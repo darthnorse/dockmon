@@ -20,6 +20,7 @@ from auth.api_key_auth import (
     invalidate_user_groups_cache,
 )
 from auth.shared import db
+from auth.utils import format_timestamp, get_auditable_user_info
 from database import CustomGroup, UserGroupMembership, User, ApiKey, GroupPermission
 from audit.audit_logger import log_audit
 from auth.capabilities import ALL_CAPABILITIES, CAPABILITY_INFO
@@ -37,27 +38,6 @@ async def _refresh_ws_capabilities(user_id: int | None = None):
             await monitor.manager.refresh_capabilities_for_user(user_id)
         else:
             await monitor.manager.refresh_all_capabilities()
-
-
-def _get_auditable_user_info(current_user: dict) -> tuple[int | None, str]:
-    """Extract user ID and username from auth context for audit logging.
-
-    Handles both session auth and API key auth contexts.
-
-    Args:
-        current_user: Auth context from get_current_user_or_api_key
-
-    Returns:
-        Tuple of (user_id, display_name) where:
-        - Session auth: (user_id, username)
-        - API key auth: (created_by_user_id, "API Key: <name>")
-    """
-    if current_user.get("auth_type") == "api_key":
-        return (
-            current_user.get("created_by_user_id"),
-            f"API Key: {current_user.get('api_key_name', 'unknown')}"
-        )
-    return (current_user.get("user_id"), current_user.get("username", "unknown"))
 
 
 # =============================================================================
@@ -227,14 +207,6 @@ def _validate_group_description(description: Optional[str]) -> Optional[str]:
     return sanitized
 
 
-def _format_datetime(dt: datetime) -> Optional[str]:
-    """Format datetime for API response with Z suffix"""
-    if dt is None:
-        return None
-    iso = dt.isoformat()
-    return iso if iso.endswith('Z') else iso + 'Z'
-
-
 def _get_group_members(session, group_id: int) -> list[GroupMemberResponse]:
     """Get all members of a group with user details. Avoids N+1 queries."""
     memberships = session.query(UserGroupMembership, User).join(
@@ -262,7 +234,7 @@ def _get_group_members(session, group_id: int) -> list[GroupMemberResponse]:
             display_name=user.display_name,
             email=user.email,
             role=user.role,
-            added_at=_format_datetime(membership.added_at),
+            added_at=format_timestamp(membership.added_at),
             added_by=adder_map.get(membership.added_by) if membership.added_by else None,
         ))
 
@@ -309,9 +281,9 @@ async def list_groups(
                 description=group.description,
                 is_system=group.is_system,
                 member_count=count_map.get(group.id, 0),
-                created_at=_format_datetime(group.created_at),
+                created_at=format_timestamp(group.created_at),
                 created_by=username_map.get(group.created_by) if group.created_by else None,
-                updated_at=_format_datetime(group.updated_at),
+                updated_at=format_timestamp(group.updated_at),
             ))
 
         return GroupListResponse(
@@ -347,7 +319,7 @@ async def create_group(
             )
 
         now = datetime.now(timezone.utc)
-        user_id, display_name = _get_auditable_user_info(current_user)
+        user_id, display_name = get_auditable_user_info(current_user)
 
         new_group = CustomGroup(
             name=sanitized_name,
@@ -382,9 +354,9 @@ async def create_group(
             description=new_group.description,
             is_system=new_group.is_system,
             member_count=0,
-            created_at=_format_datetime(new_group.created_at),
+            created_at=format_timestamp(new_group.created_at),
             created_by=display_name,
-            updated_at=_format_datetime(new_group.updated_at),
+            updated_at=format_timestamp(new_group.updated_at),
         )
 
 
@@ -419,9 +391,9 @@ async def get_group(
             description=group.description,
             is_system=group.is_system,
             members=_get_group_members(session, group_id),
-            created_at=_format_datetime(group.created_at),
+            created_at=format_timestamp(group.created_at),
             created_by=creator_username,
-            updated_at=_format_datetime(group.updated_at),
+            updated_at=format_timestamp(group.updated_at),
         )
 
 
@@ -473,7 +445,7 @@ async def update_group(
             group.description = sanitized_description
 
         now = datetime.now(timezone.utc)
-        user_id, display_name = _get_auditable_user_info(current_user)
+        user_id, display_name = get_auditable_user_info(current_user)
 
         group.updated_by = user_id
         group.updated_at = now
@@ -505,9 +477,9 @@ async def update_group(
             description=group.description,
             is_system=group.is_system,
             member_count=member_count,
-            created_at=_format_datetime(group.created_at),
+            created_at=format_timestamp(group.created_at),
             created_by=_get_username_by_id(session, group.created_by),
-            updated_at=_format_datetime(group.updated_at),
+            updated_at=format_timestamp(group.updated_at),
         )
 
 
@@ -576,7 +548,7 @@ async def delete_group(
 
         group_name = group.name
         member_count = len(memberships)
-        user_id, display_name = _get_auditable_user_info(current_user)
+        user_id, display_name = get_auditable_user_info(current_user)
 
         # Audit log (before commit for atomicity)
         log_audit(
@@ -651,7 +623,7 @@ async def add_member(
 
         # Add membership
         now = datetime.now(timezone.utc)
-        user_id, display_name = _get_auditable_user_info(current_user)
+        user_id, display_name = get_auditable_user_info(current_user)
         membership = UserGroupMembership(
             user_id=request.user_id,
             group_id=group_id,
@@ -727,11 +699,11 @@ async def remove_member(
                 detail="Cannot remove user from their last group"
             )
 
-        # Get username for audit - save member_user_id before _get_auditable_user_info overwrites user_id
+        # Get username for audit - save member_user_id before get_auditable_user_info overwrites user_id
         member_user_id = user_id
         user = session.query(User).filter(User.id == member_user_id).first()
         member_username = user.username if user else f"user_{member_user_id}"
-        user_id, display_name = _get_auditable_user_info(current_user)
+        user_id, display_name = get_auditable_user_info(current_user)
 
         # Audit log (before commit for atomicity)
         log_audit(
@@ -940,7 +912,7 @@ async def update_group_permissions(
 
         if changes:
             # Audit log
-            user_id, display_name = _get_auditable_user_info(current_user)
+            user_id, display_name = get_auditable_user_info(current_user)
             log_audit(
                 session,
                 user_id=user_id,
@@ -1027,7 +999,7 @@ async def copy_group_permissions(
             copied_count += 1
 
         # Audit log
-        user_id, display_name = _get_auditable_user_info(current_user)
+        user_id, display_name = get_auditable_user_info(current_user)
         log_audit(
             session,
             user_id=user_id,

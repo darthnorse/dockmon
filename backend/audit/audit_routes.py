@@ -19,32 +19,12 @@ from sqlalchemy import desc, and_, or_, func
 
 from auth.api_key_auth import require_capability, get_current_user_or_api_key
 from auth.shared import db
+from auth.utils import format_timestamp, get_auditable_user_info
 from database import AuditLog, GlobalSettings
 from audit.audit_logger import AuditAction, AuditEntityType, log_audit, get_client_info
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2/audit-log", tags=["audit"])
-
-
-def _get_auditable_user_info(current_user: dict) -> tuple[int | None, str]:
-    """Extract user ID and username from auth context for audit logging.
-
-    Handles both session auth and API key auth contexts.
-
-    Args:
-        current_user: Auth context from get_current_user_or_api_key
-
-    Returns:
-        Tuple of (user_id, display_name) where:
-        - Session auth: (user_id, username)
-        - API key auth: (created_by_user_id, "API Key: <name>")
-    """
-    if current_user.get("auth_type") == "api_key":
-        return (
-            current_user.get("created_by_user_id"),
-            f"API Key: {current_user.get('api_key_name', 'unknown')}"
-        )
-    return (current_user.get("user_id"), current_user.get("username", "unknown"))
 
 
 # =============================================================================
@@ -143,15 +123,6 @@ def _escape_like_pattern(value: str) -> str:
     return value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
 
-def _format_datetime(dt: Optional[datetime]) -> Optional[str]:
-    """Format datetime as UTC with 'Z' suffix per DockMon standards."""
-    if dt is None:
-        return None
-    if dt.tzinfo is not None:
-        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
-    return dt.isoformat() + 'Z'
-
-
 def _parse_iso_date(date_str: str, field_name: str) -> datetime:
     """Parse ISO date string, raising HTTPException on failure."""
     try:
@@ -184,7 +155,7 @@ def _entry_to_response(entry: AuditLog) -> AuditLogEntry:
         details=_parse_details(entry.details),
         ip_address=entry.ip_address,
         user_agent=entry.user_agent,
-        created_at=_format_datetime(entry.created_at),
+        created_at=format_timestamp(entry.created_at),
     )
 
 
@@ -346,8 +317,8 @@ async def get_audit_stats():
             entries_by_action=action_counts,
             entries_by_entity_type=entity_counts,
             entries_by_user=user_counts,
-            oldest_entry_date=_format_datetime(oldest.created_at) if oldest else None,
-            newest_entry_date=_format_datetime(newest.created_at) if newest else None,
+            oldest_entry_date=format_timestamp(oldest.created_at) if oldest else None,
+            newest_entry_date=format_timestamp(newest.created_at) if newest else None,
         )
 
 
@@ -400,7 +371,7 @@ async def export_audit_log(
         for entry in entries:
             writer.writerow([
                 entry.id,
-                _format_datetime(entry.created_at),
+                format_timestamp(entry.created_at),
                 entry.username,
                 entry.user_id or '',
                 entry.action,
@@ -441,7 +412,7 @@ async def get_retention_settings():
         return RetentionSettingsResponse(
             retention_days=retention_days,
             valid_options=VALID_RETENTION_DAYS,
-            oldest_entry_date=_format_datetime(oldest.created_at) if oldest else None,
+            oldest_entry_date=format_timestamp(oldest.created_at) if oldest else None,
             total_entries=total,
         )
 
@@ -472,7 +443,7 @@ async def update_retention_settings(
             cutoff = datetime.now(timezone.utc) - timedelta(days=request.retention_days)
             entries_to_delete = session.query(AuditLog).filter(AuditLog.created_at < cutoff).count()
 
-        user_id, display_name = _get_auditable_user_info(current_user)
+        user_id, display_name = get_auditable_user_info(current_user)
         client_info = get_client_info(req)
         log_audit(
             db=session,
@@ -514,7 +485,7 @@ async def cleanup_old_entries(
     current_user: dict = Depends(get_current_user_or_api_key),
 ):
     """Manually trigger cleanup of old audit log entries. Admin only."""
-    user_id, display_name = _get_auditable_user_info(current_user)
+    user_id, display_name = get_auditable_user_info(current_user)
 
     with db.get_session() as session:
         settings = session.query(GlobalSettings).first()
@@ -536,7 +507,7 @@ async def cleanup_old_entries(
             entity_name='audit_log_cleanup',
             details={
                 'retention_days': retention_days,
-                'cutoff_date': _format_datetime(cutoff),
+                'cutoff_date': format_timestamp(cutoff),
                 'entries_deleted': entries_to_delete,
             },
             **client_info,

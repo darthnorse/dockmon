@@ -17,8 +17,6 @@ import argon2
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, InvalidHashError
 
-from typing import Callable
-
 from auth.cookie_sessions import cookie_session_manager, get_session_cookie_max_age
 from security.rate_limiting import rate_limit_auth
 from audit import log_login, log_logout, log_login_failure, AuditAction
@@ -58,26 +56,6 @@ from auth.api_key_auth import (
 from config.settings import AppConfig
 from utils.base_path import get_base_path
 
-
-def safe_audit_log(audit_func: Callable, *args, **kwargs) -> None:
-    """
-    Execute an audit logging function with error handling.
-
-    Audit logging should never block the main operation. If logging fails,
-    we log a warning but allow the operation to proceed.
-
-    Args:
-        audit_func: The audit logging function to call
-        *args: Positional arguments for the audit function
-        **kwargs: Keyword arguments for the audit function
-    """
-    try:
-        audit_func(*args, **kwargs)
-        # Get session from first arg (all audit functions take db session as first param)
-        if args and hasattr(args[0], 'commit'):
-            args[0].commit()
-    except Exception as audit_err:
-        logger.warning(f"Failed to log audit entry: {audit_err}")
 
 # Argon2 password hasher (more secure than bcrypt)
 # SECURITY: Argon2id is resistant to GPU attacks
@@ -200,7 +178,11 @@ async def login_v2(
         if not user:
             safe_username = _sanitize_for_log(credentials.username)
             logger.warning(f"Login failed: user '{safe_username}' not found")
-            safe_audit_log(log_login_failure, session, credentials.username, request, "user_not_found")
+            try:
+                log_login_failure(session, credentials.username, request, "user_not_found")
+                session.commit()
+            except Exception as audit_err:
+                logger.warning(f"Failed to log audit entry: {audit_err}")
             raise HTTPException(
                 status_code=401,
                 detail="Invalid username or password"
@@ -236,7 +218,11 @@ async def login_v2(
         if not password_valid:
             safe_username = _sanitize_for_log(credentials.username)
             logger.warning(f"Login failed: invalid password for user '{safe_username}'")
-            safe_audit_log(log_login_failure, session, credentials.username, request, "invalid_password")
+            try:
+                log_login_failure(session, credentials.username, request, "invalid_password")
+                session.commit()
+            except Exception as audit_err:
+                logger.warning(f"Failed to log audit entry: {audit_err}")
             raise HTTPException(
                 status_code=401,
                 detail="Invalid username or password"
@@ -246,7 +232,11 @@ async def login_v2(
         if user.is_deleted:
             safe_username = _sanitize_for_log(credentials.username)
             logger.warning(f"Login failed: user '{safe_username}' is deactivated")
-            safe_audit_log(log_login_failure, session, credentials.username, request, "user_deactivated")
+            try:
+                log_login_failure(session, credentials.username, request, "user_deactivated")
+                session.commit()
+            except Exception as audit_err:
+                logger.warning(f"Failed to log audit entry: {audit_err}")
             raise HTTPException(
                 status_code=401,
                 detail="Account is deactivated"
@@ -263,7 +253,8 @@ async def login_v2(
         signed_token = cookie_session_manager.create_session(
             user_id=user.id,
             username=user.username,
-            client_ip=client_ip
+            client_ip=client_ip,
+            display_name=user.effective_display_name
         )
 
         # Set HttpOnly cookie (XSS protection)
@@ -283,7 +274,11 @@ async def login_v2(
         logger.info(f"User '{user.username}' logged in successfully from {client_ip}")
 
         # Audit: Log successful login
-        safe_audit_log(log_login, session, user.id, user.username, request, auth_method='local')
+        try:
+            log_login(session, user.id, user.effective_display_name, request, auth_method='local')
+            session.commit()
+        except Exception as audit_err:
+            logger.warning(f"Failed to log audit entry: {audit_err}")
 
         return LoginResponse(
             user={
@@ -318,7 +313,7 @@ async def logout_v2(
         session_data = cookie_session_manager.validate_session(session_id, client_ip)
         if session_data:
             user_id = session_data.get("user_id")
-            username = session_data.get("username", "unknown")
+            username = session_data.get("display_name") or session_data.get("username", "unknown")
 
         cookie_session_manager.delete_session(session_id)
 
@@ -332,7 +327,11 @@ async def logout_v2(
     oidc_logout_url = None
     if user_id:
         with db.get_session() as session:
-            safe_audit_log(log_logout, session, user_id, username, request)
+            try:
+                log_logout(session, user_id, username, request)
+                session.commit()
+            except Exception as audit_err:
+                logger.warning(f"Failed to log audit entry: {audit_err}")
 
             user = session.query(User).filter(User.id == user_id).first()
             if user and user.auth_provider == 'oidc':
@@ -523,12 +522,16 @@ async def change_password_v2(
 
     # Audit: Log password change
     with db.get_session() as session:
-        safe_audit_log(
-            log_audit, session, user_id, username,
-            AuditAction.PASSWORD_CHANGE, AuditEntityType.USER,
-            entity_id=str(user_id), entity_name=username,
-            **get_client_info(request)
-        )
+        try:
+            log_audit(
+                session, user_id, username,
+                AuditAction.PASSWORD_CHANGE, AuditEntityType.USER,
+                entity_id=str(user_id), entity_name=username,
+                **get_client_info(request)
+            )
+            session.commit()
+        except Exception as audit_err:
+            logger.warning(f"Failed to log audit entry: {audit_err}")
 
     return ChangePasswordResponse(
         success=True,
@@ -585,13 +588,17 @@ async def update_profile_v2(
         # Audit: Log profile update
         if changes:
             with db.get_session() as session:
-                safe_audit_log(
-                    log_audit, session, user_id, username,
-                    AuditAction.UPDATE, AuditEntityType.USER,
-                    entity_id=str(user_id), entity_name=username,
-                    details={'changes': changes},
-                    **get_client_info(request)
-                )
+                try:
+                    log_audit(
+                        session, user_id, username,
+                        AuditAction.UPDATE, AuditEntityType.USER,
+                        entity_id=str(user_id), entity_name=username,
+                        details={'changes': changes},
+                        **get_client_info(request)
+                    )
+                    session.commit()
+                except Exception as audit_err:
+                    logger.warning(f"Failed to log audit entry: {audit_err}")
 
         return UpdateProfileResponse(
             success=True,

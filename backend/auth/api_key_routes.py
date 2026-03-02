@@ -24,33 +24,12 @@ from pydantic import BaseModel, Field
 from database import ApiKey, User, CustomGroup
 from auth.api_key_auth import generate_api_key, get_current_user_or_api_key, require_capability
 from auth.shared import db
-from auth.utils import format_timestamp, format_timestamp_required
+from auth.utils import format_timestamp, format_timestamp_required, get_auditable_user_info
 from security.audit import security_audit
 from utils.client_ip import get_client_ip
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2/api-keys", tags=["api-keys"])
-
-
-def _get_auditable_user_info(current_user: dict) -> tuple[int | None, str]:
-    """Extract user ID and username from auth context for audit logging.
-
-    Handles both session auth and API key auth contexts.
-
-    Args:
-        current_user: Auth context from get_current_user_or_api_key
-
-    Returns:
-        Tuple of (user_id, display_name) where:
-        - Session auth: (user_id, username)
-        - API key auth: (created_by_user_id, "API Key: <name>")
-    """
-    if current_user.get("auth_type") == "api_key":
-        return (
-            current_user.get("created_by_user_id"),
-            f"API Key: {current_user.get('api_key_name', 'unknown')}"
-        )
-    return (current_user.get("user_id"), current_user.get("username", "unknown"))
 
 
 # Request/Response Models
@@ -166,7 +145,7 @@ async def create_api_key(
         expires_at = datetime.now(timezone.utc) + timedelta(days=data.expires_days)
 
     # Get user info for audit (handles both session and API key auth)
-    user_id, display_name = _get_auditable_user_info(current_user)
+    user_id, display_name = get_auditable_user_info(current_user)
 
     # Create database record
     with db.get_session() as session:
@@ -350,7 +329,7 @@ async def update_api_key(
             success=True
         )
 
-        _, display_name = _get_auditable_user_info(current_user)
+        _, display_name = get_auditable_user_info(current_user)
         logger.info(f"{display_name} updated API key: {api_key.name}")
 
         return {"message": "API key updated successfully"}
@@ -421,7 +400,7 @@ async def revoke_api_key(
             success=True
         )
 
-        _, display_name = _get_auditable_user_info(current_user)
+        _, display_name = get_auditable_user_info(current_user)
         logger.info(f"{display_name} revoked API key: {api_key.name}")
 
         return {"message": "API key revoked successfully"}

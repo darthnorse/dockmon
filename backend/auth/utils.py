@@ -5,6 +5,7 @@ Common helper functions for auth-related routes to reduce code duplication.
 """
 
 from datetime import datetime, timezone
+from typing import Literal, NotRequired, TypedDict
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -12,32 +13,71 @@ from sqlalchemy.orm import Session
 from database import User, CustomGroup
 
 
-def format_timestamp(dt: datetime | None) -> str | None:
-    """Format datetime to ISO string with 'Z' suffix for frontend.
+# ==================== Auth Context Types ====================
+
+class SessionAuthContext(TypedDict):
+    user_id: int
+    username: str
+    display_name: str
+    auth_type: Literal["session"]
+    groups: list[dict]
+    session_id: NotRequired[str]
+
+
+class ApiKeyAuthContext(TypedDict):
+    api_key_id: int
+    api_key_name: str
+    group_id: int
+    group_name: str
+    created_by_user_id: int
+    created_by_username: str
+    auth_type: Literal["api_key"]
+
+
+AuthContext = SessionAuthContext | ApiKeyAuthContext
+
+
+def get_auditable_user_info(current_user: dict) -> tuple[int | None, str]:
+    """Extract user ID and display name from auth context for audit logging.
+
+    Handles both session auth and API key auth contexts.
 
     Args:
-        dt: Datetime to format, or None
+        current_user: Auth context from get_current_user_or_api_key
 
     Returns:
-        ISO formatted string with 'Z' suffix, or None if input is None
+        Tuple of (user_id, display_name) where:
+        - Session auth: (user_id, display_name or username)
+        - API key auth: (created_by_user_id, "API Key: <name>")
     """
+    if current_user.get("auth_type") == "api_key":
+        return (
+            current_user.get("created_by_user_id"),
+            f"API Key: {current_user.get('api_key_name', 'unknown')}"
+        )
+    return (current_user.get("user_id"),
+            current_user.get("display_name") or current_user.get("username", "unknown"))
+
+
+def _to_naive_utc(dt: datetime) -> datetime:
+    """Strip timezone info after converting to UTC, so .isoformat() won't embed an offset."""
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def format_timestamp(dt: datetime | None) -> str | None:
+    """Format datetime to ISO string with 'Z' suffix for frontend."""
     if dt is None:
         return None
-    return dt.isoformat() + 'Z'
+    return _to_naive_utc(dt).isoformat() + 'Z'
 
 
 def format_timestamp_required(dt: datetime | None) -> str:
-    """Format datetime to ISO string, using now() if None.
-
-    Args:
-        dt: Datetime to format, or None
-
-    Returns:
-        ISO formatted string with 'Z' suffix (uses current time if input is None)
-    """
+    """Format datetime to ISO string with 'Z' suffix, using now() if None."""
     if dt is None:
-        return datetime.now(timezone.utc).isoformat() + 'Z'
-    return dt.isoformat() + 'Z'
+        dt = datetime.now(timezone.utc)
+    return _to_naive_utc(dt).isoformat() + 'Z'
 
 
 def get_user_or_404(session: Session, user_id: int) -> User:

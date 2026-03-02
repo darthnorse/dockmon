@@ -85,6 +85,12 @@ class User(Base):
         """Check if user authenticates via OIDC"""
         return self.auth_provider == 'oidc'
 
+    @property
+    def effective_display_name(self) -> str:
+        """Return display_name if set, otherwise username."""
+        return self.display_name or self.username
+
+
 class UserPrefs(Base):
     """User preferences table (theme and defaults)"""
     __tablename__ = "user_prefs"
@@ -1669,6 +1675,14 @@ class DatabaseManager:
 
                     session.commit()
                     logger.info("Cleared legacy tag data - starting fresh with normalized schema")
+
+                if 'oidc_config' in table_names:
+                    oidc_inspector = session.connection().engine.dialect.get_columns(session.connection(), 'oidc_config')
+                    oidc_column_names = [col['name'] for col in oidc_inspector]
+                    if 'sso_default' not in oidc_column_names:
+                        session.execute(text("ALTER TABLE oidc_config ADD COLUMN sso_default BOOLEAN NOT NULL DEFAULT 0"))
+                        session.commit()
+                        logger.info("Added sso_default column to oidc_config table")
 
         except Exception as e:
             logger.info(f"Migration warning: {e}")

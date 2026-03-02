@@ -24,6 +24,7 @@ from deployment import DeploymentExecutor
 from deployment import stack_storage
 from deployment.compose_generator import generate_compose_from_deployment, generate_compose_from_containers
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability
+from auth.utils import get_auditable_user_info
 from utils.keys import parse_composite_key
 from agent.command_executor import get_agent_command_executor, RetryPolicy
 from agent.manager import AgentManager
@@ -32,27 +33,6 @@ from deployment.stack_executor import _get_host_connection_info
 from deployment.agent_executor import get_agent_deployment_executor
 
 logger = logging.getLogger(__name__)
-
-
-def _get_auditable_user_info(current_user: dict) -> tuple[int | None, str]:
-    """Extract user ID and username from auth context for audit logging.
-
-    Handles both session auth and API key auth contexts.
-
-    Args:
-        current_user: Auth context from get_current_user_or_api_key
-
-    Returns:
-        Tuple of (user_id, display_name) where:
-        - Session auth: (user_id, username)
-        - API key auth: (created_by_user_id, "API Key: <name>")
-    """
-    if current_user.get("auth_type") == "api_key":
-        return (
-            current_user.get("created_by_user_id"),
-            f"API Key: {current_user.get('api_key_name', 'unknown')}"
-        )
-    return (current_user.get("user_id"), current_user.get("username", "unknown"))
 
 
 # Create router
@@ -498,7 +478,7 @@ async def deploy_stack(
 
         background_tasks.add_task(execute_compose_deploy)
 
-    _, display_name = _get_auditable_user_info(current_user)
+    _, display_name = get_auditable_user_info(current_user)
     logger.info(f"{display_name} started {request.action} of '{request.stack_name}' on '{host_name}'")
 
     return DeployStackResponse(
@@ -537,7 +517,7 @@ async def create_deployment(
     The stack must exist before creating a deployment.
     """
     try:
-        user_id, display_name = _get_auditable_user_info(current_user)
+        user_id, display_name = get_auditable_user_info(current_user)
         deployment_id = await executor.create_deployment(
             host_id=request.host_id,
             stack_name=request.stack_name,
@@ -588,7 +568,7 @@ async def execute_deployment(
         # Check deployment status before executing with row-level lock
         # This prevents race condition where multiple concurrent requests execute same deployment
         db = get_database_manager()
-        user_id, _ = _get_auditable_user_info(current_user)
+        user_id, _ = get_auditable_user_info(current_user)
         with db.get_session() as session:
             # Use with_for_update() to acquire row lock (prevents concurrent modifications)
             deployment = session.query(Deployment).filter_by(
@@ -676,7 +656,7 @@ async def list_deployments(
             raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}")
 
         db = get_database_manager()
-        user_id, _ = _get_auditable_user_info(current_user)
+        user_id, _ = get_auditable_user_info(current_user)
         with db.get_session() as session:
             query = session.query(Deployment)
 
@@ -828,7 +808,7 @@ async def generate_compose_from_running_containers(
     compose_dict = yaml.safe_load(compose_yaml)
     services = list(compose_dict.get("services", {}).keys())
 
-    _, display_name = _get_auditable_user_info(current_user)
+    _, display_name = get_auditable_user_info(current_user)
     logger.info(f"{display_name} generated compose for project '{request.project_name}' ({len(services)} services)")
 
     return ComposePreviewResponse(
@@ -849,7 +829,7 @@ async def get_deployment(
     """Get deployment details by ID."""
     try:
         db = get_database_manager()
-        user_id, _ = _get_auditable_user_info(current_user)
+        user_id, _ = get_auditable_user_info(current_user)
         with db.get_session() as session:
             deployment = session.query(Deployment).filter_by(
                 id=deployment_id,
@@ -884,7 +864,7 @@ async def update_deployment(
     """
     try:
         db = get_database_manager()
-        user_id, _ = _get_auditable_user_info(current_user)
+        user_id, _ = get_auditable_user_info(current_user)
 
         with db.get_session() as session:
             # Fetch deployment (with authorization check)
@@ -955,7 +935,7 @@ async def delete_deployment(
     """
     try:
         db = get_database_manager()
-        user_id, _ = _get_auditable_user_info(current_user)
+        user_id, _ = get_auditable_user_info(current_user)
         with db.get_session() as session:
             deployment = session.query(Deployment).filter_by(
                 id=deployment_id,
@@ -1000,7 +980,7 @@ async def preview_compose_from_containers(
     """
     db = get_database_manager()
     monitor = get_docker_monitor()
-    user_id, _ = _get_auditable_user_info(current_user)
+    user_id, _ = get_auditable_user_info(current_user)
 
     with db.get_session() as session:
         deployment = session.query(Deployment).filter_by(
@@ -1041,7 +1021,7 @@ async def import_deployment(
     deployment record(s) for each. If compose file has no 'name:' field,
     returns list of known stacks for user to select from.
     """
-    user_id, display_name = _get_auditable_user_info(current_user)
+    user_id, display_name = get_auditable_user_info(current_user)
 
     # 1. Validate compose YAML syntax
     try:

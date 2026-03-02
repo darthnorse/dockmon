@@ -28,6 +28,8 @@ interface Tab {
   icon: LucideIcon
   // Capabilities required to see this tab (any of these grants access)
   capabilities?: string[]
+  // Use wider layout (max-w-7xl instead of max-w-4xl)
+  wideLayout?: boolean
 }
 
 const TABS: Tab[] = [
@@ -41,7 +43,7 @@ const TABS: Tab[] = [
   { id: 'groups', label: 'Groups', icon: UserSquare2, capabilities: ['groups.manage'] },
   { id: 'permissions', label: 'Permissions', icon: Shield, capabilities: ['groups.manage'] },
   { id: 'oidc', label: 'OIDC', icon: KeyRound, capabilities: ['oidc.manage'] },
-  { id: 'audit-log', label: 'Audit Log', icon: ClipboardList, capabilities: ['audit.view'] },
+  { id: 'audit-log', label: 'Audit Log', icon: ClipboardList, capabilities: ['audit.view'], wideLayout: true },
   { id: 'system', label: 'System', icon: Settings, capabilities: ['settings.manage'] },
 ]
 
@@ -94,7 +96,7 @@ export function SettingsPage() {
 
       {/* Content */}
       <div className="flex-1 overflow-auto">
-        <div className="container mx-auto max-w-4xl px-3 sm:px-4 md:px-6 py-4 sm:py-6">
+        <div className={`container mx-auto px-3 sm:px-4 md:px-6 py-4 sm:py-6 ${TABS.find((t) => t.id === activeTab)?.wideLayout ? 'max-w-7xl' : 'max-w-4xl'}`}>
           {activeTab === 'dashboard' && <DashboardSettings />}
           {activeTab === 'alerts' && (hasCapability('alerts.view') || hasCapability('alerts.manage')) && (
             <div className="space-y-8">

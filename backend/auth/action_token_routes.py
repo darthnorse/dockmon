@@ -21,32 +21,12 @@ from pydantic import BaseModel, Field
 from auth.action_token_auth import validate_action_token
 from auth.shared import db
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user
+from auth.utils import get_auditable_user_info
 from utils.client_ip import get_client_ip
 from security.audit import security_audit
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2/action-tokens", tags=["action-tokens"])
-
-
-def _get_auditable_user_info(current_user: dict) -> tuple[int | None, str]:
-    """Extract user ID and username from auth context for audit logging.
-
-    Handles both session auth and API key auth contexts.
-
-    Args:
-        current_user: Auth context from get_current_user_or_api_key
-
-    Returns:
-        Tuple of (user_id, display_name) where:
-        - Session auth: (user_id, username)
-        - API key auth: (created_by_user_id, "API Key: <name>")
-    """
-    if current_user.get("auth_type") == "api_key":
-        return (
-            current_user.get("created_by_user_id"),
-            f"API Key: {current_user.get('api_key_name', 'unknown')}"
-        )
-    return (current_user.get("user_id"), current_user.get("username", "unknown"))
 
 
 # Response Models
@@ -128,7 +108,7 @@ async def consume_action_token(
     The token is marked as used after this call and cannot be reused.
     """
     client_ip = get_client_ip(request)
-    user_id, display_name = _get_auditable_user_info(current_user)
+    user_id, display_name = get_auditable_user_info(current_user)
 
     # Require explicit confirmation
     if not body.confirmed:

@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from auth.shared import db, safe_audit_log
 from auth.api_key_auth import require_capability, get_current_user_or_api_key
-from auth.utils import format_timestamp_required, get_group_or_400
+from auth.utils import format_timestamp_required, get_group_or_400, get_auditable_user_info
 from database import OIDCConfig, OIDCGroupMapping, CustomGroup
 from audit import get_client_info, AuditAction
 from audit.audit_logger import AuditEntityType
@@ -31,27 +31,6 @@ logger = logging.getLogger(__name__)
 OIDC_HTTP_TIMEOUT = 10.0
 
 router = APIRouter(prefix="/api/v2/oidc", tags=["oidc-config"])
-
-
-def _get_auditable_user_info(current_user: dict) -> tuple[int | None, str]:
-    """Extract user ID and username from auth context for audit logging.
-
-    Handles both session auth and API key auth contexts.
-
-    Args:
-        current_user: Auth context from get_current_user_or_api_key
-
-    Returns:
-        Tuple of (user_id, display_name) where:
-        - Session auth: (user_id, username)
-        - API key auth: (created_by_user_id, "API Key: <name>")
-    """
-    if current_user.get("auth_type") == "api_key":
-        return (
-            current_user.get("created_by_user_id"),
-            f"API Key: {current_user.get('api_key_name', 'unknown')}"
-        )
-    return (current_user.get("user_id"), current_user.get("username", "unknown"))
 
 
 # ==================== Request/Response Models ====================
@@ -272,7 +251,7 @@ async def update_oidc_config(
     Client secret is encrypted before storage.
     """
     # Get user info for audit (handles both session and API key auth)
-    user_id, display_name = _get_auditable_user_info(current_user)
+    user_id, display_name = get_auditable_user_info(current_user)
 
     with db.get_session() as session:
         config = _get_or_create_config(session)
@@ -456,7 +435,7 @@ async def create_group_mapping(
     This follows industry best practice (Kubernetes, AWS, Vault, etc.).
     """
     # Get user info for audit (handles both session and API key auth)
-    user_id, display_name = _get_auditable_user_info(current_user)
+    user_id, display_name = get_auditable_user_info(current_user)
 
     with db.get_session() as session:
         # One-to-one mapping: each OIDC value maps to exactly one DockMon group
@@ -519,7 +498,7 @@ async def update_group_mapping(
     Update an OIDC group mapping (admin only).
     """
     # Get user info for audit (handles both session and API key auth)
-    user_id, display_name = _get_auditable_user_info(current_user)
+    user_id, display_name = get_auditable_user_info(current_user)
 
     with db.get_session() as session:
         mapping = session.query(OIDCGroupMapping).filter(OIDCGroupMapping.id == mapping_id).first()
@@ -585,7 +564,7 @@ async def delete_group_mapping(
     Delete an OIDC group mapping (admin only).
     """
     # Get user info for audit (handles both session and API key auth)
-    user_id, display_name = _get_auditable_user_info(current_user)
+    user_id, display_name = get_auditable_user_info(current_user)
 
     with db.get_session() as session:
         mapping = session.query(OIDCGroupMapping).filter(OIDCGroupMapping.id == mapping_id).first()

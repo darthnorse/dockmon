@@ -512,11 +512,11 @@ async def oidc_callback(
                     safe_audit_log(
                         session,
                         user.id,
-                        user.username,
+                        user.effective_display_name,
                         AuditAction.UPDATE,
                         AuditEntityType.USER,
                         entity_id=str(user.id),
-                        entity_name=user.username,
+                        entity_name=user.effective_display_name,
                         details={
                             'source': 'oidc_group_sync',
                             'added_groups': list(added_groups),
@@ -537,7 +537,7 @@ async def oidc_callback(
                     safe_audit_log(
                         session,
                         user.id,
-                        user.username,
+                        user.effective_display_name,
                         AuditAction.LOGIN_FAILED,
                         AuditEntityType.SESSION,
                         details={'reason': 'no_matching_groups', 'oidc_groups': oidc_groups},
@@ -560,7 +560,7 @@ async def oidc_callback(
                         safe_audit_log(
                             session,
                             None,
-                            preferred_username,
+                            name or preferred_username,
                             AuditAction.LOGIN_FAILED,
                             AuditEntityType.SESSION,
                             details={'reason': 'email_conflict', 'email': email},
@@ -605,7 +605,7 @@ async def oidc_callback(
                     safe_audit_log(
                         session,
                         None,
-                        username,
+                        name or username,
                         AuditAction.LOGIN_FAILED,
                         AuditEntityType.SESSION,
                         details={'reason': 'no_matching_groups', 'oidc_groups': oidc_groups},
@@ -648,11 +648,11 @@ async def oidc_callback(
                 safe_audit_log(
                     session,
                     user.id,
-                    user.username,
+                    user.effective_display_name,
                     AuditAction.CREATE,
                     AuditEntityType.USER,
                     entity_id=str(user.id),
-                    entity_name=user.username,
+                    entity_name=user.effective_display_name,
                     details={
                         'source': 'oidc_auto_provision',
                         'groups': group_ids,
@@ -677,7 +677,7 @@ async def oidc_callback(
                 safe_audit_log(
                     session,
                     user.id,
-                    user.username,
+                    user.effective_display_name,
                     AuditAction.LOGIN_FAILED,
                     AuditEntityType.SESSION,
                     details={'reason': 'user_deactivated'},
@@ -691,12 +691,13 @@ async def oidc_callback(
             signed_token = cookie_session_manager.create_session(
                 user_id=user.id,
                 username=user.username,
-                client_ip=client_ip
+                client_ip=client_ip,
+                display_name=user.effective_display_name
             )
 
             # Audit login
             try:
-                log_login(session, user.id, user.username, request, auth_method='oidc')
+                log_login(session, user.id, user.effective_display_name, request, auth_method='oidc')
                 session.commit()
             except Exception as e:
                 logger.warning(f"Failed to log OIDC login: {e}")

@@ -317,11 +317,13 @@ async def get_current_user_or_api_key(
             # Get user info for return value
             user_id = None
             username = None
+            display_name = None
             with db.get_session() as session:
                 user = session.query(User).filter(User.id == session_data["user_id"]).first()
                 if user:
                     user_id = user.id
                     username = user.username
+                    display_name = user.display_name
 
             if user_id:
                 # Get user's groups outside session (for API symmetry with API key auth)
@@ -329,6 +331,7 @@ async def get_current_user_or_api_key(
                 return {
                     "user_id": user_id,
                     "username": username,
+                    "display_name": display_name or username,
                     "auth_type": "session",
                     "groups": user_groups,  # v2.4.0: Include groups for UI
                 }

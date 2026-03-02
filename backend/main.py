@@ -30,7 +30,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Requ
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html
-# Session-based auth - no longer need HTTPBearer
 from fastapi.responses import FileResponse, JSONResponse
 from database import (
     DatabaseManager,
@@ -74,6 +73,7 @@ from models.request_models import (
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, get_capabilities_for_user, Capabilities
+from auth.utils import get_auditable_user_info
 from websocket.connection import ConnectionManager, DateTimeEncoder
 from websocket.rate_limiter import ws_rate_limiter
 from docker_monitor.monitor import DockerMonitor
@@ -118,27 +118,6 @@ def is_compose_container(labels: Dict[str, str]) -> bool:
         True if container has com.docker.compose.* labels
     """
     return any(label.startswith("com.docker.compose") for label in labels.keys())
-
-
-def _get_auditable_user_info(current_user: dict) -> tuple[int | None, str]:
-    """Extract user ID and username from auth context for audit logging.
-
-    Handles both session auth and API key auth contexts.
-
-    Args:
-        current_user: Auth context from get_current_user_or_api_key
-
-    Returns:
-        Tuple of (user_id, display_name) where:
-        - Session auth: (user_id, username)
-        - API key auth: (created_by_user_id, "API Key: <name>")
-    """
-    if current_user.get("auth_type") == "api_key":
-        return (
-            current_user.get("created_by_user_id"),
-            f"API Key: {current_user.get('api_key_name', 'unknown')}"
-        )
-    return (current_user.get("user_id"), current_user.get("username", "unknown"))
 
 
 # ==================== Security Constants ====================
@@ -952,7 +931,7 @@ async def update_host_tags(
     # Update in-memory host object so changes are immediately visible
     host.tags = updated_tags
 
-    _, display_name = _get_auditable_user_info(current_user)
+    _, display_name = get_auditable_user_info(current_user)
     logger.info(f"User {display_name} updated tags for host {host.name}")
 
     return {"tags": updated_tags}
@@ -1949,7 +1928,7 @@ async def update_container_tags(
         container_labels=container.labels
     )
 
-    _, display_name = _get_auditable_user_info(current_user)
+    _, display_name = get_auditable_user_info(current_user)
     logger.info(f"User {display_name} updated tags for container {container.name}")
 
     return result
@@ -2157,7 +2136,7 @@ async def check_container_update(
     # Normalize to short ID
     short_id = container_id[:12] if len(container_id) > 12 else container_id
 
-    _, display_name = _get_auditable_user_info(current_user)
+    _, display_name = get_auditable_user_info(current_user)
     logger.info(f"User {display_name} triggered update check for container {short_id} on host {host_id}")
 
     checker = get_update_checker(monitor.db, monitor)
@@ -2211,7 +2190,7 @@ async def execute_container_update(
     # Normalize to short ID
     short_id = container_id[:12] if len(container_id) > 12 else container_id
 
-    _, display_name = _get_auditable_user_info(current_user)
+    _, display_name = get_auditable_user_info(current_user)
     logger.info(f"User {display_name} triggered manual update for container {short_id} on host {host_id} (force={force})")
 
     # Get update record from database
@@ -2350,7 +2329,7 @@ async def update_auto_update_config(
     short_id = container_id[:12] if len(container_id) > 12 else container_id
     composite_key = make_composite_key(host_id, short_id)
 
-    _, display_name = _get_auditable_user_info(current_user)
+    _, display_name = get_auditable_user_info(current_user)
     logger.info(f"User {display_name} updating auto-update config for {composite_key}: {config}")
 
     auto_update_enabled = config.get("auto_update_enabled", False)
@@ -2467,7 +2446,7 @@ async def check_all_updates(current_user: dict = Depends(get_current_user)):
 
     Returns stats about the check.
     """
-    _, display_name = _get_auditable_user_info(current_user)
+    _, display_name = get_auditable_user_info(current_user)
     logger.info(f"User {display_name} triggered global update check")
 
     stats = await monitor.periodic_jobs.check_updates_now()
@@ -2485,7 +2464,7 @@ async def prune_images(current_user: dict = Depends(get_current_user)):
 
     Returns count of images removed.
     """
-    _, display_name = _get_auditable_user_info(current_user)
+    _, display_name = get_auditable_user_info(current_user)
     logger.info(f"User {display_name} triggered manual image prune")
 
     removed_count = await monitor.periodic_jobs.cleanup_old_images()
@@ -3008,7 +2987,7 @@ async def create_batch_job(request: BatchJobCreate, current_user: dict = Depends
         raise HTTPException(status_code=500, detail="Batch manager not initialized")
 
     try:
-        user_id, display_name = _get_auditable_user_info(current_user)
+        user_id, display_name = get_auditable_user_info(current_user)
         job_id = await batch_manager.create_job(
             user_id=user_id,
             scope=request.scope,
@@ -3404,7 +3383,7 @@ async def dismiss_upgrade_notice(current_user: dict = Depends(get_current_user),
             if settings:
                 settings.upgrade_notice_dismissed = True
                 session.commit()
-                _, display_name = _get_auditable_user_info(current_user)
+                _, display_name = get_auditable_user_info(current_user)
                 logger.info(f"User '{display_name}' dismissed upgrade notice")
                 return {"success": True}
             return {"success": False, "error": "Settings not found"}
@@ -3522,7 +3501,7 @@ async def update_http_health_check(
         old_check_from = check.check_from if check else None
 
         # Get user_id for audit tracking (v2.3.0+)
-        user_id, _ = _get_auditable_user_info(current_user)
+        user_id, _ = get_auditable_user_info(current_user)
 
         if check:
             # Update existing
@@ -3809,7 +3788,7 @@ async def create_alert_rule_v2(
     from models.settings_models import AlertRuleV2Create
 
     try:
-        _, display_name = _get_auditable_user_info(current_user)
+        _, display_name = get_auditable_user_info(current_user)
 
         # Default suppress_during_updates to True for container-scoped rules if not explicitly set
         suppress_during_updates = rule.suppress_during_updates
@@ -3888,7 +3867,7 @@ async def update_alert_rule_v2(
     from models.settings_models import AlertRuleV2Update
 
     try:
-        _, display_name = _get_auditable_user_info(current_user)
+        _, display_name = get_auditable_user_info(current_user)
 
         # Build update dict with only provided fields
         # exclude_unset=True means only fields explicitly set are included
@@ -3926,7 +3905,7 @@ async def delete_alert_rule_v2(
 ):
     """Delete an alert rule (v2)"""
     try:
-        _, display_name = _get_auditable_user_info(current_user)
+        _, display_name = get_auditable_user_info(current_user)
 
         # Get rule info before deleting for event logging
         rule = monitor.db.get_alert_rule_v2(rule_id)
@@ -5441,7 +5420,7 @@ async def generate_agent_registration_token(
     unlimited agents to register with the same token (within the 15 minute window).
     """
     try:
-        user_id, _ = _get_auditable_user_info(current_user)
+        user_id, _ = get_auditable_user_info(current_user)
         agent_manager = AgentManager()  # Creates short-lived sessions internally
         token_record = agent_manager.generate_registration_token(
             user_id=user_id,

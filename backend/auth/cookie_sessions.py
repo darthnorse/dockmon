@@ -213,7 +213,7 @@ class CookieSessionManager:
             except Exception as e:
                 logger.error(f"Session cleanup failed: {e}", exc_info=True)
 
-    def create_session(self, user_id: int, username: str, client_ip: str) -> str:
+    def create_session(self, user_id: int, username: str, client_ip: str, display_name: str = None) -> str:
         """
         Create a new session and return signed cookie value.
 
@@ -221,6 +221,7 @@ class CookieSessionManager:
             user_id: Database user ID
             username: Username
             client_ip: Client IP address for validation
+            display_name: Optional friendly display name (e.g. from OIDC 'name' claim)
 
         Returns:
             Signed session token for cookie
@@ -254,6 +255,7 @@ class CookieSessionManager:
             self.sessions[session_id] = {
                 "user_id": user_id,
                 "username": username,
+                "display_name": display_name or username,
                 "client_ip": client_ip,
                 "created_at": now,
                 "last_accessed": now,
@@ -345,6 +347,7 @@ class CookieSessionManager:
             return {
                 "user_id": session["user_id"],
                 "username": session["username"],
+                "display_name": session["display_name"],
                 "session_id": session_id,
             }
 

@@ -22,7 +22,7 @@ from argon2 import PasswordHasher
 
 from auth.shared import db, safe_audit_log
 from auth.api_key_auth import require_capability, get_current_user_or_api_key, invalidate_user_groups_cache
-from auth.utils import format_timestamp, format_timestamp_required, get_user_or_404, validate_group_ids
+from auth.utils import format_timestamp, format_timestamp_required, get_user_or_404, validate_group_ids, get_auditable_user_info
 from database import User, CustomGroup, UserGroupMembership
 from audit import get_client_info, AuditAction
 from audit.audit_logger import AuditEntityType
@@ -38,27 +38,6 @@ ph = PasswordHasher(
     hash_len=32,
     salt_len=16
 )
-
-
-def _get_auditable_user_info(current_user: dict) -> tuple[int | None, str]:
-    """Extract user ID and username from auth context for audit logging.
-
-    Handles both session auth and API key auth contexts.
-
-    Args:
-        current_user: Auth context from get_current_user_or_api_key
-
-    Returns:
-        Tuple of (user_id, display_name) where:
-        - Session auth: (user_id, username)
-        - API key auth: (created_by_user_id, "API Key: <name>")
-    """
-    if current_user.get("auth_type") == "api_key":
-        return (
-            current_user.get("created_by_user_id"),
-            f"API Key: {current_user.get('api_key_name', 'unknown')}"
-        )
-    return (current_user.get("user_id"), current_user.get("username", "unknown"))
 
 
 # ==================== Request/Response Models ====================
@@ -277,7 +256,7 @@ async def create_user(
     - Auth provider is 'local'
     """
     # Get user info for audit (handles both session and API key auth)
-    user_id, display_name = _get_auditable_user_info(current_user)
+    user_id, display_name = get_auditable_user_info(current_user)
 
     with db.get_session() as session:
         # Check if username already exists
@@ -384,7 +363,7 @@ async def update_user(
     # Get user info for audit (handles both session and API key auth)
     # NOTE: user_id path param = target; audit user_id = acting user
     target_user_id = user_id
-    user_id, display_name = _get_auditable_user_info(current_user)
+    user_id, display_name = get_auditable_user_info(current_user)
 
     with db.get_session() as session:
         user = get_user_or_404(session, target_user_id)
@@ -488,7 +467,7 @@ async def delete_user(
     # Get user info for audit (handles both session and API key auth)
     # NOTE: user_id path param = target; audit user_id = acting user
     target_user_id = user_id
-    user_id, display_name = _get_auditable_user_info(current_user)
+    user_id, display_name = get_auditable_user_info(current_user)
 
     with db.get_session() as session:
         user = get_user_or_404(session, target_user_id)
@@ -546,7 +525,7 @@ async def reactivate_user(
     # Get user info for audit (handles both session and API key auth)
     # NOTE: user_id path param = target; audit user_id = acting user
     target_user_id = user_id
-    user_id, display_name = _get_auditable_user_info(current_user)
+    user_id, display_name = get_auditable_user_info(current_user)
 
     with db.get_session() as session:
         user = get_user_or_404(session, target_user_id)
@@ -601,7 +580,7 @@ async def reset_user_password(
     # Get user info for audit (handles both session and API key auth)
     # NOTE: user_id path param = target; audit user_id = acting user
     target_user_id = user_id
-    user_id, display_name = _get_auditable_user_info(current_user)
+    user_id, display_name = get_auditable_user_info(current_user)
 
     with db.get_session() as session:
         user = get_user_or_404(session, target_user_id)

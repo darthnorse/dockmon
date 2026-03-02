@@ -332,7 +332,14 @@ export function OIDCSettings() {
               </Label>
               <Select value={defaultGroupId} onValueChange={setDefaultGroupId}>
                 <SelectTrigger className="max-w-xs">
-                  <SelectValue placeholder="Select a default group" />
+                  <SelectValue placeholder="Select a default group">
+                    {defaultGroupId === NO_DEFAULT_GROUP
+                      ? 'No default (deny access)'
+                      : (() => {
+                          const g = groups.find((gr) => gr.id.toString() === defaultGroupId)
+                          return g ? `${g.name}${g.is_system ? ' (System)' : ''}` : defaultGroupId
+                        })()}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="__none__">No default (deny access)</SelectItem>

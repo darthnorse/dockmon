@@ -39,6 +39,7 @@ from auth.shared import db, safe_audit_log
 from auth.cookie_sessions import cookie_session_manager, get_session_cookie_max_age
 from auth.api_key_auth import invalidate_user_groups_cache
 from config.settings import AppConfig
+from utils.base_path import get_base_path
 from database import User, OIDCConfig, OIDCGroupMapping, PendingOIDCAuth, CustomGroup, UserGroupMembership
 from security.rate_limiting import rate_limit_auth
 from audit import log_login, log_login_failure, get_client_info, AuditAction
@@ -111,6 +112,9 @@ def _generate_nonce() -> str:
 
 async def _fetch_oidc_discovery(provider_url: str) -> dict:
     """Fetch OIDC provider discovery document."""
+    provider_url = provider_url.rstrip('/')
+    if provider_url.endswith('/.well-known/openid-configuration'):
+        provider_url = provider_url[:-len('/.well-known/openid-configuration')]
     discovery_url = f"{provider_url}/.well-known/openid-configuration"
 
     async with httpx.AsyncClient(timeout=OIDC_HTTP_TIMEOUT) as client:
@@ -133,12 +137,18 @@ async def _exchange_code_for_tokens(
         'code': code,
         'redirect_uri': redirect_uri,
         'client_id': client_id,
-        'client_secret': client_secret,
-        'code_verifier': code_verifier,
     }
+    # Use client_secret for confidential clients, PKCE for public clients
+    # Some providers (e.g. Authentik) reject both together
+    if client_secret:
+        data['client_secret'] = client_secret
+    elif code_verifier:
+        data['code_verifier'] = code_verifier
 
     async with httpx.AsyncClient(timeout=OIDC_HTTP_TIMEOUT) as client:
         response = await client.post(token_endpoint, data=data)
+        if response.status_code >= 400:
+            logger.error(f"OIDC token endpoint returned {response.status_code}: {response.text[:500]}")
         response.raise_for_status()
         return response.json()
 
@@ -262,16 +272,19 @@ async def oidc_authorize(
         # Generate security parameters
         state = _generate_state()
         nonce = _generate_nonce()
-        code_verifier = _generate_code_verifier()
-        code_challenge = _generate_code_challenge(code_verifier)
+
+        # Use PKCE only for public clients (no client_secret)
+        # Some providers (e.g. Authentik) reject client_secret + PKCE together
+        has_secret = bool(config.client_secret_encrypted)
+        code_verifier = '' if has_secret else _generate_code_verifier()
+        code_challenge = '' if has_secret else _generate_code_challenge(code_verifier)
 
         # Build callback URL
         # Use request's base URL, respecting reverse proxy headers
         scheme = request.headers.get('X-Forwarded-Proto', request.url.scheme)
         host = request.headers.get('X-Forwarded-Host', request.headers.get('Host', request.url.netloc))
 
-        # Handle BASE_PATH for reverse proxy subpath deployments
-        base_path = AppConfig.BASE_PATH.rstrip('/') if AppConfig.BASE_PATH else ''
+        base_path = get_base_path().rstrip('/')
         redirect_uri = f"{scheme}://{host}{base_path}/api/v2/auth/oidc/callback"
 
         # Validate and sanitize the redirect URL to prevent open redirect attacks
@@ -304,13 +317,14 @@ async def oidc_authorize(
             'scope': config.scopes,
             'state': state,
             'nonce': nonce,
-            'code_challenge': code_challenge,
-            'code_challenge_method': 'S256',
         }
+        if code_challenge:
+            params['code_challenge'] = code_challenge
+            params['code_challenge_method'] = 'S256'
 
         auth_url = f"{authorization_endpoint}?{urlencode(params)}"
 
-        logger.info(f"OIDC authorize redirect: state={state[:8]}...")
+        logger.info(f"OIDC authorize redirect: state={state[:8]}..., redirect_uri={redirect_uri}")
         return RedirectResponse(url=auth_url, status_code=302)
 
 
@@ -417,11 +431,15 @@ async def oidc_callback(
                         return RedirectResponse(url="/login?error=oidc_error&message=Invalid+nonce")
 
             # Fetch user info (prefer userinfo endpoint, fall back to ID token claims)
+            userinfo = None
             if userinfo_endpoint:
-                userinfo = await _fetch_userinfo(userinfo_endpoint, access_token)
-            elif id_token_claims:
+                try:
+                    userinfo = await _fetch_userinfo(userinfo_endpoint, access_token)
+                except httpx.HTTPStatusError as e:
+                    logger.warning(f"OIDC userinfo request failed ({e.response.status_code}), falling back to ID token claims")
+            if not userinfo and id_token_claims:
                 userinfo = id_token_claims
-            else:
+            if not userinfo:
                 raise ValueError("No userinfo endpoint and no ID token")
 
             # Extract user info
@@ -680,7 +698,8 @@ async def oidc_callback(
             return redirect_response
 
         except httpx.HTTPStatusError as e:
-            logger.error(f"OIDC token exchange failed: {e}")
+            body = e.response.text[:500] if e.response else "no response body"
+            logger.error(f"OIDC token exchange failed: {e} | response: {body}")
             return RedirectResponse(url="/login?error=oidc_error&message=Token+exchange+failed")
         except Exception as e:
             # Log full error for debugging, but return generic message to prevent info leakage

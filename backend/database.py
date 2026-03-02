@@ -308,7 +308,8 @@ class PendingOIDCAuth(Base):
     @property
     def is_expired(self) -> bool:
         """Check if auth request has expired"""
-        return datetime.now(timezone.utc) > self.expires_at
+        exp = self.expires_at.replace(tzinfo=timezone.utc) if self.expires_at.tzinfo is None else self.expires_at
+        return datetime.now(timezone.utc) > exp
 
 
 class StackMetadata(Base):

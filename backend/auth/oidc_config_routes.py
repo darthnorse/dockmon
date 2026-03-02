@@ -362,7 +362,10 @@ async def discover_oidc_provider(
                 message="Provider URL not configured",
             )
 
-        discovery_url = f"{config.provider_url}/.well-known/openid-configuration"
+        provider_url = config.provider_url.rstrip('/')
+        if provider_url.endswith('/.well-known/openid-configuration'):
+            provider_url = provider_url[:-len('/.well-known/openid-configuration')]
+        discovery_url = f"{provider_url}/.well-known/openid-configuration"
 
         try:
             async with httpx.AsyncClient(timeout=OIDC_HTTP_TIMEOUT) as client:
@@ -390,9 +393,15 @@ async def discover_oidc_provider(
             )
         except httpx.HTTPStatusError as e:
             logger.warning(f"OIDC provider discovery HTTP error: {e}")
+            hint = ""
+            if e.response.status_code == 404:
+                hint = (
+                    f". Tried: {discovery_url} — check that the Provider URL includes the full path "
+                    "(e.g. for Authentik: https://auth.example.com/application/o/your-app-slug)"
+                )
             return OIDCDiscoveryResponse(
                 success=False,
-                message=f"Provider returned HTTP {e.response.status_code}",
+                message=f"Provider returned HTTP {e.response.status_code}{hint}",
             )
         except Exception as e:
             logger.error(f"OIDC provider discovery error: {e}")

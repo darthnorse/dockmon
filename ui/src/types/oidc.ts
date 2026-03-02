@@ -16,6 +16,7 @@ export interface OIDCConfig {
   claim_for_groups: string
   default_group_id: number | null  // Default group for users with no matching OIDC claims
   default_group_name: string | null  // For display
+  sso_default: boolean
   created_at: string
   updated_at: string
 }
@@ -28,6 +29,7 @@ export interface OIDCConfigUpdateRequest {
   scopes?: string | null
   claim_for_groups?: string | null
   default_group_id?: number | null
+  sso_default?: boolean
 }
 
 // ==================== OIDC Discovery ====================
@@ -72,6 +74,7 @@ export interface OIDCGroupMappingUpdateRequest {
 export interface OIDCStatus {
   enabled: boolean
   provider_configured: boolean
+  sso_default: boolean
 }
 
 // ==================== Legacy Role Types (for migration) ====================

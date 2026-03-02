@@ -22,9 +22,102 @@ import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useAuth } from './AuthContext'
 import { useOIDCStatus } from '@/hooks/useOIDC'
 import { ApiError, apiClient } from '@/lib/api/client'
+import { getBasePath } from '@/lib/utils/basePath'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+
+function Divider({ label }: { label: string }) {
+  return (
+    <div className="relative my-4">
+      <div className="absolute inset-0 flex items-center">
+        <span className="w-full border-t border-border" />
+      </div>
+      <div className="relative flex justify-center text-xs uppercase">
+        <span className="bg-card px-2 text-muted-foreground">{label}</span>
+      </div>
+    </div>
+  )
+}
+
+interface LocalLoginFormProps {
+  username: string
+  setUsername: (v: string) => void
+  password: string
+  setPassword: (v: string) => void
+  error: string | null
+  setError: (v: string | null) => void
+  isLoading: boolean
+  onSubmit: (e: FormEvent) => void
+  submitVariant?: 'default' | 'outline'
+}
+
+function LocalLoginForm({
+  username, setUsername, password, setPassword,
+  error, setError, isLoading, onSubmit, submitVariant,
+}: LocalLoginFormProps) {
+  return (
+    <form onSubmit={onSubmit} className="space-y-4">
+      <div className="space-y-2">
+        <label htmlFor="username" className="text-xs font-medium text-muted-foreground">
+          Username
+        </label>
+        <Input
+          id="username"
+          data-testid="login-username"
+          type="text"
+          value={username}
+          onChange={(e) => {
+            setUsername(e.target.value)
+            if (error) setError(null)
+          }}
+          disabled={isLoading}
+          autoComplete="username"
+          autoFocus
+          placeholder="Enter your username"
+        />
+      </div>
+      <div className="space-y-2">
+        <label htmlFor="password" className="text-xs font-medium text-muted-foreground">
+          Password
+        </label>
+        <Input
+          id="password"
+          data-testid="login-password"
+          type="password"
+          value={password}
+          onChange={(e) => {
+            setPassword(e.target.value)
+            if (error) setError(null)
+          }}
+          disabled={isLoading}
+          autoComplete="current-password"
+          placeholder="Enter your password"
+        />
+      </div>
+      <Button
+        type="submit"
+        data-testid="login-submit"
+        disabled={isLoading}
+        variant={submitVariant}
+        className="w-full"
+        size="lg"
+      >
+        {isLoading ? (
+          <>
+            <span className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-primary-foreground border-t-transparent" />
+            Logging in...
+          </>
+        ) : (
+          <>
+            <LogIn className="h-4 w-4" />
+            Log In
+          </>
+        )}
+      </Button>
+    </form>
+  )
+}
 
 export function LoginPage() {
   const { login, isLoading } = useAuth()
@@ -34,6 +127,7 @@ export function LoginPage() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [showLocalLogin, setShowLocalLogin] = useState(false)
 
   // Get redirect URL from query params (e.g., /login?redirect=/quick-action?token=xxx)
   const redirectUrl = searchParams.get('redirect')
@@ -50,7 +144,7 @@ export function LoginPage() {
 
   const handleOIDCLogin = () => {
     // Redirect to OIDC authorize endpoint, preserving redirect URL
-    const authorizeUrl = new URL('/api/v2/auth/oidc/authorize', window.location.origin)
+    const authorizeUrl = new URL(`${getBasePath()}/api/v2/auth/oidc/authorize`, window.location.origin)
     if (redirectUrl) {
       authorizeUrl.searchParams.set('redirect', redirectUrl)
     }
@@ -61,7 +155,6 @@ export function LoginPage() {
     e.preventDefault()
     setError(null)
 
-    // Basic client-side validation
     if (!username.trim() || !password) {
       setError('Please enter both username and password')
       return
@@ -76,7 +169,6 @@ export function LoginPage() {
         console.warn('Failed to sync timezone offset:', err)
       })
 
-      // Navigate to redirect URL or home
       navigate(redirectUrl || '/', { replace: true })
     } catch (err) {
       if (err instanceof ApiError) {
@@ -93,6 +185,11 @@ export function LoginPage() {
     }
   }
 
+  const formProps = {
+    username, setUsername, password, setPassword,
+    error, setError, isLoading, onSubmit: handleSubmit,
+  }
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
       <Card className="w-full max-w-md">
@@ -107,101 +204,20 @@ export function LoginPage() {
         </CardHeader>
 
         <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            {/* Error Alert */}
-            {error && (
-              <div
-                role="alert"
-                className="rounded-lg border-l-4 border-danger bg-danger/10 p-3 text-sm text-danger"
-              >
-                {error}
-              </div>
-            )}
-
-            {/* Username Field */}
-            <div className="space-y-2">
-              <label
-                htmlFor="username"
-                className="text-xs font-medium text-muted-foreground"
-              >
-                Username
-              </label>
-              <Input
-                id="username"
-                data-testid="login-username"
-                type="text"
-                value={username}
-                onChange={(e) => {
-                  setUsername(e.target.value)
-                  if (error) setError(null) // Clear error when typing
-                }}
-                disabled={isLoading}
-                autoComplete="username"
-                autoFocus
-                placeholder="Enter your username"
-              />
-            </div>
-
-            {/* Password Field */}
-            <div className="space-y-2">
-              <label
-                htmlFor="password"
-                className="text-xs font-medium text-muted-foreground"
-              >
-                Password
-              </label>
-              <Input
-                id="password"
-                data-testid="login-password"
-                type="password"
-                value={password}
-                onChange={(e) => {
-                  setPassword(e.target.value)
-                  if (error) setError(null) // Clear error when typing
-                }}
-                disabled={isLoading}
-                autoComplete="current-password"
-                placeholder="Enter your password"
-              />
-            </div>
-
-            {/* Submit Button */}
-            <Button
-              type="submit"
-              data-testid="login-submit"
-              disabled={isLoading}
-              className="w-full"
-              size="lg"
+          {error && (
+            <div
+              role="alert"
+              className="mb-4 rounded-lg border-l-4 border-danger bg-danger/10 p-3 text-sm text-danger"
             >
-              {isLoading ? (
-                <>
-                  <span className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-primary-foreground border-t-transparent" />
-                  Logging in...
-                </>
-              ) : (
-                <>
-                  <LogIn className="h-4 w-4" />
-                  Log In
-                </>
-              )}
-            </Button>
-          </form>
+              {error}
+            </div>
+          )}
 
-          {/* OIDC SSO Button */}
-          {oidcStatus?.enabled && (
+          {oidcStatus?.enabled && oidcStatus.sso_default ? (
             <>
-              <div className="relative my-4">
-                <div className="absolute inset-0 flex items-center">
-                  <span className="w-full border-t border-border" />
-                </div>
-                <div className="relative flex justify-center text-xs uppercase">
-                  <span className="bg-card px-2 text-muted-foreground">or</span>
-                </div>
-              </div>
-
+              {/* SSO-primary layout */}
               <Button
                 type="button"
-                variant="outline"
                 className="w-full"
                 size="lg"
                 onClick={handleOIDCLogin}
@@ -209,6 +225,43 @@ export function LoginPage() {
                 <KeyRound className="h-4 w-4" />
                 Sign in with SSO
               </Button>
+
+              {!showLocalLogin ? (
+                <button
+                  type="button"
+                  className="mt-4 w-full text-center text-sm text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={() => setShowLocalLogin(true)}
+                >
+                  Sign in with local account
+                </button>
+              ) : (
+                <>
+                  <Divider label="local account" />
+                  <LocalLoginForm {...formProps} submitVariant="outline" />
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              {/* Default layout: local login primary */}
+              <LocalLoginForm {...formProps} />
+
+              {/* OIDC SSO Button (secondary) */}
+              {oidcStatus?.enabled && (
+                <>
+                  <Divider label="or" />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full"
+                    size="lg"
+                    onClick={handleOIDCLogin}
+                  >
+                    <KeyRound className="h-4 w-4" />
+                    Sign in with SSO
+                  </Button>
+                </>
+              )}
             </>
           )}
         </CardContent>

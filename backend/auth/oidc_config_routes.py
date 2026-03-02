@@ -67,6 +67,7 @@ class OIDCConfigResponse(BaseModel):
     claim_for_groups: str
     default_group_id: int | None = None
     default_group_name: str | None = None  # For display
+    sso_default: bool
     created_at: str
     updated_at: str
 
@@ -80,6 +81,7 @@ class OIDCConfigUpdateRequest(BaseModel):
     scopes: str | None = Field(None, max_length=500)
     claim_for_groups: str | None = Field(None, max_length=100)
     default_group_id: int | None = None
+    sso_default: bool | None = None
 
     @field_validator('provider_url')
     @classmethod
@@ -133,10 +135,10 @@ class OIDCStatusResponse(BaseModel):
     """OIDC status for public endpoints"""
     enabled: bool
     provider_configured: bool
+    sso_default: bool
 
 
 # ==================== Helper Functions ====================
-# format_timestamp_required imported from auth.utils
 
 
 def _config_to_response(config: OIDCConfig, session) -> OIDCConfigResponse:
@@ -157,6 +159,7 @@ def _config_to_response(config: OIDCConfig, session) -> OIDCConfigResponse:
         claim_for_groups=config.claim_for_groups,
         default_group_id=config.default_group_id,
         default_group_name=default_group_name,
+        sso_default=config.sso_default,
         created_at=format_timestamp_required(config.created_at),
         updated_at=format_timestamp_required(config.updated_at),
     )
@@ -202,6 +205,7 @@ def _get_or_create_config(session) -> OIDCConfig:
             enabled=False,
             scopes='openid profile email groups',
             claim_for_groups='groups',
+            sso_default=False,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
         )
@@ -221,16 +225,23 @@ async def get_oidc_status() -> OIDCStatusResponse:
     Returns whether OIDC is enabled and configured.
     """
     with db.get_session() as session:
-        config = session.query(OIDCConfig).filter(OIDCConfig.id == 1).first()
+        row = session.query(
+            OIDCConfig.enabled,
+            OIDCConfig.provider_url,
+            OIDCConfig.client_id,
+            OIDCConfig.sso_default,
+        ).filter(OIDCConfig.id == 1).first()
 
-        if not config:
-            return OIDCStatusResponse(enabled=False, provider_configured=False)
+        if not row:
+            return OIDCStatusResponse(enabled=False, provider_configured=False, sso_default=False)
 
-        provider_configured = bool(config.provider_url and config.client_id)
+        provider_configured = bool(row.provider_url and row.client_id)
+        is_enabled = row.enabled and provider_configured
 
         return OIDCStatusResponse(
-            enabled=config.enabled and provider_configured,
+            enabled=is_enabled,
             provider_configured=provider_configured,
+            sso_default=row.sso_default and is_enabled,
         )
 
 
@@ -304,6 +315,10 @@ async def update_oidc_config(
                 # Setting to 0 clears the default group
                 changes['default_group_id'] = {'old': config.default_group_id, 'new': None}
                 config.default_group_id = None
+
+        if config_data.sso_default is not None:
+            changes['sso_default'] = {'old': config.sso_default, 'new': config_data.sso_default}
+            config.sso_default = config_data.sso_default
 
         config.updated_at = datetime.now(timezone.utc)
         # Audit log (before commit for atomicity)

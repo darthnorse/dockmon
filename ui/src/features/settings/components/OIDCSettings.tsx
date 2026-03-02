@@ -5,7 +5,7 @@
  * Group-Based Permissions Refactor (v2.4.0)
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   ExternalLink,
   Plus,
@@ -19,6 +19,8 @@ import {
   Globe,
   Users,
   AlertTriangle,
+  Copy,
+  Check,
 } from 'lucide-react'
 import {
   useOIDCConfig,
@@ -55,6 +57,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { toast } from 'sonner'
+import { getBasePath } from '@/lib/utils/basePath'
 
 // Default OIDC configuration values
 const DEFAULT_SCOPES = 'openid profile email groups'
@@ -73,7 +76,6 @@ export function OIDCSettings() {
 
   const groups = groupsData?.groups || []
 
-  // Local form state
   const [enabled, setEnabled] = useState(false)
   const [providerUrl, setProviderUrl] = useState('')
   const [clientId, setClientId] = useState('')
@@ -81,12 +83,16 @@ export function OIDCSettings() {
   const [scopes, setScopes] = useState(DEFAULT_SCOPES)
   const [claimForGroups, setClaimForGroups] = useState(DEFAULT_GROUPS_CLAIM)
   const [defaultGroupId, setDefaultGroupId] = useState<string>('')
-  const [hasChanges, setHasChanges] = useState(false)
+  const [ssoDefault, setSsoDefault] = useState(false)
 
-  // Discovery state
+  const callbackUrl = useMemo(() => {
+    return `${window.location.origin}${getBasePath()}/api/v2/auth/oidc/callback`
+  }, [])
+  const [callbackCopied, setCallbackCopied] = useState(false)
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const [discoveryResult, setDiscoveryResult] = useState<OIDCDiscoveryResponse | null>(null)
 
-  // Modal states
   const [showCreateMapping, setShowCreateMapping] = useState(false)
   const [editingMapping, setEditingMapping] = useState<OIDCGroupMapping | null>(null)
   const [deletingMapping, setDeletingMapping] = useState<OIDCGroupMapping | null>(null)
@@ -100,24 +106,30 @@ export function OIDCSettings() {
       setScopes(config.scopes || DEFAULT_SCOPES)
       setClaimForGroups(config.claim_for_groups || DEFAULT_GROUPS_CLAIM)
       setDefaultGroupId(config.default_group_id?.toString() || NO_DEFAULT_GROUP)
+      setSsoDefault(config.sso_default)
       // Don't sync client_secret - it's never returned
-      setHasChanges(false)
     }
   }, [config])
 
-  // Track changes
   useEffect(() => {
-    if (!config) return
-    const changed =
+    return () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+    }
+  }, [])
+
+  const hasChanges = useMemo(() => {
+    if (!config) return false
+    return (
       enabled !== config.enabled ||
       providerUrl !== (config.provider_url || '') ||
       clientId !== (config.client_id || '') ||
       clientSecret !== '' ||
       scopes !== (config.scopes || DEFAULT_SCOPES) ||
       claimForGroups !== (config.claim_for_groups || DEFAULT_GROUPS_CLAIM) ||
-      defaultGroupId !== (config.default_group_id?.toString() || NO_DEFAULT_GROUP)
-    setHasChanges(changed)
-  }, [config, enabled, providerUrl, clientId, clientSecret, scopes, claimForGroups, defaultGroupId])
+      defaultGroupId !== (config.default_group_id?.toString() || NO_DEFAULT_GROUP) ||
+      ssoDefault !== config.sso_default
+    )
+  }, [config, enabled, providerUrl, clientId, clientSecret, scopes, claimForGroups, defaultGroupId, ssoDefault])
 
   const handleSaveConfig = async () => {
     const data: OIDCConfigUpdateRequest = {}
@@ -128,13 +140,13 @@ export function OIDCSettings() {
     if (scopes !== (config?.scopes || DEFAULT_SCOPES)) data.scopes = scopes || null
     if (claimForGroups !== (config?.claim_for_groups || DEFAULT_GROUPS_CLAIM)) data.claim_for_groups = claimForGroups || null
     if (defaultGroupId !== (config?.default_group_id?.toString() || NO_DEFAULT_GROUP)) {
-      data.default_group_id = defaultGroupId && defaultGroupId !== NO_DEFAULT_GROUP ? parseInt(defaultGroupId, 10) : null
+      data.default_group_id = defaultGroupId && defaultGroupId !== NO_DEFAULT_GROUP ? parseInt(defaultGroupId, 10) : 0
     }
+    if (ssoDefault !== config?.sso_default) data.sso_default = ssoDefault
 
     try {
       await updateConfig.mutateAsync(data)
       setClientSecret('')
-      setHasChanges(false)
     } catch {
       // Error handled by mutation
     }
@@ -174,6 +186,17 @@ export function OIDCSettings() {
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
               <Switch
+                id="sso-default"
+                checked={ssoDefault}
+                onCheckedChange={setSsoDefault}
+                disabled={!enabled}
+              />
+              <Label htmlFor="sso-default" className={`text-sm ${enabled ? 'text-gray-300' : 'text-gray-500'}`}>
+                SSO as default login
+              </Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch
                 id="oidc-enabled"
                 checked={enabled}
                 onCheckedChange={setEnabled}
@@ -186,6 +209,38 @@ export function OIDCSettings() {
         </div>
 
         <div className="rounded-lg border border-gray-800 bg-gray-900/50 p-4 space-y-4">
+          {/* Callback URL - needed for OIDC provider configuration */}
+          <div className="space-y-2">
+            <Label className="text-sm text-gray-300">Callback URL</Label>
+            <div className="flex items-center gap-2">
+              <Input
+                readOnly
+                value={callbackUrl}
+                className="font-mono text-sm bg-gray-950/50"
+              />
+              <Button
+                variant="outline"
+                size="icon"
+                className="shrink-0"
+                onClick={() => {
+                  navigator.clipboard.writeText(callbackUrl)
+                  setCallbackCopied(true)
+                  if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+                  copyTimerRef.current = setTimeout(() => setCallbackCopied(false), 2000)
+                }}
+              >
+                {callbackCopied ? (
+                  <Check className="h-4 w-4 text-green-400" />
+                ) : (
+                  <Copy className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
+            <p className="text-xs text-gray-500">
+              Add this URL as an allowed redirect URI in your OIDC provider
+            </p>
+          </div>
+
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="provider-url" className="text-sm text-gray-300">
@@ -251,7 +306,7 @@ export function OIDCSettings() {
                 onChange={(e) => setScopes(e.target.value)}
               />
               <p className="text-xs text-gray-500">
-                Space-separated list of OAuth2 scopes
+                Permissions requested from the provider. Add <code className="text-gray-400">groups</code> if your provider requires it to include group data in the token.
               </p>
             </div>
 
@@ -267,7 +322,7 @@ export function OIDCSettings() {
                 className="max-w-xs"
               />
               <p className="text-xs text-gray-500">
-                The claim in the ID token/userinfo that contains group membership
+                The key in the ID token where group membership is found. Varies by provider (e.g. <code className="text-gray-400">groups</code>, <code className="text-gray-400">roles</code>).
               </p>
             </div>
 
@@ -527,7 +582,6 @@ function GroupMappingModal({ isOpen, onClose, mapping, groups, onSubmit, isSubmi
 
   useEffect(() => {
     if (!isOpen) {
-      // Reset form when modal closes
       setOidcValue('')
       setGroupId('')
       setPriority(0)

@@ -12,6 +12,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { AlertCircle, Terminal as TerminalIcon, RotateCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { getBasePath } from '@/lib/utils/basePath'
 
 interface ContainerShellTabProps {
   hostId: string
@@ -101,7 +102,7 @@ export function ContainerShellTab({
       fit.fit()
 
       // Construct WebSocket URL
-      const basePath = import.meta.env.BASE_URL.replace(/\/$/, '')
+      const basePath = getBasePath()
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const wsUrl = `${wsProtocol}//${window.location.host}${basePath}/ws/shell/${hostId}/${containerId}`
 

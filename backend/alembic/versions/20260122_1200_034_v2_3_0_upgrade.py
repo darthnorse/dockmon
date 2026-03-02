@@ -288,6 +288,7 @@ def upgrade():
             sa.Column('scopes', sa.Text(), nullable=False, server_default='openid profile email groups'),
             sa.Column('claim_for_groups', sa.Text(), nullable=False, server_default='groups'),
             sa.Column('default_group_id', sa.Integer(), nullable=True),  # Added for group-based permissions
+            sa.Column('sso_default', sa.Boolean(), nullable=False, server_default='0'),
             sa.Column('created_at', sa.DateTime(), nullable=False, server_default=sa.func.current_timestamp()),
             sa.Column('updated_at', sa.DateTime(), nullable=False, server_default=sa.func.current_timestamp()),
             sa.CheckConstraint('id = 1', name='ck_oidc_config_singleton'),
@@ -298,6 +299,8 @@ def upgrade():
         # Add default_group_id if table exists but column doesn't
         if not column_exists('oidc_config', 'default_group_id'):
             op.add_column('oidc_config', sa.Column('default_group_id', sa.Integer(), nullable=True))
+        if not column_exists('oidc_config', 'sso_default'):
+            op.add_column('oidc_config', sa.Column('sso_default', sa.Boolean(), nullable=False, server_default='0'))
 
     # 4d. oidc_role_mappings - Legacy group to role mapping
     if not table_exists('oidc_role_mappings'):
@@ -559,6 +562,8 @@ def downgrade():
     # =========================================================================
     if table_exists('oidc_config') and column_exists('oidc_config', 'default_group_id'):
         op.drop_column('oidc_config', 'default_group_id')
+    if table_exists('oidc_config') and column_exists('oidc_config', 'sso_default'):
+        op.drop_column('oidc_config', 'sso_default')
 
     # =========================================================================
     # 5. DROP LEGACY TABLES

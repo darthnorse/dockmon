@@ -186,6 +186,7 @@ class OIDCConfig(Base):
 
     # v2.3.0 refactor: Default group for users with no OIDC group mappings
     default_group_id = Column(Integer, ForeignKey('custom_groups.id', ondelete='SET NULL'), nullable=True)
+    sso_default = Column(Boolean, nullable=False, default=False)
 
     created_at = Column(DateTime, nullable=False, default=utcnow)
     updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)

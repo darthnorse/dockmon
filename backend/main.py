@@ -5610,7 +5610,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         await websocket.close(code=1008, reason="Invalid or expired session")
         return
 
-    # Check that the user still exists and is not deactivated
     ws_user_id = session_data.get("user_id")
     if ws_user_id:
         with monitor.db.get_session() as db_session:
@@ -5864,7 +5863,6 @@ async def websocket_shell_endpoint(
         await websocket.close(code=1008, reason="Invalid or expired session")
         return
 
-    # Check that the user still exists and is not deactivated
     shell_user_id = session_data.get("user_id")
     if shell_user_id:
         with monitor.db.get_session() as db_session:

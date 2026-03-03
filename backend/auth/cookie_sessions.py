@@ -376,18 +376,7 @@ class CookieSessionManager:
         return False
 
     def delete_sessions_for_user(self, user_id: int) -> int:
-        """
-        Delete all sessions belonging to a specific user.
-
-        Used when a user is deactivated/deleted to immediately evict
-        their active sessions, preventing continued access.
-
-        Args:
-            user_id: Database user ID whose sessions should be removed
-
-        Returns:
-            Number of sessions deleted
-        """
+        """Delete all sessions belonging to a specific user."""
         with self._sessions_lock:
             to_delete = [
                 sid for sid, data in self.sessions.items()

@@ -234,20 +234,12 @@ def _get_groups_for_oidc_user(oidc_groups: list, session) -> list[int]:
     return []
 
 
-# ==================== JWKS Cache ====================
-
-# Module-level JWKS cache: {jwks_uri: {"jwks": {...}, "fetched_at": timestamp}}
 _jwks_cache: dict[str, dict] = {}
 _JWKS_CACHE_TTL_SECONDS = 3600  # 1 hour
 
 
 async def _fetch_jwks(jwks_uri: str) -> dict:
-    """
-    Fetch the JWKS (JSON Web Key Set) from the provider.
-
-    Results are cached in memory for 1 hour to avoid fetching on every login.
-    Returns the JWKS dict containing the 'keys' array.
-    """
+    """Fetch and cache the provider's JWKS (JSON Web Key Set)."""
     now = time.monotonic()
     cached = _jwks_cache.get(jwks_uri)
 
@@ -271,30 +263,7 @@ def _verify_id_token(
     client_id: str,
     expected_nonce: str,
 ) -> dict:
-    """
-    Verify an OIDC ID token's JWT signature and validate standard claims.
-
-    Verifies:
-    - JWT signature using the provider's JWKS
-    - exp (expiration) claim
-    - iss (issuer) - lenient comparison (trailing slash stripped, warn on mismatch)
-    - aud (audience) matches client_id
-    - nonce matches expected value for replay protection
-
-    Args:
-        id_token: The raw JWT string
-        jwks_data: The provider's JWKS (from _fetch_jwks)
-        provider_url: The configured OIDC provider URL
-        client_id: The configured OIDC client ID
-        expected_nonce: The nonce stored during the authorize step
-
-    Returns:
-        Verified claims dict
-
-    Raises:
-        jwt.InvalidTokenError: On any verification failure
-    """
-    # Extract the key ID from the JWT header to find the right signing key
+    """Verify an OIDC ID token's JWT signature and validate claims (exp, iss, aud, nonce)."""
     try:
         unverified_header = jwt.get_unverified_header(id_token)
     except jwt.DecodeError as e:
@@ -303,18 +272,15 @@ def _verify_id_token(
     kid = unverified_header.get("kid")
     alg = unverified_header.get("alg", "RS256")
 
-    # Build the signing key from JWKS
     signing_key = None
     jwk_keys = jwks_data.get("keys", [])
 
     if kid:
-        # Match by key ID
         for key_data in jwk_keys:
             if key_data.get("kid") == kid:
                 signing_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(key_data))
                 break
     else:
-        # No kid in header - use the first key (common with some providers)
         if jwk_keys:
             signing_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(jwk_keys[0]))
             logger.warning("JWT has no 'kid' header, using first JWKS key")
@@ -324,11 +290,8 @@ def _verify_id_token(
             f"No matching key found in JWKS for kid={kid}"
         )
 
-    # Normalize issuer for comparison (strip trailing slashes)
     expected_issuer = provider_url.rstrip("/")
 
-    # Decode and verify the token
-    # PyJWT verifies: signature, exp, iss, aud
     try:
         claims = jwt.decode(
             id_token,
@@ -343,8 +306,6 @@ def _verify_id_token(
             },
         )
     except jwt.InvalidIssuerError:
-        # Some providers use different issuer formats (e.g., with/without trailing slash,
-        # different path). Log a warning and retry without issuer verification.
         logger.warning(
             f"OIDC issuer mismatch: expected={expected_issuer}, "
             f"retrying without strict issuer check"
@@ -366,7 +327,6 @@ def _verify_id_token(
             f"expected={expected_issuer}, actual={actual_issuer}"
         )
 
-    # Validate nonce (not checked by PyJWT automatically)
     token_nonce = claims.get("nonce")
     if token_nonce != expected_nonce:
         raise jwt.InvalidTokenError(
@@ -622,7 +582,6 @@ async def oidc_callback(
                 existing = session.query(UserGroupMembership).filter_by(user_id=user.id).all()
                 existing_group_ids = {m.group_id for m in existing}
 
-                # Block login BEFORE modifying memberships if user would have no groups
                 if not new_group_ids:
                     logger.warning(f"OIDC login blocked: user '{user.username}' has no group memberships")
                     safe_audit_log(
@@ -643,7 +602,6 @@ async def oidc_callback(
                 added_groups = new_group_ids - existing_group_ids
                 removed_groups = existing_group_ids - new_group_ids
 
-                # Last-admin protection: prevent removing last admin from Administrators
                 admin_group = session.query(CustomGroup).filter_by(name="Administrators").first()
                 if admin_group and admin_group.id in removed_groups:
                     other_admin_count = session.query(UserGroupMembership).join(

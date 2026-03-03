@@ -421,7 +421,6 @@ async def update_group(
                 detail=f"Group with ID {group_id} not found"
             )
 
-        # Block renaming system groups (e.g., Administrators, Operators, Read Only)
         if group.is_system and sanitized_name is not None and sanitized_name != group.name:
             raise HTTPException(
                 status_code=400,
@@ -706,7 +705,6 @@ async def remove_member(
                 detail="Cannot remove user from their last group"
             )
 
-        # Prevent removing the last admin from the Administrators group
         if group.name == "Administrators":
             other_admin_count = session.query(UserGroupMembership).join(
                 User, UserGroupMembership.user_id == User.id
@@ -895,9 +893,6 @@ async def update_group_permissions(
                     detail=f"Unknown capability: {perm_update.capability}"
                 )
 
-        # Safety check: prevent removing critical capabilities from all groups.
-        # If a critical capability is being denied, at least one OTHER group
-        # must still have it granted; otherwise the system becomes locked out.
         CRITICAL_CAPABILITIES = {"groups.manage", "users.manage", "settings.manage", "oidc.manage"}
 
         for perm_update in request.permissions:
@@ -906,8 +901,6 @@ async def update_group_permissions(
             if perm_update.allowed:
                 continue
 
-            # This update would deny a critical capability on this group.
-            # Check whether any OTHER group still grants it.
             other_group_has_cap = session.query(GroupPermission).filter(
                 GroupPermission.group_id != group_id,
                 GroupPermission.capability == perm_update.capability,
@@ -1030,9 +1023,6 @@ async def copy_group_permissions(
         if not source_permissions:
             warning = f"Source group '{source_group.name}' has no permissions. Target group permissions have been cleared."
 
-        # Safety check: prevent losing critical capabilities system-wide.
-        # If the target group currently grants a critical capability that the
-        # source group does not, and no other group grants it, block the copy.
         CRITICAL_CAPABILITIES = {"groups.manage", "users.manage", "settings.manage", "oidc.manage"}
         source_granted = {p.capability for p in source_permissions if p.allowed}
         target_current = session.query(GroupPermission).filter(
@@ -1043,8 +1033,7 @@ async def copy_group_permissions(
 
         for perm in target_current:
             if perm.capability in source_granted:
-                continue  # Source also grants it, no loss
-            # Target has it but source doesn't — check if any other group still has it
+                continue
             other_group_has_cap = session.query(GroupPermission).filter(
                 GroupPermission.group_id != target_group_id,
                 GroupPermission.capability == perm.capability,

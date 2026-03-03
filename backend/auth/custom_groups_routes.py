@@ -895,6 +895,35 @@ async def update_group_permissions(
                     detail=f"Unknown capability: {perm_update.capability}"
                 )
 
+        # Safety check: prevent removing critical capabilities from all groups.
+        # If a critical capability is being denied, at least one OTHER group
+        # must still have it granted; otherwise the system becomes locked out.
+        CRITICAL_CAPABILITIES = {"groups.manage", "users.manage", "settings.manage"}
+
+        for perm_update in request.permissions:
+            if perm_update.capability not in CRITICAL_CAPABILITIES:
+                continue
+            if perm_update.allowed:
+                continue
+
+            # This update would deny a critical capability on this group.
+            # Check whether any OTHER group still grants it.
+            other_group_has_cap = session.query(GroupPermission).filter(
+                GroupPermission.group_id != group_id,
+                GroupPermission.capability == perm_update.capability,
+                GroupPermission.allowed == True,  # noqa: E712
+            ).first()
+
+            if not other_group_has_cap:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Cannot remove '{perm_update.capability}' from this group "
+                        f"because no other group has it granted. "
+                        f"At least one group must retain this capability to prevent system lockout."
+                    ),
+                )
+
         now = datetime.now(timezone.utc)
         updated_count = 0
         changes = []

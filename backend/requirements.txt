@@ -15,6 +15,7 @@ argon2-cffi==23.1.0
 itsdangerous==2.1.2
 aiosmtplib==3.0.2
 cryptography==46.0.5
+PyJWT[crypto]==2.10.1
 packaging==25.0
 python-dateutil==2.9.0.post0
 cronsim==2.7

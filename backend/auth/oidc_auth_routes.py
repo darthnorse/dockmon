@@ -19,17 +19,18 @@ SECURITY:
 - Database storage for pending auth requests (multi-instance safe)
 """
 
-import base64
 import hashlib
 import json
 import logging
 import secrets
+import time
 from base64 import urlsafe_b64encode
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from urllib.parse import urlencode, urlparse, quote
 
 import httpx
+import jwt
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
@@ -233,6 +234,149 @@ def _get_groups_for_oidc_user(oidc_groups: list, session) -> list[int]:
     return []
 
 
+# ==================== JWKS Cache ====================
+
+# Module-level JWKS cache: {jwks_uri: {"jwks": {...}, "fetched_at": timestamp}}
+_jwks_cache: dict[str, dict] = {}
+_JWKS_CACHE_TTL_SECONDS = 3600  # 1 hour
+
+
+async def _fetch_jwks(jwks_uri: str) -> dict:
+    """
+    Fetch the JWKS (JSON Web Key Set) from the provider.
+
+    Results are cached in memory for 1 hour to avoid fetching on every login.
+    Returns the JWKS dict containing the 'keys' array.
+    """
+    now = time.monotonic()
+    cached = _jwks_cache.get(jwks_uri)
+
+    if cached and (now - cached["fetched_at"]) < _JWKS_CACHE_TTL_SECONDS:
+        return cached["jwks"]
+
+    async with httpx.AsyncClient(timeout=OIDC_HTTP_TIMEOUT) as client:
+        response = await client.get(jwks_uri)
+        response.raise_for_status()
+        jwks = response.json()
+
+    _jwks_cache[jwks_uri] = {"jwks": jwks, "fetched_at": now}
+    logger.debug(f"JWKS fetched and cached from {jwks_uri} ({len(jwks.get('keys', []))} keys)")
+    return jwks
+
+
+def _verify_id_token(
+    id_token: str,
+    jwks_data: dict,
+    provider_url: str,
+    client_id: str,
+    expected_nonce: str,
+) -> dict:
+    """
+    Verify an OIDC ID token's JWT signature and validate standard claims.
+
+    Verifies:
+    - JWT signature using the provider's JWKS
+    - exp (expiration) claim
+    - iss (issuer) - lenient comparison (trailing slash stripped, warn on mismatch)
+    - aud (audience) matches client_id
+    - nonce matches expected value for replay protection
+
+    Args:
+        id_token: The raw JWT string
+        jwks_data: The provider's JWKS (from _fetch_jwks)
+        provider_url: The configured OIDC provider URL
+        client_id: The configured OIDC client ID
+        expected_nonce: The nonce stored during the authorize step
+
+    Returns:
+        Verified claims dict
+
+    Raises:
+        jwt.InvalidTokenError: On any verification failure
+    """
+    # Extract the key ID from the JWT header to find the right signing key
+    try:
+        unverified_header = jwt.get_unverified_header(id_token)
+    except jwt.DecodeError as e:
+        raise jwt.InvalidTokenError(f"Failed to decode JWT header: {e}")
+
+    kid = unverified_header.get("kid")
+    alg = unverified_header.get("alg", "RS256")
+
+    # Build the signing key from JWKS
+    signing_key = None
+    jwk_keys = jwks_data.get("keys", [])
+
+    if kid:
+        # Match by key ID
+        for key_data in jwk_keys:
+            if key_data.get("kid") == kid:
+                signing_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(key_data))
+                break
+    else:
+        # No kid in header - use the first key (common with some providers)
+        if jwk_keys:
+            signing_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(jwk_keys[0]))
+            logger.warning("JWT has no 'kid' header, using first JWKS key")
+
+    if signing_key is None:
+        raise jwt.InvalidTokenError(
+            f"No matching key found in JWKS for kid={kid}"
+        )
+
+    # Normalize issuer for comparison (strip trailing slashes)
+    expected_issuer = provider_url.rstrip("/")
+
+    # Decode and verify the token
+    # PyJWT verifies: signature, exp, iss, aud
+    try:
+        claims = jwt.decode(
+            id_token,
+            signing_key,
+            algorithms=[alg],
+            audience=client_id,
+            issuer=expected_issuer,
+            options={
+                "verify_exp": True,
+                "verify_iss": True,
+                "verify_aud": True,
+            },
+        )
+    except jwt.InvalidIssuerError:
+        # Some providers use different issuer formats (e.g., with/without trailing slash,
+        # different path). Log a warning and retry without issuer verification.
+        logger.warning(
+            f"OIDC issuer mismatch: expected={expected_issuer}, "
+            f"retrying without strict issuer check"
+        )
+        claims = jwt.decode(
+            id_token,
+            signing_key,
+            algorithms=[alg],
+            audience=client_id,
+            options={
+                "verify_exp": True,
+                "verify_iss": False,
+                "verify_aud": True,
+            },
+        )
+        actual_issuer = claims.get("iss", "unknown")
+        logger.warning(
+            f"OIDC issuer accepted despite mismatch: "
+            f"expected={expected_issuer}, actual={actual_issuer}"
+        )
+
+    # Validate nonce (not checked by PyJWT automatically)
+    token_nonce = claims.get("nonce")
+    if token_nonce != expected_nonce:
+        raise jwt.InvalidTokenError(
+            f"Nonce mismatch: expected={expected_nonce[:8]}... "
+            f"got={str(token_nonce)[:8]}..."
+        )
+
+    return claims
+
+
 # ==================== OIDC Flow Endpoints ====================
 
 @router.get("/authorize")
@@ -414,23 +558,29 @@ async def oidc_callback(
 
             logger.info(f"OIDC token response keys: {list(tokens.keys())}, scope: {tokens.get('scope', 'not returned')}")
 
-            # Decode and validate ID token (nonce validation for replay protection)
+            # Verify ID token JWT signature and validate claims
             id_token_claims = None
             if id_token:
-                parts = id_token.split('.')
-                if len(parts) >= 2:
-                    # Decode payload (add padding if needed)
-                    payload_b64 = parts[1]
-                    padding = 4 - len(payload_b64) % 4
-                    if padding != 4:
-                        payload_b64 += '=' * padding
-                    id_token_claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+                jwks_uri = discovery.get('jwks_uri')
+                if not jwks_uri:
+                    raise ValueError("Missing jwks_uri in discovery document")
 
-                    # Validate nonce to prevent replay attacks
-                    token_nonce = id_token_claims.get('nonce')
-                    if token_nonce != expected_nonce:
-                        logger.warning(f"OIDC nonce mismatch: expected={expected_nonce[:8]}... got={str(token_nonce)[:8]}...")
-                        return RedirectResponse(url="/login?error=oidc_error&message=Invalid+nonce")
+                try:
+                    jwks_data = await _fetch_jwks(jwks_uri)
+                    id_token_claims = _verify_id_token(
+                        id_token=id_token,
+                        jwks_data=jwks_data,
+                        provider_url=config.provider_url,
+                        client_id=config.client_id,
+                        expected_nonce=expected_nonce,
+                    )
+                    logger.info("OIDC ID token verified successfully")
+                except jwt.InvalidTokenError as e:
+                    logger.warning(f"OIDC ID token verification failed: {e}")
+                    return RedirectResponse(url="/login?error=oidc_error&message=ID+token+verification+failed")
+                except Exception as e:
+                    logger.error(f"OIDC ID token verification error: {e}")
+                    return RedirectResponse(url="/login?error=oidc_error&message=ID+token+verification+failed")
 
             # Fetch user info from provider (server-to-server, authenticated via access token)
             userinfo = None

@@ -1030,6 +1030,36 @@ async def copy_group_permissions(
         if not source_permissions:
             warning = f"Source group '{source_group.name}' has no permissions. Target group permissions have been cleared."
 
+        # Safety check: prevent losing critical capabilities system-wide.
+        # If the target group currently grants a critical capability that the
+        # source group does not, and no other group grants it, block the copy.
+        CRITICAL_CAPABILITIES = {"groups.manage", "users.manage", "settings.manage", "oidc.manage"}
+        source_granted = {p.capability for p in source_permissions if p.allowed}
+        target_current = session.query(GroupPermission).filter(
+            GroupPermission.group_id == target_group_id,
+            GroupPermission.capability.in_(CRITICAL_CAPABILITIES),
+            GroupPermission.allowed == True,  # noqa: E712
+        ).all()
+
+        for perm in target_current:
+            if perm.capability in source_granted:
+                continue  # Source also grants it, no loss
+            # Target has it but source doesn't — check if any other group still has it
+            other_group_has_cap = session.query(GroupPermission).filter(
+                GroupPermission.group_id != target_group_id,
+                GroupPermission.capability == perm.capability,
+                GroupPermission.allowed == True,  # noqa: E712
+            ).first()
+            if not other_group_has_cap:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Cannot copy permissions: this would remove '{perm.capability}' "
+                        f"from '{target_group.name}' and no other group has it granted. "
+                        f"At least one group must retain this capability to prevent system lockout."
+                    ),
+                )
+
         # Delete existing target permissions
         session.query(GroupPermission).filter(
             GroupPermission.group_id == target_group_id

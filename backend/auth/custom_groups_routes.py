@@ -898,7 +898,7 @@ async def update_group_permissions(
         # Safety check: prevent removing critical capabilities from all groups.
         # If a critical capability is being denied, at least one OTHER group
         # must still have it granted; otherwise the system becomes locked out.
-        CRITICAL_CAPABILITIES = {"groups.manage", "users.manage", "settings.manage"}
+        CRITICAL_CAPABILITIES = {"groups.manage", "users.manage", "settings.manage", "oidc.manage"}
 
         for perm_update in request.permissions:
             if perm_update.capability not in CRITICAL_CAPABILITIES:

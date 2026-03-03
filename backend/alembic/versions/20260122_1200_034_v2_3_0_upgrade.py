@@ -82,7 +82,7 @@ ALL_CAPABILITIES = [
     'oidc.manage',
     'groups.manage',
     'audit.view',
-    'apikeys.manage_other', 'apikeys.manage_own',
+    'apikeys.manage_other',
     'tags.manage', 'tags.view',
     'events.view',
 ]

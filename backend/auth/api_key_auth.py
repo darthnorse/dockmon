@@ -456,7 +456,6 @@ class Capabilities:
     BATCH_CREATE = 'batch.create'
     TAGS_MANAGE = 'tags.manage'
     HEALTHCHECKS_TEST = 'healthchecks.test'
-    APIKEYS_MANAGE_OWN = 'apikeys.manage_own'
 
     # Read-only capabilities
     HOSTS_VIEW = 'hosts.view'

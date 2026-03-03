@@ -207,11 +207,6 @@ CAPABILITY_INFO: dict[str, dict[str, str]] = {
     },
 
     # API Keys
-    'apikeys.manage_own': {
-        'category': 'API Keys',
-        'name': 'Manage Own Keys',
-        'description': 'Create and manage personal API keys',
-    },
     'apikeys.manage_other': {
         'category': 'API Keys',
         'name': 'Manage Others Keys',
@@ -269,7 +264,6 @@ OPERATOR_CAPABILITIES: set[str] = {
     'alerts.view',
     'notifications.view',
     'agents.view',
-    'apikeys.manage_own',
     'tags.manage',
     'tags.view',
     'events.view',

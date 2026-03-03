@@ -622,9 +622,44 @@ async def oidc_callback(
                 existing = session.query(UserGroupMembership).filter_by(user_id=user.id).all()
                 existing_group_ids = {m.group_id for m in existing}
 
+                # Block login BEFORE modifying memberships if user would have no groups
+                if not new_group_ids:
+                    logger.warning(f"OIDC login blocked: user '{user.username}' has no group memberships")
+                    safe_audit_log(
+                        session,
+                        user.id,
+                        user.effective_display_name,
+                        AuditAction.LOGIN_FAILED,
+                        AuditEntityType.SESSION,
+                        details={'reason': 'no_matching_groups', 'oidc_groups': oidc_groups},
+                        **get_client_info(request)
+                    )
+                    session.commit()
+                    return RedirectResponse(
+                        url="/login?error=oidc_error&message=You+are+not+authorized+to+access+DockMon"
+                    )
+
                 # Track changes for logging
                 added_groups = new_group_ids - existing_group_ids
                 removed_groups = existing_group_ids - new_group_ids
+
+                # Last-admin protection: prevent removing last admin from Administrators
+                admin_group = session.query(CustomGroup).filter_by(name="Administrators").first()
+                if admin_group and admin_group.id in removed_groups:
+                    other_admin_count = session.query(UserGroupMembership).join(
+                        User, UserGroupMembership.user_id == User.id
+                    ).filter(
+                        UserGroupMembership.group_id == admin_group.id,
+                        UserGroupMembership.user_id != user.id,
+                        User.deleted_at.is_(None)
+                    ).count()
+                    if other_admin_count == 0:
+                        removed_groups.discard(admin_group.id)
+                        new_group_ids.add(admin_group.id)
+                        logger.warning(
+                            f"Preserved Administrators membership for last admin "
+                            f"'{user.username}' during OIDC sync"
+                        )
 
                 # Add new groups
                 # Note: Race conditions are unlikely since we checked existing memberships above.
@@ -678,23 +713,6 @@ async def oidc_callback(
 
                 # Invalidate user's group cache after sync
                 invalidate_user_groups_cache(user.id)
-
-                # Block login if user has no groups (deny access)
-                if not new_group_ids:
-                    logger.warning(f"OIDC login blocked: user '{user.username}' has no group memberships")
-                    safe_audit_log(
-                        session,
-                        user.id,
-                        user.effective_display_name,
-                        AuditAction.LOGIN_FAILED,
-                        AuditEntityType.SESSION,
-                        details={'reason': 'no_matching_groups', 'oidc_groups': oidc_groups},
-                        **get_client_info(request)
-                    )
-                    session.commit()
-                    return RedirectResponse(
-                        url="/login?error=oidc_error&message=You+are+not+authorized+to+access+DockMon"
-                    )
 
             else:
                 # New OIDC user - check for email conflict

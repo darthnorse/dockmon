@@ -1891,7 +1891,6 @@ async def delete_container(
     # Delegate to monitor (which delegates to operations module)
     result = await monitor.delete_container(host_id, container_id, container_name, removeVolumes)
 
-    # Audit log on success only
     if result.get("success"):
         _safe_audit(current_user, log_container_action, AuditAction.DELETE, host_id, normalize_container_id(container_id), container_name, request, details={'remove_volumes': removeVolumes})
 
@@ -2398,6 +2397,7 @@ async def update_auto_update_config(
     host_id: str,
     container_id: str,
     config: dict,
+    request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -2506,8 +2506,9 @@ async def update_auto_update_config(
 
         session.commit()
 
-        # Return the updated config
-        return {
+        # Capture values before closing session (ORM attributes need active session)
+        container_name = record.container_name
+        result = {
             "update_available": record.update_available,
             "current_image": record.current_image,
             "current_digest": record.current_digest,
@@ -2521,6 +2522,11 @@ async def update_auto_update_config(
             "registry_page_url": record.registry_page_url,  # v2.0.2+
             "registry_page_source": record.registry_page_source,  # v2.0.2+
         }
+
+    _safe_audit(current_user, log_container_action, AuditAction.UPDATE, host_id, short_id, container_name, request,
+                details={'auto_update_enabled': auto_update_enabled, 'floating_tag_mode': floating_tag_mode})
+
+    return result
 
 
 @app.post("/api/updates/check-all", tags=["container-updates"], dependencies=[Depends(require_capability("containers.update"))])
@@ -2538,7 +2544,7 @@ async def check_all_updates(current_user: dict = Depends(get_current_user)):
 
 
 @app.post("/api/images/prune", tags=["images"], dependencies=[Depends(require_capability("containers.operate"))])
-async def prune_images(current_user: dict = Depends(get_current_user)):
+async def prune_images(request: Request, current_user: dict = Depends(get_current_user)):
     """
     Manually trigger Docker image pruning.
 
@@ -2552,6 +2558,11 @@ async def prune_images(current_user: dict = Depends(get_current_user)):
     logger.info(f"User {display_name} triggered manual image prune")
 
     removed_count = await monitor.periodic_jobs.cleanup_old_images()
+
+    _safe_audit(current_user, log_audit, AuditAction.PRUNE, AuditEntityType.CONTAINER,
+                details={'resource': 'images', 'scope': 'global', 'removed_count': removed_count},
+                **get_client_info(request))
+
     return {"removed": removed_count}
 
 
@@ -2740,6 +2751,7 @@ async def get_update_policies(current_user: dict = Depends(get_current_user)):
 @app.put("/api/update-policies/{category}/toggle", tags=["container-updates"], dependencies=[Depends(require_capability("policies.manage"))])
 async def toggle_update_policy_category(
     category: str,
+    request: Request,
     enabled: bool = Query(..., description="Enable or disable all patterns in category"),
     current_user: dict = Depends(get_current_user)
 ):
@@ -2760,16 +2772,22 @@ async def toggle_update_policy_category(
 
         logger.info(f"Toggled {count} patterns in category '{category}' to enabled={enabled}")
 
-        return {
-            "success": True,
-            "category": category,
-            "enabled": enabled,
-            "patterns_affected": count
-        }
+    _safe_audit(current_user, log_audit, AuditAction.TOGGLE, AuditEntityType.UPDATE_POLICY,
+                entity_name=category,
+                details={'enabled': enabled, 'patterns_affected': count},
+                **get_client_info(request))
+
+    return {
+        "success": True,
+        "category": category,
+        "enabled": enabled,
+        "patterns_affected": count
+    }
 
 
 @app.post("/api/update-policies/custom", tags=["container-updates"], dependencies=[Depends(require_capability("policies.manage"))])
 async def create_custom_update_policy(
+    request: Request,
     pattern: str = Query(..., description="Pattern to match against image/container name"),
     action: str = Query("warn", description="Action: 'warn' (show confirmation) or 'ignore' (skip update checks)"),
     current_user: dict = Depends(get_current_user)
@@ -2811,19 +2829,26 @@ async def create_custom_update_policy(
         session.add(policy)
         session.commit()
 
+        policy_id = policy.id
         logger.info(f"Created custom update policy pattern: {pattern} (action={action})")
 
-        return {
-            "success": True,
-            "id": policy.id,
-            "pattern": pattern,
-            "action": action
-        }
+    _safe_audit(current_user, log_audit, AuditAction.CREATE, AuditEntityType.UPDATE_POLICY,
+                entity_id=str(policy_id), entity_name=pattern,
+                details={'action': action},
+                **get_client_info(request))
+
+    return {
+        "success": True,
+        "id": policy_id,
+        "pattern": pattern,
+        "action": action
+    }
 
 
 @app.put("/api/update-policies/{policy_id}/action", tags=["container-updates"], dependencies=[Depends(require_capability("policies.manage"))])
 async def update_policy_action(
     policy_id: int,
+    request: Request,
     action: str = Query(..., description="Action: 'warn' (show confirmation) or 'ignore' (skip update checks)"),
     current_user: dict = Depends(get_current_user)
 ):
@@ -2851,22 +2876,29 @@ async def update_policy_action(
             )
 
         old_action = policy.action
+        policy_pattern = policy.pattern
         policy.action = action
         session.commit()
 
-        logger.info(f"Updated policy {policy.pattern} action: {old_action} -> {action}")
+        logger.info(f"Updated policy {policy_pattern} action: {old_action} -> {action}")
 
-        return {
-            "success": True,
-            "id": policy.id,
-            "pattern": policy.pattern,
-            "action": action
-        }
+    _safe_audit(current_user, log_audit, AuditAction.UPDATE, AuditEntityType.UPDATE_POLICY,
+                entity_id=str(policy_id), entity_name=policy_pattern,
+                details={'action': action, 'previous_action': old_action},
+                **get_client_info(request))
+
+    return {
+        "success": True,
+        "id": policy_id,
+        "pattern": policy_pattern,
+        "action": action
+    }
 
 
 @app.delete("/api/update-policies/custom/{policy_id}", tags=["container-updates"], dependencies=[Depends(require_capability("policies.manage"))])
 async def delete_custom_update_policy(
     policy_id: int,
+    request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -2894,16 +2926,21 @@ async def delete_custom_update_policy(
 
         logger.info(f"Deleted custom update policy: {pattern}")
 
-        return {
-            "success": True,
-            "deleted_pattern": pattern
-        }
+    _safe_audit(current_user, log_audit, AuditAction.DELETE, AuditEntityType.UPDATE_POLICY,
+                entity_id=str(policy_id), entity_name=pattern,
+                **get_client_info(request))
+
+    return {
+        "success": True,
+        "deleted_pattern": pattern
+    }
 
 
 @app.put("/api/hosts/{host_id}/containers/{container_id}/update-policy", tags=["container-updates"], dependencies=[Depends(require_capability("policies.manage"))])
 async def set_container_update_policy(
     host_id: str,
     container_id: str,
+    request: Request,
     policy: Optional[str] = Query(None, description="Policy: 'allow', 'warn', 'block', or null for auto-detect"),
     current_user: dict = Depends(get_current_user)
 ):
@@ -2950,16 +2987,20 @@ async def set_container_update_policy(
 
         # Update policy
         update_record.update_policy = policy
+        container_name = update_record.container_name
         session.commit()
 
         logger.info(f"Set update policy for {host_id}:{container_id} to {policy}")
 
-        return {
-            "success": True,
-            "host_id": host_id,
-            "container_id": container_id,
-            "update_policy": policy
-        }
+    _safe_audit(current_user, log_container_action, AuditAction.UPDATE, host_id, short_id, container_name, request,
+                details={'policy': policy})
+
+    return {
+        "success": True,
+        "host_id": host_id,
+        "container_id": container_id,
+        "update_policy": policy
+    }
 
 
 @app.get("/api/tags/suggest", tags=["tags"], dependencies=[Depends(require_capability("tags.view"))])
@@ -3060,7 +3101,7 @@ async def suggest_host_tags(
 # ==================== Batch Operations ====================
 
 @app.post("/api/batch", tags=["batch-operations"], status_code=201, dependencies=[Depends(require_capability("batch.create"))])
-async def create_batch_job(request: BatchJobCreate, current_user: dict = Depends(get_current_user)):
+async def create_batch_job(request: BatchJobCreate, http_request: Request, current_user: dict = Depends(get_current_user)):
     """
     Create a batch job for bulk operations on containers
 
@@ -3081,6 +3122,11 @@ async def create_batch_job(request: BatchJobCreate, current_user: dict = Depends
         )
 
         logger.info(f"User {display_name} created batch job {job_id}: {request.action} on {len(request.ids)} containers")
+
+        _safe_audit(current_user, log_audit, AuditAction.CREATE, AuditEntityType.CONTAINER,
+                    entity_id=job_id, entity_name=f"batch:{request.action}",
+                    details={'type': 'batch_job', 'action': request.action, 'scope': request.scope, 'container_count': len(request.ids)},
+                    **get_client_info(http_request))
 
         return {"job_id": job_id}
     except ValueError as e:
@@ -3563,6 +3609,7 @@ async def update_http_health_check(
     host_id: str,
     container_id: str,
     config: HttpHealthCheckConfig,
+    request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """Update or create HTTP health check configuration"""
@@ -3638,6 +3685,11 @@ async def update_http_health_check(
 
         session.commit()
 
+    _safe_audit(current_user, log_audit, AuditAction.UPDATE, AuditEntityType.HEALTH_CHECK,
+                entity_id=composite_key, entity_name=container_name,
+                details={'url': config.url, 'method': config.method, 'enabled': config.enabled, 'check_from': config.check_from},
+                **get_client_info(request))
+
     # Push config to agent if needed (after commit, outside session)
     if config.check_from == 'agent':
         # Push updated config to agent
@@ -3653,6 +3705,7 @@ async def update_http_health_check(
 async def delete_http_health_check(
     host_id: str,
     container_id: str,
+    request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """Delete HTTP health check configuration"""
@@ -3663,6 +3716,8 @@ async def delete_http_health_check(
     composite_key = make_composite_key(host_id, container_id)
 
     was_agent_based = False
+    check_url = None
+    check_container_name = None
     with monitor.db.get_session() as session:
         check = session.query(ContainerHttpHealthCheck).filter_by(
             container_id=composite_key
@@ -3670,8 +3725,16 @@ async def delete_http_health_check(
 
         if check:
             was_agent_based = check.check_from == 'agent'
+            check_url = check.url
+            check_container_name = check.container_name
             session.delete(check)
             session.commit()
+
+    if check_url is not None:
+        _safe_audit(current_user, log_audit, AuditAction.DELETE, AuditEntityType.HEALTH_CHECK,
+                    entity_id=composite_key, entity_name=check_container_name,
+                    details={'url': check_url},
+                    **get_client_info(request))
 
     # Remove from agent if it was agent-based
     if was_agent_based:
@@ -5251,13 +5314,18 @@ async def get_host_events(host_id: str, limit: int = 50, current_user: dict = De
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/events/cleanup", tags=["events"], dependencies=[Depends(require_capability("settings.manage"))])
-async def cleanup_old_events(days: int = 30, current_user: dict = Depends(get_current_user)):
-    """Clean up old events - DANGEROUS: Can delete audit logs"""
+async def cleanup_old_events(request: Request, days: int = 30, current_user: dict = Depends(get_current_user)):
+    """Clean up old events older than specified days"""
     try:
         if days < 1:
             raise HTTPException(status_code=400, detail="Days must be at least 1")
 
         deleted_count = monitor.db.cleanup_old_events(days)
+
+        _safe_audit(current_user, log_audit, AuditAction.DELETE, AuditEntityType.SETTINGS,
+                    entity_name="event_cleanup",
+                    details={'days': days, 'deleted_count': deleted_count},
+                    **get_client_info(request))
 
         monitor.event_logger.log_system_event(
             "Event Cleanup Completed",
@@ -5312,6 +5380,7 @@ async def get_registry_credentials(current_user: dict = Depends(get_current_user
 @app.post("/api/registry-credentials", tags=["registry"], dependencies=[Depends(require_capability("registry.manage"))])
 async def create_registry_credential(
     data: dict,
+    request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -5373,7 +5442,6 @@ async def create_registry_credential(
 
             logger.info(f"Created registry credential for {registry_url} (username: {username})")
 
-            # Log event
             monitor.event_logger.log_system_event(
                 "Registry Credential Created",
                 f"Added credentials for registry: {registry_url}",
@@ -5381,14 +5449,21 @@ async def create_registry_credential(
                 LogEventType.CONFIG_CHANGED
             )
 
-            # Return credential without password
-            return {
+            credential_id = credential.id
+            result = {
                 "id": credential.id,
                 "registry_url": credential.registry_url,
                 "username": credential.username,
                 "created_at": credential.created_at.isoformat() + 'Z' if credential.created_at else None,
                 "updated_at": credential.updated_at.isoformat() + 'Z' if credential.updated_at else None
             }
+
+        _safe_audit(current_user, log_audit, AuditAction.CREATE, AuditEntityType.REGISTRY_CREDENTIAL,
+                    entity_id=str(credential_id), entity_name=registry_url,
+                    details={'username': username},
+                    **get_client_info(request))
+
+        return result
 
     except HTTPException:
         raise
@@ -5401,6 +5476,7 @@ async def create_registry_credential(
 async def update_registry_credential(
     credential_id: int,
     data: dict,
+    request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -5443,7 +5519,6 @@ async def update_registry_credential(
 
             logger.info(f"Updated registry credential for {credential.registry_url}")
 
-            # Log event
             monitor.event_logger.log_system_event(
                 "Registry Credential Updated",
                 f"Updated credentials for registry: {credential.registry_url}",
@@ -5451,14 +5526,22 @@ async def update_registry_credential(
                 LogEventType.CONFIG_CHANGED
             )
 
-            # Return credential without password
-            return {
+            cred_url = credential.registry_url
+            cred_username = credential.username
+            result = {
                 "id": credential.id,
                 "registry_url": credential.registry_url,
                 "username": credential.username,
                 "created_at": credential.created_at.isoformat() + 'Z' if credential.created_at else None,
                 "updated_at": credential.updated_at.isoformat() + 'Z' if credential.updated_at else None
             }
+
+        _safe_audit(current_user, log_audit, AuditAction.UPDATE, AuditEntityType.REGISTRY_CREDENTIAL,
+                    entity_id=str(credential_id), entity_name=cred_url,
+                    details={'username': cred_username},
+                    **get_client_info(request))
+
+        return result
 
     except HTTPException:
         raise
@@ -5470,6 +5553,7 @@ async def update_registry_credential(
 @app.delete("/api/registry-credentials/{credential_id}", tags=["registry"], dependencies=[Depends(require_capability("registry.manage"))])
 async def delete_registry_credential(
     credential_id: int,
+    request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -5495,7 +5579,6 @@ async def delete_registry_credential(
 
             logger.info(f"Deleted registry credential for {registry_url}")
 
-            # Log event
             monitor.event_logger.log_system_event(
                 "Registry Credential Deleted",
                 f"Deleted credentials for registry: {registry_url}",
@@ -5503,10 +5586,14 @@ async def delete_registry_credential(
                 LogEventType.CONFIG_CHANGED
             )
 
-            return {
-                "success": True,
-                "message": f"Deleted credentials for {registry_url}"
-            }
+        _safe_audit(current_user, log_audit, AuditAction.DELETE, AuditEntityType.REGISTRY_CREDENTIAL,
+                    entity_id=str(credential_id), entity_name=registry_url,
+                    **get_client_info(request))
+
+        return {
+            "success": True,
+            "message": f"Deleted credentials for {registry_url}"
+        }
 
     except HTTPException:
         raise
@@ -5537,6 +5624,11 @@ async def generate_agent_registration_token(
             user_id=user_id,
             multi_use=body.multi_use
         )
+
+        _safe_audit(current_user, log_audit, AuditAction.CREATE, AuditEntityType.API_KEY,
+                    entity_name="agent_registration_token",
+                    details={'type': 'agent_registration_token', 'multi_use': body.multi_use, 'token_prefix': token_record.token[:8] + '...'},
+                    **get_client_info(request))
 
         return {
             "success": True,
@@ -5655,6 +5747,10 @@ async def migrate_agent_from_host(
 
         if not result["success"]:
             raise HTTPException(status_code=400, detail=result.get("error", "Migration failed"))
+
+        _safe_audit(current_user, log_host_change, AuditAction.UPDATE,
+                    result.get("host_id", agent_id), result.get("migrated_from", {}).get("host_name"),
+                    request, details={'agent_id': agent_id, 'migrated_from': source_host_id})
 
         # Broadcast migration notification to frontend
         try:

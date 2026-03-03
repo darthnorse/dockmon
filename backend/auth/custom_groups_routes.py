@@ -956,7 +956,6 @@ async def update_group_permissions(
                 updated_count += 1
 
         if changes:
-            # Audit log
             user_id, display_name = get_auditable_user_info(current_user)
             log_audit(
                 session,
@@ -1069,7 +1068,6 @@ async def copy_group_permissions(
             session.add(new_perm)
             copied_count += 1
 
-        # Audit log
         user_id, display_name = get_auditable_user_info(current_user)
         log_audit(
             session,

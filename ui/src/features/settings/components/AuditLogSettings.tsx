@@ -34,8 +34,9 @@ import {
   useExportAuditLog,
 } from '@/hooks/useAuditLog'
 import type { AuditLogQueryParams, AuditLogEntry } from '@/types/audit'
-import { ACTION_LABELS, ENTITY_TYPE_LABELS, RETENTION_LABELS } from '@/types/audit'
+import { getActionLabel, getEntityTypeLabel, RETENTION_LABELS } from '@/types/audit'
 import { Button } from '@/components/ui/button'
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import {
   Dialog,
   DialogContent,
@@ -89,8 +90,8 @@ function AuditEntryRow({
   isExpanded: boolean
   onToggle: () => void
 }) {
-  const actionLabel = ACTION_LABELS[entry.action] || entry.action
-  const entityTypeLabel = ENTITY_TYPE_LABELS[entry.entity_type] || entry.entity_type
+  const actionLabel = getActionLabel(entry.action)
+  const entityTypeLabel = getEntityTypeLabel(entry.entity_type)
 
   // Get action color from mapping, with fallbacks for partial matches
   const actionColor = useMemo(() => {
@@ -488,20 +489,26 @@ export function AuditLogSettings() {
                   <UserIcon className="mr-1 inline-block h-3 w-3" />
                   User
                 </label>
-                <select
-                  value={filters.user_id ?? ''}
-                  onChange={(e) =>
-                    handleFilterChange('user_id', e.target.value ? Number(e.target.value) : undefined)
-                  }
-                  className={INPUT_CLASS}
+                <Select
+                  value={String(filters.user_id ?? '')}
+                  onValueChange={(v) => handleFilterChange('user_id', v ? Number(v) : undefined)}
                 >
-                  <option value="">All users</option>
-                  {users?.map((user) => (
-                    <option key={user.user_id} value={user.user_id}>
-                      {user.username}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger>
+                    <SelectValue>
+                      {filters.user_id
+                        ? users?.find((u) => u.user_id === filters.user_id)?.username ?? `User ${filters.user_id}`
+                        : 'All users'}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">All users</SelectItem>
+                    {users?.map((user) => (
+                      <SelectItem key={user.user_id} value={String(user.user_id)}>
+                        {user.username}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               <div>
@@ -509,18 +516,26 @@ export function AuditLogSettings() {
                   <Activity className="mr-1 inline-block h-3 w-3" />
                   Action
                 </label>
-                <select
+                <Select
                   value={filters.action ?? ''}
-                  onChange={(e) => handleFilterChange('action', e.target.value || undefined)}
-                  className={INPUT_CLASS}
+                  onValueChange={(v) => handleFilterChange('action', v || undefined)}
                 >
-                  <option value="">All actions</option>
-                  {actions?.map((action) => (
-                    <option key={action} value={action}>
-                      {ACTION_LABELS[action] || action}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger>
+                    <SelectValue>
+                      {filters.action
+                        ? getActionLabel(filters.action)
+                        : 'All actions'}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">All actions</SelectItem>
+                    {actions?.map((action) => (
+                      <SelectItem key={action} value={action}>
+                        {getActionLabel(action)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               <div>
@@ -528,18 +543,26 @@ export function AuditLogSettings() {
                   <FileText className="mr-1 inline-block h-3 w-3" />
                   Entity Type
                 </label>
-                <select
+                <Select
                   value={filters.entity_type ?? ''}
-                  onChange={(e) => handleFilterChange('entity_type', e.target.value || undefined)}
-                  className={INPUT_CLASS}
+                  onValueChange={(v) => handleFilterChange('entity_type', v || undefined)}
                 >
-                  <option value="">All types</option>
-                  {entityTypes?.map((type) => (
-                    <option key={type} value={type}>
-                      {ENTITY_TYPE_LABELS[type] || type}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger>
+                    <SelectValue>
+                      {filters.entity_type
+                        ? getEntityTypeLabel(filters.entity_type)
+                        : 'All types'}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">All types</SelectItem>
+                    {entityTypes?.map((type) => (
+                      <SelectItem key={type} value={type}>
+                        {getEntityTypeLabel(type)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               <div>

@@ -403,6 +403,13 @@ async def update_user(
             new_groups = validate_group_ids(session, user_data.group_ids)
             new_group_names = [g.name for g in new_groups]
 
+            # Prevent removing the last admin from the Administrators group
+            admin_group = session.query(CustomGroup).filter(
+                CustomGroup.name == "Administrators"
+            ).first()
+            if admin_group and admin_group.id not in user_data.group_ids:
+                _ensure_not_last_admin(session, target_user_id, "remove from Administrators")
+
             # Get current groups for audit log
             current_groups = _get_user_groups(session, target_user_id)
             old_group_names = [g.name for g in current_groups]

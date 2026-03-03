@@ -699,6 +699,22 @@ async def remove_member(
                 detail="Cannot remove user from their last group"
             )
 
+        # Prevent removing the last admin from the Administrators group
+        if group.name == "Administrators":
+            other_admin_count = session.query(UserGroupMembership).join(
+                User, UserGroupMembership.user_id == User.id
+            ).filter(
+                UserGroupMembership.group_id == group_id,
+                UserGroupMembership.user_id != user_id,
+                User.deleted_at.is_(None)
+            ).count()
+
+            if other_admin_count == 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot remove from Administrators: this is the last member of the Administrators group"
+                )
+
         # Get username for audit - save member_user_id before get_auditable_user_info overwrites user_id
         member_user_id = user_id
         user = session.query(User).filter(User.id == member_user_id).first()

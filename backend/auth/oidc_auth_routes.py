@@ -432,17 +432,15 @@ async def oidc_callback(
                         logger.warning(f"OIDC nonce mismatch: expected={expected_nonce[:8]}... got={str(token_nonce)[:8]}...")
                         return RedirectResponse(url="/login?error=oidc_error&message=Invalid+nonce")
 
-            # Fetch user info (prefer userinfo endpoint, fall back to ID token claims)
+            # Fetch user info from provider (server-to-server, authenticated via access token)
             userinfo = None
             if userinfo_endpoint:
                 try:
                     userinfo = await _fetch_userinfo(userinfo_endpoint, access_token)
                 except httpx.HTTPStatusError as e:
-                    logger.warning(f"OIDC userinfo request failed ({e.response.status_code}), falling back to ID token claims")
-            if not userinfo and id_token_claims:
-                userinfo = id_token_claims
+                    logger.warning(f"OIDC userinfo request failed ({e.response.status_code})")
             if not userinfo:
-                raise ValueError("No userinfo endpoint and no ID token")
+                raise ValueError("Failed to fetch user information from provider")
 
             # Extract user info
             logger.info(f"OIDC userinfo/claims keys: {list(userinfo.keys())}")

@@ -22,6 +22,7 @@ from argon2 import PasswordHasher
 
 from auth.shared import db, safe_audit_log
 from auth.api_key_auth import require_capability, get_current_user_or_api_key, invalidate_user_groups_cache
+from auth.cookie_sessions import cookie_session_manager
 from auth.utils import format_timestamp, format_timestamp_required, get_user_or_404, validate_group_ids, get_auditable_user_info
 from database import User, CustomGroup, UserGroupMembership
 from audit import get_client_info, AuditAction
@@ -514,6 +515,11 @@ async def delete_user(
         )
 
         session.commit()
+
+        # Immediately evict all active sessions for this user
+        evicted = cookie_session_manager.delete_sessions_for_user(target_user_id)
+        if evicted:
+            logger.info(f"Evicted {evicted} active session(s) for deactivated user '{user.username}'")
 
         logger.info(f"User '{user.username}' deactivated by {display_name}")
 

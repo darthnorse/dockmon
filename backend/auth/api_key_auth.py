@@ -320,7 +320,7 @@ async def get_current_user_or_api_key(
             display_name = None
             with db.get_session() as session:
                 user = session.query(User).filter(User.id == session_data["user_id"]).first()
-                if user:
+                if user and not user.is_deleted:
                     user_id = user.id
                     username = user.username
                     display_name = user.display_name

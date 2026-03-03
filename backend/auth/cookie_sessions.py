@@ -375,6 +375,32 @@ class CookieSessionManager:
 
         return False
 
+    def delete_sessions_for_user(self, user_id: int) -> int:
+        """
+        Delete all sessions belonging to a specific user.
+
+        Used when a user is deactivated/deleted to immediately evict
+        their active sessions, preventing continued access.
+
+        Args:
+            user_id: Database user ID whose sessions should be removed
+
+        Returns:
+            Number of sessions deleted
+        """
+        with self._sessions_lock:
+            to_delete = [
+                sid for sid, data in self.sessions.items()
+                if data.get("user_id") == user_id
+            ]
+            for sid in to_delete:
+                del self.sessions[sid]
+
+        if to_delete:
+            logger.info(f"Evicted {len(to_delete)} session(s) for user ID {user_id}")
+
+        return len(to_delete)
+
     def _cleanup_expired_sessions_unsafe(self, dynamic_timeout: timedelta) -> int:
         """
         Remove expired sessions (UNSAFE - must be called with lock held).

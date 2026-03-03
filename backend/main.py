@@ -5610,8 +5610,18 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         await websocket.close(code=1008, reason="Invalid or expired session")
         return
 
+    # Check that the user still exists and is not deactivated
+    ws_user_id = session_data.get("user_id")
+    if ws_user_id:
+        with monitor.db.get_session() as db_session:
+            ws_user = db_session.query(User).filter(User.id == ws_user_id).first()
+            if not ws_user or ws_user.is_deleted:
+                logger.warning(f"WebSocket rejected: user ID {ws_user_id} is deactivated or missing")
+                await websocket.close(code=1008, reason="User account deactivated")
+                return
+
     # Get user_id for capability-based filtering
-    user_id = session_data.get("user_id")
+    user_id = ws_user_id
     user_caps = set(get_capabilities_for_user(user_id)) if user_id else set()
     can_view_env = user_id is not None and has_capability_for_user(user_id, Capabilities.CONTAINERS_VIEW_ENV)
 
@@ -5854,8 +5864,18 @@ async def websocket_shell_endpoint(
         await websocket.close(code=1008, reason="Invalid or expired session")
         return
 
+    # Check that the user still exists and is not deactivated
+    shell_user_id = session_data.get("user_id")
+    if shell_user_id:
+        with monitor.db.get_session() as db_session:
+            shell_user = db_session.query(User).filter(User.id == shell_user_id).first()
+            if not shell_user or shell_user.is_deleted:
+                logger.warning(f"Shell WebSocket rejected: user ID {shell_user_id} is deactivated or missing")
+                await websocket.close(code=1008, reason="User account deactivated")
+                return
+
     # CRITICAL: Check shell permission - essentially root access to container
-    user_id = session_data.get("user_id")
+    user_id = shell_user_id
     username = session_data.get("username", "unknown")
 
     if not has_capability_for_user(user_id, Capabilities.CONTAINERS_SHELL):

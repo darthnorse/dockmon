@@ -421,6 +421,13 @@ async def update_group(
                 detail=f"Group with ID {group_id} not found"
             )
 
+        # Block renaming system groups (e.g., Administrators, Operators, Read Only)
+        if group.is_system and sanitized_name is not None and sanitized_name != group.name:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot rename system group '{group.name}'"
+            )
+
         # Check name uniqueness if changing
         if sanitized_name and sanitized_name.lower() != group.name.lower():
             existing = session.query(CustomGroup).filter(

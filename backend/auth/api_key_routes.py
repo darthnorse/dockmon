@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from database import ApiKey, User, CustomGroup
 from auth.api_key_auth import generate_api_key, get_current_user_or_api_key, require_capability
 from auth.shared import db
+from audit.audit_logger import AuditAction, AuditEntityType, log_audit, get_client_info
 from auth.utils import format_timestamp, format_timestamp_required, get_auditable_user_info
 from security.audit import security_audit
 from utils.client_ip import get_client_ip
@@ -168,10 +169,15 @@ async def create_api_key(
         )
 
         session.add(api_key)
+        session.flush()  # Assign ID without committing
+
+        # Audit log (before commit so both records are in same transaction)
+        if request:
+            log_audit(session, user_id, display_name, AuditAction.CREATE, AuditEntityType.API_KEY, entity_id=str(api_key.id), entity_name=api_key.name, details={'group': group.name}, **get_client_info(request))
+
         session.commit()
         session.refresh(api_key)
 
-        # Audit log
         client_ip = get_client_ip(request)
         security_audit.log_privileged_action(
             client_ip=client_ip,
@@ -318,9 +324,13 @@ async def update_api_key(
                 api_key.allowed_ips = data.allowed_ips
 
         api_key.updated_at = datetime.now(timezone.utc)
+
+        user_id, display_name = get_auditable_user_info(current_user)
+        if request:
+            log_audit(session, user_id, display_name, AuditAction.UPDATE, AuditEntityType.API_KEY, entity_id=str(key_id), entity_name=api_key.name, details={'changes': changes}, **get_client_info(request))
+
         session.commit()
 
-        # Audit log
         client_ip = get_client_ip(request) if request else "unknown"
         security_audit.log_privileged_action(
             client_ip=client_ip,
@@ -329,7 +339,6 @@ async def update_api_key(
             success=True
         )
 
-        _, display_name = get_auditable_user_info(current_user)
         logger.info(f"{display_name} updated API key: {api_key.name}")
 
         return {"message": "API key updated successfully"}
@@ -389,9 +398,13 @@ async def revoke_api_key(
         # Soft delete
         api_key.revoked_at = datetime.now(timezone.utc)
         api_key.updated_at = datetime.now(timezone.utc)
+
+        user_id, display_name = get_auditable_user_info(current_user)
+        if request:
+            log_audit(session, user_id, display_name, AuditAction.DELETE, AuditEntityType.API_KEY, entity_id=str(key_id), entity_name=api_key.name, details={'group': group_name}, **get_client_info(request))
+
         session.commit()
 
-        # Audit log
         client_ip = get_client_ip(request) if request else "unknown"
         security_audit.log_privileged_action(
             client_ip=client_ip,
@@ -400,7 +413,6 @@ async def revoke_api_key(
             success=True
         )
 
-        _, display_name = get_auditable_user_info(current_user)
         logger.info(f"{display_name} revoked API key: {api_key.name}")
 
         return {"message": "API key revoked successfully"}

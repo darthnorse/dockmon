@@ -14,6 +14,7 @@ from fastapi import Request
 from sqlalchemy.orm import Session
 
 from database import AuditLog
+from utils.client_ip import get_client_ip
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +38,20 @@ class AuditAction(str, Enum):
     START = 'start'
     STOP = 'stop'
     RESTART = 'restart'
+    KILL = 'kill'
+    RENAME = 'rename'
     SHELL = 'shell'
     SHELL_END = 'shell_end'
     CONTAINER_UPDATE = 'container_update'
 
     # Stack operations
     DEPLOY = 'deploy'
+    COPY = 'copy'
+
+    # Resource operations
+    PRUNE = 'prune'
+    TOGGLE = 'toggle'
+    TEST = 'test'
 
     # Settings
     SETTINGS_CHANGE = 'settings_change'
@@ -69,23 +78,20 @@ class AuditEntityType(str, Enum):
     OIDC_CONFIG = 'oidc_config'
 
 
-def get_client_info(request: Request) -> Dict[str, Optional[str]]:
+def get_client_info(request: Optional[Request]) -> Dict[str, Optional[str]]:
     """
     Extract client information from request.
 
     Args:
-        request: FastAPI request object
+        request: FastAPI request object (None-safe for WebSocket/internal calls)
 
     Returns:
         Dict with ip_address and user_agent
     """
-    # Get IP address - check X-Forwarded-For for reverse proxy setups
-    ip_address = request.headers.get('X-Forwarded-For')
-    if ip_address:
-        # Take first IP if multiple (client -> proxies)
-        ip_address = ip_address.split(',')[0].strip()
-    else:
-        ip_address = request.client.host if request.client else None
+    if request is None:
+        return {'ip_address': None, 'user_agent': None}
+
+    ip_address = get_client_ip(request)
 
     user_agent = request.headers.get('User-Agent')
 
@@ -242,7 +248,7 @@ def log_host_change(
     action: AuditAction,
     host_id: str,
     host_name: str,
-    request: Request,
+    request: Optional[Request],
     details: Optional[Dict[str, Any]] = None,
 ) -> AuditLog:
     """
@@ -317,7 +323,7 @@ def log_container_action(
     host_id: str,
     container_id: str,
     container_name: str,
-    request: Request,
+    request: Optional[Request],
     details: Optional[Dict[str, Any]] = None,
 ) -> AuditLog:
     """
@@ -355,7 +361,7 @@ def log_stack_change(
     username: str,
     action: AuditAction,
     stack_name: str,
-    request: Request,
+    request: Optional[Request],
     details: Optional[Dict[str, Any]] = None,
 ) -> AuditLog:
     """
@@ -389,7 +395,7 @@ def log_settings_change(
     user_id: int,
     username: str,
     setting_name: str,
-    request: Request,
+    request: Optional[Request],
     old_value: Optional[Any] = None,
     new_value: Optional[Any] = None,
 ) -> AuditLog:

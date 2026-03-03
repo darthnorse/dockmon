@@ -14,10 +14,11 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, Field
 
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, Capabilities
+from audit.audit_logger import AuditAction, log_stack_change
 from auth.utils import get_auditable_user_info
 from database import DatabaseManager, StackMetadata
 from deployment import stack_storage
@@ -192,7 +193,7 @@ async def get_stack(name: str, user=Depends(get_current_user)):
 
 
 @router.post("", response_model=StackResponse, status_code=201, dependencies=[rate_limit_stacks, Depends(require_capability("stacks.edit"))])
-async def create_stack(request: StackCreate, user=Depends(get_current_user)):
+async def create_stack(request: StackCreate, http_request: Request, user=Depends(get_current_user)):
     """
     Create a new stack.
 
@@ -219,6 +220,7 @@ async def create_stack(request: StackCreate, user=Depends(get_current_user)):
             updated_by=user_id
         )
         session.add(metadata)
+        log_stack_change(session, user_id, display_name, AuditAction.CREATE, request.name, http_request)
         session.commit()
 
     logger.info(f"User {display_name} created stack '{request.name}'")
@@ -232,7 +234,7 @@ async def create_stack(request: StackCreate, user=Depends(get_current_user)):
 
 
 @router.put("/{name}", response_model=StackResponse, dependencies=[rate_limit_stacks, Depends(require_capability("stacks.edit"))])
-async def update_stack(name: str, request: StackUpdate, user=Depends(get_current_user)):
+async def update_stack(name: str, request: StackUpdate, http_request: Request, user=Depends(get_current_user)):
     """
     Update a stack's content.
 
@@ -267,6 +269,7 @@ async def update_stack(name: str, request: StackUpdate, user=Depends(get_current
                 updated_by=user_id
             )
             session.add(metadata)
+        log_stack_change(session, user_id, display_name, AuditAction.UPDATE, name, http_request)
         session.commit()
 
     # Get deployed_to info from containers
@@ -292,7 +295,7 @@ async def update_stack(name: str, request: StackUpdate, user=Depends(get_current
 
 
 @router.put("/{name}/rename", response_model=StackResponse, dependencies=[rate_limit_stacks, Depends(require_capability("stacks.edit"))])
-async def rename_stack(name: str, request: StackRename, user=Depends(get_current_user)):
+async def rename_stack(name: str, request: StackRename, http_request: Request, user=Depends(get_current_user)):
     """
     Rename a stack.
 
@@ -339,6 +342,7 @@ async def rename_stack(name: str, request: StackRename, user=Depends(get_current
                 updated_by=user_id
             )
             session.add(new_metadata)
+        log_stack_change(session, user_id, display_name, AuditAction.RENAME, name, http_request, details={'new_name': request.new_name})
         session.commit()
 
     # Read content for response
@@ -359,7 +363,7 @@ async def rename_stack(name: str, request: StackRename, user=Depends(get_current
 
 
 @router.delete("/{name}", status_code=204, dependencies=[rate_limit_stacks, Depends(require_capability("stacks.edit"))])
-async def delete_stack(name: str, user=Depends(get_current_user)):
+async def delete_stack(name: str, http_request: Request, user=Depends(get_current_user)):
     """
     Delete a stack from filesystem.
 
@@ -380,13 +384,14 @@ async def delete_stack(name: str, user=Depends(get_current_user)):
     db = get_db_manager()
     with db.get_session() as session:
         session.query(StackMetadata).filter_by(stack_name=name).delete()
+        log_stack_change(session, user_id, display_name, AuditAction.DELETE, name, http_request)
         session.commit()
 
     logger.info(f"User {display_name} deleted stack '{name}'")
 
 
 @router.post("/{name}/copy", response_model=StackResponse, status_code=201, dependencies=[rate_limit_stacks, Depends(require_capability("stacks.edit"))])
-async def copy_stack_endpoint(name: str, request: StackCopy, user=Depends(get_current_user)):
+async def copy_stack_endpoint(name: str, request: StackCopy, http_request: Request, user=Depends(get_current_user)):
     """
     Copy a stack to a new name.
 
@@ -409,6 +414,7 @@ async def copy_stack_endpoint(name: str, request: StackCopy, user=Depends(get_cu
             updated_by=user_id
         )
         session.add(metadata)
+        log_stack_change(session, user_id, display_name, AuditAction.COPY, name, http_request, details={'dest_name': request.dest_name})
         session.commit()
 
     # Read content for response

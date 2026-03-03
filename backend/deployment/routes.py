@@ -14,7 +14,7 @@ import uuid
 import yaml
 from datetime import datetime, timezone
 from typing import List, Literal, Optional, Dict
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy.orm import Session
@@ -24,6 +24,7 @@ from deployment import DeploymentExecutor
 from deployment import stack_storage
 from deployment.compose_generator import generate_compose_from_deployment, generate_compose_from_containers
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability
+from audit.audit_logger import AuditAction, log_stack_change
 from auth.utils import get_auditable_user_info
 from utils.keys import parse_composite_key
 from agent.command_executor import get_agent_command_executor, RetryPolicy
@@ -295,6 +296,7 @@ _DEPLOY_ACTION_MESSAGES = {
 @router.post("/deploy", response_model=DeployStackResponse, dependencies=[Depends(require_capability("stacks.deploy"))])
 async def deploy_stack(
     request: DeployStackRequest,
+    http_request: Request,
     background_tasks: BackgroundTasks,
     current_user=Depends(get_current_user),
 ):
@@ -478,7 +480,10 @@ async def deploy_stack(
 
         background_tasks.add_task(execute_compose_deploy)
 
-    _, display_name = get_auditable_user_info(current_user)
+    user_id, display_name = get_auditable_user_info(current_user)
+    with db.get_session() as session:
+        log_stack_change(session, user_id, display_name, AuditAction.DEPLOY, request.stack_name, http_request, details={'host_id': request.host_id, 'host_name': host_name, 'action': request.action})
+        session.commit()
     logger.info(f"{display_name} started {request.action} of '{request.stack_name}' on '{host_name}'")
 
     return DeployStackResponse(

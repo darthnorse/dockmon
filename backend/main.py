@@ -70,6 +70,7 @@ from models.request_models import (
     ContainerTagUpdate, HostTagUpdate, HttpHealthCheckConfig, GenerateTokenRequest,
     RenameContainerRequest
 )
+from audit.audit_logger import AuditAction, AuditEntityType, log_audit, log_container_action, log_host_change, log_settings_change, get_client_info
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, get_capabilities_for_user, Capabilities
@@ -118,6 +119,35 @@ def is_compose_container(labels: Dict[str, str]) -> bool:
         True if container has com.docker.compose.* labels
     """
     return any(label.startswith("com.docker.compose") for label in labels.keys())
+
+
+def _get_container_name(host_id: str, container_id: str) -> str:
+    """Look up human-readable container name from cached container list. Falls back to container_id."""
+    for c in monitor.get_last_containers():
+        if (c.short_id == container_id or c.id == container_id) and c.host_id == host_id:
+            return c.name
+    return container_id
+
+
+def _get_host_name(host_id: str) -> str:
+    """Look up host name from monitor.hosts. Falls back to host_id."""
+    host = monitor.hosts.get(host_id)
+    return host.name if host else host_id
+
+
+def _safe_audit(current_user, log_fn, *args, **kwargs):
+    """Safely log an audit event. Prevents audit failures from causing HTTP 500.
+
+    Handles get_auditable_user_info, session management, and commit.
+    log_fn signature must be: log_fn(session, user_id, display_name, *args, **kwargs)
+    """
+    try:
+        user_id, display_name = get_auditable_user_info(current_user)
+        with monitor.db.get_session() as session:
+            log_fn(session, user_id, display_name, *args, **kwargs)
+            session.commit()
+    except Exception:
+        logger.error("Audit logging failed", exc_info=True)
 
 
 # ==================== Security Constants ====================
@@ -731,6 +761,8 @@ async def add_host(config: DockerHostConfig, current_user: dict = Depends(get_cu
                 user_agent=request.headers.get('user-agent', 'unknown')
             )
 
+        _safe_audit(current_user, log_host_change, AuditAction.CREATE, host.id, config.name, request, details={'url': config.url})
+
         # Broadcast host addition to WebSocket clients so they refresh
         await monitor.manager.broadcast({
             "type": "host_added",
@@ -870,16 +902,23 @@ async def test_host_connection(config: DockerHostConfig, current_user: dict = De
         raise HTTPException(status_code=400, detail=f"Connection failed: {str(e)}")
 
 @app.put("/api/hosts/{host_id}", tags=["hosts"], dependencies=[Depends(require_capability("hosts.manage"))])
-async def update_host(host_id: str, config: DockerHostConfig, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
+async def update_host(host_id: str, config: DockerHostConfig, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
     """Update an existing Docker host"""
     host = await asyncio.to_thread(monitor.update_host, host_id, config)
+    _safe_audit(current_user, log_host_change, AuditAction.UPDATE, host_id, config.name, request)
     return host
 
 @app.delete("/api/hosts/{host_id}", tags=["hosts"], dependencies=[Depends(require_capability("hosts.manage"))])
-async def remove_host(host_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
+async def remove_host(host_id: str, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
     """Remove a Docker host"""
     try:
+        # Get host name before removal for audit
+        host = monitor.hosts.get(host_id)
+        host_name = host.name if host else host_id
+
         await monitor.remove_host(host_id)
+
+        _safe_audit(current_user, log_host_change, AuditAction.DELETE, host_id, host_name, request)
 
         # Broadcast host removal to WebSocket clients so they refresh
         await monitor.manager.broadcast({
@@ -901,6 +940,7 @@ async def remove_host(host_id: str, current_user: dict = Depends(get_current_use
 async def update_host_tags(
     host_id: str,
     request: HostTagUpdate,
+    http_request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -931,8 +971,7 @@ async def update_host_tags(
     # Update in-memory host object so changes are immediately visible
     host.tags = updated_tags
 
-    _, display_name = get_auditable_user_info(current_user)
-    logger.info(f"User {display_name} updated tags for host {host.name}")
+    _safe_audit(current_user, log_host_change, AuditAction.UPDATE, host_id, host.name, http_request, details={'tags_to_add': request.tags_to_add, 'tags_to_remove': request.tags_to_remove})
 
     return {"tags": updated_tags}
 
@@ -1081,7 +1120,7 @@ async def get_host_agent_info(host_id: str, current_user: dict = Depends(get_cur
 
 
 @app.post("/api/hosts/{host_id}/agent/update", tags=["hosts"], dependencies=[Depends(require_capability("agents.manage"))])
-async def trigger_agent_update(host_id: str, current_user: dict = Depends(get_current_user)):
+async def trigger_agent_update(host_id: str, request: Request, current_user: dict = Depends(get_current_user)):
     """
     Trigger agent self-update.
 
@@ -1180,6 +1219,8 @@ async def trigger_agent_update(host_id: str, current_user: dict = Depends(get_cu
                 detail=f"Failed to send update command: {result.error}"
             )
 
+        _safe_audit(current_user, log_host_change, AuditAction.UPDATE, host_id, host.name, request, details={'action': 'agent_update', 'target_version': latest_version})
+
         return {
             "success": True,
             "message": "Agent update initiated",
@@ -1275,7 +1316,7 @@ async def list_host_images(host_id: str, current_user: dict = Depends(get_curren
 
 
 @app.post("/api/hosts/{host_id}/images/prune", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
-async def prune_host_images(host_id: str, current_user: dict = Depends(get_current_user)):
+async def prune_host_images(host_id: str, request: Request, current_user: dict = Depends(get_current_user)):
     """
     Prune all unused images on a specific host.
 
@@ -1289,7 +1330,9 @@ async def prune_host_images(host_id: str, current_user: dict = Depends(get_curre
     agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
     if agent_id:
         logger.info(f"Routing prune_images for host {host_id} through agent {agent_id}")
-        return await monitor.operations.agent_operations.prune_images(host_id)
+        result = await monitor.operations.agent_operations.prune_images(host_id)
+        _safe_audit(current_user, log_host_change, AuditAction.PRUNE, host_id, _get_host_name(host_id), request, details={'resource': 'images', 'via': 'agent'})
+        return result
 
     # Legacy path: Direct Docker socket access
     client = monitor.clients.get(host_id)
@@ -1308,6 +1351,8 @@ async def prune_host_images(host_id: str, current_user: dict = Depends(get_curre
         removed_count = len([i for i in images_deleted if i.get('Deleted')])
 
         logger.info(f"Pruned {removed_count} unused images from host {host_id}, reclaimed {space_reclaimed} bytes")
+
+        _safe_audit(current_user, log_host_change, AuditAction.PRUNE, host_id, _get_host_name(host_id), request, details={'resource': 'images', 'removed_count': removed_count, 'space_reclaimed': space_reclaimed})
 
         return {
             'removed_count': removed_count,
@@ -1412,6 +1457,7 @@ async def list_host_networks(host_id: str, current_user: dict = Depends(get_curr
 async def delete_host_network(
     host_id: str,
     network_id: str,
+    request: Request,
     force: bool = False,
     current_user: dict = Depends(get_current_user)
 ):
@@ -1439,7 +1485,9 @@ async def delete_host_network(
     agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
     if agent_id:
         logger.info(f"Routing delete_network for host {host_id} through agent {agent_id}")
-        return await monitor.operations.agent_operations.delete_network(host_id, network_id, force)
+        result = await monitor.operations.agent_operations.delete_network(host_id, network_id, force)
+        _safe_audit(current_user, log_host_change, AuditAction.DELETE, host_id, _get_host_name(host_id), request, details={'resource': 'network', 'network_id': network_id})
+        return result
 
     # Legacy path: Direct Docker socket access
     client = monitor.clients.get(host_id)
@@ -1482,6 +1530,8 @@ async def delete_host_network(
         await async_docker_call(network.remove)
         logger.info(f"Deleted network {network_name} ({network_id}) from host {host_id}")
 
+        _safe_audit(current_user, log_host_change, AuditAction.DELETE, host_id, _get_host_name(host_id), request, details={'resource': 'network', 'network_name': network_name})
+
         return {
             "success": True,
             "message": f"Network '{network_name}' deleted"
@@ -1497,7 +1547,7 @@ async def delete_host_network(
 
 
 @app.post("/api/hosts/{host_id}/networks/prune", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
-async def prune_host_networks(host_id: str, current_user: dict = Depends(get_current_user)):
+async def prune_host_networks(host_id: str, request: Request, current_user: dict = Depends(get_current_user)):
     """
     Prune all unused networks on a specific host.
 
@@ -1512,7 +1562,9 @@ async def prune_host_networks(host_id: str, current_user: dict = Depends(get_cur
     agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
     if agent_id:
         logger.info(f"Routing prune_networks for host {host_id} through agent {agent_id}")
-        return await monitor.operations.agent_operations.prune_networks(host_id)
+        result = await monitor.operations.agent_operations.prune_networks(host_id)
+        _safe_audit(current_user, log_host_change, AuditAction.PRUNE, host_id, _get_host_name(host_id), request, details={'resource': 'networks', 'via': 'agent'})
+        return result
 
     # Legacy path: Direct Docker socket access
     client = monitor.clients.get(host_id)
@@ -1527,6 +1579,8 @@ async def prune_host_networks(host_id: str, current_user: dict = Depends(get_cur
         networks_deleted = result.get('NetworksDeleted') or []
 
         logger.info(f"Pruned {len(networks_deleted)} unused networks from host {host_id}: {networks_deleted}")
+
+        _safe_audit(current_user, log_host_change, AuditAction.PRUNE, host_id, _get_host_name(host_id), request, details={'resource': 'networks', 'removed_count': len(networks_deleted)})
 
         return {
             'removed_count': len(networks_deleted),
@@ -1622,6 +1676,7 @@ async def list_host_volumes(host_id: str, current_user: dict = Depends(get_curre
 async def delete_host_volume(
     host_id: str,
     volume_name: str,
+    request: Request,
     force: bool = False,
     current_user: dict = Depends(get_current_user)
 ):
@@ -1645,7 +1700,9 @@ async def delete_host_volume(
     agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
     if agent_id:
         logger.info(f"Routing delete_volume for host {host_id} through agent {agent_id}")
-        return await monitor.operations.agent_operations.delete_volume(host_id, volume_name, force)
+        result = await monitor.operations.agent_operations.delete_volume(host_id, volume_name, force)
+        _safe_audit(current_user, log_host_change, AuditAction.DELETE, host_id, _get_host_name(host_id), request, details={'resource': 'volume', 'volume_name': volume_name})
+        return result
 
     # Legacy path: Direct Docker socket access
     client = monitor.clients.get(host_id)
@@ -1675,6 +1732,8 @@ async def delete_host_volume(
         await async_docker_call(volume.remove, force=force)
         logger.info(f"Deleted volume {volume_name} from host {host_id}")
 
+        _safe_audit(current_user, log_host_change, AuditAction.DELETE, host_id, _get_host_name(host_id), request, details={'resource': 'volume', 'volume_name': volume_name})
+
         return {
             "success": True,
             "message": f"Volume '{volume_name}' deleted"
@@ -1692,7 +1751,7 @@ async def delete_host_volume(
 
 
 @app.post("/api/hosts/{host_id}/volumes/prune", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
-async def prune_host_volumes(host_id: str, current_user: dict = Depends(get_current_user)):
+async def prune_host_volumes(host_id: str, request: Request, current_user: dict = Depends(get_current_user)):
     """
     Prune all unused volumes on a specific host.
 
@@ -1707,7 +1766,9 @@ async def prune_host_volumes(host_id: str, current_user: dict = Depends(get_curr
     agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
     if agent_id:
         logger.info(f"Routing prune_volumes for host {host_id} through agent {agent_id}")
-        return await monitor.operations.agent_operations.prune_volumes(host_id)
+        result = await monitor.operations.agent_operations.prune_volumes(host_id)
+        _safe_audit(current_user, log_host_change, AuditAction.PRUNE, host_id, _get_host_name(host_id), request, details={'resource': 'volumes', 'via': 'agent'})
+        return result
 
     # Legacy path: Direct Docker socket access
     client = monitor.clients.get(host_id)
@@ -1723,6 +1784,8 @@ async def prune_host_volumes(host_id: str, current_user: dict = Depends(get_curr
         space_reclaimed = result.get('SpaceReclaimed', 0)
 
         logger.info(f"Pruned {len(volumes_removed)} volumes from host {host_id}, reclaimed {space_reclaimed} bytes")
+
+        _safe_audit(current_user, log_host_change, AuditAction.PRUNE, host_id, _get_host_name(host_id), request, details={'resource': 'volumes', 'removed_count': len(volumes_removed), 'space_reclaimed': space_reclaimed})
 
         return {
             "removed_count": len(volumes_removed),
@@ -1748,44 +1811,55 @@ async def get_containers(host_id: Optional[str] = None, current_user: dict = Dep
     return filter_container_env(containers, can_view_env)
 
 @app.post("/api/hosts/{host_id}/containers/{container_id}/restart", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
-async def restart_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
+async def restart_container(host_id: str, container_id: str, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Restart a container"""
     container_id = normalize_container_id(container_id)
     success = await monitor.restart_container(host_id, container_id)
+    if success:
+        _safe_audit(current_user, log_container_action, AuditAction.RESTART, host_id, container_id, _get_container_name(host_id, container_id), request)
     return {"status": "success" if success else "failed"}
 
 @app.post("/api/hosts/{host_id}/containers/{container_id}/stop", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
-async def stop_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
+async def stop_container(host_id: str, container_id: str, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Stop a container"""
     container_id = normalize_container_id(container_id)
     success = await monitor.stop_container(host_id, container_id)
+    if success:
+        _safe_audit(current_user, log_container_action, AuditAction.STOP, host_id, container_id, _get_container_name(host_id, container_id), request)
     return {"status": "success" if success else "failed"}
 
 @app.post("/api/hosts/{host_id}/containers/{container_id}/start", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
-async def start_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
+async def start_container(host_id: str, container_id: str, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Start a container"""
     container_id = normalize_container_id(container_id)
     success = await monitor.start_container(host_id, container_id)
+    if success:
+        _safe_audit(current_user, log_container_action, AuditAction.START, host_id, container_id, _get_container_name(host_id, container_id), request)
     return {"status": "success" if success else "failed"}
 
 @app.post("/api/hosts/{host_id}/containers/{container_id}/kill", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
-async def kill_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
+async def kill_container(host_id: str, container_id: str, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Kill a container (SIGKILL) - for unresponsive containers that won't stop gracefully"""
     container_id = normalize_container_id(container_id)
     success = await monitor.kill_container(host_id, container_id)
+    if success:
+        _safe_audit(current_user, log_container_action, AuditAction.KILL, host_id, container_id, _get_container_name(host_id, container_id), request)
     return {"status": "success" if success else "failed"}
 
 @app.post("/api/hosts/{host_id}/containers/{container_id}/rename", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
-async def rename_container(host_id: str, container_id: str, body: RenameContainerRequest, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
+async def rename_container(host_id: str, container_id: str, body: RenameContainerRequest, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Rename a container"""
     container_id = normalize_container_id(container_id)
     success = await monitor.rename_container(host_id, container_id, body.name)
+    if success:
+        _safe_audit(current_user, log_container_action, AuditAction.RENAME, host_id, container_id, _get_container_name(host_id, container_id), request, details={'new_name': body.name})
     return {"status": "success" if success else "failed"}
 
 @app.delete("/api/hosts/{host_id}/containers/{container_id}", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
 async def delete_container(
     host_id: str,
     container_id: str,
+    request: Request,
     removeVolumes: bool = False,
     current_user: dict = Depends(get_current_user),
     rate_limit_check: bool = rate_limit_containers
@@ -1815,7 +1889,13 @@ async def delete_container(
     container_name = container.name if container else container_id
 
     # Delegate to monitor (which delegates to operations module)
-    return await monitor.delete_container(host_id, container_id, container_name, removeVolumes)
+    result = await monitor.delete_container(host_id, container_id, container_name, removeVolumes)
+
+    # Audit log on success only
+    if result.get("success"):
+        _safe_audit(current_user, log_container_action, AuditAction.DELETE, host_id, normalize_container_id(container_id), container_name, request, details={'remove_volumes': removeVolumes})
+
+    return result
 
 @app.get("/api/hosts/{host_id}/containers/{container_id}/logs", tags=["containers"], dependencies=[Depends(require_capability("containers.logs"))])
 async def get_container_logs(
@@ -1878,19 +1958,21 @@ async def inspect_container(
 
 
 @app.post("/api/hosts/{host_id}/containers/{container_id}/auto-restart", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
-async def toggle_auto_restart(host_id: str, container_id: str, request: AutoRestartRequest, current_user: dict = Depends(get_current_user)):
+async def toggle_auto_restart(host_id: str, container_id: str, request: AutoRestartRequest, http_request: Request, current_user: dict = Depends(get_current_user)):
     """Toggle auto-restart for a container"""
     # Normalize to short ID (12 chars) for consistency with monitor's internal tracking
     short_id = container_id[:12] if len(container_id) > 12 else container_id
     monitor.toggle_auto_restart(host_id, short_id, request.container_name, request.enabled)
+    _safe_audit(current_user, log_container_action, AuditAction.TOGGLE, host_id, short_id, request.container_name, http_request, details={'auto_restart': request.enabled})
     return {"host_id": host_id, "container_id": container_id, "auto_restart": request.enabled}
 
 @app.post("/api/hosts/{host_id}/containers/{container_id}/desired-state", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
-async def set_desired_state(host_id: str, container_id: str, request: DesiredStateRequest, current_user: dict = Depends(get_current_user)):
+async def set_desired_state(host_id: str, container_id: str, request: DesiredStateRequest, http_request: Request, current_user: dict = Depends(get_current_user)):
     """Set desired state for a container"""
     # Normalize to short ID (12 chars) for consistency
     short_id = container_id[:12] if len(container_id) > 12 else container_id
     monitor.set_container_desired_state(host_id, short_id, request.container_name, request.desired_state, request.web_ui_url)
+    _safe_audit(current_user, log_container_action, AuditAction.UPDATE, host_id, short_id, request.container_name, http_request, details={'desired_state': request.desired_state})
     return {"host_id": host_id, "container_id": container_id, "desired_state": request.desired_state, "web_ui_url": request.web_ui_url}
 
 @app.patch("/api/hosts/{host_id}/containers/{container_id}/tags", tags=["tags"], dependencies=[Depends(require_capability("tags.manage"))])
@@ -1898,6 +1980,7 @@ async def update_container_tags(
     host_id: str,
     container_id: str,
     request: ContainerTagUpdate,
+    http_request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -1928,8 +2011,7 @@ async def update_container_tags(
         container_labels=container.labels
     )
 
-    _, display_name = get_auditable_user_info(current_user)
-    logger.info(f"User {display_name} updated tags for container {container.name}")
+    _safe_audit(current_user, log_container_action, AuditAction.UPDATE, host_id, normalize_container_id(container_id), container.name, http_request, details={'tags_to_add': request.tags_to_add, 'tags_to_remove': request.tags_to_remove})
 
     return result
 
@@ -2166,6 +2248,7 @@ async def check_container_update(
 async def execute_container_update(
     host_id: str,
     container_id: str,
+    request: Request,
     force: bool = Query(False),
     current_user: dict = Depends(get_current_user)
 ):
@@ -2293,6 +2376,7 @@ async def execute_container_update(
     success = await executor.update_container(host_id, short_id, update_record, force=force)
 
     if success:
+        _safe_audit(current_user, log_container_action, AuditAction.CONTAINER_UPDATE, host_id, short_id, container_name, request, details={'previous_image': update_record.current_image, 'new_image': update_record.latest_image})
         return {
             "status": "success",
             "message": f"Container successfully updated to {update_record.latest_image}",
@@ -3255,6 +3339,7 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
 @app.put("/api/settings", tags=["system"], dependencies=[Depends(require_capability("settings.manage"))])
 async def update_settings(
     settings: GlobalSettingsUpdate,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     rate_limit_check: bool = rate_limit_default
 ):
@@ -3299,6 +3384,9 @@ async def update_settings(
     # Wake periodic job if update schedule changed (no restart required)
     if 'update_check_time' in validated_dict:
         monitor.periodic_jobs.notify_schedule_changed()
+
+    changed_keys = list(validated_dict.keys())
+    _safe_audit(current_user, log_settings_change, ', '.join(changed_keys), request)
 
     # Broadcast blackout status change to all clients
     is_blackout, window_name = monitor.notification_service.blackout_manager.is_in_blackout_window()
@@ -3781,6 +3869,7 @@ async def get_alert_rules_v2(current_user: dict = Depends(get_current_user)):
 @app.post("/api/alerts/rules", tags=["alerts"], dependencies=[Depends(require_capability("alerts.manage"))])
 async def create_alert_rule_v2(
     rule: AlertRuleV2Create,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     rate_limit_check: bool = rate_limit_default
 ):
@@ -3826,6 +3915,8 @@ async def create_alert_rule_v2(
 
         logger.info(f"Created alert rule v2: {new_rule.name} (ID: {new_rule.id})")
 
+        _safe_audit(current_user, log_audit, AuditAction.CREATE, AuditEntityType.ALERT_RULE, entity_id=str(new_rule.id), entity_name=new_rule.name, **get_client_info(request))
+
         # Log event
         channels = []
         if new_rule.notify_channels_json:
@@ -3861,6 +3952,7 @@ async def create_alert_rule_v2(
 async def update_alert_rule_v2(
     rule_id: str,
     updates: AlertRuleV2Update,
+    request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """Update an alert rule (v2)"""
@@ -3884,6 +3976,8 @@ async def update_alert_rule_v2(
 
         logger.info(f"Updated alert rule v2: {rule_id}")
 
+        _safe_audit(current_user, log_audit, AuditAction.UPDATE, AuditEntityType.ALERT_RULE, entity_id=rule_id, entity_name=updated_rule.name, **get_client_info(request))
+
         return {
             "id": updated_rule.id,
             "name": updated_rule.name,
@@ -3900,6 +3994,7 @@ async def update_alert_rule_v2(
 @app.delete("/api/alerts/rules/{rule_id}", tags=["alerts"], dependencies=[Depends(require_capability("alerts.manage"))])
 async def delete_alert_rule_v2(
     rule_id: str,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     rate_limit_check: bool = rate_limit_default
 ):
@@ -3916,6 +4011,8 @@ async def delete_alert_rule_v2(
             raise HTTPException(status_code=404, detail="Alert rule not found")
 
         logger.info(f"Deleted alert rule v2: {rule_id}")
+
+        _safe_audit(current_user, log_audit, AuditAction.DELETE, AuditEntityType.ALERT_RULE, entity_id=rule_id, entity_name=rule.name if rule else None, **get_client_info(request))
 
         # Log event
         if rule:
@@ -3936,6 +4033,7 @@ async def delete_alert_rule_v2(
 @app.patch("/api/alerts/rules/{rule_id}/toggle", tags=["alerts"], dependencies=[Depends(require_capability("alerts.manage"))])
 async def toggle_alert_rule_v2(
     rule_id: str,
+    request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """Toggle an alert rule enabled/disabled state (v2)"""
@@ -3949,6 +4047,8 @@ async def toggle_alert_rule_v2(
         updated_rule = monitor.db.update_alert_rule_v2(rule_id, enabled=new_enabled)
 
         logger.info(f"Toggled alert rule v2: {rule_id} to {new_enabled}")
+
+        _safe_audit(current_user, log_audit, AuditAction.TOGGLE, AuditEntityType.ALERT_RULE, entity_id=rule_id, entity_name=rule.name, details={'enabled': new_enabled}, **get_client_info(request))
 
         return {
             "id": updated_rule.id,
@@ -4098,7 +4198,7 @@ async def get_notification_channels(current_user: dict = Depends(get_current_use
     } for ch in channels]
 
 @app.post("/api/notifications/channels", tags=["notifications"], dependencies=[Depends(require_capability("notifications.manage"))])
-async def create_notification_channel(channel: NotificationChannelCreate, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
+async def create_notification_channel(channel: NotificationChannelCreate, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Create a new notification channel"""
     try:
         db_channel = monitor.db.add_notification_channel({
@@ -4108,11 +4208,14 @@ async def create_notification_channel(channel: NotificationChannelCreate, curren
             "enabled": channel.enabled
         })
 
+        _, display_name = get_auditable_user_info(current_user)
+        _safe_audit(current_user, log_audit, AuditAction.CREATE, AuditEntityType.NOTIFICATION_CHANNEL, entity_id=str(db_channel.id), entity_name=db_channel.name, details={'type': db_channel.type}, **get_client_info(request))
+
         # Log notification channel creation
         monitor.event_logger.log_notification_channel_created(
             channel_name=db_channel.name,
             channel_type=db_channel.type,
-            triggered_by="user"
+            triggered_by=display_name
         )
 
         return {
@@ -4129,7 +4232,7 @@ async def create_notification_channel(channel: NotificationChannelCreate, curren
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.put("/api/notifications/channels/{channel_id}", tags=["notifications"], dependencies=[Depends(require_capability("notifications.manage"))])
-async def update_notification_channel(channel_id: int, updates: NotificationChannelUpdate, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
+async def update_notification_channel(channel_id: int, updates: NotificationChannelUpdate, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Update a notification channel"""
     try:
         update_data = {k: v for k, v in updates.dict().items() if v is not None}
@@ -4137,6 +4240,8 @@ async def update_notification_channel(channel_id: int, updates: NotificationChan
 
         if not db_channel:
             raise HTTPException(status_code=404, detail="Channel not found")
+
+        _safe_audit(current_user, log_audit, AuditAction.UPDATE, AuditEntityType.NOTIFICATION_CHANNEL, entity_id=str(channel_id), entity_name=db_channel.name, **get_client_info(request))
 
         return {
             "id": db_channel.id,
@@ -4154,7 +4259,7 @@ async def update_notification_channel(channel_id: int, updates: NotificationChan
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete("/api/notifications/channels/{channel_id}", tags=["notifications"], dependencies=[Depends(require_capability("notifications.manage"))])
-async def delete_notification_channel(channel_id: int, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
+async def delete_notification_channel(channel_id: int, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Delete a notification channel"""
     try:
         # Single transaction: clean up references AND delete channel atomically (#166)
@@ -4192,6 +4297,9 @@ async def delete_notification_channel(channel_id: int, current_user: dict = Depe
                 logger.info(f"Removed channel {channel_id} from {updated_count} alert rule(s)")
             logger.info(f"Deleted notification channel: {channel_name} (ID: {channel_id})")
 
+        # Audit log (separate session since the above committed and closed)
+        _safe_audit(current_user, log_audit, AuditAction.DELETE, AuditEntityType.NOTIFICATION_CHANNEL, entity_id=str(channel_id), entity_name=channel_name, **get_client_info(request))
+
         return {
             "status": "success",
             "message": f"Channel {channel_id} deleted"
@@ -4203,13 +4311,16 @@ async def delete_notification_channel(channel_id: int, current_user: dict = Depe
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/notifications/channels/{channel_id}/test", tags=["notifications"], dependencies=[Depends(require_capability("notifications.manage"))])
-async def test_notification_channel(channel_id: int, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
+async def test_notification_channel(channel_id: int, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Test a notification channel"""
     try:
         if not hasattr(monitor, 'notification_service'):
             raise HTTPException(status_code=503, detail="Notification service not available")
 
         result = await monitor.notification_service.test_channel(channel_id)
+
+        _safe_audit(current_user, log_audit, AuditAction.TEST, AuditEntityType.NOTIFICATION_CHANNEL, entity_id=str(channel_id), **get_client_info(request))
+
         return result
     except HTTPException:
         raise
@@ -5901,13 +6012,48 @@ async def websocket_shell_endpoint(
         await websocket.close(code=1008, reason="Host not found")
         return
 
+    # Audit log - shell access granted
+    short_id = normalize_container_id(container_id)
+    container_name = _get_container_name(host_id, short_id)
+    user_agent = websocket.headers.get('User-Agent') if websocket else None
+    try:
+        with monitor.db.get_session() as session:
+            log_audit(
+                session, user_id, username, AuditAction.SHELL,
+                AuditEntityType.CONTAINER,
+                entity_id=short_id,
+                entity_name=container_name,
+                host_id=host_id,
+                ip_address=client_ip,
+                user_agent=user_agent,
+            )
+            session.commit()
+    except Exception:
+        logger.error("Shell audit logging failed", exc_info=True)
+
     # Route based on connection type
-    if host.connection_type == 'agent':
-        # Agent-based host: route through agent WebSocket
-        await _handle_agent_shell_session(websocket, host_id, container_id, session_data)
-    else:
-        # Local/Remote host: direct Docker connection
-        await _handle_direct_shell_session(websocket, host_id, container_id, session_data)
+    try:
+        if host.connection_type == 'agent':
+            # Agent-based host: route through agent WebSocket
+            await _handle_agent_shell_session(websocket, host_id, container_id, session_data)
+        else:
+            # Local/Remote host: direct Docker connection
+            await _handle_direct_shell_session(websocket, host_id, container_id, session_data)
+    finally:
+        # Audit log - shell session ended
+        try:
+            with monitor.db.get_session() as session:
+                log_audit(
+                    session, user_id, username, AuditAction.SHELL_END,
+                    AuditEntityType.CONTAINER,
+                    entity_id=short_id,
+                    entity_name=container_name,
+                    host_id=host_id,
+                    ip_address=client_ip,
+                )
+                session.commit()
+        except Exception:
+            logger.error("Shell end audit logging failed", exc_info=True)
 
 
 async def _handle_agent_shell_session(

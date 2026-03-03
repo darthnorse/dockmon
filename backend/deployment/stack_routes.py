@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, Capabilities
+from auth.utils import get_auditable_user_info
 from database import DatabaseManager, StackMetadata
 from deployment import stack_storage
 from deployment.container_utils import scan_deployed_stacks
@@ -209,7 +210,7 @@ async def create_stack(request: StackCreate, user=Depends(get_current_user)):
         raise HTTPException(status_code=400, detail=str(e))
 
     # Track created_by in StackMetadata (v2.3.0+)
-    user_id = user.get("user_id")
+    user_id, display_name = get_auditable_user_info(user)
     db = get_db_manager()
     with db.get_session() as session:
         metadata = StackMetadata(
@@ -220,7 +221,7 @@ async def create_stack(request: StackCreate, user=Depends(get_current_user)):
         session.add(metadata)
         session.commit()
 
-    logger.info(f"User {user['username']} created stack '{request.name}'")
+    logger.info(f"User {display_name} created stack '{request.name}'")
 
     return StackResponse(
         name=request.name,
@@ -251,7 +252,7 @@ async def update_stack(name: str, request: StackUpdate, user=Depends(get_current
         raise HTTPException(status_code=400, detail=str(e))
 
     # Track updated_by in StackMetadata (v2.3.0+)
-    user_id = user.get("user_id")
+    user_id, display_name = get_auditable_user_info(user)
     db = get_db_manager()
     with db.get_session() as session:
         metadata = session.query(StackMetadata).filter_by(stack_name=name).first()
@@ -280,7 +281,7 @@ async def update_stack(name: str, request: StackUpdate, user=Depends(get_current
             for h in deployed_stacks[name].hosts
         ]
 
-    logger.info(f"User {user['username']} updated stack '{name}'")
+    logger.info(f"User {display_name} updated stack '{name}'")
 
     return StackResponse(
         name=name,
@@ -315,7 +316,7 @@ async def rename_stack(name: str, request: StackRename, user=Depends(get_current
         raise HTTPException(status_code=500, detail=f"Failed to rename stack: {e}")
 
     # Update StackMetadata - since stack_name is PK, delete old and create new (v2.3.0+)
-    user_id = user.get("user_id")
+    user_id, display_name = get_auditable_user_info(user)
     db = get_db_manager()
     with db.get_session() as session:
         old_metadata = session.query(StackMetadata).filter_by(stack_name=name).first()
@@ -346,7 +347,7 @@ async def rename_stack(name: str, request: StackRename, user=Depends(get_current
     # Filter env_content for users without stacks.view_env capability
     can_view_env = check_auth_capability(user, Capabilities.STACKS_VIEW_ENV)
 
-    logger.info(f"User {user.get('username', 'unknown')} renamed stack '{name}' to '{request.new_name}'")
+    logger.info(f"User {display_name} renamed stack '{name}' to '{request.new_name}'")
 
     # New stack has no deployed containers (they still have old name in labels)
     return StackResponse(
@@ -375,12 +376,13 @@ async def delete_stack(name: str, user=Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=f"Failed to delete stack: {e}")
 
     # Delete StackMetadata (v2.3.0+)
+    user_id, display_name = get_auditable_user_info(user)
     db = get_db_manager()
     with db.get_session() as session:
         session.query(StackMetadata).filter_by(stack_name=name).delete()
         session.commit()
 
-    logger.info(f"User {user['username']} deleted stack '{name}'")
+    logger.info(f"User {display_name} deleted stack '{name}'")
 
 
 @router.post("/{name}/copy", response_model=StackResponse, status_code=201, dependencies=[rate_limit_stacks, Depends(require_capability("stacks.edit"))])
@@ -398,7 +400,7 @@ async def copy_stack_endpoint(name: str, request: StackCopy, user=Depends(get_cu
         raise HTTPException(status_code=400, detail=str(e))
 
     # Create StackMetadata for the copied stack (v2.3.0+)
-    user_id = user.get("user_id")
+    user_id, display_name = get_auditable_user_info(user)
     db = get_db_manager()
     with db.get_session() as session:
         metadata = StackMetadata(
@@ -415,7 +417,7 @@ async def copy_stack_endpoint(name: str, request: StackCopy, user=Depends(get_cu
     # Filter env_content for users without stacks.view_env capability
     can_view_env = check_auth_capability(user, Capabilities.STACKS_VIEW_ENV)
 
-    logger.info(f"User {user.get('username', 'unknown')} copied stack '{name}' to '{request.dest_name}'")
+    logger.info(f"User {display_name} copied stack '{name}' to '{request.dest_name}'")
 
     return StackResponse(
         name=request.dest_name,

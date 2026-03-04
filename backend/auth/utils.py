@@ -192,7 +192,7 @@ def validate_group_ids(session: Session, group_ids: list[int]) -> list[CustomGro
 
 
 # Capabilities that must always be held by at least one group with members
-CRITICAL_CAPABILITIES = frozenset({"groups.manage", "users.manage", "settings.manage", "oidc.manage"})
+CRITICAL_CAPABILITIES = frozenset({"groups.manage", "users.manage", "settings.manage", "oidc.manage", "apikeys.manage_other"})
 
 
 def verify_critical_capabilities(session: Session) -> None:

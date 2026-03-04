@@ -632,11 +632,18 @@ async def update_profile_v2(
 
     SECURITY:
     - Requires valid session cookie (API key auth not supported)
+    - Enforces must_change_password (user must change password first)
     - Username must be unique
     - Input validation via Pydantic
     - Atomic: all changes in single DB transaction
     """
     user_id = current_user["user_id"]
+
+    # Enforce must_change_password — user must change password before other profile updates
+    with db.get_session() as check_session:
+        check_user = check_session.query(User).filter(User.id == user_id).first()
+        if check_user and check_user.must_change_password:
+            raise HTTPException(status_code=403, detail="Password change required")
     username = current_user["username"]
     new_display_name = profile_data.display_name
     new_username = profile_data.username

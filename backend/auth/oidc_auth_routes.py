@@ -730,6 +730,11 @@ async def oidc_callback(
             if not userinfo:
                 raise ValueError("Failed to fetch user information from provider")
 
+            # Validate userinfo is a dict (OIDC spec allows JWT-formatted responses)
+            if not isinstance(userinfo, dict):
+                logger.error(f"OIDC userinfo response is not a dict: {type(userinfo).__name__}")
+                raise ValueError("Invalid userinfo response format from provider")
+
             # Extract user info - prefer ID token claims where available
             logger.info(f"OIDC userinfo/claims keys: {list(userinfo.keys())}")
             oidc_subject = userinfo.get('sub')

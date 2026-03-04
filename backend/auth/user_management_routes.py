@@ -260,17 +260,23 @@ async def create_user(
     user_id, display_name = get_auditable_user_info(current_user)
 
     with db.get_session() as session:
-        # Check if username already exists
-        existing = session.query(User).filter(User.username == user_data.username).first()
+        # Check if username already exists (among active users)
+        existing = session.query(User).filter(
+            User.username == user_data.username,
+            User.deleted_at.is_(None),
+        ).first()
         if existing:
             raise HTTPException(
                 status_code=400,
                 detail="Username already exists"
             )
 
-        # Check if email already exists (if provided)
+        # Check if email already exists among active users (if provided)
         if user_data.email:
-            existing_email = session.query(User).filter(User.email == user_data.email).first()
+            existing_email = session.query(User).filter(
+                User.email == user_data.email,
+                User.deleted_at.is_(None),
+            ).first()
             if existing_email:
                 raise HTTPException(
                     status_code=400,
@@ -375,11 +381,12 @@ async def update_user(
 
         # Update email if provided
         if user_data.email is not None:
-            # Check for email uniqueness
+            # Check for email uniqueness among active users
             if user_data.email:
                 existing = session.query(User).filter(
                     User.email == user_data.email,
-                    User.id != target_user_id
+                    User.id != target_user_id,
+                    User.deleted_at.is_(None),
                 ).first()
                 if existing:
                     raise HTTPException(
@@ -507,10 +514,15 @@ async def delete_user(
                 detail="User is already deactivated"
             )
 
-        # Soft delete
+        # Soft delete: mangle username/email so the unique constraints allow reuse
+        # Format: __deleted_{id}_{original} — reversible on reactivation
+        original_username = user.username
+        original_email = user.email  # Capture before nulling
         user.deleted_at = datetime.now(timezone.utc)
         user.deleted_by = user_id
         user.updated_at = datetime.now(timezone.utc)
+        user.username = f"__deleted_{user.id}_{original_username}"
+        user.email = None  # Release email for reuse (nullable column)
 
         # Audit log (before commit for atomicity)
         safe_audit_log(
@@ -520,7 +532,8 @@ async def delete_user(
             AuditAction.DELETE,
             AuditEntityType.USER,
             entity_id=str(user.id),
-            entity_name=user.username,
+            entity_name=original_username,
+            details={'original_username': original_username, 'original_email': original_email},
             **get_client_info(request)
         )
 
@@ -528,12 +541,12 @@ async def delete_user(
 
         evicted = cookie_session_manager.delete_sessions_for_user(target_user_id)
         if evicted:
-            logger.info(f"Evicted {evicted} active session(s) for deactivated user '{user.username}'")
+            logger.info(f"Evicted {evicted} active session(s) for deactivated user '{original_username}'")
         invalidate_user_groups_cache(target_user_id)
 
-        logger.info(f"User '{user.username}' deactivated by {display_name}")
+        logger.info(f"User '{original_username}' deactivated by {display_name}")
 
-        return {"message": f"User '{user.username}' has been deactivated"}
+        return {"message": f"User '{original_username}' has been deactivated"}
 
 
 @router.post("/{user_id}/reactivate", response_model=UserResponse, dependencies=[Depends(require_capability("users.manage"))])
@@ -559,7 +572,26 @@ async def reactivate_user(
                 detail="User is not deactivated"
             )
 
+        # Restore original username from mangled format: __deleted_{id}_{original}
+        original_username = user.username
+        prefix = f"__deleted_{user.id}_"
+        if user.username.startswith(prefix):
+            original_username = user.username[len(prefix):]
+
+        # Check if original username is still available among active users
+        conflict = session.query(User).filter(
+            User.username == original_username,
+            User.id != user.id,
+            User.deleted_at.is_(None),
+        ).first()
+        if conflict:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot reactivate: username '{original_username}' is now taken by another user"
+            )
+
         # Reactivate
+        user.username = original_username
         user.deleted_at = None
         user.deleted_by = None
         user.updated_at = datetime.now(timezone.utc)
@@ -572,7 +604,7 @@ async def reactivate_user(
             AuditAction.UPDATE,
             AuditEntityType.USER,
             entity_id=str(user.id),
-            entity_name=user.username,
+            entity_name=original_username,
             details={'action': 'reactivate'},
             **get_client_info(request)
         )

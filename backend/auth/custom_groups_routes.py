@@ -237,11 +237,12 @@ def _validate_group_description(description: Optional[str]) -> Optional[str]:
 
 
 def _get_group_members(session, group_id: int) -> list[GroupMemberResponse]:
-    """Get all members of a group with user details. Avoids N+1 queries."""
+    """Get all active members of a group with user details. Avoids N+1 queries."""
     memberships = session.query(UserGroupMembership, User).join(
         User, UserGroupMembership.user_id == User.id
     ).filter(
-        UserGroupMembership.group_id == group_id
+        UserGroupMembership.group_id == group_id,
+        User.deleted_at.is_(None),
     ).all()
 
     if not memberships:
@@ -287,10 +288,14 @@ async def list_groups(
     with db.get_session() as session:
         groups = session.query(CustomGroup).all()
 
-        # Get member counts for each group in a single query
+        # Get member counts for each group (active users only)
         count_results = session.query(
             UserGroupMembership.group_id,
             func.count(UserGroupMembership.id)
+        ).join(
+            User, UserGroupMembership.user_id == User.id
+        ).filter(
+            User.deleted_at.is_(None)
         ).group_by(UserGroupMembership.group_id).all()
         count_map = {group_id: count for group_id, count in count_results}
 
@@ -485,9 +490,12 @@ async def update_group(
         group.updated_by = user_id
         group.updated_at = now
 
-        # Get member count
-        member_count = session.query(UserGroupMembership).filter(
-            UserGroupMembership.group_id == group_id
+        # Get member count (active users only)
+        member_count = session.query(UserGroupMembership).join(
+            User, UserGroupMembership.user_id == User.id
+        ).filter(
+            UserGroupMembership.group_id == group_id,
+            User.deleted_at.is_(None),
         ).count()
 
         # Audit log (before commit for atomicity)
@@ -1143,6 +1151,25 @@ async def copy_group_permissions(
                 'warning': warning,
             },
         )
+
+        # Post-mutation verification: re-check critical capabilities before committing
+        session.flush()
+        for cap in CRITICAL_CAPABILITIES:
+            has_any = session.query(GroupPermission).join(
+                UserGroupMembership, GroupPermission.group_id == UserGroupMembership.group_id
+            ).join(
+                User, UserGroupMembership.user_id == User.id
+            ).filter(
+                GroupPermission.capability == cap,
+                GroupPermission.allowed == True,  # noqa: E712
+                User.deleted_at.is_(None),
+            ).first()
+            if not has_any:
+                session.rollback()
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Operation would leave no group (with active members) having '{cap}'. Aborted."
+                )
 
         session.commit()
 

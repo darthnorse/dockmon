@@ -126,7 +126,11 @@ COOKIE_SIGNER = URLSafeTimedSerializer(SECRET_KEY, salt="dockmon-session")
 MAX_SESSIONS_PER_USER = 10
 
 _session_timeout_cache: dict = {"value": 24, "expires_at": 0.0}
+_session_timeout_cache_lock = threading.Lock()
 _SESSION_TIMEOUT_CACHE_TTL = 60  # seconds
+
+# Absolute ceiling for signature max_age (used by delete/update that don't need expiry enforcement)
+_SIGNATURE_MAX_AGE_CEILING = 86400 * 400  # 400 days
 
 
 def get_session_timeout_hours() -> int:
@@ -137,8 +141,9 @@ def get_session_timeout_hours() -> int:
     Falls back to 24h default if DB read fails.
     """
     now = time.monotonic()
-    if now < _session_timeout_cache["expires_at"]:
-        return _session_timeout_cache["value"]
+    with _session_timeout_cache_lock:
+        if now < _session_timeout_cache["expires_at"]:
+            return _session_timeout_cache["value"]
 
     try:
         # Local import to avoid circular imports (cookie_sessions loads early in boot)
@@ -146,19 +151,22 @@ def get_session_timeout_hours() -> int:
         db = DatabaseManager()
         settings = db.get_settings()
         if settings and settings.session_timeout_hours is not None:
-            _session_timeout_cache["value"] = settings.session_timeout_hours
-            _session_timeout_cache["expires_at"] = now + _SESSION_TIMEOUT_CACHE_TTL
+            with _session_timeout_cache_lock:
+                _session_timeout_cache["value"] = settings.session_timeout_hours
+                _session_timeout_cache["expires_at"] = now + _SESSION_TIMEOUT_CACHE_TTL
             return settings.session_timeout_hours
     except Exception as e:
         logger.debug(f"Failed to read session_timeout_hours from DB, using fallback: {e}")
 
-    _session_timeout_cache["expires_at"] = now + _SESSION_TIMEOUT_CACHE_TTL
-    return _session_timeout_cache["value"]
+    with _session_timeout_cache_lock:
+        _session_timeout_cache["expires_at"] = now + _SESSION_TIMEOUT_CACHE_TTL
+        return _session_timeout_cache["value"]
 
 
 def invalidate_session_timeout_cache():
     """Force re-read of session_timeout_hours from DB on next access."""
-    _session_timeout_cache["expires_at"] = 0.0
+    with _session_timeout_cache_lock:
+        _session_timeout_cache["expires_at"] = 0.0
 
 
 def get_session_cookie_max_age() -> int:
@@ -313,10 +321,6 @@ class CookieSessionManager:
         never_expire = timeout_hours == 0
         dynamic_timeout = timedelta(hours=timeout_hours) if not never_expire else None
 
-        # Absolute ceiling: even "never expire" uses a 400-day max_age on the signature
-        # to limit token validity if the SECRET_KEY is ever leaked
-        _SIGNATURE_MAX_AGE_CEILING = 86400 * 400  # 400 days
-
         try:
             if never_expire:
                 session_id = COOKIE_SIGNER.loads(signed_token, max_age=_SIGNATURE_MAX_AGE_CEILING)
@@ -380,7 +384,7 @@ class CookieSessionManager:
             True if session was deleted, False if not found
         """
         try:
-            session_id = COOKIE_SIGNER.loads(signed_token)
+            session_id = COOKIE_SIGNER.loads(signed_token, max_age=_SIGNATURE_MAX_AGE_CEILING)
         except (SignatureExpired, BadSignature):
             return False
 
@@ -396,7 +400,7 @@ class CookieSessionManager:
     def update_session_username(self, signed_token: str, new_username: str) -> bool:
         """Update the username in an active session (e.g., after profile change)."""
         try:
-            session_id = COOKIE_SIGNER.loads(signed_token)
+            session_id = COOKIE_SIGNER.loads(signed_token, max_age=_SIGNATURE_MAX_AGE_CEILING)
         except (SignatureExpired, BadSignature):
             return False
 

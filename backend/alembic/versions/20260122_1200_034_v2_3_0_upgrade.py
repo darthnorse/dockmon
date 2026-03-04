@@ -11,14 +11,17 @@ CHANGES IN v2.3.0:
 - OIDC authentication with group mapping
 - Audit columns and comprehensive audit logging
 - Custom groups for organization
+- Account lockout (failed_login_attempts, locked_until)
 
 SCHEMA CHANGES:
 
 1. User table additions:
    - email (unique, for password reset and OIDC matching)
    - auth_provider ('local' or 'oidc')
-   - oidc_subject (OIDC subject identifier)
+   - oidc_subject (OIDC subject identifier, unique index)
    - deleted_at/deleted_by (soft delete support)
+   - failed_login_attempts (account lockout counter)
+   - locked_until (account lockout expiry)
 
 2. Audit columns added to 8 tables:
    - docker_hosts, notification_channels, tags, registry_credentials
@@ -189,17 +192,70 @@ def upgrade():
             if not column_exists('users', 'deleted_by'):
                 batch_op.add_column(sa.Column('deleted_by', sa.Integer(), nullable=True))
 
-        # Set placeholder email for existing users
+        # Set placeholder email for existing active users only
+        # (soft-deleted users intentionally have NULL email)
         if column_exists('users', 'email'):
+            if column_exists('users', 'deleted_at'):
+                bind.execute(sa.text("""
+                    UPDATE users
+                    SET email = username || '@localhost'
+                    WHERE email IS NULL AND deleted_at IS NULL
+                """))
+            else:
+                bind.execute(sa.text("""
+                    UPDATE users
+                    SET email = username || '@localhost'
+                    WHERE email IS NULL
+                """))
+
+        # Account lockout columns (security hardening)
+        with op.batch_alter_table('users', schema=None) as batch_op:
+            if not column_exists('users', 'failed_login_attempts'):
+                batch_op.add_column(sa.Column(
+                    'failed_login_attempts', sa.Integer(),
+                    nullable=False, server_default='0'
+                ))
+
+            if not column_exists('users', 'locked_until'):
+                batch_op.add_column(sa.Column('locked_until', sa.DateTime(), nullable=True))
+
+        # Create unique index on oidc_subject (outside batch for safety)
+        if column_exists('users', 'oidc_subject') and not index_exists('users', 'uq_users_oidc_subject'):
+            op.create_index('uq_users_oidc_subject', 'users', ['oidc_subject'], unique=True)
+
+        # Drop old full unique constraints on username/email so soft-deleted users
+        # don't block reuse. Replace with partial unique indexes (active users only).
+        # batch_alter_table rebuilds the table without the old UNIQUE constraints.
+        with op.batch_alter_table('users', schema=None) as batch_op:
+            # Recreate username column without UNIQUE constraint
+            # (batch mode handles this by rebuilding the table)
+            try:
+                batch_op.drop_constraint('uq_users_username', type_='unique')
+            except Exception:
+                pass  # Constraint may not exist by that name
+
+        # Mangle any already-soft-deleted users so they don't collide
+        if column_exists('users', 'deleted_at'):
             bind.execute(sa.text("""
                 UPDATE users
-                SET email = username || '@localhost'
-                WHERE email IS NULL
+                SET username = '__deleted_' || CAST(id AS TEXT) || '_' || username,
+                    email = NULL
+                WHERE deleted_at IS NOT NULL
+                  AND username NOT LIKE '__deleted_%'
             """))
 
-        # Create index on oidc_subject (outside batch for safety)
-        if column_exists('users', 'oidc_subject') and not index_exists('users', 'ix_users_oidc_subject'):
-            op.create_index('ix_users_oidc_subject', 'users', ['oidc_subject'])
+        # Partial unique indexes for soft-delete safety:
+        # Allow reuse of username/email after soft-delete, but enforce uniqueness among active users.
+        # SQLite supports partial indexes via CREATE INDEX ... WHERE.
+        if column_exists('users', 'deleted_at'):
+            if not index_exists('users', 'uq_users_username_active'):
+                bind.execute(sa.text(
+                    "CREATE UNIQUE INDEX uq_users_username_active ON users(username) WHERE deleted_at IS NULL"
+                ))
+            if not index_exists('users', 'uq_users_email_active'):
+                bind.execute(sa.text(
+                    "CREATE UNIQUE INDEX uq_users_email_active ON users(email) WHERE deleted_at IS NULL"
+                ))
 
     # =========================================================================
     # 2. AUDIT COLUMNS - Add created_by/updated_by to 8 tables
@@ -521,6 +577,18 @@ def upgrade():
                     VALUES (:user_id, :group_id, :now)
                 """), {'user_id': first_user, 'group_id': admin_group_id, 'now': now})
 
+    # =========================================================================
+    # 12. FIX OIDC PASSWORD SENTINEL
+    # =========================================================================
+    # OIDC users should never have an empty password_hash (could be confused
+    # with a valid empty string). Use a sentinel that no hash algorithm produces.
+    if table_exists('users') and column_exists('users', 'auth_provider'):
+        bind.execute(sa.text("""
+            UPDATE users
+            SET password_hash = '!OIDC_NO_PASSWORD'
+            WHERE auth_provider = 'oidc' AND (password_hash = '' OR password_hash IS NULL)
+        """))
+
 
 def downgrade():
     """Revert v2.3.0 schema changes"""
@@ -619,12 +687,22 @@ def downgrade():
     # 8. REMOVE USER COLUMNS (use batch mode for SQLite)
     # =========================================================================
     if table_exists('users'):
-        # Drop index first
+        # Drop indexes first
+        if index_exists('users', 'uq_users_username_active'):
+            op.drop_index('uq_users_username_active', 'users')
+        if index_exists('users', 'uq_users_email_active'):
+            op.drop_index('uq_users_email_active', 'users')
+        if index_exists('users', 'uq_users_oidc_subject'):
+            op.drop_index('uq_users_oidc_subject', 'users')
         if index_exists('users', 'ix_users_oidc_subject'):
             op.drop_index('ix_users_oidc_subject', 'users')
 
         with op.batch_alter_table('users', schema=None) as batch_op:
-            user_columns = ['email', 'auth_provider', 'oidc_subject', 'deleted_at', 'deleted_by']
+            user_columns = [
+                'email', 'auth_provider', 'oidc_subject',
+                'deleted_at', 'deleted_by',
+                'failed_login_attempts', 'locked_until',
+            ]
             for col_name in user_columns:
                 if column_exists('users', col_name):
                     batch_op.drop_column(col_name)

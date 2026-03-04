@@ -49,7 +49,7 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    username = Column(String, nullable=False, unique=True)
+    username = Column(String, nullable=False)  # Uniqueness enforced by partial index (active users only)
     password_hash = Column(String, nullable=False)
     display_name = Column(String, nullable=True)  # Optional friendly display name
     role = Column(Text, nullable=False, default="admin")  # "admin", "user", "readonly"
@@ -67,7 +67,7 @@ class User(Base):
     last_login = Column(DateTime, nullable=True)
 
     # v2.3.0 Multi-User Support
-    email = Column(Text, nullable=True, unique=True)  # Required for password reset and OIDC matching
+    email = Column(Text, nullable=True)  # Uniqueness enforced by partial index (active users only)
     auth_provider = Column(Text, nullable=False, default='local')  # 'local' or 'oidc'
     oidc_subject = Column(Text, nullable=True, unique=True, index=True)  # OIDC subject identifier for user matching
 
@@ -1688,28 +1688,6 @@ class DatabaseManager:
                         session.commit()
                         logger.info("Added sso_default column to oidc_config table")
 
-                # Migration: Add account lockout columns to users table (v2.5.0 security)
-                # Re-read column names in case they changed above
-                users_inspector = session.connection().engine.dialect.get_columns(session.connection(), 'users')
-                users_column_names = [col.get('name', '') for col in users_inspector if 'name' in col]
-
-                if 'failed_login_attempts' not in users_column_names:
-                    session.execute(text("ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER DEFAULT 0 NOT NULL"))
-                    session.commit()
-                    logger.info("Added failed_login_attempts column to users table")
-
-                if 'locked_until' not in users_column_names:
-                    session.execute(text("ALTER TABLE users ADD COLUMN locked_until DATETIME"))
-                    session.commit()
-                    logger.info("Added locked_until column to users table")
-
-                # Migration: Add unique constraint on oidc_subject (v2.5.0 security)
-                try:
-                    session.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_oidc_subject ON users(oidc_subject)"))
-                    session.commit()
-                    logger.info("Added unique index on oidc_subject column")
-                except Exception:
-                    pass  # Index may already exist
 
         except Exception as e:
             logger.info(f"Migration warning: {e}")

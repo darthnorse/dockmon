@@ -19,6 +19,7 @@ SECURITY:
 - Database storage for pending auth requests (multi-instance safe)
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -249,6 +250,7 @@ def _get_groups_for_oidc_user(oidc_groups: list, session) -> list[int]:
 
 
 _jwks_cache: dict[str, dict] = {}
+_jwks_cache_lock = asyncio.Lock()
 _JWKS_CACHE_TTL_SECONDS = 3600  # 1 hour
 
 
@@ -256,6 +258,7 @@ async def _fetch_jwks(jwks_uri: str) -> dict:
     """Fetch and cache the provider's JWKS (JSON Web Key Set).
 
     Falls back to stale cache on fetch failure to maintain availability.
+    Thread-safe via asyncio.Lock to prevent concurrent double-fetches.
     """
     now = time.monotonic()
     cached = _jwks_cache.get(jwks_uri)
@@ -263,20 +266,26 @@ async def _fetch_jwks(jwks_uri: str) -> dict:
     if cached and (now - cached["fetched_at"]) < _JWKS_CACHE_TTL_SECONDS:
         return cached["jwks"]
 
-    try:
-        async with httpx.AsyncClient(timeout=OIDC_HTTP_TIMEOUT) as client:
-            response = await client.get(jwks_uri)
-            response.raise_for_status()
-            jwks = response.json()
-    except Exception as e:
-        if cached:
-            logger.warning(f"JWKS fetch failed ({e}), using stale cache for {jwks_uri}")
+    async with _jwks_cache_lock:
+        # Re-check after acquiring lock (another coroutine may have fetched)
+        cached = _jwks_cache.get(jwks_uri)
+        if cached and (now - cached["fetched_at"]) < _JWKS_CACHE_TTL_SECONDS:
             return cached["jwks"]
-        raise
 
-    _jwks_cache[jwks_uri] = {"jwks": jwks, "fetched_at": now}
-    logger.debug(f"JWKS fetched and cached from {jwks_uri} ({len(jwks.get('keys', []))} keys)")
-    return jwks
+        try:
+            async with httpx.AsyncClient(timeout=OIDC_HTTP_TIMEOUT) as client:
+                response = await client.get(jwks_uri)
+                response.raise_for_status()
+                jwks = response.json()
+        except Exception as e:
+            if cached:
+                logger.warning(f"JWKS fetch failed ({e}), using stale cache for {jwks_uri}")
+                return cached["jwks"]
+            raise
+
+        _jwks_cache[jwks_uri] = {"jwks": jwks, "fetched_at": now}
+        logger.debug(f"JWKS fetched and cached from {jwks_uri} ({len(jwks.get('keys', []))} keys)")
+        return jwks
 
 
 ALLOWED_JWT_ALGORITHMS = ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"]
@@ -750,6 +759,7 @@ async def oidc_callback(
                     )
 
                 session.commit()
+                session.refresh(user)
 
                 # Invalidate user's group cache after sync
                 invalidate_user_groups_cache(user.id)
@@ -828,7 +838,7 @@ async def oidc_callback(
                 # Auto-provision new user (no role field - groups provide permissions)
                 user = User(
                     username=username,
-                    password_hash='',  # OIDC users don't have passwords
+                    password_hash='!OIDC_NO_PASSWORD',  # Sentinel: never matches any hash algorithm
                     display_name=name,
                     email=email,
                     role='user',  # Legacy field - kept for compatibility but groups determine permissions
@@ -852,6 +862,12 @@ async def oidc_callback(
                         # May have been an email conflict instead of oidc_subject conflict
                         logger.error("OIDC user creation race: IntegrityError but user not found by oidc_subject")
                         return RedirectResponse(url=f"{base}/login?error=oidc_error&message=Authentication+failed")
+
+                    # Check if the existing user is deactivated
+                    if user.is_deleted:
+                        logger.warning(f"OIDC login blocked (race path): user '{user.username}' is deactivated")
+                        return RedirectResponse(url=f"{base}/login?error=oidc_error&message=Account+deactivated")
+
                     logger.info(f"OIDC user creation race resolved: found existing user '{user.username}'")
                     # Perform group sync on the existing user (same logic as existing-user path)
                     race_group_ids = set(_get_groups_for_oidc_user(oidc_groups, session))

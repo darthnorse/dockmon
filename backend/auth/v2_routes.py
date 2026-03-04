@@ -201,16 +201,32 @@ async def login_v2(
     Returns:
         User data and session cookie
     """
-    # Get user from database
+    # Get user from database (active users only — soft-deleted have mangled usernames)
     with db.get_session() as session:
-        user = session.query(User).filter(User.username == credentials.username).first()
+        user = session.query(User).filter(
+            User.username == credentials.username,
+            User.deleted_at.is_(None),
+        ).first()
 
         if not user:
             _verify_dummy(credentials.password)
             safe_username = _sanitize_for_log(credentials.username)
-            logger.warning(f"Login failed: user '{safe_username}' not found")
+
+            # Check if this is a deactivated user (mangled username: __deleted_{id}_{original})
+            deactivated = session.query(User).filter(
+                User.username.like(f"%_{credentials.username}"),
+                User.deleted_at.isnot(None),
+            ).first()
+
+            if deactivated:
+                reason = "user_deactivated"
+                logger.warning(f"Login failed: user '{safe_username}' is deactivated")
+            else:
+                reason = "user_not_found"
+                logger.warning(f"Login failed: user '{safe_username}' not found")
+
             try:
-                log_login_failure(session, credentials.username, request, "user_not_found")
+                log_login_failure(session, credentials.username, request, reason)
                 session.commit()
             except Exception as audit_err:
                 logger.warning(f"Failed to log audit entry: {audit_err}")
@@ -241,24 +257,6 @@ async def login_v2(
             logger.warning(f"Login failed: account '{safe_username}' is locked")
             try:
                 log_login_failure(session, credentials.username, request, "account_locked")
-                session.commit()
-            except Exception as audit_err:
-                logger.warning(f"Failed to log audit entry: {audit_err}")
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid username or password"
-            )
-
-        # Check for soft-deleted user (constant-time: still verify against real hash)
-        if user.is_deleted:
-            try:
-                ph.verify(user.password_hash, credentials.password)
-            except (VerifyMismatchError, InvalidHashError):
-                pass
-            safe_username = _sanitize_for_log(credentials.username)
-            logger.warning(f"Login failed: user '{safe_username}' is deactivated")
-            try:
-                log_login_failure(session, credentials.username, request, "user_deactivated")
                 session.commit()
             except Exception as audit_err:
                 logger.warning(f"Failed to log audit entry: {audit_err}")
@@ -597,7 +595,7 @@ async def change_password_v2(
 
     # Single session: guard checks + verify + change (prevents TOCTOU race)
     with db.get_session() as session:
-        user = session.query(User).filter(User.username == username).first()
+        user = session.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(status_code=401, detail="Current password is incorrect")
         if user.auth_provider == 'oidc':
@@ -648,77 +646,70 @@ async def update_profile_v2(
     profile_data: UpdateProfileRequest,
     request: Request,
     session_id: str = Cookie(None),
-    current_user: dict = Depends(get_current_user_or_api_key)
+    current_user: dict = Depends(get_current_user_dependency)
 ) -> UpdateProfileResponse:
     """
     Update user profile (display name, username).
 
     SECURITY:
-    - Requires valid session cookie
+    - Requires valid session cookie (API key auth not supported)
     - Username must be unique
     - Input validation via Pydantic
+    - Atomic: all changes in single DB transaction
     """
     user_id = current_user["user_id"]
     username = current_user["username"]
-    # SECURITY FIX: Use validated Pydantic model fields instead of dict.get()
     new_display_name = profile_data.display_name
     new_username = profile_data.username
 
-    try:
-        changes = {}
+    changes = {}
+
+    with db.get_session() as session:
+        user = session.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
 
         # Update display name if provided
         if new_display_name is not None:
-            db.update_display_name(username, new_display_name)
+            user.display_name = new_display_name
             changes['display_name'] = new_display_name
 
         # Update username if provided and different
         if new_username and new_username != username:
-            from sqlalchemy.exc import IntegrityError as SAIntegrityError
-            try:
-                if not db.change_username(username, new_username):
-                    raise HTTPException(
-                        status_code=500,
-                        detail="Failed to update username"
-                    )
-            except SAIntegrityError:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Username already taken"
-                )
+            # Check uniqueness among active users
+            conflict = session.query(User).filter(
+                User.username == new_username,
+                User.id != user_id,
+                User.deleted_at.is_(None),
+            ).first()
+            if conflict:
+                raise HTTPException(status_code=400, detail="Username already taken")
+
+            user.username = new_username
             changes['username'] = {'old': username, 'new': new_username}
 
-            # Update session with new username
-            if session_id:
+        if changes:
+            user.updated_at = datetime.now(timezone.utc)
+
+            # Audit log (before commit for atomicity)
+            log_audit(
+                session, user_id, username,
+                AuditAction.UPDATE, AuditEntityType.USER,
+                entity_id=str(user_id), entity_name=username,
+                details={'changes': changes},
+                **get_client_info(request)
+            )
+
+            session.commit()
+
+            # Update session username after commit
+            if 'username' in changes and session_id:
                 cookie_session_manager.update_session_username(session_id, new_username)
 
-        logger.info(f"Profile updated for user: {username}")
+    logger.info(f"Profile updated for user: {username}")
 
-        # Audit: Log profile update
-        if changes:
-            with db.get_session() as session:
-                try:
-                    log_audit(
-                        session, user_id, username,
-                        AuditAction.UPDATE, AuditEntityType.USER,
-                        entity_id=str(user_id), entity_name=username,
-                        details={'changes': changes},
-                        **get_client_info(request)
-                    )
-                    session.commit()
-                except Exception as audit_err:
-                    logger.warning(f"Failed to log audit entry: {audit_err}")
-
-        return UpdateProfileResponse(
-            success=True,
-            message="Profile updated successfully",
-            changes=changes if changes else None
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to update profile: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to update profile"
-        )
+    return UpdateProfileResponse(
+        success=True,
+        message="Profile updated successfully",
+        changes=changes if changes else None
+    )

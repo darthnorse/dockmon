@@ -77,7 +77,8 @@ export function useCreateGroup() {
       toast.success(`Group "${group.name}" created successfully`)
     },
     onError: (error: Error) => {
-      toast.error(error.message || 'Failed to create group')
+      console.error('Failed to create group:', error)
+      toast.error('Failed to create group. Please try again.')
     },
   })
 }
@@ -96,7 +97,8 @@ export function useUpdateGroup() {
       toast.success(`Group "${group.name}" updated successfully`)
     },
     onError: (error: Error) => {
-      toast.error(error.message || 'Failed to update group')
+      console.error('Failed to update group:', error)
+      toast.error('Failed to update group. Please try again.')
     },
   })
 }
@@ -114,7 +116,8 @@ export function useDeleteGroup() {
       toast.success(data.message || 'Group deleted successfully')
     },
     onError: (error: Error) => {
-      toast.error(error.message || 'Failed to delete group')
+      console.error('Failed to delete group:', error)
+      toast.error('Failed to delete group. Please try again.')
     },
   })
 }
@@ -133,7 +136,8 @@ export function useAddGroupMember() {
       toast.success(data.message || 'Member added successfully')
     },
     onError: (error: Error) => {
-      toast.error(error.message || 'Failed to add member')
+      console.error('Failed to add member:', error)
+      toast.error('Failed to add member. Please try again.')
     },
   })
 }
@@ -152,7 +156,8 @@ export function useRemoveGroupMember() {
       toast.success(data.message || 'Member removed successfully')
     },
     onError: (error: Error) => {
-      toast.error(error.message || 'Failed to remove member')
+      console.error('Failed to remove member:', error)
+      toast.error('Failed to remove member. Please try again.')
     },
   })
 }
@@ -208,7 +213,8 @@ export function useUpdateGroupPermissions() {
       toast.success(data.message || 'Permissions updated successfully')
     },
     onError: (error: Error) => {
-      toast.error(error.message || 'Failed to update permissions')
+      console.error('Failed to update permissions:', error)
+      toast.error('Failed to update permissions. Please try again.')
     },
   })
 }
@@ -232,7 +238,8 @@ export function useCopyGroupPermissions() {
       }
     },
     onError: (error: Error) => {
-      toast.error(error.message || 'Failed to copy permissions')
+      console.error('Failed to copy permissions:', error)
+      toast.error('Failed to copy permissions. Please try again.')
     },
   })
 }

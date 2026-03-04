@@ -91,6 +91,7 @@ import { useContainerUpdateStatus, useUpdatesSummary, useAllAutoUpdateConfigs, u
 import { useContainerActions } from './hooks/useContainerActions'
 import { useContainerHealthCheck } from './hooks/useContainerHealthCheck'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
+import { sanitizeHref } from '@/lib/utils/urlSanitize'
 import { formatBytes } from '@/lib/utils/formatting'
 import { useContainerModal } from '@/providers'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
@@ -1431,10 +1432,10 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                 }}
               />
 
-              {/* WebUI link - shows if web_ui_url is defined */}
-              {container.web_ui_url && (
+              {/* WebUI link - shows if web_ui_url is defined and safe */}
+              {container.web_ui_url && sanitizeHref(container.web_ui_url) && (
                 <a
-                  href={container.web_ui_url}
+                  href={sanitizeHref(container.web_ui_url)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center justify-center h-8 w-8 rounded hover:bg-surface-2 text-muted-foreground hover:text-primary transition-colors"

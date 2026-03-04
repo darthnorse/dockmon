@@ -23,7 +23,7 @@ from auth.password import ph
 
 from auth.cookie_sessions import cookie_session_manager, get_session_cookie_max_age
 from utils.client_ip import get_client_ip
-from security.rate_limiting import rate_limit_auth
+from security.rate_limiting import rate_limit_auth, get_rate_limit_dependency
 from audit import log_login, log_logout, log_login_failure, AuditAction
 from audit.audit_logger import get_client_info, log_audit, AuditEntityType
 
@@ -115,7 +115,7 @@ class LoginResponse(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     """Change password request with validation"""
-    current_password: str
+    current_password: str = Field(..., min_length=1, max_length=128)
     new_password: str = Field(..., min_length=8, max_length=128)
 
 
@@ -347,7 +347,8 @@ async def login_v2(
         )
 
 
-@router.post("/logout", response_model=LogoutResponse)
+@router.post("/logout", response_model=LogoutResponse,
+             dependencies=[Depends(get_rate_limit_dependency("auth"))])
 async def logout_v2(
     response: Response,
     request: Request,
@@ -407,6 +408,9 @@ async def logout_v2(
                             resp = await client.get(discovery_url)
                             if resp.status_code == 200:
                                 end_session = resp.json().get('end_session_endpoint')
+                                if end_session and not end_session.startswith('https://'):
+                                    logger.warning(f"Ignoring non-HTTPS end_session_endpoint: {end_session}")
+                                    end_session = None
                                 if end_session:
                                     if AppConfig.REVERSE_PROXY_MODE:
                                         scheme = request.headers.get('X-Forwarded-Proto', request.url.scheme)

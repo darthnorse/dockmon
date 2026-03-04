@@ -37,6 +37,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { toast } from 'sonner'
 
 export function GroupPermissionsSettings() {
   // Queries
@@ -157,6 +158,7 @@ export function GroupPermissionsSettings() {
   // Save all changes
   const handleSaveAll = async () => {
     if (!permissionsData?.permissions) return
+    const errors: string[] = []
 
     for (const group of groups) {
       const original = permissionsData.permissions[group.id] || {}
@@ -170,13 +172,20 @@ export function GroupPermissionsSettings() {
       }
 
       if (changes.length > 0) {
-        await updatePermissions.mutateAsync({
-          groupId: group.id,
-          request: { permissions: changes },
-        })
+        try {
+          await updatePermissions.mutateAsync({
+            groupId: group.id,
+            request: { permissions: changes },
+          })
+        } catch {
+          errors.push(group.name)
+        }
       }
     }
     await refetch()
+    if (errors.length > 0) {
+      toast.error(`Failed to save permissions for: ${errors.join(', ')}`)
+    }
   }
 
   // Open copy dialog
@@ -204,7 +213,7 @@ export function GroupPermissionsSettings() {
     }
   }
 
-  // Check if group has any changes
+  // Check if group has any changes (both directions to catch removals)
   const groupHasChanges = (groupId: number) => {
     if (!permissionsData?.permissions) return false
     const original = permissionsData.permissions[groupId] || {}
@@ -212,6 +221,9 @@ export function GroupPermissionsSettings() {
 
     for (const [cap, allowed] of Object.entries(edited)) {
       if (original[cap] !== allowed) return true
+    }
+    for (const [cap, allowed] of Object.entries(original)) {
+      if (edited[cap] !== allowed) return true
     }
     return false
   }

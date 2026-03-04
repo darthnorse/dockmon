@@ -86,7 +86,14 @@ export function ChangePasswordModal({
         if (err.status === 401) {
           setError('Current password is incorrect')
         } else if (err.status === 400) {
-          setError(err.message || 'Invalid password')
+          const msg = (err.message || '').toLowerCase()
+          if (msg.includes('same as') || msg.includes('reuse')) {
+            setError('New password cannot be the same as current password')
+          } else if (msg.includes('too short') || msg.includes('min')) {
+            setError('New password does not meet minimum length requirements')
+          } else {
+            setError('Invalid password. Please check requirements and try again.')
+          }
         } else {
           setError('Failed to change password. Please try again.')
         }

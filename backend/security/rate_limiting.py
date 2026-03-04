@@ -8,6 +8,7 @@ import os
 import time
 from collections import defaultdict
 from datetime import datetime
+from threading import Lock
 from typing import Dict, Tuple
 
 from fastapi import Request, HTTPException, status, Depends
@@ -48,6 +49,7 @@ class RateLimiter:
     Provides protection against abuse and DoS attacks
     """
     def __init__(self):
+        self._lock = Lock()
         # Start with generous initial tokens to allow immediate bursts
         # This prevents legitimate users from getting rate limited on first use
         self.clients = defaultdict(lambda: {"tokens": 100, "last_update": time.time(), "violations": 0})
@@ -125,7 +127,7 @@ class RateLimiter:
         return self.limits["default"]
 
     def _cleanup_old_entries(self):
-        """Clean up old entries to prevent memory leaks"""
+        """Clean up old entries to prevent memory leaks. Must be called with self._lock held."""
         current_time = time.time()
         # Remove clients not seen for 1 hour
         cutoff_time = current_time - 3600
@@ -143,72 +145,74 @@ class RateLimiter:
 
     def is_allowed(self, client_ip: str, endpoint: str) -> Tuple[bool, str]:
         """Check if request is allowed and return (allowed, reason)"""
-        current_time = time.time()
+        with self._lock:
+            current_time = time.time()
 
-        # Cleanup old entries periodically (every 5 minutes)
-        if current_time - self._last_cleanup >= 300:
-            self._cleanup_old_entries()
-            self._last_cleanup = current_time
+            # Cleanup old entries periodically (every 5 minutes)
+            if current_time - self._last_cleanup >= 300:
+                self._cleanup_old_entries()
+                self._last_cleanup = current_time
 
-        # Check if client is banned
-        if client_ip in self.banned_clients:
-            if current_time < self.banned_clients[client_ip]:
-                return False, f"IP banned until {datetime.fromtimestamp(self.banned_clients[client_ip]).isoformat()}Z"
+            # Check if client is banned
+            if client_ip in self.banned_clients:
+                if current_time < self.banned_clients[client_ip]:
+                    return False, f"IP banned until {datetime.fromtimestamp(self.banned_clients[client_ip]).isoformat()}Z"
+                else:
+                    # Ban expired, remove from banned list
+                    del self.banned_clients[client_ip]
+
+            requests_per_minute, burst_limit, violation_threshold = self._get_limit(endpoint)
+            client_data = self.clients[client_ip]
+
+            # Token bucket algorithm with burst support
+            time_passed = current_time - client_data["last_update"]
+            tokens_to_add = (time_passed / 60.0) * requests_per_minute
+            # Allow bursting up to burst_limit tokens
+            client_data["tokens"] = min(burst_limit, client_data["tokens"] + tokens_to_add)
+            client_data["last_update"] = current_time
+
+            # Check if request is allowed
+            if client_data["tokens"] >= 1.0:
+                client_data["tokens"] -= 1.0
+                return True, "OK"
             else:
-                # Ban expired, remove from banned list
-                del self.banned_clients[client_ip]
+                # Rate limit exceeded
+                client_data["violations"] += 1
 
-        requests_per_minute, burst_limit, violation_threshold = self._get_limit(endpoint)
-        client_data = self.clients[client_ip]
+                # Check if violations exceed threshold - ban the client
+                if client_data["violations"] >= violation_threshold:
+                    ban_duration = 60  # 60 seconds ban (reduced from 15 minutes for better UX)
+                    self.banned_clients[client_ip] = current_time + ban_duration
+                    logger.warning(f"IP {client_ip} banned for 60 seconds due to {violation_threshold} rate limit violations")
 
-        # Token bucket algorithm with burst support
-        time_passed = current_time - client_data["last_update"]
-        tokens_to_add = (time_passed / 60.0) * requests_per_minute
-        # Allow bursting up to burst_limit tokens
-        client_data["tokens"] = min(burst_limit, client_data["tokens"] + tokens_to_add)
-        client_data["last_update"] = current_time
+                    # Security audit log
+                    security_audit.log_rate_limit_violation(
+                        client_ip=client_ip,
+                        endpoint=endpoint,
+                        violations=client_data["violations"],
+                        banned=True
+                    )
 
-        # Check if request is allowed
-        if client_data["tokens"] >= 1.0:
-            client_data["tokens"] -= 1.0
-            return True, "OK"
-        else:
-            # Rate limit exceeded
-            client_data["violations"] += 1
+                    return False, f"IP banned for repeated violations"
 
-            # Check if violations exceed threshold - ban the client
-            if client_data["violations"] >= violation_threshold:
-                ban_duration = 60  # 60 seconds ban (reduced from 15 minutes for better UX)
-                self.banned_clients[client_ip] = current_time + ban_duration
-                logger.warning(f"IP {client_ip} banned for 60 seconds due to {violation_threshold} rate limit violations")
-
-                # Security audit log
+                # Log rate limit violation
                 security_audit.log_rate_limit_violation(
                     client_ip=client_ip,
                     endpoint=endpoint,
                     violations=client_data["violations"],
-                    banned=True
+                    banned=False
                 )
 
-                return False, f"IP banned for repeated violations"
-
-            # Log rate limit violation
-            security_audit.log_rate_limit_violation(
-                client_ip=client_ip,
-                endpoint=endpoint,
-                violations=client_data["violations"],
-                banned=False
-            )
-
-            return False, f"Rate limit exceeded. Try again in {int(60 - time_passed)} seconds"
+                return False, f"Rate limit exceeded. Try again in {int(60 - time_passed)} seconds"
 
     def get_stats(self) -> dict:
         """Get rate limiter statistics"""
-        return {
-            "active_clients": len(self.clients),
-            "banned_clients": len(self.banned_clients),
-            "total_violations": sum(data["violations"] for data in self.clients.values())
-        }
+        with self._lock:
+            return {
+                "active_clients": len(self.clients),
+                "banned_clients": len(self.banned_clients),
+                "total_violations": sum(data["violations"] for data in self.clients.values())
+            }
 
 
 # Global rate limiter instance

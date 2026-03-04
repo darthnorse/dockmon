@@ -63,3 +63,21 @@ def get_client_ip(request: Request) -> str:
     client_ip = request.client.host if request.client else "unknown"
     logger.debug(f"Using request.client.host: {client_ip}")
     return client_ip
+
+
+def get_client_ip_ws(websocket) -> str:
+    """
+    Get client IP from WebSocket, respecting reverse proxy headers.
+
+    WebSocket objects have .headers and .client like Request objects,
+    but are not FastAPI Request instances, so we need a separate function.
+    """
+    if AppConfig.REVERSE_PROXY_MODE:
+        forwarded = websocket.headers.get('x-forwarded-for')
+        if forwarded:
+            return forwarded.split(',')[0].strip()
+        real_ip = websocket.headers.get('x-real-ip')
+        if real_ip:
+            return real_ip.strip()
+
+    return websocket.client.host if websocket.client else "unknown"

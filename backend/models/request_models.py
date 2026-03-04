@@ -38,6 +38,16 @@ class DesiredStateRequest(BaseModel):
             raise ValueError(f'Invalid desired state. Must be one of: {valid_states}')
         return v
 
+    @field_validator('web_ui_url')
+    @classmethod
+    def validate_web_ui_url(cls, v: Optional[str]) -> Optional[str]:
+        """Reject non-HTTP(S) URLs to prevent stored XSS via javascript: URIs"""
+        if v is None or v == '':
+            return v
+        if not (v.startswith('http://') or v.startswith('https://')):
+            raise ValueError('web_ui_url must use http:// or https:// protocol')
+        return v
+
 
 class AlertRuleCreate(BaseModel):
     """Request model for creating alert rules"""

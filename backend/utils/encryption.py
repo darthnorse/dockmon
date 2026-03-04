@@ -53,12 +53,14 @@ def _get_or_create_key() -> bytes:
         # Ensure directory exists
         os.makedirs(os.path.dirname(KEY_PATH), exist_ok=True)
 
-        # Write key with restrictive permissions
-        with open(KEY_PATH, 'wb') as f:
-            f.write(key)
-
-        # Set file permissions to 600 (owner read/write only)
-        os.chmod(KEY_PATH, 0o600)
+        # Write key with restrictive permissions (set umask first to avoid race)
+        old_umask = os.umask(0o077)
+        try:
+            with open(KEY_PATH, 'wb') as f:
+                f.write(key)
+        finally:
+            os.umask(old_umask)
+        os.chmod(KEY_PATH, 0o600)  # Belt and suspenders
 
         logger.info(f"Generated new encryption key at {KEY_PATH}")
         return key

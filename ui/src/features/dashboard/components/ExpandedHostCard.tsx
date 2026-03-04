@@ -38,6 +38,7 @@ import { useContainerModal } from '@/providers'
 import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
 import { debug } from '@/lib/debug'
 import { formatBytes } from '@/lib/utils/formatting'
+import { isSafeUrl } from '@/lib/utils/urlSanitize'
 
 export interface ExpandedHostData {
   id: string
@@ -511,8 +512,8 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
                         >
                           View Logs
                         </DropdownMenuItem>
-                        {/* WebUI - only show if configured */}
-                        {container.web_ui_url && (
+                        {/* WebUI - only show if configured and safe */}
+                        {container.web_ui_url && isSafeUrl(container.web_ui_url) && (
                           <>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem

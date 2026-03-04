@@ -16,6 +16,7 @@ import { useState, useEffect } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { Container, ArrowRight, CheckCircle2, XCircle, Loader2, Clock, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { apiClient, ApiError } from '@/lib/api/client'
 
 interface TokenInfo {
   valid: boolean
@@ -45,6 +46,19 @@ interface ExecuteResult {
   error?: string
 }
 
+interface UpdateResponse {
+  status?: string
+  message?: string
+  detail?: string
+  previous_image?: string
+  new_image?: string
+}
+
+interface ConsumeResponse {
+  success: boolean
+  error?: string
+}
+
 type PageState = 'loading' | 'invalid' | 'ready' | 'executing' | 'success' | 'error'
 
 export function QuickActionPage() {
@@ -68,20 +82,16 @@ export function QuickActionPage() {
     validateToken()
   }, [token])
 
+  const redirectToLogin = () => {
+    const returnUrl = encodeURIComponent(window.location.pathname + window.location.search)
+    navigate(`/login?redirect=${returnUrl}`)
+  }
+
   const validateToken = async () => {
     try {
-      const response = await fetch(`/api/v2/action-tokens/${encodeURIComponent(token!)}/info`, {
-        credentials: 'include'  // Include session cookie
-      })
-
-      // If not authenticated, redirect to login with return URL
-      if (response.status === 401) {
-        const returnUrl = encodeURIComponent(window.location.pathname + window.location.search)
-        navigate(`/login?redirect=${returnUrl}`)
-        return
-      }
-
-      const data: TokenInfo = await response.json()
+      const data = await apiClient.get<TokenInfo>(
+        `/v2/action-tokens/${encodeURIComponent(token!)}/info`
+      )
 
       setTokenInfo(data)
 
@@ -91,7 +101,11 @@ export function QuickActionPage() {
         setState('invalid')
         setErrorMessage(getErrorMessage(data.reason))
       }
-    } catch (error) {
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        redirectToLogin()
+        return
+      }
       setState('invalid')
       setErrorMessage('Failed to validate token')
     }
@@ -104,20 +118,11 @@ export function QuickActionPage() {
 
     try {
       // Step 1: Consume the token (validates and marks as used)
-      const consumeResponse = await fetch(`/api/v2/action-tokens/${encodeURIComponent(token!)}/consume`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ confirmed: true }),
-      })
+      const consumeData = await apiClient.post<ConsumeResponse>(
+        `/v2/action-tokens/${encodeURIComponent(token!)}/consume`,
+        { confirmed: true }
+      )
 
-      if (consumeResponse.status === 401) {
-        const returnUrl = encodeURIComponent(window.location.pathname + window.location.search)
-        navigate(`/login?redirect=${returnUrl}`)
-        return
-      }
-
-      const consumeData = await consumeResponse.json()
       if (!consumeData.success) {
         setState('error')
         setErrorMessage(consumeData.error || 'Token validation failed')
@@ -132,38 +137,32 @@ export function QuickActionPage() {
         return
       }
 
-      const updateResponse = await fetch(
-        `/api/hosts/${encodeURIComponent(host_id)}/containers/${encodeURIComponent(container_id)}/execute-update?force=true`,
-        {
-          method: 'POST',
-          credentials: 'include',
-        }
+      const updateData = await apiClient.post<UpdateResponse>(
+        `/hosts/${encodeURIComponent(host_id)}/containers/${encodeURIComponent(container_id)}/execute-update`,
+        undefined,
+        { params: { force: true } }
       )
 
-      if (updateResponse.status === 401) {
-        const returnUrl = encodeURIComponent(window.location.pathname + window.location.search)
-        navigate(`/login?redirect=${returnUrl}`)
-        return
-      }
-
-      const updateData = await updateResponse.json()
-
       if (updateData.status === 'success') {
+        const result: ExecuteResult['result'] = {}
+        if (updateData.message) result.message = updateData.message
+        if (updateData.previous_image) result.previous_image = updateData.previous_image
+        if (updateData.new_image) result.new_image = updateData.new_image
         setExecuteResult({
           success: true,
           action_type: 'container_update',
-          result: {
-            message: updateData.message,
-            previous_image: updateData.previous_image,
-            new_image: updateData.new_image,
-          }
+          result,
         })
         setState('success')
       } else {
         setState('error')
         setErrorMessage(updateData.detail || updateData.message || 'Update failed')
       }
-    } catch (error) {
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        redirectToLogin()
+        return
+      }
       setState('error')
       setErrorMessage('Failed to execute action')
     }

@@ -639,6 +639,9 @@ async def oidc_callback(
         code_verifier = pending.code_verifier
         redirect_uri = pending.redirect_uri
         frontend_redirect = pending.frontend_redirect
+        # Re-validate redirect after DB retrieval to prevent open redirect
+        if not frontend_redirect or not frontend_redirect.startswith('/') or frontend_redirect.startswith('//'):
+            frontend_redirect = '/'
         session.delete(pending)
         session.commit()
         config = session.query(OIDCConfig).filter(OIDCConfig.id == 1).first()

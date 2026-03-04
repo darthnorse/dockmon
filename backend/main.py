@@ -85,6 +85,7 @@ from utils.async_docker import async_docker_call, async_client_ping, async_clien
 from utils.base_path import get_base_path
 from utils.response_filtering import filter_container_env, filter_container_inspect_env, filter_ws_container_message
 from utils.host_ips import deserialize_host_ips
+from utils.client_ip import get_client_ip_ws
 from updates.container_validator import ContainerValidator, ValidationResult
 from agent.manager import AgentManager
 from agent import handle_agent_websocket
@@ -5825,7 +5826,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
 
     # Validate session using v2 auth
     from auth.cookie_sessions import cookie_session_manager
-    client_ip = websocket.client.host if websocket.client else "unknown"
+    client_ip = get_client_ip_ws(websocket)
     session_data = cookie_session_manager.validate_session(session_id, client_ip)
 
     if not session_data:
@@ -6074,7 +6075,7 @@ async def websocket_shell_endpoint(
 
     # Validate session using v2 auth
     from auth.cookie_sessions import cookie_session_manager
-    client_ip = websocket.client.host if websocket.client else "unknown"
+    client_ip = get_client_ip_ws(websocket)
     session_data = cookie_session_manager.validate_session(session_id, client_ip)
 
     if not session_data:

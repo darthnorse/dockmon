@@ -31,6 +31,7 @@ import { Button } from '@/components/ui/button'
 import { useContainerTagEditor } from '@/hooks/useContainerTagEditor'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
 import { formatBytes } from '@/lib/utils/formatting'
+import { sanitizeHref } from '@/lib/utils/urlSanitize'
 
 interface ContainerInfoTabProps {
   container: Container
@@ -232,14 +233,20 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                 <div>
                   {webUiUrl ? (
                     <div className="flex items-center gap-2">
-                      <a
-                        href={webUiUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sm text-primary hover:underline truncate flex-1"
-                      >
-                        {webUiUrl}
-                      </a>
+                      {sanitizeHref(webUiUrl) ? (
+                        <a
+                          href={sanitizeHref(webUiUrl)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-sm text-primary hover:underline truncate flex-1"
+                        >
+                          {webUiUrl}
+                        </a>
+                      ) : (
+                        <span className="text-sm text-muted-foreground truncate flex-1">
+                          {webUiUrl}
+                        </span>
+                      )}
                       <button
                         onClick={() => setIsEditingWebUi(true)}
                         className="text-xs text-primary hover:text-primary/80"

@@ -66,7 +66,8 @@ export function useCreateUser() {
       toast.success(`User "${user.username}" created successfully`)
     },
     onError: (error: Error) => {
-      toast.error(error.message || 'Failed to create user')
+      console.error('Failed to create user:', error)
+      toast.error('Failed to create user. Please try again.')
     },
   })
 }
@@ -87,7 +88,8 @@ export function useUpdateUser() {
       toast.success(`User "${user.username}" updated successfully`)
     },
     onError: (error: Error) => {
-      toast.error(error.message || 'Failed to update user')
+      console.error('Failed to update user:', error)
+      toast.error('Failed to update user. Please try again.')
     },
   })
 }
@@ -109,7 +111,8 @@ export function useDeleteUser() {
       toast.success(response.message || 'User deleted successfully')
     },
     onError: (error: Error) => {
-      toast.error(error.message || 'Failed to delete user')
+      console.error('Failed to delete user:', error)
+      toast.error('Failed to delete user. Please try again.')
     },
   })
 }
@@ -143,7 +146,8 @@ export function useResetUserPassword() {
       }
     },
     onError: (error: Error) => {
-      toast.error(error.message || 'Failed to reset password')
+      console.error('Failed to reset password:', error)
+      toast.error('Failed to reset password. Please try again.')
     },
   })
 }

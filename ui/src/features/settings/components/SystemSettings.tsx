@@ -7,8 +7,22 @@ import { useState, useEffect } from 'react'
 import { useGlobalSettings, useUpdateGlobalSettings } from '@/hooks/useSettings'
 import { toast } from 'sonner'
 import { ToggleSwitch } from './ToggleSwitch'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { useAuth } from '@/features/auth/AuthContext'
+
+const SESSION_TIMEOUT_OPTIONS = [
+  { value: '24', label: '24 hours' },
+  { value: '168', label: '7 days' },
+  { value: '720', label: '30 days' },
+  { value: '2160', label: '3 months' },
+  { value: '4320', label: '6 months' },
+  { value: '8760', label: '12 months' },
+  { value: '0', label: 'Never' },
+]
 
 export function SystemSettings() {
+  const { hasCapability } = useAuth()
+  const canManage = hasCapability('settings.manage')
   const { data: settings } = useGlobalSettings()
   const updateSettings = useUpdateGlobalSettings()
 
@@ -143,7 +157,7 @@ export function SystemSettings() {
   }
 
   return (
-    <div className="space-y-6">
+    <fieldset disabled={!canManage} className="space-y-6 disabled:opacity-60">
       {/* External Access */}
       <div>
         <div className="mb-4">
@@ -171,6 +185,47 @@ export function SystemSettings() {
                   Environment default: {settings.external_url_from_env}
                 </span>
               )}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Security */}
+      <div>
+        <div className="mb-4">
+          <h3 className="text-lg font-semibold text-white">Security</h3>
+          <p className="text-xs text-gray-400 mt-1">Authentication and session settings</p>
+        </div>
+        <div className="space-y-4">
+          <div>
+            <label htmlFor="session-timeout" className="block text-sm font-medium text-gray-300 mb-2">
+              Session Timeout
+            </label>
+            <Select
+              value={String(settings?.session_timeout_hours ?? 24)}
+              onValueChange={async (v) => {
+                const value = Number(v)
+                try {
+                  await updateSettings.mutateAsync({ session_timeout_hours: value })
+                  toast.success('Session timeout updated')
+                } catch (error) {
+                  toast.error('Failed to update session timeout')
+                }
+              }}
+            >
+              <SelectTrigger id="session-timeout" className="w-full max-w-xs">
+                <SelectValue>
+                  {SESSION_TIMEOUT_OPTIONS.find(o => o.value === String(settings?.session_timeout_hours ?? 24))?.label ?? '24 hours'}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {SESSION_TIMEOUT_OPTIONS.map(o => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="mt-1 text-xs text-gray-400">
+              How long login sessions remain valid. Changes take effect immediately for all sessions.
             </p>
           </div>
         </div>
@@ -275,6 +330,7 @@ export function SystemSettings() {
             description="Automatically restart containers that stop unexpectedly (can be overridden per container)"
             checked={defaultAutoRestart}
             onChange={handleDefaultAutoRestartToggle}
+            disabled={!canManage}
           />
         </div>
       </div>
@@ -344,6 +400,6 @@ export function SystemSettings() {
           </div>
         </div>
       </div>
-    </div>
+    </fieldset>
   )
 }

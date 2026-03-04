@@ -1,14 +1,17 @@
 /**
  * Create API Key Modal
- * Form to create a new API key with scope and IP restrictions
+ * Form to create a new API key with group-based permissions
+ *
+ * Group-Based Permissions Refactor (v2.4.0)
  */
 
 import { useState, type FormEvent } from 'react'
-import { X } from 'lucide-react'
+import { X, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useCreateApiKey } from '@/hooks/useApiKeys'
-import { CreateApiKeyResponse, CreateApiKeyRequest, SCOPE_PRESETS, ApiKeyScope } from '@/types/api-keys'
+import { useGroups } from '@/hooks/useGroups'
+import type { CreateApiKeyResponse, CreateApiKeyRequest } from '@/types/api-keys'
 import { toast } from 'sonner'
 
 interface CreateApiKeyModalProps {
@@ -19,19 +22,25 @@ interface CreateApiKeyModalProps {
 
 export function CreateApiKeyModal({ isOpen, onClose, onSuccess }: CreateApiKeyModalProps) {
   const createKey = useCreateApiKey()
+  const { data: groupsData, isLoading: loadingGroups, isError: groupsError } = useGroups()
 
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const [selectedScopes, setSelectedScopes] = useState<Set<ApiKeyScope>>(new Set(['read']))
+  const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null)
   const [allowedIps, setAllowedIps] = useState('')
   const [expiresDays, setExpiresDays] = useState('')
 
+  const groups = groupsData?.groups || []
+
   if (!isOpen) return null
 
-  const handleScopePresetClick = (scopes: ApiKeyScope[]) => {
-    setSelectedScopes(new Set(scopes))
+  const resetForm = () => {
+    setName('')
+    setDescription('')
+    setSelectedGroupId(null)
+    setAllowedIps('')
+    setExpiresDays('')
   }
-
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -41,15 +50,15 @@ export function CreateApiKeyModal({ isOpen, onClose, onSuccess }: CreateApiKeyMo
       return
     }
 
-    if (selectedScopes.size === 0) {
-      toast.error('Select at least one scope')
+    if (!selectedGroupId) {
+      toast.error('Select a group for this API key')
       return
     }
 
     try {
       const request: CreateApiKeyRequest = {
         name: name.trim(),
-        scopes: Array.from(selectedScopes).sort().join(','),
+        group_id: selectedGroupId,
       }
 
       if (description.trim()) {
@@ -65,33 +74,21 @@ export function CreateApiKeyModal({ isOpen, onClose, onSuccess }: CreateApiKeyMo
       }
 
       const response = await createKey.mutateAsync(request)
-
-      // Reset form
-      setName('')
-      setDescription('')
-      setSelectedScopes(new Set(['read']))
-      setAllowedIps('')
-      setExpiresDays('')
-
-      // Show new key display modal
+      resetForm()
       onSuccess(response)
-    } catch (error) {
-      toast.error('Failed to create API key')
+    } catch {
+      // Error handled by mutation
     }
   }
 
   const handleClose = () => {
     if (createKey.isPending) return
-    setName('')
-    setDescription('')
-    setSelectedScopes(new Set(['read']))
-    setAllowedIps('')
-    setExpiresDays('')
+    resetForm()
     onClose()
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="bg-gray-900 rounded-lg max-w-md w-full mx-4 border border-gray-800 max-h-[90vh] overflow-y-auto">
         {/* Header */}
         <div className="sticky top-0 bg-gray-900 border-b border-gray-800 px-6 py-4 flex items-center justify-between">
@@ -130,34 +127,61 @@ export function CreateApiKeyModal({ isOpen, onClose, onSuccess }: CreateApiKeyMo
             />
           </div>
 
-          {/* Scopes */}
+          {/* Group Selection */}
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-3">Permissions *</label>
-
-            {/* Presets */}
-            <div className="grid grid-cols-2 gap-2 mb-4">
-              {SCOPE_PRESETS.map((preset) => (
-                <button
-                  key={preset.label}
-                  type="button"
-                  onClick={() => handleScopePresetClick(preset.scopes)}
-                  disabled={createKey.isPending}
-                  className={`p-3 rounded border text-left transition-colors text-sm ${
-                    Array.from(selectedScopes).sort().join(',') === preset.scopes.sort().join(',')
-                      ? 'border-blue-500 bg-blue-900/30 text-blue-200'
-                      : 'border-gray-700 bg-gray-800/50 text-gray-300 hover:border-gray-600'
-                  }`}
-                >
-                  <div className="font-medium">{preset.label}</div>
-                  <div className="text-xs text-gray-400 mt-1">{preset.useCase}</div>
-                </button>
-              ))}
-            </div>
-
-            <p className="text-xs text-gray-500 mt-2">
-              <strong>read:</strong> View containers and data • <strong>write:</strong> Manage containers •{' '}
-              <strong>admin:</strong> Full access
+            <label className="block text-sm font-medium text-gray-300 mb-3">
+              Permissions Group *
+            </label>
+            <p className="text-xs text-gray-500 mb-3">
+              This API key will have the same permissions as the selected group.
             </p>
+            {loadingGroups ? (
+              <div className="text-sm text-gray-500">Loading groups...</div>
+            ) : groupsError ? (
+              <div className="rounded-lg border border-red-900/30 bg-red-900/10 p-3 text-sm text-red-300">
+                Failed to load groups. Please try again.
+              </div>
+            ) : groups.length === 0 ? (
+              <div className="rounded-lg border border-yellow-900/30 bg-yellow-900/10 p-3 text-sm text-yellow-300">
+                No groups available. Create a group first in the Groups settings.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {groups.map((group) => (
+                  <label
+                    key={group.id}
+                    className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors ${
+                      selectedGroupId === group.id
+                        ? 'border-blue-500 bg-blue-900/30'
+                        : 'border-gray-700 bg-gray-800/50 hover:border-gray-600'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="group"
+                      checked={selectedGroupId === group.id}
+                      onChange={() => setSelectedGroupId(group.id)}
+                      disabled={createKey.isPending}
+                      className="mt-0.5 h-4 w-4 border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500"
+                    />
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <Users className="h-4 w-4 text-blue-400" />
+                        <span className="font-medium text-white">{group.name}</span>
+                        {group.is_system && (
+                          <span className="rounded bg-gray-700 px-1.5 py-0.5 text-xs text-gray-400">
+                            System
+                          </span>
+                        )}
+                      </div>
+                      {group.description && (
+                        <div className="mt-1 text-xs text-gray-400">{group.description}</div>
+                      )}
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* IP Allowlist */}

@@ -42,6 +42,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { useAuth } from '@/features/auth/AuthContext'
 
 /**
  * Category metadata for display
@@ -82,6 +83,8 @@ const CATEGORY_CONFIG: Record<
 }
 
 export function UpdatePoliciesSettings() {
+  const { hasCapability } = useAuth()
+  const canManage = hasCapability('policies.manage')
   const { data: policies, isLoading, isError } = useUpdatePolicies()
   const toggleCategory = useTogglePolicyCategory()
   const createPattern = useCreateCustomPattern()
@@ -204,7 +207,7 @@ export function UpdatePoliciesSettings() {
   }
 
   return (
-    <div className="space-y-6">
+    <fieldset disabled={!canManage} className="space-y-6">
       {/* Header */}
       <div>
         <h3 className="text-lg font-semibold text-text-primary">Update Validation Policies</h3>
@@ -407,6 +410,6 @@ export function UpdatePoliciesSettings() {
           You can still manually check for updates via the container's Updates tab.
         </p>
       </div>
-    </div>
+    </fieldset>
   )
 }

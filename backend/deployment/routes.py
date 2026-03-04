@@ -14,7 +14,7 @@ import uuid
 import yaml
 from datetime import datetime, timezone
 from typing import List, Literal, Optional, Dict
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy.orm import Session
@@ -23,7 +23,9 @@ from database import Deployment, DatabaseManager, DeploymentMetadata, DockerHost
 from deployment import DeploymentExecutor
 from deployment import stack_storage
 from deployment.compose_generator import generate_compose_from_deployment, generate_compose_from_containers
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_scope
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability
+from audit.audit_logger import AuditAction, log_stack_change
+from auth.utils import get_auditable_user_info
 from utils.keys import parse_composite_key
 from agent.command_executor import get_agent_command_executor, RetryPolicy
 from agent.manager import AgentManager
@@ -32,6 +34,7 @@ from deployment.stack_executor import _get_host_connection_info
 from deployment.agent_executor import get_agent_deployment_executor
 
 logger = logging.getLogger(__name__)
+
 
 # Create router
 router = APIRouter(prefix="/api/deployments", tags=["deployments"])
@@ -290,9 +293,10 @@ _DEPLOY_ACTION_MESSAGES = {
 
 # ==================== Deployment Endpoints ====================
 
-@router.post("/deploy", response_model=DeployStackResponse, dependencies=[Depends(require_scope("write"))])
+@router.post("/deploy", response_model=DeployStackResponse, dependencies=[Depends(require_capability("stacks.deploy"))])
 async def deploy_stack(
     request: DeployStackRequest,
+    http_request: Request,
     background_tasks: BackgroundTasks,
     current_user=Depends(get_current_user),
 ):
@@ -395,7 +399,7 @@ async def deploy_stack(
 
             except Exception as e:
                 await broadcast_event(make_event(
-                    'deployment_failed', 'failed', error=str(e),
+                    'deployment_failed', 'failed', error="Deployment failed. Check server logs for details.",
                 ))
                 logger.error(f"Agent deployment failed: {e}", exc_info=True)
 
@@ -470,13 +474,17 @@ async def deploy_stack(
 
             except Exception as e:
                 await broadcast_event(make_event(
-                    'deployment_failed', 'failed', error=str(e),
+                    'deployment_failed', 'failed', error="Deployment failed. Check server logs for details.",
                 ))
                 logger.error(f"Deployment failed: {e}", exc_info=True)
 
         background_tasks.add_task(execute_compose_deploy)
 
-    logger.info(f"User {current_user.get('username', current_user.get('api_key_name', 'unknown'))} started {request.action} of '{request.stack_name}' on '{host_name}'")
+    user_id, display_name = get_auditable_user_info(current_user)
+    with db.get_session() as session:
+        log_stack_change(session, user_id, display_name, AuditAction.DEPLOY, request.stack_name, http_request, details={'host_id': request.host_id, 'host_name': host_name, 'action': request.action})
+        session.commit()
+    logger.info(f"{display_name} started {request.action} of '{request.stack_name}' on '{host_name}'")
 
     return DeployStackResponse(
         deployment_id=deployment_id,
@@ -485,7 +493,7 @@ async def deploy_stack(
     )
 
 
-@router.post("", response_model=DeploymentResponse, status_code=201, dependencies=[Depends(require_scope("write"))])
+@router.post("", response_model=DeploymentResponse, status_code=201, dependencies=[Depends(require_capability("stacks.deploy"))])
 async def create_deployment(
     request: DeploymentCreate,
     background_tasks: BackgroundTasks,
@@ -514,12 +522,13 @@ async def create_deployment(
     The stack must exist before creating a deployment.
     """
     try:
+        user_id, display_name = get_auditable_user_info(current_user)
         deployment_id = await executor.create_deployment(
             host_id=request.host_id,
             stack_name=request.stack_name,
-            user_id=current_user['user_id'],
+            user_id=user_id,
             rollback_on_failure=request.rollback_on_failure,
-            created_by=current_user['username'],
+            created_by=display_name,
         )
 
         # Fetch created deployment
@@ -532,10 +541,10 @@ async def create_deployment(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to create deployment: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to create deployment")
 
 
-@router.post("/{deployment_id}/execute", response_model=DeploymentResponse, dependencies=[Depends(require_scope("write"))])
+@router.post("/{deployment_id}/execute", response_model=DeploymentResponse, dependencies=[Depends(require_capability("stacks.deploy"))])
 async def execute_deployment(
     deployment_id: str,
     background_tasks: BackgroundTasks,
@@ -564,11 +573,12 @@ async def execute_deployment(
         # Check deployment status before executing with row-level lock
         # This prevents race condition where multiple concurrent requests execute same deployment
         db = get_database_manager()
+        user_id, _ = get_auditable_user_info(current_user)
         with db.get_session() as session:
             # Use with_for_update() to acquire row lock (prevents concurrent modifications)
             deployment = session.query(Deployment).filter_by(
                 id=deployment_id,
-                user_id=current_user['user_id']
+                user_id=user_id
             ).with_for_update().first()
             if not deployment:
                 raise HTTPException(status_code=404, detail="Deployment not found")
@@ -616,10 +626,10 @@ async def execute_deployment(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to execute deployment: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to execute deployment")
 
 
-@router.get("", response_model=List[DeploymentResponse])
+@router.get("", response_model=List[DeploymentResponse], dependencies=[Depends(require_capability("stacks.view"))])
 async def list_deployments(
     host_id: Optional[str] = None,
     status: Optional[str] = None,
@@ -651,11 +661,12 @@ async def list_deployments(
             raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}")
 
         db = get_database_manager()
+        user_id, _ = get_auditable_user_info(current_user)
         with db.get_session() as session:
             query = session.query(Deployment)
 
             # CRITICAL: Filter by user_id to prevent users from seeing other users' deployments
-            query = query.filter_by(user_id=current_user['user_id'])
+            query = query.filter_by(user_id=user_id)
 
             if host_id:
                 query = query.filter_by(host_id=host_id)
@@ -669,14 +680,14 @@ async def list_deployments(
 
     except Exception as e:
         logger.error(f"Failed to list deployments: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to list deployments")
 
 
 # ==================== Import Stack Endpoints ====================
 # NOTE: Static routes MUST be defined BEFORE path parameter routes (/{deployment_id})
 # to ensure FastAPI matches them first.
 
-@router.get("/known-stacks", response_model=List[KnownStack])
+@router.get("/known-stacks", response_model=List[KnownStack], dependencies=[Depends(require_capability("stacks.view"))])
 async def get_known_stacks(
     current_user=Depends(get_current_user),
 ):
@@ -711,7 +722,7 @@ def _get_container_project(container) -> str | None:
     return labels.get('com.docker.compose.project')
 
 
-@router.get("/running-projects", response_model=List[RunningProject])
+@router.get("/running-projects", response_model=List[RunningProject], dependencies=[Depends(require_capability("stacks.view"))])
 async def list_running_projects(
     current_user=Depends(get_current_user),
 ):
@@ -763,7 +774,7 @@ async def list_running_projects(
     return result
 
 
-@router.post("/generate-from-containers", response_model=ComposePreviewResponse)
+@router.post("/generate-from-containers", response_model=ComposePreviewResponse, dependencies=[Depends(require_capability("stacks.edit"))])
 async def generate_compose_from_running_containers(
     request: GenerateFromContainersRequest,
     current_user=Depends(get_current_user),
@@ -802,7 +813,8 @@ async def generate_compose_from_running_containers(
     compose_dict = yaml.safe_load(compose_yaml)
     services = list(compose_dict.get("services", {}).keys())
 
-    logger.info(f"User '{current_user['username']}' generated compose for project '{request.project_name}' ({len(services)} services)")
+    _, display_name = get_auditable_user_info(current_user)
+    logger.info(f"{display_name} generated compose for project '{request.project_name}' ({len(services)} services)")
 
     return ComposePreviewResponse(
         compose_yaml=compose_yaml,
@@ -814,7 +826,7 @@ async def generate_compose_from_running_containers(
 # ==================== Deployment CRUD (Path Parameter Routes) ====================
 # NOTE: These routes with /{deployment_id} MUST come AFTER all static routes above.
 
-@router.get("/{deployment_id}", response_model=DeploymentResponse)
+@router.get("/{deployment_id}", response_model=DeploymentResponse, dependencies=[Depends(require_capability("stacks.view"))])
 async def get_deployment(
     deployment_id: str,
     current_user=Depends(get_current_user),
@@ -822,10 +834,11 @@ async def get_deployment(
     """Get deployment details by ID."""
     try:
         db = get_database_manager()
+        user_id, _ = get_auditable_user_info(current_user)
         with db.get_session() as session:
             deployment = session.query(Deployment).filter_by(
                 id=deployment_id,
-                user_id=current_user['user_id']
+                user_id=user_id
             ).first()
 
             if not deployment:
@@ -837,10 +850,10 @@ async def get_deployment(
         raise
     except Exception as e:
         logger.error(f"Failed to get deployment: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get deployment")
 
 
-@router.put("/{deployment_id}", response_model=DeploymentResponse, dependencies=[Depends(require_scope("write"))])
+@router.put("/{deployment_id}", response_model=DeploymentResponse, dependencies=[Depends(require_capability("stacks.deploy"))])
 async def update_deployment(
     deployment_id: str,
     request: DeploymentUpdate,
@@ -856,12 +869,13 @@ async def update_deployment(
     """
     try:
         db = get_database_manager()
+        user_id, _ = get_auditable_user_info(current_user)
 
         with db.get_session() as session:
             # Fetch deployment (with authorization check)
             deployment = session.query(Deployment).filter_by(
                 id=deployment_id,
-                user_id=current_user['user_id']
+                user_id=user_id
             ).first()
             if not deployment:
                 raise HTTPException(status_code=404, detail="Deployment not found")
@@ -909,10 +923,10 @@ async def update_deployment(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to update deployment: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to update deployment")
 
 
-@router.delete("/{deployment_id}", dependencies=[Depends(require_scope("write"))])
+@router.delete("/{deployment_id}", dependencies=[Depends(require_capability("stacks.deploy"))])
 async def delete_deployment(
     deployment_id: str,
     current_user=Depends(get_current_user),
@@ -926,10 +940,11 @@ async def delete_deployment(
     """
     try:
         db = get_database_manager()
+        user_id, _ = get_auditable_user_info(current_user)
         with db.get_session() as session:
             deployment = session.query(Deployment).filter_by(
                 id=deployment_id,
-                user_id=current_user['user_id']
+                user_id=user_id
             ).first()
 
             if not deployment:
@@ -955,10 +970,10 @@ async def delete_deployment(
         raise
     except Exception as e:
         logger.error(f"Failed to delete deployment: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to delete deployment")
 
 
-@router.get("/{deployment_id}/compose-preview", response_model=ComposePreviewResponse)
+@router.get("/{deployment_id}/compose-preview", response_model=ComposePreviewResponse, dependencies=[Depends(require_capability("stacks.view"))])
 async def preview_compose_from_containers(
     deployment_id: str,
     current_user=Depends(get_current_user),
@@ -970,11 +985,12 @@ async def preview_compose_from_containers(
     """
     db = get_database_manager()
     monitor = get_docker_monitor()
+    user_id, _ = get_auditable_user_info(current_user)
 
     with db.get_session() as session:
         deployment = session.query(Deployment).filter_by(
             id=deployment_id,
-            user_id=current_user['user_id']
+            user_id=user_id
         ).first()
 
         if not deployment:
@@ -998,7 +1014,7 @@ async def preview_compose_from_containers(
         )
 
 
-@router.post("/import", response_model=ImportDeploymentResponse, status_code=201, dependencies=[Depends(require_scope("write"))])
+@router.post("/import", response_model=ImportDeploymentResponse, status_code=201, dependencies=[Depends(require_capability("stacks.deploy"))])
 async def import_deployment(
     request: ImportDeploymentRequest,
     current_user=Depends(get_current_user),
@@ -1010,7 +1026,7 @@ async def import_deployment(
     deployment record(s) for each. If compose file has no 'name:' field,
     returns list of known stacks for user to select from.
     """
-    user_id = current_user['user_id']
+    user_id, display_name = get_auditable_user_info(current_user)
 
     # 1. Validate compose YAML syntax
     try:
@@ -1107,7 +1123,7 @@ async def import_deployment(
         actual_stack_name = await stack_storage.find_stack_by_name(stack_name)
         if actual_stack_name:
             stack_name = actual_stack_name
-            logger.info(f"User '{current_user['username']}' using existing stack '{stack_name}' on filesystem")
+            logger.info(f"{display_name} using existing stack '{stack_name}' on filesystem")
         else:
             # Edge case: stack was deleted between check and import
             await stack_storage.write_stack(
@@ -1115,7 +1131,7 @@ async def import_deployment(
                 compose_yaml=request.compose_content,
                 env_content=request.env_content,
             )
-            logger.info(f"User '{current_user['username']}' created stack '{stack_name}' (use_existing_stack but stack was missing)")
+            logger.info(f"{display_name} created stack '{stack_name}' (use_existing_stack but stack was missing)")
     elif not stack_already_exists:
         # Create new stack
         await stack_storage.write_stack(
@@ -1123,7 +1139,7 @@ async def import_deployment(
             compose_yaml=request.compose_content,
             env_content=request.env_content,
         )
-        logger.info(f"User '{current_user['username']}' created stack '{stack_name}' on filesystem during import")
+        logger.info(f"{display_name} created stack '{stack_name}' on filesystem during import")
     elif request.overwrite_stack:
         # Overwrite existing stack content
         await stack_storage.write_stack(
@@ -1131,7 +1147,7 @@ async def import_deployment(
             compose_yaml=request.compose_content,
             env_content=request.env_content,
         )
-        logger.info(f"User '{current_user['username']}' overwrote existing stack '{stack_name}' on filesystem during import")
+        logger.info(f"{display_name} overwrote existing stack '{stack_name}' on filesystem during import")
 
     # 6. Create deployment for each host
     db = get_database_manager()
@@ -1158,7 +1174,7 @@ async def import_deployment(
                 user_id=user_id,
                 stack_name=stack_name,
                 status='stopped' if import_as_stopped else 'running',
-                created_by=current_user['username'],
+                created_by=display_name,
                 progress_percent=100,
                 committed=True,
                 rollback_on_failure=False,
@@ -1194,7 +1210,7 @@ async def import_deployment(
 
 # ==================== Scan Compose Dirs Endpoint ====================
 
-@router.post("/scan-compose-dirs/{host_id}", response_model=ScanComposeDirsResponse)
+@router.post("/scan-compose-dirs/{host_id}", response_model=ScanComposeDirsResponse, dependencies=[Depends(require_capability("stacks.view"))])
 async def scan_compose_dirs(
     host_id: str,
     request: Optional[ScanComposeDirsRequest] = None,
@@ -1410,7 +1426,7 @@ async def _scan_agent_dirs(host_id: str, request: Optional[ScanComposeDirsReques
 
 # ==================== Read Compose File Endpoint ====================
 
-@router.post("/read-compose-file/{host_id}", response_model=ReadComposeFileResponse)
+@router.post("/read-compose-file/{host_id}", response_model=ReadComposeFileResponse, dependencies=[Depends(require_capability("stacks.view_env"))])
 async def read_compose_file(
     host_id: str,
     request: ReadComposeFileRequest,

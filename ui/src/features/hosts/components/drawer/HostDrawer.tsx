@@ -7,6 +7,7 @@
 
 import { Edit, Maximize2 } from 'lucide-react'
 import { Drawer } from '@/components/ui/drawer'
+import { useAuth } from '@/features/auth/AuthContext'
 import { HostOverviewSection } from './HostOverviewSection'
 import { HostTagsSection } from './HostTagsSection'
 import { HostConnectionSection } from './HostConnectionSection'
@@ -54,6 +55,9 @@ export function HostDrawer({
   onEdit,
   onExpand,
 }: HostDrawerProps) {
+  const { hasCapability } = useAuth()
+  const canManage = hasCapability('hosts.manage')
+
   if (!hostId || !host) return null
 
   return (
@@ -82,7 +86,8 @@ export function HostDrawer({
         <div className="px-6 py-4 border-b border-border bg-muted/30">
           <button
             onClick={() => onEdit(hostId)}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-background hover:bg-muted border border-border transition-colors text-sm"
+            disabled={!canManage}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-background hover:bg-muted border border-border transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Edit className="h-4 w-4" />
             <span>Edit Host</span>

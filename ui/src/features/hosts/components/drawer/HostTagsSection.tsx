@@ -9,12 +9,16 @@ import { TagChip } from '@/components/TagChip'
 import { Button } from '@/components/ui/button'
 import { Host } from '@/types/api'
 import { useHostTagEditor } from '@/hooks/useHostTagEditor'
+import { useAuth } from '@/features/auth/AuthContext'
 
 interface HostTagsSectionProps {
   host: Host
 }
 
 export function HostTagsSection({ host }: HostTagsSectionProps) {
+  const { hasCapability } = useAuth()
+  const canManageTags = hasCapability('tags.manage')
+
   const currentTags = host.tags || []
 
   const {
@@ -41,6 +45,7 @@ export function HostTagsSection({ host }: HostTagsSectionProps) {
               variant="ghost"
               size="sm"
               onClick={handleStartEdit}
+              disabled={!canManageTags}
               className="h-7 px-2"
             >
               <Plus className="h-3 w-3 mr-1" />

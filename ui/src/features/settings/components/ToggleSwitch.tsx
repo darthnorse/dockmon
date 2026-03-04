@@ -9,14 +9,15 @@ interface ToggleSwitchProps {
   description?: string
   checked: boolean
   onChange: (checked: boolean) => void
+  disabled?: boolean
 }
 
-export function ToggleSwitch({ id, label, description, checked, onChange }: ToggleSwitchProps) {
+export function ToggleSwitch({ id, label, description, checked, onChange, disabled }: ToggleSwitchProps) {
   return (
     <div className="py-4 first:pt-0 last:pb-0">
       <div className="flex items-start justify-between">
         <div className="flex-1 mr-4">
-          <label htmlFor={id} className="text-sm font-medium cursor-pointer">
+          <label htmlFor={id} className={`text-sm font-medium ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
             {label}
           </label>
           {description && (
@@ -29,10 +30,12 @@ export function ToggleSwitch({ id, label, description, checked, onChange }: Togg
           role="switch"
           aria-checked={checked}
           id={id}
+          disabled={disabled}
           onClick={() => onChange(!checked)}
           className={`
-            relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent
+            relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent
             transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2
+            ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}
             ${checked ? 'bg-accent' : 'bg-border'}
           `}
         >

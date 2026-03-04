@@ -15,6 +15,7 @@ import secrets
 import bcrypt
 import uuid
 
+from auth.capabilities import ALL_CAPABILITIES, OPERATOR_CAPABILITIES, READONLY_CAPABILITIES
 from utils.keys import make_composite_key
 
 logger = logging.getLogger(__name__)
@@ -37,14 +38,20 @@ def utcnow():
 Base = declarative_base()
 
 class User(Base):
-    """User authentication and settings"""
+    """User authentication and settings
+
+    v2.3.0 Multi-User Support:
+    - Added email for password reset and OIDC matching
+    - Added auth_provider for local vs OIDC authentication
+    - Added oidc_subject for OIDC user identification
+    """
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String, nullable=False, unique=True)
     password_hash = Column(String, nullable=False)
     display_name = Column(String, nullable=True)  # Optional friendly display name
-    role = Column(Text, nullable=False, default="admin")  # "admin", "user", "readonly" - for future RBAC
+    role = Column(Text, nullable=False, default="admin")  # "admin", "user", "readonly"
     is_first_login = Column(Boolean, default=True)
     must_change_password = Column(Boolean, default=False)
     dashboard_layout_v2 = Column(Text, nullable=True)  # JSON string of react-grid-layout (v2)
@@ -58,11 +65,31 @@ class User(Base):
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
     last_login = Column(DateTime, nullable=True)
 
+    # v2.3.0 Multi-User Support
+    email = Column(Text, nullable=True)  # Uniqueness enforced at application level
+    auth_provider = Column(Text, nullable=False, default='local')  # 'local' or 'oidc'
+    oidc_subject = Column(Text, nullable=True, unique=True, index=True)  # OIDC subject identifier for user matching
+
+    # Account lockout (v2.5.0 security hardening)
+    failed_login_attempts = Column(Integer, default=0, nullable=False)
+    locked_until = Column(DateTime, nullable=True)
+
+    @property
+    def is_oidc_user(self) -> bool:
+        """Check if user authenticates via OIDC"""
+        return self.auth_provider == 'oidc'
+
+    @property
+    def effective_display_name(self) -> str:
+        """Return display_name if set, otherwise username."""
+        return self.display_name or self.username
+
+
 class UserPrefs(Base):
     """User preferences table (theme and defaults)"""
     __tablename__ = "user_prefs"
 
-    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete='CASCADE'), primary_key=True)
     theme = Column(String, default="dark")
     defaults_json = Column(Text, nullable=True)  # JSON string of default preferences
     dismissed_dockmon_update_version = Column(Text, nullable=True)  # Version user dismissed (v2.0.1+)
@@ -71,15 +98,283 @@ class UserPrefs(Base):
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+# ==================== v2.3.0 Multi-User Support Tables ====================
+
+class RolePermission(Base):
+    """
+    DEPRECATED: Role-based permissions - replaced by GroupPermission.
+    Kept for backwards compatibility during migration.
+    """
+    __tablename__ = "role_permissions"
+
+    role = Column(Text, nullable=False, primary_key=True)  # 'admin', 'user', 'readonly'
+    capability = Column(Text, nullable=False, primary_key=True)  # 'hosts.manage', 'stacks.edit', etc.
+    allowed = Column(Boolean, nullable=False, default=False)
+
+
+class GroupPermission(Base):
+    """
+    Group-based permissions for RBAC (v2.3.0 refactor).
+
+    Defines which capabilities each group has access to.
+    Replaces RolePermission - groups are now the permission source.
+
+    Users can belong to multiple groups (union of permissions).
+    API keys belong to exactly one group.
+    """
+    __tablename__ = "group_permissions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    group_id = Column(Integer, ForeignKey('custom_groups.id', ondelete='CASCADE'), nullable=False)
+    capability = Column(Text, nullable=False)  # 'hosts.manage', 'stacks.edit', etc.
+    allowed = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+    # Relationship to group
+    group = relationship("CustomGroup", back_populates="permissions")
+
+    __table_args__ = (
+        UniqueConstraint('group_id', 'capability', name='uq_group_capability'),
+        Index('idx_group_permissions_group', 'group_id'),
+    )
+
+
+class PasswordResetToken(Base):
+    """
+    Password reset tokens for self-service password recovery (v2.3.0).
+
+    Tokens are hashed before storage and have a 1-hour expiration.
+    Single-use: marked as used after successful password reset.
+    """
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    token_hash = Column(Text, nullable=False, unique=True)  # SHA256 hash (unique implies index)
+    expires_at = Column(DateTime, nullable=False)  # 1 hour from creation (UTC)
+    used_at = Column(DateTime, nullable=True)  # NULL until used
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+    @property
+    def is_expired(self) -> bool:
+        """Check if token has expired"""
+        return datetime.now(timezone.utc) > self.expires_at
+
+    @property
+    def is_used(self) -> bool:
+        """Check if token has been used"""
+        return self.used_at is not None
+
+
+class OIDCConfig(Base):
+    """
+    OIDC provider configuration (v2.3.0).
+
+    Singleton table (id=1 enforced) for OIDC provider settings.
+    Client secret is encrypted before storage.
+    """
+    __tablename__ = "oidc_config"
+
+    id = Column(Integer, primary_key=True)
+    enabled = Column(Boolean, nullable=False, default=False)
+    provider_url = Column(Text, nullable=True)  # e.g., https://auth.example.com/realms/myrealm
+    client_id = Column(Text, nullable=True)
+    client_secret_encrypted = Column(Text, nullable=True)  # Fernet-encrypted
+    scopes = Column(Text, nullable=False, default='openid profile email groups')
+    claim_for_groups = Column(Text, nullable=False, default='groups')  # Which claim contains group membership
+
+    # v2.3.0 refactor: Default group for users with no OIDC group mappings
+    default_group_id = Column(Integer, ForeignKey('custom_groups.id', ondelete='SET NULL'), nullable=True)
+    sso_default = Column(Boolean, nullable=False, default=False)
+
+    # Provider compatibility: some providers (e.g. Authentik) reject client_secret + PKCE together
+    disable_pkce_with_secret = Column(Boolean, nullable=False, default=False)
+
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+    # Relationship to default group
+    default_group = relationship("CustomGroup", foreign_keys=[default_group_id])
+
+    __table_args__ = (
+        CheckConstraint('id = 1', name='ck_oidc_config_singleton'),
+    )
+
+
+class OIDCRoleMapping(Base):
+    """
+    DEPRECATED: OIDC group to role mappings - replaced by OIDCGroupMapping.
+    Kept for backwards compatibility during migration.
+    """
+    __tablename__ = "oidc_role_mappings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    oidc_value = Column(Text, nullable=False, index=True)  # Group/role value to match
+    dockmon_role = Column(Text, nullable=False)  # 'admin', 'user', 'readonly'
+    priority = Column(Integer, nullable=False, default=0)  # Higher priority wins
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class OIDCGroupMapping(Base):
+    """
+    OIDC group to DockMon group mappings (v2.3.0 refactor).
+
+    Maps OIDC groups/claims to DockMon groups.
+    Replaces OIDCRoleMapping - now maps to groups instead of roles.
+    """
+    __tablename__ = "oidc_group_mappings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    oidc_value = Column(Text, nullable=False, unique=True, index=True)  # Group value from OIDC provider
+    group_id = Column(Integer, ForeignKey('custom_groups.id', ondelete='CASCADE'), nullable=False)
+    priority = Column(Integer, nullable=False, default=0)  # Higher priority evaluated first
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+    # Relationship to group
+    group = relationship("CustomGroup", foreign_keys=[group_id])
+
+
+class CustomGroup(Base):
+    """
+    User groups with permissions (v2.3.0 refactor).
+
+    Groups are the permission source for users and API keys.
+    - Users can belong to multiple groups (union of permissions)
+    - API keys belong to exactly one group
+    - System groups (is_system=True) cannot be deleted
+
+    Default system groups: Administrators, Operators, Read Only
+    """
+    __tablename__ = "custom_groups"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(Text, nullable=False, unique=True)  # Group name (unique)
+    description = Column(Text, nullable=True)  # Optional description
+
+    # v2.3.0 refactor: System groups cannot be deleted
+    is_system = Column(Boolean, nullable=False, default=False)
+
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+    # Relationships
+    memberships = relationship("UserGroupMembership", back_populates="group", cascade="all, delete-orphan")
+    permissions = relationship("GroupPermission", back_populates="group", cascade="all, delete-orphan")
+
+
+class UserGroupMembership(Base):
+    """
+    User to group membership mapping (v2.3.0 Phase 5).
+
+    Maps users to custom groups. A user can belong to multiple groups.
+    """
+    __tablename__ = "user_group_memberships"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    group_id = Column(Integer, ForeignKey('custom_groups.id', ondelete='CASCADE'), nullable=False)
+    added_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    added_at = Column(DateTime, nullable=False, default=utcnow)
+
+    # Relationships
+    group = relationship("CustomGroup", back_populates="memberships")
+    user = relationship("User", foreign_keys=[user_id])
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'group_id', name='uq_user_group_membership'),
+        Index('idx_user_group_user', 'user_id'),
+        Index('idx_user_group_group', 'group_id'),
+    )
+
+
+class PendingOIDCAuth(Base):
+    """
+    Pending OIDC authentication requests (v2.3.0).
+
+    Stores state, nonce, and PKCE verifier for OIDC authorization flow.
+    Supports multi-instance deployments by using database instead of in-memory storage.
+    Expires after 10 minutes.
+    """
+    __tablename__ = "pending_oidc_auth"
+
+    state = Column(Text, primary_key=True)  # State parameter (CSRF protection)
+    nonce = Column(Text, nullable=False)  # Nonce parameter (replay protection)
+    code_verifier = Column(Text, nullable=False)  # PKCE code verifier
+    redirect_uri = Column(Text, nullable=False)  # Callback URL
+    frontend_redirect = Column(Text, nullable=False, default='/')  # Where to redirect after auth
+    expires_at = Column(DateTime, nullable=False, index=True)  # 10 minutes from creation
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+    @property
+    def is_expired(self) -> bool:
+        """Check if auth request has expired"""
+        exp = self.expires_at.replace(tzinfo=timezone.utc) if self.expires_at.tzinfo is None else self.expires_at
+        return datetime.now(timezone.utc) > exp
+
+
+class StackMetadata(Base):
+    """
+    Audit trail for filesystem-based stacks (v2.3.0).
+
+    Tracks who created/modified stacks since stack content is stored on filesystem.
+    """
+    __tablename__ = "stack_metadata"
+
+    stack_name = Column(Text, primary_key=True)
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class AuditLog(Base):
+    """
+    Comprehensive action audit log (v2.3.0).
+
+    Records all significant user actions for security and compliance.
+    Actions include: login, logout, create, update, delete, start, stop,
+    restart, deploy, shell, etc.
+    """
+    __tablename__ = "audit_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    username = Column(Text, nullable=False)  # Stored separately for audit trail preservation
+    action = Column(Text, nullable=False)  # 'create', 'update', 'delete', 'login', 'shell', etc.
+    entity_type = Column(Text, nullable=False)  # 'host', 'stack', 'container', 'user', 'session', etc.
+    entity_id = Column(Text, nullable=True)  # ID of affected entity
+    entity_name = Column(Text, nullable=True)  # Human-readable name
+    host_id = Column(Text, nullable=True)  # For container operations
+    details = Column(Text, nullable=True)  # JSON with additional context
+    ip_address = Column(Text, nullable=True)
+    user_agent = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+    __table_args__ = (
+        Index('idx_audit_log_user', 'user_id'),
+        Index('idx_audit_log_entity', 'entity_type', 'entity_id'),
+        Index('idx_audit_log_action', 'action'),
+        Index('idx_audit_log_created', 'created_at'),
+    )
+
+
 class ApiKey(Base):
     """
     API keys for programmatic access (Ansible, Homepage, monitoring tools).
+
+    v2.3.0 Refactor:
+    - Permissions come from group (not scopes/roles)
+    - created_by_user_id for audit (who created the key)
+    - group_id for permissions (what the key can do)
 
     SECURITY:
     - Keys are hashed (SHA256) before storage - NEVER store plaintext
     - key_prefix allows user identification without exposing full key
     - Optional IP restrictions for additional security
-    - Scoped permissions (read/write/admin)
+    - Permissions determined by group assignment
 
     CONSISTENCY:
     - All datetime fields use timezone.utc for consistency
@@ -90,8 +385,13 @@ class ApiKey(Base):
     # Primary key
     id = Column(Integer, primary_key=True, autoincrement=True)
 
-    # Owner
-    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    # v2.3.0 refactor: Group for permissions (replaces scopes)
+    # ON DELETE RESTRICT - cannot delete group if API keys reference it
+    group_id = Column(Integer, ForeignKey('custom_groups.id', ondelete='RESTRICT'), nullable=False)
+
+    # v2.3.0 refactor: Audit trail - who created this key
+    # ON DELETE SET NULL - preserve key if creator is deleted
+    created_by_user_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
 
     # Key identification (user-friendly)
     name = Column(Text, nullable=False)  # "Homepage Dashboard", "Ansible Automation"
@@ -99,10 +399,7 @@ class ApiKey(Base):
 
     # Key storage (SECURITY CRITICAL)
     key_hash = Column(Text, nullable=False, unique=True)  # SHA256 hash of full key
-    key_prefix = Column(Text, nullable=False)  # First 12 chars for UI display
-
-    # Permissions (mandatory enforcement)
-    scopes = Column(Text, nullable=False, default="read")  # Comma-separated: "read", "read,write", "admin"
+    key_prefix = Column(Text, nullable=False)  # First 20 chars for UI display
 
     # IP restrictions (optional security layer)
     # WARNING: Only works correctly with REVERSE_PROXY_MODE=true
@@ -120,8 +417,12 @@ class ApiKey(Base):
     created_at = Column(DateTime, nullable=False)
     updated_at = Column(DateTime, nullable=False)
 
+    # Relationships
+    group = relationship("CustomGroup", foreign_keys=[group_id])
+    created_by = relationship("User", foreign_keys=[created_by_user_id])
+
     def __repr__(self):
-        return f"<ApiKey(id={self.id}, name='{self.name}', prefix='{self.key_prefix}', scopes='{self.scopes}')>"
+        return f"<ApiKey(id={self.id}, name='{self.name}', prefix='{self.key_prefix}', group_id={self.group_id})>"
 
 
 class ActionToken(Base):
@@ -150,7 +451,7 @@ class ActionToken(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
 
     # Token storage (SECURITY CRITICAL)
-    token_hash = Column(Text, nullable=False, unique=True, index=True)  # SHA256 hash
+    token_hash = Column(Text, nullable=False, unique=True)  # SHA256 hash (unique implies index)
     token_prefix = Column(Text, nullable=False)  # First 12 chars for logs
 
 
@@ -183,7 +484,7 @@ class RegistrationToken(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     token = Column(String, nullable=False, unique=True)  # UUID
-    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_by_user_id = Column(Integer, ForeignKey("users.id", ondelete='SET NULL'), nullable=True)
     created_at = Column(DateTime, default=utcnow, nullable=False)
     expires_at = Column(DateTime, nullable=False)  # 15 minute expiry
 
@@ -234,6 +535,10 @@ class DockerHostDB(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+    # v2.3.0 Multi-User Support - Audit columns
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     # Phase 3d - Host organization
     tags = Column(Text, nullable=True)  # JSON array of tags
     description = Column(Text, nullable=True)  # Optional host description
@@ -274,6 +579,10 @@ class AutoRestartConfig(Base):
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
+    # v2.3.0 Multi-User Support - Audit columns
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+
     # Relationships
     host = relationship("DockerHostDB", back_populates="auto_restart_configs")
 
@@ -292,6 +601,10 @@ class ContainerDesiredState(Base):
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
+    # v2.3.0 Multi-User Support - Audit columns
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+
     # Relationships
     host = relationship("DockerHostDB")
 
@@ -301,7 +614,7 @@ class BatchJob(Base):
     __tablename__ = "batch_jobs"
 
     id = Column(String, primary_key=True)  # e.g., "job_abc123"
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete='SET NULL'), nullable=True)
     scope = Column(String, nullable=False)  # 'container' (hosts in future)
     action = Column(String, nullable=False)  # 'start', 'stop', 'restart', etc.
     params = Column(Text, nullable=True)  # JSON string of action parameters
@@ -384,6 +697,9 @@ class GlobalSettings(Base):
     # Alert system settings
     alert_retention_days = Column(Integer, default=90)  # Keep resolved alerts for N days (0 = keep forever)
 
+    # Audit log settings (v2.3.0 Phase 6)
+    audit_log_retention_days = Column(Integer, default=90)  # Keep audit entries for N days (0 = unlimited)
+
     # Version tracking and upgrade notifications
     app_version = Column(String, default="2.0.0")  # Current application version
     upgrade_notice_dismissed = Column(Boolean, default=True)  # Whether user has seen v2 upgrade notice (False for v1→v2 upgrades set by migration)
@@ -405,6 +721,9 @@ class GlobalSettings(Base):
     # Editor theme preference (v2.2.8+)
     # Available: 'github-dark', 'vscode-dark', 'dracula', 'material-dark', 'nord'
     editor_theme = Column(Text, default='aura')
+
+    # Session timeout (0 = never expires, 1-8760 hours)
+    session_timeout_hours = Column(Integer, default=24)
 
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -525,6 +844,10 @@ class ContainerHttpHealthCheck(Base):
     created_at = Column(DateTime, default=utcnow, nullable=False)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
+    # v2.3.0 Multi-User Support - Audit columns
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+
     __table_args__ = (
         Index('idx_http_health_enabled', 'enabled'),
         Index('idx_http_health_host', 'host_id'),
@@ -545,6 +868,10 @@ class UpdatePolicy(Base):
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
+    # v2.3.0 Multi-User Support - Audit columns
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+
     __table_args__ = (
         UniqueConstraint('category', 'pattern', name='uq_update_policies_category_pattern'),
     )
@@ -561,6 +888,10 @@ class NotificationChannel(Base):
     enabled = Column(Boolean, default=True)
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+    # v2.3.0 Multi-User Support - Audit columns
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
 
 # ==================== Alerts v2 Tables ====================
 
@@ -805,6 +1136,10 @@ class Tag(Base):
     created_at = Column(DateTime, default=utcnow, nullable=False)
     last_used_at = Column(DateTime, nullable=True)  # Last time tag was assigned to something
 
+    # v2.3.0 Multi-User Support - Audit columns
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+
     # Relationships
     assignments = relationship("TagAssignment", back_populates="tag", cascade="all, delete-orphan")
 
@@ -862,6 +1197,10 @@ class RegistryCredential(Base):
     created_at = Column(DateTime, default=utcnow, nullable=False)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
+    # v2.3.0 Multi-User Support - Audit columns
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    updated_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+
 
 class Deployment(Base):
     """
@@ -905,7 +1244,7 @@ class Deployment(Base):
 
     id = Column(String, primary_key=True)  # Composite: {host_id}:{deployment_short_id}
     host_id = Column(String, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)  # User who created deployment (for authorization)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)  # User who created deployment
     stack_name = Column(String, nullable=False)  # References stack in /app/data/stacks/{stack_name}/
     status = Column(String, nullable=False, default='planning')  # planning, validating, pulling_image, creating, starting, running, failed, rolled_back
     error_message = Column(Text, nullable=True)
@@ -1334,6 +1673,15 @@ class DatabaseManager:
                     session.commit()
                     logger.info("Cleared legacy tag data - starting fresh with normalized schema")
 
+                if 'oidc_config' in table_names:
+                    oidc_inspector = session.connection().engine.dialect.get_columns(session.connection(), 'oidc_config')
+                    oidc_column_names = [col['name'] for col in oidc_inspector]
+                    if 'sso_default' not in oidc_column_names:
+                        session.execute(text("ALTER TABLE oidc_config ADD COLUMN sso_default BOOLEAN NOT NULL DEFAULT 0"))
+                        session.commit()
+                        logger.info("Added sso_default column to oidc_config table")
+
+
         except Exception as e:
             logger.info(f"Migration warning: {e}")
             # Don't fail startup on migration errors
@@ -1482,6 +1830,8 @@ class DatabaseManager:
             # Initialize default update validation policies if none exist
             self._seed_update_policies(session)
 
+            self._ensure_default_groups(session)
+
     def _seed_update_policies(self, session):
         """
         Seed default update validation policies if they don't exist.
@@ -1546,6 +1896,88 @@ class DatabaseManager:
         if inserted > 0:
             session.commit()
             logger.info(f"Seeded {inserted} missing default update validation policies")
+
+    def _ensure_default_groups(self, session):
+        """
+        Ensure default system groups, permissions, and admin membership exist.
+
+        This matches the v2.3.0 Alembic migration 034 behavior - it defensively
+        seeds missing data without affecting existing records. This handles
+        fresh installs where Base.metadata.create_all() + stamp HEAD skips
+        migration data seeding.
+        """
+        admin_exists = session.query(CustomGroup).filter_by(name='Administrators').first()
+        if not admin_exists:
+            admin_group = CustomGroup(
+                name='Administrators',
+                description='Full access to all features',
+                is_system=True,
+            )
+            operators_group = CustomGroup(
+                name='Operators',
+                description='Can operate containers and deploy stacks, limited configuration access',
+                is_system=True,
+            )
+            readonly_group = CustomGroup(
+                name='Read Only',
+                description='View-only access to all features',
+                is_system=True,
+            )
+            session.add_all([admin_group, operators_group, readonly_group])
+            session.flush()  # Need IDs assigned before FK references below
+            logger.info("Created default system groups: Administrators, Operators, Read Only")
+        else:
+            admin_group = admin_exists
+            operators_group = session.query(CustomGroup).filter_by(name='Operators').first()
+            readonly_group = session.query(CustomGroup).filter_by(name='Read Only').first()
+
+        if not admin_group or not operators_group or not readonly_group:
+            logger.warning("Could not find all default groups - skipping permission seeding")
+            return
+
+        group_caps = [
+            (admin_group, ALL_CAPABILITIES),
+            (operators_group, OPERATOR_CAPABILITIES),
+            (readonly_group, READONLY_CAPABILITIES),
+        ]
+        for group, capabilities in group_caps:
+            existing_caps = set(
+                row.capability
+                for row in session.query(GroupPermission.capability).filter_by(group_id=group.id).all()
+            )
+            missing_caps = capabilities - existing_caps
+            for cap in sorted(missing_caps):
+                session.add(GroupPermission(
+                    group_id=group.id,
+                    capability=cap,
+                    allowed=True,
+                ))
+            if missing_caps:
+                logger.info(f"Seeded {len(missing_caps)} missing permissions for group '{group.name}'")
+
+        existing_membership = session.query(UserGroupMembership).filter_by(
+            user_id=1, group_id=admin_group.id
+        ).first()
+        if not existing_membership:
+            first_user = session.query(User).filter_by(id=1).first()
+            if first_user:
+                session.add(UserGroupMembership(
+                    user_id=first_user.id,
+                    group_id=admin_group.id,
+                ))
+                logger.info(f"Assigned user '{first_user.username}' to Administrators group")
+
+        # Only set OIDC default group for freshly created configs (no provider URL yet)
+        # Don't overwrite NULL for existing configs where admin explicitly chose "Deny Access"
+        oidc_config = session.query(OIDCConfig).filter(
+            OIDCConfig.default_group_id.is_(None),
+            OIDCConfig.provider_url.is_(None),
+        ).first()
+        if oidc_config:
+            oidc_config.default_group_id = readonly_group.id
+            logger.info("Set OIDC default group to 'Read Only'")
+
+        session.commit()
 
     def get_session(self) -> Session:
         """Get a database session"""
@@ -3006,7 +3438,9 @@ class DatabaseManager:
                     # External URL for notification action links (v2.2.0+)
                     'external_url',
                     # Editor theme preference (v2.2.8+)
-                    'editor_theme'
+                    'editor_theme',
+                    # Session timeout
+                    'session_timeout_hours'
                 }
 
                 for key, value in updates.items():
@@ -3569,94 +4003,30 @@ class DatabaseManager:
 
     # User management methods
     def _hash_password(self, password: str) -> str:
-        """Hash a password using bcrypt with salt"""
-        # Generate salt and hash password
-        salt = bcrypt.gensalt(rounds=12)  # 12 rounds is a good balance of security/speed
-        hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
-        return hashed.decode('utf-8')
-
-    def _verify_password(self, password: str, hashed: str) -> bool:
-        """
-        Verify a password against a bcrypt or Argon2id hash.
-
-        BACKWARD COMPATIBILITY: Supports both bcrypt (v1) and Argon2id (v2) hashes.
-        """
-        # Try Argon2id first (v2 format: starts with $argon2id$)
-        if hashed.startswith('$argon2id$'):
-            try:
-                from argon2 import PasswordHasher
-                from argon2.exceptions import VerifyMismatchError
-                ph = PasswordHasher()
-                ph.verify(hashed, password)
-                return True
-            except VerifyMismatchError:
-                return False
-            except Exception as e:
-                logger.error(f"Argon2id verification failed: {e}")
-                return False
-
-        # Fall back to bcrypt (v1 format)
-        try:
-            return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
-        except Exception as e:
-            logger.error(f"bcrypt verification failed: {e}")
-            return False
+        """Hash a password using Argon2id (GPU-resistant)."""
+        from auth.password import ph
+        return ph.hash(password)
 
     def get_or_create_default_user(self) -> None:
         """Create default admin user if no users exist"""
         with self.get_session() as session:
-            # Check if ANY user exists (not just 'admin')
             user_count = session.query(User).count()
             if user_count == 0:
-                # Only create default admin user if no users exist at all
                 user = User(
                     username="admin",
-                    password_hash=self._hash_password("dockmon123"),  # Default password
+                    password_hash=self._hash_password("dockmon123"),
                     is_first_login=True,
                     must_change_password=True
                 )
                 session.add(user)
+                session.flush()
+
+                admin_group = session.query(CustomGroup).filter_by(name='Administrators').first()
+                if admin_group:
+                    session.add(UserGroupMembership(user_id=user.id, group_id=admin_group.id))
+
                 session.commit()
                 logger.info("Created default admin user")
-
-    def verify_user_credentials(self, username: str, password: str) -> Optional[Dict[str, Any]]:
-        """Verify user credentials and return user info if valid"""
-        with self.get_session() as session:
-            user = session.query(User).filter(User.username == username).first()
-
-            # Prevent timing attack: always run bcrypt even if user doesn't exist
-            if user:
-                is_valid = self._verify_password(password, user.password_hash)
-            else:
-                # Run dummy bcrypt to maintain constant time
-                dummy_hash = "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYFj.N/wx9S"
-                self._verify_password(password, dummy_hash)
-                is_valid = False
-
-            if user and is_valid:
-                # Update last login
-                user.last_login = datetime.now(timezone.utc)
-                session.commit()
-                return {
-                    "username": user.username,
-                    "is_first_login": user.is_first_login,
-                    "must_change_password": user.must_change_password
-                }
-            return None
-
-    def change_user_password(self, username: str, new_password: str) -> bool:
-        """Change user password"""
-        with self.get_session() as session:
-            user = session.query(User).filter(User.username == username).first()
-            if user:
-                user.password_hash = self._hash_password(new_password)
-                user.is_first_login = False
-                user.must_change_password = False
-                user.updated_at = datetime.now(timezone.utc)
-                session.commit()
-                logger.info(f"Password changed for user: {username}")
-                return True
-            return False
 
     def username_exists(self, username: str) -> bool:
         """Check if username already exists"""

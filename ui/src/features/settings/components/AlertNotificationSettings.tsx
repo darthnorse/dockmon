@@ -3,12 +3,13 @@
  * Customize alert message templates
  */
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useGlobalSettings, useUpdateGlobalSettings, useTemplateVariables } from '@/hooks/useSettings'
 import { toast } from 'sonner'
 import { RotateCcw, Copy, Check } from 'lucide-react'
+import { useAuth } from '@/features/auth/AuthContext'
 
-const DEFAULT_TEMPLATE = `🚨 **{SEVERITY} Alert: {KIND}**
+const DEFAULT_TEMPLATE = `**{SEVERITY} Alert: {KIND}**
 
 **{SCOPE_TYPE}:** \`{CONTAINER_NAME}\`
 **Host:** {HOST_NAME}
@@ -18,6 +19,8 @@ const DEFAULT_TEMPLATE = `🚨 **{SEVERITY} Alert: {KIND}**
 ───────────────────────`
 
 export function AlertNotificationSettings() {
+  const { hasCapability } = useAuth()
+  const canManage = hasCapability('alerts.manage')
   const { data: settings } = useGlobalSettings()
   const { data: variables } = useTemplateVariables()
   const updateSettings = useUpdateGlobalSettings()
@@ -27,11 +30,11 @@ export function AlertNotificationSettings() {
   const [hasChanges, setHasChanges] = useState(false)
 
   // Update local state when settings load
-  useState(() => {
+  useEffect(() => {
     if (settings?.alert_template) {
       setTemplate(settings.alert_template)
     }
-  })
+  }, [settings])
 
   const handleTemplateChange = (value: string) => {
     setTemplate(value)
@@ -62,7 +65,7 @@ export function AlertNotificationSettings() {
   }
 
   return (
-    <div className="space-y-6">
+    <fieldset disabled={!canManage} className="space-y-6 disabled:opacity-60">
       {/* Alert Message Template Section */}
       <div className="bg-surface border border-border rounded-lg p-6">
         <div className="mb-4">
@@ -93,7 +96,7 @@ export function AlertNotificationSettings() {
             <button
               onClick={handleSave}
               disabled={!hasChanges || updateSettings.isPending}
-              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
             >
               {updateSettings.isPending ? 'Saving...' : 'Save Template'}
             </button>
@@ -139,6 +142,6 @@ export function AlertNotificationSettings() {
           ))}
         </div>
       </div>
-    </div>
+    </fieldset>
   )
 }

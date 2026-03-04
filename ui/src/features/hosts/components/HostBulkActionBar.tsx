@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { TagInput } from '@/components/TagInput'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
+import { useAuth } from '@/features/auth/AuthContext'
 
 interface HostBulkActionBarProps {
   selectedHostIds: Set<string>
@@ -21,6 +22,9 @@ export function HostBulkActionBar({
   onClearSelection,
   onTagsUpdated
 }: HostBulkActionBarProps) {
+  const { hasCapability } = useAuth()
+  const canManageTags = hasCapability('tags.manage')
+
   const [showTagInput, setShowTagInput] = useState(false)
   const [tagMode, setTagMode] = useState<'add' | 'remove'>('add')
   const [tags, setTags] = useState<string[]>([])
@@ -143,6 +147,7 @@ export function HostBulkActionBar({
               variant="outline"
               size="sm"
               onClick={handleAddTags}
+              disabled={!canManageTags}
               className="flex-1"
             >
               <Plus className="h-4 w-4 mr-2" />
@@ -152,6 +157,7 @@ export function HostBulkActionBar({
               variant="outline"
               size="sm"
               onClick={handleRemoveTags}
+              disabled={!canManageTags}
               className="flex-1"
             >
               <Minus className="h-4 w-4 mr-2" />
@@ -178,7 +184,7 @@ export function HostBulkActionBar({
                 variant="default"
                 size="sm"
                 onClick={handleApplyTags}
-                disabled={tags.length === 0}
+                disabled={!canManageTags || tags.length === 0}
                 className="flex-1"
               >
                 {tagMode === 'add' ? 'Add' : 'Remove'} Tags

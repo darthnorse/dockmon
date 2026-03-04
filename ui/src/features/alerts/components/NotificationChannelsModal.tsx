@@ -6,7 +6,7 @@
 
 import { useState } from 'react'
 import { X, Plus, Trash2, Edit, Power, PowerOff, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react'
-import { Smartphone, Send, MessageSquare, Hash, Bell, Mail, Users, BellRing } from 'lucide-react'
+import { Smartphone, Send, MessageSquare, Hash, Bell, Mail, Users, BellRing, LucideIcon } from 'lucide-react'
 import {
   useNotificationChannels,
   useCreateChannel,
@@ -18,6 +18,7 @@ import {
   ChannelCreateRequest,
 } from '../hooks/useNotificationChannels'
 import { ChannelForm } from './ChannelForm'
+import { useAuth } from '@/features/auth/AuthContext'
 
 interface Props {
   onClose: () => void
@@ -25,7 +26,7 @@ interface Props {
 
 type View = 'list' | 'create' | 'edit'
 
-const CHANNEL_ICONS: Record<string, any> = {
+const CHANNEL_ICONS: Record<string, LucideIcon> = {
   telegram: Send,
   discord: MessageSquare,
   slack: Hash,
@@ -37,6 +38,8 @@ const CHANNEL_ICONS: Record<string, any> = {
 }
 
 export function NotificationChannelsModal({ onClose }: Props) {
+  const { hasCapability } = useAuth()
+  const canManageNotifications = hasCapability('notifications.manage')
   const [view, setView] = useState<View>('list')
   const [selectedChannel, setSelectedChannel] = useState<NotificationChannel | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null)
@@ -56,7 +59,7 @@ export function NotificationChannelsModal({ onClose }: Props) {
       await createChannel.mutateAsync(data)
       setView('list')
       setTestResult(null)
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Failed to create channel:', error)
     }
   }
@@ -71,7 +74,7 @@ export function NotificationChannelsModal({ onClose }: Props) {
       setView('list')
       setSelectedChannel(null)
       setTestResult(null)
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Failed to update channel:', error)
     }
   }
@@ -80,7 +83,7 @@ export function NotificationChannelsModal({ onClose }: Props) {
     try {
       await deleteChannel.mutateAsync(channelId)
       setDeleteConfirm(null)
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Failed to delete channel:', error)
     }
   }
@@ -91,7 +94,7 @@ export function NotificationChannelsModal({ onClose }: Props) {
         channelId: channel.id,
         updates: { enabled: !channel.enabled },
       })
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Failed to toggle channel:', error)
     }
   }
@@ -107,8 +110,9 @@ export function NotificationChannelsModal({ onClose }: Props) {
         } else {
           setTestResult({ success: false, message: result.error || 'Test failed' })
         }
-      } catch (error: any) {
-        setTestResult({ success: false, message: error.message || 'Test failed' })
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : 'Test failed'
+        setTestResult({ success: false, message })
       }
     } else {
       setTestResult({ success: false, message: 'Please save the channel first before testing' })
@@ -148,14 +152,24 @@ export function NotificationChannelsModal({ onClose }: Props) {
           {view === 'list' && (
             <>
               {/* Add Channel Button */}
-              <div className="mb-6">
+              <div className="mb-6 flex items-center gap-4">
                 <button
-                  onClick={() => setView('create')}
-                  className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+                  onClick={() => { setTestResult(null); setView('create') }}
+                  disabled={!canManageNotifications}
+                  className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
                 >
                   <Plus className="h-4 w-4" />
                   Add Channel
                 </button>
+                {testResult && (
+                  <div className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-sm ${testResult.success ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}`}>
+                    {testResult.success ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+                    {testResult.message}
+                    <button onClick={() => setTestResult(null)} className="ml-1 text-gray-400 hover:text-white">
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Channels List */}
@@ -197,47 +211,50 @@ export function NotificationChannelsModal({ onClose }: Props) {
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={async () => {
-                              try {
-                                const result = await testChannel.mutateAsync(channel.id)
-                                if (result.success) {
-                                  alert('Test notification sent successfully!')
-                                } else {
-                                  alert(`Test failed: ${result.error || 'Unknown error'}`)
+                        <fieldset disabled={!canManageNotifications} className="disabled:opacity-60">
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={async () => {
+                                try {
+                                  const result = await testChannel.mutateAsync(channel.id)
+                                  if (result.success) {
+                                    setTestResult({ success: true, message: 'Test notification sent successfully!' })
+                                  } else {
+                                    setTestResult({ success: false, message: result.error || 'Test failed' })
+                                  }
+                                } catch (error: unknown) {
+                                  const message = error instanceof Error ? error.message : 'Unknown error'
+                                  setTestResult({ success: false, message: `Test failed: ${message}` })
                                 }
-                              } catch (error: any) {
-                                alert(`Test failed: ${error.message || 'Unknown error'}`)
-                              }
-                            }}
-                            disabled={!channel.enabled}
-                            className="rounded-md bg-gray-700 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            Test
-                          </button>
-                          <button
-                            onClick={() => handleToggleEnabled(channel)}
-                            className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-gray-700 hover:text-white"
-                            title={channel.enabled ? 'Disable channel' : 'Enable channel'}
-                          >
-                            {channel.enabled ? <PowerOff className="h-4 w-4" /> : <Power className="h-4 w-4" />}
-                          </button>
-                          <button
-                            onClick={() => handleEdit(channel)}
-                            className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-gray-700 hover:text-white"
-                            title="Edit channel"
-                          >
-                            <Edit className="h-4 w-4" />
-                          </button>
-                          <button
-                            onClick={() => setDeleteConfirm(channel.id)}
-                            className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-gray-700 hover:text-red-400"
-                            title="Delete channel"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
-                        </div>
+                              }}
+                              disabled={!channel.enabled}
+                              className="rounded-md bg-gray-700 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Test
+                            </button>
+                            <button
+                              onClick={() => handleToggleEnabled(channel)}
+                              className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-gray-700 hover:text-white"
+                              title={channel.enabled ? 'Disable channel' : 'Enable channel'}
+                            >
+                              {channel.enabled ? <PowerOff className="h-4 w-4" /> : <Power className="h-4 w-4" />}
+                            </button>
+                            <button
+                              onClick={() => handleEdit(channel)}
+                              className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-gray-700 hover:text-white"
+                              title="Edit channel"
+                            >
+                              <Edit className="h-4 w-4" />
+                            </button>
+                            <button
+                              onClick={() => setDeleteConfirm(channel.id)}
+                              className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-gray-700 hover:text-red-400"
+                              title="Delete channel"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </fieldset>
                       </div>
                     )
                   })}
@@ -267,6 +284,7 @@ export function NotificationChannelsModal({ onClose }: Props) {
                 onTest={handleTest}
                 isSubmitting={createChannel.isPending || updateChannel.isPending}
                 isTesting={testChannel.isPending}
+                disabled={!canManageNotifications}
               />
             </div>
           )}
@@ -300,7 +318,7 @@ export function NotificationChannelsModal({ onClose }: Props) {
               </button>
               <button
                 onClick={() => handleDelete(deleteConfirm)}
-                disabled={deleteChannel.isPending}
+                disabled={!canManageNotifications || deleteChannel.isPending}
                 className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
               >
                 {deleteChannel.isPending ? 'Deleting...' : 'Delete Channel'}

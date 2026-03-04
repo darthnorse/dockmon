@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from auth.action_token_auth import validate_action_token
 from auth.shared import db
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user
+from auth.utils import get_auditable_user_info
 from utils.client_ip import get_client_ip
 from security.audit import security_audit
 
@@ -107,7 +108,7 @@ async def consume_action_token(
     The token is marked as used after this call and cannot be reused.
     """
     client_ip = get_client_ip(request)
-    user_id = current_user.get("user_id")
+    user_id, display_name = get_auditable_user_info(current_user)
 
     # Require explicit confirmation
     if not body.confirmed:

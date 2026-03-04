@@ -2,8 +2,7 @@
  * Authentication Context
  *
  * SECURITY:
- * - Cookie-based authentication (HttpOnly, Secure, SameSite=strict)
- * - No tokens stored in localStorage/sessionStorage
+ * - Cookie-based authentication (HttpOnly, Secure, SameSite=lax)
  * - Automatic session validation on mount
  *
  * PATTERN:
@@ -14,14 +13,34 @@
 
 import { createContext, useContext, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { authApi } from './api'
 import type { LoginRequest } from '@/types/api'
 
+interface AuthUserGroup {
+  id: number
+  name: string
+}
+
+interface AuthUser {
+  id: number
+  username: string
+  display_name?: string | null
+  is_first_login?: boolean
+  must_change_password?: boolean
+  auth_provider?: string
+  groups: AuthUserGroup[]
+}
+
 interface AuthContextValue {
-  user: { id: number; username: string; display_name?: string | null; is_first_login?: boolean } | null
+  user: AuthUser | null
+  capabilities: string[]
   isLoading: boolean
   isAuthenticated: boolean
   isFirstLogin: boolean
+  mustChangePassword: boolean
+  isAdmin: boolean
+  hasCapability: (capability: string) => boolean
   login: (credentials: LoginRequest) => Promise<void>
   logout: () => Promise<void>
 }
@@ -30,6 +49,7 @@ const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
 
   // Query current user (validates session cookie)
   const { data, isLoading, isError } = useQuery({
@@ -42,11 +62,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Login mutation
   const loginMutation = useMutation({
     mutationFn: authApi.login,
-    onSuccess: (response, variables) => {
-      // If first login, temporarily store password for password change modal
-      if (response.user.is_first_login) {
-        sessionStorage.setItem('_tmp_pwd', variables.password)
-      }
+    onSuccess: () => {
       // Invalidate current user query to refetch
       void queryClient.invalidateQueries({ queryKey: ['auth', 'currentUser'] })
     },
@@ -55,17 +71,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Logout mutation
   const logoutMutation = useMutation({
     mutationFn: authApi.logout,
-    onSuccess: () => {
-      // Clear all queries on logout
+    onSuccess: (response) => {
       queryClient.clear()
+      if (response?.oidc_logout_url) {
+        // Validate URL protocol before redirecting to prevent javascript: or data: URIs
+        try {
+          const url = new URL(response.oidc_logout_url)
+          if (url.protocol === 'https:' || url.protocol === 'http:') {
+            window.location.href = response.oidc_logout_url
+            return
+          }
+        } catch {
+          // Invalid URL - fall through to login redirect
+        }
+        navigate('/login', { replace: true })
+      } else {
+        navigate('/login', { replace: true })
+      }
     },
   })
 
+  // Extract capabilities from response
+  const capabilities = data?.capabilities ?? []
+
+  // Check if user is admin (in Administrators group or has users.manage capability)
+  const isAdmin =
+    data?.user?.groups?.some((g) => g.name === 'Administrators') ||
+    capabilities.includes('users.manage') ||
+    false
+
+  // Helper to check if user has a specific capability
+  const hasCapability = (capability: string): boolean => {
+    return capabilities.includes(capability)
+  }
+
   const value: AuthContextValue = {
     user: data?.user ?? null,
+    capabilities,
     isLoading: isLoading || loginMutation.isPending || logoutMutation.isPending,
     isAuthenticated: !isError && data?.user != null,
     isFirstLogin: data?.user?.is_first_login ?? false,
+    mustChangePassword: data?.user?.must_change_password ?? false,
+    isAdmin,
+    hasCapability,
     login: async (credentials) => {
       await loginMutation.mutateAsync(credentials)
     },

@@ -46,6 +46,7 @@ class RealtimeMonitor:
         self.stats_subscribers: Dict[str, Set[Any]] = {}  # container_id -> set of websockets
         self.event_subscribers: Set[Any] = set()  # websockets listening to all events
         self.monitoring_tasks: Dict[str, asyncio.Task] = {}
+        self.connection_manager = None  # Set by monitor after initialization
 
     async def subscribe_to_stats(self, websocket: Any, container_id: str):
         """Subscribe a websocket to container stats"""
@@ -106,10 +107,16 @@ class RealtimeMonitor:
                 # CRITICAL: Calculate stats using async wrapper to prevent blocking
                 stats = await self._calculate_container_stats_async(container)
 
-                # Broadcast to all subscribers
+                # Broadcast to all subscribers (with capability check)
                 dead_sockets = []
                 for websocket in self.stats_subscribers.get(container_id, []):
                     try:
+                        # Defense-in-depth: verify subscriber still has containers.view
+                        if self.connection_manager:
+                            caps = self.connection_manager._connection_capabilities.get(websocket, set())
+                            if "containers.view" not in caps:
+                                dead_sockets.append(websocket)
+                                continue
                         await websocket.send_text(json.dumps({
                             "type": "container_stats",
                             "data": asdict(stats)

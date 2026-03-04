@@ -22,6 +22,7 @@ import { apiClient } from '@/lib/api/client'
 import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
 import { formatTime } from '@/lib/utils/timeFormat'
 import type { Host } from '@/types/api'
+import { useAuth } from '@/features/auth/AuthContext'
 
 interface HostOverviewTabProps {
   hostId: string
@@ -41,6 +42,10 @@ interface AgentInfo {
 }
 
 export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
+  const { hasCapability } = useAuth()
+  const canManageAgents = hasCapability('agents.manage')
+  const canManageTags = hasCapability('tags.manage')
+
   const { timeFormat } = useTimeFormat()
   const queryClient = useQueryClient()
   const [updateTriggered, setUpdateTriggered] = useState(false)
@@ -130,7 +135,7 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
               {!agent.is_container_mode && (
                 <Button
                   onClick={() => triggerUpdate.mutate()}
-                  disabled={triggerUpdate.isPending}
+                  disabled={!canManageAgents || triggerUpdate.isPending}
                   size="sm"
                 >
                   {triggerUpdate.isPending ? (
@@ -266,7 +271,8 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
                     <h4 className="text-lg font-medium text-foreground">Tags</h4>
                     <button
                       onClick={handleStartEdit}
-                      className="text-xs text-primary hover:text-primary/80"
+                      disabled={!canManageTags}
+                      className="text-xs text-primary hover:text-primary/80 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       + Edit
                     </button>

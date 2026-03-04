@@ -5,6 +5,7 @@
  */
 
 import { memo, useState, useEffect } from 'react'
+import { useAuth } from '@/features/auth/AuthContext'
 import { Activity, RefreshCw, CheckCircle2, XCircle, Clock, AlertTriangle, FlaskConical } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -27,13 +28,19 @@ export interface ContainerHealthCheckTabProps {
 }
 
 function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabProps) {
+  const { hasCapability } = useAuth()
+  const canViewHC = hasCapability('healthchecks.view')
+  const canManageHC = hasCapability('healthchecks.manage')
+  const canTestHC = hasCapability('healthchecks.test')
   const { timeFormat } = useTimeFormat()
+
   // CRITICAL: Always use 12-char short ID for API calls (backend expects short IDs)
   const containerShortId = container.id.slice(0, 12)
 
-  const { data: healthCheck, isLoading, error } = useContainerHealthCheck(
-    container.host_id,
-    containerShortId
+  // Pass undefined when no view permission to prevent fetching
+  const { data: healthCheck, isLoading } = useContainerHealthCheck(
+    canViewHC ? container.host_id : undefined,
+    canViewHC ? containerShortId : undefined
   )
   const updateHealthCheck = useUpdateHealthCheck()
   const testHealthCheck = useTestHealthCheck()
@@ -74,9 +81,12 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
     }
   }, [healthCheck])
 
-  // Log any errors for debugging
-  if (error) {
-    console.error('Error fetching health check:', error)
+  if (!canViewHC) {
+    return (
+      <div className="flex items-center justify-center h-64 text-muted-foreground">
+        You do not have permission to view health checks.
+      </div>
+    )
   }
 
   const handleTest = async () => {
@@ -231,39 +241,43 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
         </div>
 
         <div className="flex gap-2">
-          <Button
-            onClick={handleTest}
-            disabled={testHealthCheck.isPending || !url || !healthCheckExists}
-            variant="outline"
-            title={!healthCheckExists ? 'Save configuration first to test' : ''}
-          >
-            {testHealthCheck.isPending ? (
-              <>
-                <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                Testing...
-              </>
-            ) : (
-              <>
-                <FlaskConical className="mr-2 h-4 w-4" />
-                Check Now
-              </>
-            )}
-          </Button>
+          <fieldset disabled={!canTestHC} className="disabled:opacity-60">
+            <Button
+              onClick={handleTest}
+              disabled={testHealthCheck.isPending || !url || !healthCheckExists}
+              variant="outline"
+              title={!healthCheckExists ? 'Save configuration first to test' : ''}
+            >
+              {testHealthCheck.isPending ? (
+                <>
+                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                  Testing...
+                </>
+              ) : (
+                <>
+                  <FlaskConical className="mr-2 h-4 w-4" />
+                  Check Now
+                </>
+              )}
+            </Button>
+          </fieldset>
 
-          <Button
-            onClick={handleSave}
-            disabled={updateHealthCheck.isPending}
-            variant="default"
-          >
-            {updateHealthCheck.isPending ? (
-              <>
-                <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                Saving...
-              </>
-            ) : (
-              'Save Changes'
-            )}
-          </Button>
+          <fieldset disabled={!canManageHC} className="disabled:opacity-60">
+            <Button
+              onClick={handleSave}
+              disabled={updateHealthCheck.isPending}
+              variant="default"
+            >
+              {updateHealthCheck.isPending ? (
+                <>
+                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                'Save Changes'
+              )}
+            </Button>
+          </fieldset>
         </div>
       </div>
 
@@ -303,7 +317,7 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
       )}
 
       {/* Configuration Form */}
-      <div className="space-y-4 border-t pt-6">
+      <fieldset disabled={!canManageHC} className="space-y-4 border-t pt-6 disabled:opacity-60">
         <h4 className="text-lg font-medium text-foreground mb-3">Configuration</h4>
 
         {/* Enable/Disable toggle */}
@@ -576,7 +590,7 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
             </div>
           )}
         </div>
-      </div>
+      </fieldset>
 
       {/* Help text */}
       <div className="bg-muted/50 rounded-lg p-4 text-sm text-muted-foreground space-y-2">

@@ -4,8 +4,9 @@
  */
 
 import { useState } from 'react'
-import { Plus, Trash2, Edit, Power, PowerOff, Bell, BellRing } from 'lucide-react'
+import { Plus, Trash2, Edit, Power, PowerOff, Bell, BellRing, LucideIcon } from 'lucide-react'
 import { Smartphone, Send, MessageSquare, Hash, Mail, Users } from 'lucide-react'
+import { useAuth } from '@/features/auth/AuthContext'
 import {
   useNotificationChannels,
   useCreateChannel,
@@ -14,11 +15,12 @@ import {
   useTestChannel,
   useDependentAlerts,
   NotificationChannel,
+  ChannelCreateRequest,
 } from '../../alerts/hooks/useNotificationChannels'
 import { ChannelForm } from '../../alerts/components/ChannelForm'
 import { toast } from 'sonner'
 
-const CHANNEL_ICONS: Record<string, any> = {
+const CHANNEL_ICONS: Record<string, LucideIcon> = {
   telegram: Send,
   discord: MessageSquare,
   slack: Hash,
@@ -30,6 +32,8 @@ const CHANNEL_ICONS: Record<string, any> = {
 }
 
 export function NotificationChannelsSection() {
+  const { hasCapability } = useAuth()
+  const canManage = hasCapability('notifications.manage')
   const [view, setView] = useState<'list' | 'create' | 'edit'>('list')
   const [selectedChannel, setSelectedChannel] = useState<NotificationChannel | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null)
@@ -43,17 +47,17 @@ export function NotificationChannelsSection() {
 
   const channels = channelsData?.channels || []
 
-  const handleCreate = async (data: any) => {
+  const handleCreate = async (data: ChannelCreateRequest) => {
     try {
       await createChannel.mutateAsync(data)
       setView('list')
       toast.success('Channel created successfully')
-    } catch (error: any) {
-      toast.error(`Failed to create channel: ${error.message}`)
+    } catch (error) {
+      toast.error(`Failed to create channel: ${error instanceof Error ? error.message : 'Unknown error'}`)
     }
   }
 
-  const handleUpdate = async (data: any) => {
+  const handleUpdate = async (data: ChannelCreateRequest) => {
     if (!selectedChannel) return
     try {
       await updateChannel.mutateAsync({
@@ -63,8 +67,8 @@ export function NotificationChannelsSection() {
       setView('list')
       setSelectedChannel(null)
       toast.success('Channel updated successfully')
-    } catch (error: any) {
-      toast.error(`Failed to update channel: ${error.message}`)
+    } catch (error) {
+      toast.error(`Failed to update channel: ${error instanceof Error ? error.message : 'Unknown error'}`)
     }
   }
 
@@ -73,8 +77,8 @@ export function NotificationChannelsSection() {
       await deleteChannel.mutateAsync(channelId)
       setDeleteConfirm(null)
       toast.success('Channel deleted successfully')
-    } catch (error: any) {
-      toast.error(`Failed to delete channel: ${error.message}`)
+    } catch (error) {
+      toast.error(`Failed to delete channel: ${error instanceof Error ? error.message : 'Unknown error'}`)
     }
   }
 
@@ -85,8 +89,8 @@ export function NotificationChannelsSection() {
         updates: { enabled: !channel.enabled },
       })
       toast.success(channel.enabled ? 'Channel disabled' : 'Channel enabled')
-    } catch (error: any) {
-      toast.error('Failed to toggle channel')
+    } catch (error) {
+      toast.error(`Failed to toggle channel: ${error instanceof Error ? error.message : 'Unknown error'}`)
     }
   }
 
@@ -116,6 +120,7 @@ export function NotificationChannelsSection() {
           onSubmit={view === 'create' ? handleCreate : handleUpdate}
           onCancel={handleCancelForm}
           isSubmitting={createChannel.isPending || updateChannel.isPending}
+          disabled={!canManage}
         />
       </div>
     )
@@ -123,13 +128,14 @@ export function NotificationChannelsSection() {
 
   return (
     <div className="space-y-4">
+      <fieldset disabled={!canManage} className="space-y-4 disabled:opacity-60">
       <div className="flex items-center justify-between">
         <p className="text-xs text-gray-400">
           Configure notification channels for receiving alert notifications
         </p>
         <button
-          onClick={() => setView('create')}
           className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+          onClick={() => setView('create')}
         >
           <Plus className="h-4 w-4" />
           Add Channel
@@ -184,12 +190,12 @@ export function NotificationChannelsSection() {
                         } else {
                           toast.error(`Test failed: ${result.error || 'Unknown error'}`)
                         }
-                      } catch (error: any) {
-                        toast.error(`Test failed: ${error.message || 'Unknown error'}`)
+                      } catch (error) {
+                        toast.error(`Test failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
                       }
                     }}
                     disabled={!channel.enabled}
-                    className="rounded-md bg-gray-700 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="rounded-md bg-gray-700 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-gray-600 disabled:opacity-50"
                   >
                     Test
                   </button>
@@ -220,6 +226,8 @@ export function NotificationChannelsSection() {
           })}
         </div>
       )}
+
+      </fieldset>
 
       {/* Delete Confirmation Dialog */}
       {deleteConfirm !== null && (

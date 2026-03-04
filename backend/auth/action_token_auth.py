@@ -136,8 +136,96 @@ def validate_action_token(
     # Hash the provided token
     token_hash = hashlib.sha256(token.encode()).hexdigest()
 
+    now = datetime.now(timezone.utc)
+
     with db.get_session() as session:
-        # Look up token by hash
+        if mark_used:
+            # Atomic mark-as-used: prevents TOCTOU race condition
+            rows = session.query(ActionToken).filter(
+                ActionToken.token_hash == token_hash,
+                ActionToken.used_at.is_(None),
+                ActionToken.revoked_at.is_(None),
+                ActionToken.expires_at > now,
+            ).update({
+                "used_at": now,
+                "used_from_ip": client_ip,
+            })
+            session.commit()
+
+            if rows == 0:
+                # Determine specific reason for failure
+                token_record = session.query(ActionToken).filter(
+                    ActionToken.token_hash == token_hash
+                ).first()
+                if not token_record:
+                    logger.warning(f"Action token not found (hash: {token_hash[:12]}...) from {client_ip}")
+                    security_audit.log_event(
+                        event_type="action_token_not_found",
+                        severity="warning",
+                        client_ip=client_ip,
+                        details={"token_hash_prefix": token_hash[:12]}
+                    )
+                    return {"valid": False, "reason": "not_found"}
+                if token_record.revoked_at is not None:
+                    return {"valid": False, "reason": "revoked"}
+                if token_record.used_at is not None:
+                    logger.warning(f"Already-used action token attempted from {client_ip}")
+                    security_audit.log_event(
+                        event_type="action_token_replay_attempt",
+                        severity="warning",
+                        client_ip=client_ip,
+                        details={
+                            "token_id": token_record.id,
+                            "token_prefix": token_record.token_prefix,
+                            "original_use_ip": token_record.used_from_ip,
+                            "used_at": token_record.used_at.isoformat()
+                        }
+                    )
+                    return {"valid": False, "reason": "already_used"}
+                return {"valid": False, "reason": "expired"}
+
+            # Fetch the updated record for response
+            token_record = session.query(ActionToken).filter(
+                ActionToken.token_hash == token_hash
+            ).first()
+
+            try:
+                action_params = json.loads(token_record.action_params)
+            except json.JSONDecodeError:
+                logger.error(f"Invalid action_params JSON for token {token_record.id}")
+                return {"valid": False, "reason": "invalid_params"}
+
+            logger.info(f"Action token {token_record.token_prefix}... used from {client_ip}")
+            security_audit.log_event(
+                event_type="action_token_used",
+                severity="info",
+                user_id=None,
+                client_ip=client_ip,
+                details={
+                    "token_id": token_record.id,
+                    "token_prefix": token_record.token_prefix,
+                    "action_type": token_record.action_type,
+                    "action_params": action_params
+                }
+            )
+
+            expires_at = token_record.expires_at
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            time_remaining = expires_at - now
+            hours_remaining = time_remaining.total_seconds() / 3600
+
+            return {
+                "valid": True,
+                "token_id": token_record.id,
+                "action_type": token_record.action_type,
+                "action_params": action_params,
+                "created_at": token_record.created_at.isoformat() + "Z",
+                "expires_at": expires_at.isoformat() + "Z",
+                "hours_remaining": round(hours_remaining, 1)
+            }
+
+        # Non-mark_used path (info endpoint): sequential checks for proper error reasons
         token_record = session.query(ActionToken).filter(
             ActionToken.token_hash == token_hash
         ).first()
@@ -152,7 +240,6 @@ def validate_action_token(
             )
             return {"valid": False, "reason": "not_found"}
 
-        # Check if revoked
         if token_record.revoked_at is not None:
             logger.warning(f"Revoked action token used from {client_ip}")
             security_audit.log_event(
@@ -167,7 +254,6 @@ def validate_action_token(
             )
             return {"valid": False, "reason": "revoked"}
 
-        # Check if already used
         if token_record.used_at is not None:
             logger.warning(f"Already-used action token attempted from {client_ip}")
             security_audit.log_event(
@@ -183,8 +269,6 @@ def validate_action_token(
             )
             return {"valid": False, "reason": "already_used"}
 
-        # Check if expired
-        now = datetime.now(timezone.utc)
         expires_at = token_record.expires_at
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
@@ -203,34 +287,12 @@ def validate_action_token(
             )
             return {"valid": False, "reason": "expired"}
 
-        # Parse action params
         try:
             action_params = json.loads(token_record.action_params)
         except json.JSONDecodeError:
             logger.error(f"Invalid action_params JSON for token {token_record.id}")
             return {"valid": False, "reason": "invalid_params"}
 
-        # Mark as used if requested (execute endpoint)
-        if mark_used:
-            token_record.used_at = now
-            token_record.used_from_ip = client_ip
-            session.commit()
-
-            logger.info(f"Action token {token_record.token_prefix}... used from {client_ip}")
-            security_audit.log_event(
-                event_type="action_token_used",
-                severity="info",
-                user_id=None,
-                client_ip=client_ip,
-                details={
-                    "token_id": token_record.id,
-                    "token_prefix": token_record.token_prefix,
-                    "action_type": token_record.action_type,
-                    "action_params": action_params
-                }
-            )
-
-        # Calculate time remaining
         time_remaining = expires_at - now
         hours_remaining = time_remaining.total_seconds() / 3600
 

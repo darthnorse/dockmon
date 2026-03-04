@@ -11,16 +11,32 @@ com.docker.compose.project labels, not from database records.
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, Field
 
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, Capabilities
+from audit.audit_logger import AuditAction, log_stack_change
+from auth.utils import get_auditable_user_info
+from database import DatabaseManager, StackMetadata
 from deployment import stack_storage
 from deployment.container_utils import scan_deployed_stacks
 from deployment.routes import get_docker_monitor
 from security.rate_limiting import rate_limit_stacks
+from utils.response_filtering import filter_stack_env_content
+
+# Database manager for audit tracking (v2.3.0+)
+_db_manager = None
+
+
+def get_db_manager():
+    """Get or create singleton DatabaseManager for audit tracking."""
+    global _db_manager
+    if _db_manager is None:
+        _db_manager = DatabaseManager()
+    return _db_manager
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +121,7 @@ class StackResponse(BaseModel):
 
 # ==================== Endpoints ====================
 
-@router.get("", response_model=List[StackListItem])
+@router.get("", response_model=List[StackListItem], dependencies=[Depends(require_capability("stacks.view"))])
 async def list_stacks(user=Depends(get_current_user)):
     """
     List all stacks with deployed_to information.
@@ -138,12 +154,13 @@ async def list_stacks(user=Depends(get_current_user)):
     return result
 
 
-@router.get("/{name}", response_model=StackResponse)
+@router.get("/{name}", response_model=StackResponse, dependencies=[Depends(require_capability("stacks.view"))])
 async def get_stack(name: str, user=Depends(get_current_user)):
     """
     Get a stack by name with its content.
 
     Returns compose.yaml and .env content along with deployed_to info.
+    Note: .env content is filtered out for users without stacks.view_env capability (v2.3.0+).
     """
     # Check if stack exists
     if not await stack_storage.stack_exists(name):
@@ -164,16 +181,19 @@ async def get_stack(name: str, user=Depends(get_current_user)):
             for h in deployed_stacks[name].hosts
         ]
 
+    # Filter env_content for users without stacks.view_env capability
+    can_view_env = check_auth_capability(user, Capabilities.STACKS_VIEW_ENV)
+
     return StackResponse(
         name=name,
         deployed_to=deployed_to,
         compose_yaml=compose_yaml,
-        env_content=env_content,
+        env_content=filter_stack_env_content(env_content, can_view_env),
     )
 
 
-@router.post("", response_model=StackResponse, status_code=201, dependencies=[rate_limit_stacks])
-async def create_stack(request: StackCreate, user=Depends(get_current_user)):
+@router.post("", response_model=StackResponse, status_code=201, dependencies=[rate_limit_stacks, Depends(require_capability("stacks.edit"))])
+async def create_stack(request: StackCreate, http_request: Request, user=Depends(get_current_user)):
     """
     Create a new stack.
 
@@ -190,7 +210,20 @@ async def create_stack(request: StackCreate, user=Depends(get_current_user)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    logger.info(f"User {user['username']} created stack '{request.name}'")
+    # Track created_by in StackMetadata (v2.3.0+)
+    user_id, display_name = get_auditable_user_info(user)
+    db = get_db_manager()
+    with db.get_session() as session:
+        metadata = StackMetadata(
+            stack_name=request.name,
+            created_by=user_id,
+            updated_by=user_id
+        )
+        session.add(metadata)
+        log_stack_change(session, user_id, display_name, AuditAction.CREATE, request.name, http_request)
+        session.commit()
+
+    logger.info(f"User {display_name} created stack '{request.name}'")
 
     return StackResponse(
         name=request.name,
@@ -200,8 +233,8 @@ async def create_stack(request: StackCreate, user=Depends(get_current_user)):
     )
 
 
-@router.put("/{name}", response_model=StackResponse, dependencies=[rate_limit_stacks])
-async def update_stack(name: str, request: StackUpdate, user=Depends(get_current_user)):
+@router.put("/{name}", response_model=StackResponse, dependencies=[rate_limit_stacks, Depends(require_capability("stacks.edit"))])
+async def update_stack(name: str, request: StackUpdate, http_request: Request, user=Depends(get_current_user)):
     """
     Update a stack's content.
 
@@ -220,6 +253,25 @@ async def update_stack(name: str, request: StackUpdate, user=Depends(get_current
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    # Track updated_by in StackMetadata (v2.3.0+)
+    user_id, display_name = get_auditable_user_info(user)
+    db = get_db_manager()
+    with db.get_session() as session:
+        metadata = session.query(StackMetadata).filter_by(stack_name=name).first()
+        if metadata:
+            metadata.updated_by = user_id
+            metadata.updated_at = datetime.now(timezone.utc)
+        else:
+            # Create metadata if it doesn't exist (for pre-v2.3.0 stacks)
+            metadata = StackMetadata(
+                stack_name=name,
+                created_by=user_id,
+                updated_by=user_id
+            )
+            session.add(metadata)
+        log_stack_change(session, user_id, display_name, AuditAction.UPDATE, name, http_request)
+        session.commit()
+
     # Get deployed_to info from containers
     monitor = get_docker_monitor()
     all_containers = monitor.get_last_containers()
@@ -232,7 +284,7 @@ async def update_stack(name: str, request: StackUpdate, user=Depends(get_current
             for h in deployed_stacks[name].hosts
         ]
 
-    logger.info(f"User {user['username']} updated stack '{name}'")
+    logger.info(f"User {display_name} updated stack '{name}'")
 
     return StackResponse(
         name=name,
@@ -242,8 +294,8 @@ async def update_stack(name: str, request: StackUpdate, user=Depends(get_current
     )
 
 
-@router.put("/{name}/rename", response_model=StackResponse, dependencies=[rate_limit_stacks])
-async def rename_stack(name: str, request: StackRename, user=Depends(get_current_user)):
+@router.put("/{name}/rename", response_model=StackResponse, dependencies=[rate_limit_stacks, Depends(require_capability("stacks.edit"))])
+async def rename_stack(name: str, request: StackRename, http_request: Request, user=Depends(get_current_user)):
     """
     Rename a stack.
 
@@ -266,22 +318,52 @@ async def rename_stack(name: str, request: StackRename, user=Depends(get_current
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to rename stack: {e}")
 
+    # Update StackMetadata - since stack_name is PK, delete old and create new (v2.3.0+)
+    user_id, display_name = get_auditable_user_info(user)
+    db = get_db_manager()
+    with db.get_session() as session:
+        old_metadata = session.query(StackMetadata).filter_by(stack_name=name).first()
+        if old_metadata:
+            # Preserve original created_by and created_at
+            new_metadata = StackMetadata(
+                stack_name=request.new_name,
+                created_by=old_metadata.created_by,
+                updated_by=user_id,
+                created_at=old_metadata.created_at,
+                updated_at=datetime.now(timezone.utc)
+            )
+            session.delete(old_metadata)
+            session.add(new_metadata)
+        else:
+            # Create metadata if it doesn't exist (for pre-v2.3.0 stacks)
+            new_metadata = StackMetadata(
+                stack_name=request.new_name,
+                created_by=user_id,
+                updated_by=user_id
+            )
+            session.add(new_metadata)
+        log_stack_change(session, user_id, display_name, AuditAction.RENAME, name, http_request, details={'new_name': request.new_name})
+        session.commit()
+
     # Read content for response
     compose_yaml, env_content = await stack_storage.read_stack(request.new_name)
 
-    logger.info(f"User {user['username']} renamed stack '{name}' to '{request.new_name}'")
+    # Filter env_content for users without stacks.view_env capability
+    can_view_env = check_auth_capability(user, Capabilities.STACKS_VIEW_ENV)
+
+    logger.info(f"User {display_name} renamed stack '{name}' to '{request.new_name}'")
 
     # New stack has no deployed containers (they still have old name in labels)
     return StackResponse(
         name=request.new_name,
         deployed_to=[],
         compose_yaml=compose_yaml,
-        env_content=env_content,
+        env_content=filter_stack_env_content(env_content, can_view_env),
     )
 
 
-@router.delete("/{name}", status_code=204, dependencies=[rate_limit_stacks])
-async def delete_stack(name: str, user=Depends(get_current_user)):
+@router.delete("/{name}", status_code=204, dependencies=[rate_limit_stacks, Depends(require_capability("stacks.edit"))])
+async def delete_stack(name: str, http_request: Request, user=Depends(get_current_user)):
     """
     Delete a stack from filesystem.
 
@@ -297,11 +379,19 @@ async def delete_stack(name: str, user=Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete stack: {e}")
 
-    logger.info(f"User {user['username']} deleted stack '{name}'")
+    # Delete StackMetadata (v2.3.0+)
+    user_id, display_name = get_auditable_user_info(user)
+    db = get_db_manager()
+    with db.get_session() as session:
+        session.query(StackMetadata).filter_by(stack_name=name).delete()
+        log_stack_change(session, user_id, display_name, AuditAction.DELETE, name, http_request)
+        session.commit()
+
+    logger.info(f"User {display_name} deleted stack '{name}'")
 
 
-@router.post("/{name}/copy", response_model=StackResponse, status_code=201, dependencies=[rate_limit_stacks])
-async def copy_stack_endpoint(name: str, request: StackCopy, user=Depends(get_current_user)):
+@router.post("/{name}/copy", response_model=StackResponse, status_code=201, dependencies=[rate_limit_stacks, Depends(require_capability("stacks.edit"))])
+async def copy_stack_endpoint(name: str, request: StackCopy, http_request: Request, user=Depends(get_current_user)):
     """
     Copy a stack to a new name.
 
@@ -314,14 +404,30 @@ async def copy_stack_endpoint(name: str, request: StackCopy, user=Depends(get_cu
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    # Create StackMetadata for the copied stack (v2.3.0+)
+    user_id, display_name = get_auditable_user_info(user)
+    db = get_db_manager()
+    with db.get_session() as session:
+        metadata = StackMetadata(
+            stack_name=request.dest_name,
+            created_by=user_id,
+            updated_by=user_id
+        )
+        session.add(metadata)
+        log_stack_change(session, user_id, display_name, AuditAction.COPY, name, http_request, details={'dest_name': request.dest_name})
+        session.commit()
+
     # Read content for response
     compose_yaml, env_content = await stack_storage.read_stack(request.dest_name)
 
-    logger.info(f"User {user['username']} copied stack '{name}' to '{request.dest_name}'")
+    # Filter env_content for users without stacks.view_env capability
+    can_view_env = check_auth_capability(user, Capabilities.STACKS_VIEW_ENV)
+
+    logger.info(f"User {display_name} copied stack '{name}' to '{request.dest_name}'")
 
     return StackResponse(
         name=request.dest_name,
         deployed_to=[],
         compose_yaml=compose_yaml,
-        env_content=env_content,
+        env_content=filter_stack_env_content(env_content, can_view_env),
     )

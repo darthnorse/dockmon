@@ -1,3 +1,4 @@
+import { useAuth } from '@/features/auth/AuthContext'
 import type { Container } from '../types'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
 
@@ -16,6 +17,9 @@ export function BulkActionConfirmModal({
   action,
   containers,
 }: BulkActionConfirmModalProps) {
+  const { hasCapability } = useAuth()
+  const canOperate = hasCapability('containers.operate')
+
   if (!isOpen) return null
 
   const actionLabels = {
@@ -88,12 +92,14 @@ export function BulkActionConfirmModal({
           >
             Cancel
           </button>
-          <button
-            onClick={onConfirm}
-            className={`px-4 py-2 text-sm font-medium rounded transition-colors ${actionColors[action]}`}
-          >
-            {actionLabels[action]} {containers.length} Container{containers.length !== 1 ? 's' : ''}
-          </button>
+          <fieldset disabled={!canOperate} className="disabled:opacity-60">
+            <button
+              onClick={onConfirm}
+              className={`px-4 py-2 text-sm font-medium rounded transition-colors ${actionColors[action]}`}
+            >
+              {actionLabels[action]} {containers.length} Container{containers.length !== 1 ? 's' : ''}
+            </button>
+          </fieldset>
         </div>
       </div>
     </div>

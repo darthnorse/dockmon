@@ -274,10 +274,7 @@ func isPathSafe(path string) bool {
 		"/usr/bin",
 		"/usr/sbin",
 		"/usr/lib",
-		"/etc/ssl",
-		"/etc/ssh",
-		"/etc/shadow",
-		"/etc/passwd",
+		"/etc",
 	}
 
 	for _, prefix := range blockedPrefixes {

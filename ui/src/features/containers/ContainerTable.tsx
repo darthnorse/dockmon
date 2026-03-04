@@ -85,11 +85,13 @@ import { BatchJobPanel } from './components/BatchJobPanel'
 import { ColumnCustomizationPanel } from './components/ColumnCustomizationPanel'
 import { IPAddressCell } from './components/IPAddressCell'
 import type { Container } from './types'
+import { useAuth } from '@/features/auth/AuthContext'
 import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import { useContainerUpdateStatus, useUpdatesSummary, useAllAutoUpdateConfigs, useAllHealthCheckConfigs } from './hooks/useContainerUpdates'
 import { useContainerActions } from './hooks/useContainerActions'
 import { useContainerHealthCheck } from './hooks/useContainerHealthCheck'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
+import { sanitizeHref } from '@/lib/utils/urlSanitize'
 import { formatBytes } from '@/lib/utils/formatting'
 import { useContainerModal } from '@/providers'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
@@ -363,6 +365,8 @@ interface ContainerTableProps {
 }
 
 export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {}) {
+  const { hasCapability } = useAuth()
+  const canOperate = hasCapability('containers.operate')
   const { data: preferences } = useUserPreferences()
   const updatePreferences = useUpdatePreferences()
   const [sorting, setSorting] = useState<SortingState>(preferences?.container_table_sort || [])
@@ -899,18 +903,18 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           const allCurrentSelected = currentCompositeKeys.length > 0 && currentCompositeKeys.every(key => selectedContainerIds.has(key))
 
           return (
-            <div className="flex items-center justify-center">
+            <fieldset disabled={!canOperate} className="flex items-center justify-center disabled:opacity-60">
               <input
                 type="checkbox"
                 checked={allCurrentSelected}
                 onChange={() => toggleSelectAll(table)}
                 className="h-4 w-4 rounded border-border text-primary focus:ring-primary cursor-pointer"
               />
-            </div>
+            </fieldset>
           )
         },
         cell: ({ row }) => (
-          <div className="flex items-center justify-center">
+          <fieldset disabled={!canOperate} className="flex items-center justify-center disabled:opacity-60">
             <input
               type="checkbox"
               checked={selectedContainerIds.has(makeCompositeKey(row.original))}
@@ -918,7 +922,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
               onClick={(e) => e.stopPropagation()}
               className="h-4 w-4 rounded border-border text-primary focus:ring-primary cursor-pointer"
             />
-          </div>
+          </fieldset>
         ),
         size: 50,
         enableSorting: false,
@@ -1318,77 +1322,79 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
 
           return (
             <div className="flex items-center gap-1">
-              {/* Start button - enabled only when stopped */}
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8"
-                onClick={() => {
-                  if (!container.host_id) {
-                    toast.error('Cannot start container', {
-                      description: 'Container missing host information',
+              <fieldset disabled={!canOperate} className="flex items-center gap-1 disabled:opacity-60">
+                {/* Start button - enabled only when stopped */}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => {
+                    if (!container.host_id) {
+                      toast.error('Cannot start container', {
+                        description: 'Container missing host information',
+                      })
+                      return
+                    }
+                    executeAction({
+                      type: 'start',
+                      container_id: container.id,
+                      host_id: container.host_id,
                     })
-                    return
-                  }
-                  executeAction({
-                    type: 'start',
-                    container_id: container.id,
-                    host_id: container.host_id,
-                  })
-                }}
-                disabled={!canStart || isContainerPending(container.host_id || '', container.id)}
-                title="Start container"
-              >
-                <PlayCircle className={`h-4 w-4 ${canStart ? 'text-success' : 'text-muted-foreground'}`} />
-              </Button>
+                  }}
+                  disabled={!canStart || isContainerPending(container.host_id || '', container.id)}
+                  title="Start container"
+                >
+                  <PlayCircle className={`h-4 w-4 ${canStart ? 'text-success' : 'text-muted-foreground'}`} />
+                </Button>
 
-              {/* Stop button - enabled only when running */}
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8"
-                onClick={() => {
-                  if (!container.host_id) {
-                    toast.error('Cannot stop container', {
-                      description: 'Container missing host information',
+                {/* Stop button - enabled only when running */}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => {
+                    if (!container.host_id) {
+                      toast.error('Cannot stop container', {
+                        description: 'Container missing host information',
+                      })
+                      return
+                    }
+                    executeAction({
+                      type: 'stop',
+                      container_id: container.id,
+                      host_id: container.host_id,
                     })
-                    return
-                  }
-                  executeAction({
-                    type: 'stop',
-                    container_id: container.id,
-                    host_id: container.host_id,
-                  })
-                }}
-                disabled={!canStop || isContainerPending(container.host_id || '', container.id)}
-                title="Stop container"
-              >
-                <Square className={`h-4 w-4 ${canStop ? 'text-danger' : 'text-muted-foreground'}`} />
-              </Button>
+                  }}
+                  disabled={!canStop || isContainerPending(container.host_id || '', container.id)}
+                  title="Stop container"
+                >
+                  <Square className={`h-4 w-4 ${canStop ? 'text-danger' : 'text-muted-foreground'}`} />
+                </Button>
 
-              {/* Restart button - enabled only when running */}
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8"
-                onClick={() => {
-                  if (!container.host_id) {
-                    toast.error('Cannot restart container', {
-                      description: 'Container missing host information',
+                {/* Restart button - enabled only when running */}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => {
+                    if (!container.host_id) {
+                      toast.error('Cannot restart container', {
+                        description: 'Container missing host information',
+                      })
+                      return
+                    }
+                    executeAction({
+                      type: 'restart',
+                      container_id: container.id,
+                      host_id: container.host_id,
                     })
-                    return
-                  }
-                  executeAction({
-                    type: 'restart',
-                    container_id: container.id,
-                    host_id: container.host_id,
-                  })
-                }}
-                disabled={!canRestart || isContainerPending(container.host_id || '', container.id)}
-                title="Restart container"
-              >
-                <RotateCw className={`h-4 w-4 ${canRestart ? 'text-info' : 'text-muted-foreground'}`} />
-              </Button>
+                  }}
+                  disabled={!canRestart || isContainerPending(container.host_id || '', container.id)}
+                  title="Restart container"
+                >
+                  <RotateCw className={`h-4 w-4 ${canRestart ? 'text-info' : 'text-muted-foreground'}`} />
+                </Button>
+              </fieldset>
 
               {/* Maximize button - opens full details modal (hidden in simplified workflow) */}
               {!simplifiedWorkflow && (
@@ -1426,10 +1432,10 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
                 }}
               />
 
-              {/* WebUI link - shows if web_ui_url is defined */}
-              {container.web_ui_url && (
+              {/* WebUI link - shows if web_ui_url is defined and safe */}
+              {container.web_ui_url && sanitizeHref(container.web_ui_url) && (
                 <a
-                  href={container.web_ui_url}
+                  href={sanitizeHref(container.web_ui_url)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center justify-center h-8 w-8 rounded hover:bg-surface-2 text-muted-foreground hover:text-primary transition-colors"
@@ -1444,7 +1450,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         },
       },
     ],
-    [executeAction, isContainerPending, selectedContainerIds, data, toggleContainerSelection, toggleSelectAll, alertCounts, allAutoUpdateConfigs, allHealthCheckConfigs]
+    [executeAction, isContainerPending, selectedContainerIds, data, toggleContainerSelection, toggleSelectAll, alertCounts, allAutoUpdateConfigs, allHealthCheckConfigs, canOperate]
   )
 
   const table = useReactTable({

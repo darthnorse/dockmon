@@ -18,6 +18,7 @@
  */
 
 import { useState, useEffect, useMemo } from 'react'
+import { useAuth } from '@/features/auth/AuthContext'
 import { Cpu, MemoryStick, Network } from 'lucide-react'
 import type { Container } from '../../types'
 import { useContainerSparklines } from '@/lib/stats/StatsProvider'
@@ -30,12 +31,17 @@ import { Button } from '@/components/ui/button'
 import { useContainerTagEditor } from '@/hooks/useContainerTagEditor'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
 import { formatBytes } from '@/lib/utils/formatting'
+import { sanitizeHref } from '@/lib/utils/urlSanitize'
 
 interface ContainerInfoTabProps {
   container: Container
 }
 
 export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
+  const { hasCapability } = useAuth()
+  const canOperate = hasCapability('containers.operate')
+  const canManageTags = hasCapability('tags.manage')
+  const canViewEnv = hasCapability('containers.view_env')
   // CRITICAL: Always use 12-char short ID for API calls (backend expects short IDs)
   const containerShortId = container.id.slice(0, 12)
 
@@ -133,8 +139,8 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     return `${(bytesPerSec / (k * k)).toFixed(2)} MB/s`
   }
 
-  // Filter out common system env vars for cleaner display
-  const filteredEnv = container.env
+  // Filter out common system env vars for cleaner display (skip if user can't view env)
+  const filteredEnv = canViewEnv && container.env
     ? Object.entries(container.env).filter(([key]) => {
         // Show app-specific variables, hide common system paths
         return !['PATH', 'HOME', 'HOSTNAME', 'TERM'].includes(key)
@@ -191,7 +197,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
             </div>
 
             {/* WebUI URL */}
-            <div>
+            <fieldset disabled={!canOperate} className="disabled:opacity-60">
               <h4 className="text-lg font-medium text-foreground mb-3">WebUI</h4>
               {isEditingWebUi ? (
                 <div className="space-y-2">
@@ -227,14 +233,20 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                 <div>
                   {webUiUrl ? (
                     <div className="flex items-center gap-2">
-                      <a
-                        href={webUiUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sm text-primary hover:underline truncate flex-1"
-                      >
-                        {webUiUrl}
-                      </a>
+                      {sanitizeHref(webUiUrl) ? (
+                        <a
+                          href={sanitizeHref(webUiUrl)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-sm text-primary hover:underline truncate flex-1"
+                        >
+                          {webUiUrl}
+                        </a>
+                      ) : (
+                        <span className="text-sm text-muted-foreground truncate flex-1">
+                          {webUiUrl}
+                        </span>
+                      )}
                       <button
                         onClick={() => setIsEditingWebUi(true)}
                         className="text-xs text-primary hover:text-primary/80"
@@ -252,12 +264,12 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                   )}
                 </div>
               )}
-            </div>
+            </fieldset>
 
             {/* Tags */}
             <div>
               {isEditingTags ? (
-                <div className="space-y-2">
+                <fieldset disabled={!canManageTags} className="space-y-2 disabled:opacity-60">
                   <div className="flex items-center justify-between">
                     <h4 className="text-lg font-medium text-foreground">Tags</h4>
                   </div>
@@ -287,14 +299,15 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                       Cancel
                     </Button>
                   </div>
-                </div>
+                </fieldset>
               ) : (
                 <div>
                   <div className="flex items-center justify-between mb-3">
                     <h4 className="text-lg font-medium text-foreground">Tags</h4>
                     <button
                       onClick={handleStartEdit}
-                      className="text-xs text-primary hover:text-primary/80"
+                      disabled={!canManageTags}
+                      className="text-xs text-primary hover:text-primary/80 disabled:opacity-60 disabled:cursor-not-allowed"
                     >
                       + Edit
                     </button>
@@ -368,58 +381,60 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
 
           {/* RIGHT COLUMN */}
           <div className="space-y-6">
-            {/* Auto-restart Toggle */}
-            <div>
-              <h4 className="text-lg font-medium text-foreground mb-3">Auto-restart</h4>
-              <label className="flex items-center gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={autoRestart}
-                  onChange={(e) => handleAutoRestartToggle(e.target.checked)}
-                  className="w-4 h-4 rounded border-border bg-surface-1 checked:bg-primary"
-                />
-                <span className="text-sm">
-                  Automatically restart container if it stops unexpectedly
-                </span>
-              </label>
-            </div>
-
-            {/* Desired State */}
-            <div>
-              <h4 className="text-lg font-medium text-foreground mb-3">Desired State</h4>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => handleDesiredStateChange('should_run')}
-                  className={`flex-1 px-3 py-2 text-sm rounded transition-colors ${
-                    desiredState === 'should_run'
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-surface-1 hover:bg-surface-2'
-                  }`}
-                >
-                  Should Run
-                </button>
-                <button
-                  onClick={() => handleDesiredStateChange('on_demand')}
-                  className={`flex-1 px-3 py-2 text-sm rounded transition-colors ${
-                    desiredState === 'on_demand'
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-surface-1 hover:bg-surface-2'
-                  }`}
-                >
-                  On Demand
-                </button>
-                <button
-                  onClick={() => handleDesiredStateChange('unspecified')}
-                  className={`flex-1 px-3 py-2 text-sm rounded transition-colors ${
-                    desiredState === 'unspecified'
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-surface-1 hover:bg-surface-2'
-                  }`}
-                >
-                  Unspecified
-                </button>
+            <fieldset disabled={!canOperate} className="space-y-6 disabled:opacity-60">
+              {/* Auto-restart Toggle */}
+              <div>
+                <h4 className="text-lg font-medium text-foreground mb-3">Auto-restart</h4>
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={autoRestart}
+                    onChange={(e) => handleAutoRestartToggle(e.target.checked)}
+                    className="w-4 h-4 rounded border-border bg-surface-1 checked:bg-primary"
+                  />
+                  <span className="text-sm">
+                    Automatically restart container if it stops unexpectedly
+                  </span>
+                </label>
               </div>
-            </div>
+
+              {/* Desired State */}
+              <div>
+                <h4 className="text-lg font-medium text-foreground mb-3">Desired State</h4>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => handleDesiredStateChange('should_run')}
+                    className={`flex-1 px-3 py-2 text-sm rounded transition-colors ${
+                      desiredState === 'should_run'
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-surface-1 hover:bg-surface-2'
+                    }`}
+                  >
+                    Should Run
+                  </button>
+                  <button
+                    onClick={() => handleDesiredStateChange('on_demand')}
+                    className={`flex-1 px-3 py-2 text-sm rounded transition-colors ${
+                      desiredState === 'on_demand'
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-surface-1 hover:bg-surface-2'
+                    }`}
+                  >
+                    On Demand
+                  </button>
+                  <button
+                    onClick={() => handleDesiredStateChange('unspecified')}
+                    className={`flex-1 px-3 py-2 text-sm rounded transition-colors ${
+                      desiredState === 'unspecified'
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-surface-1 hover:bg-surface-2'
+                    }`}
+                  >
+                    Unspecified
+                  </button>
+                </div>
+              </div>
+            </fieldset>
 
             {/* Live Stats Header */}
             <div className="-mb-3">

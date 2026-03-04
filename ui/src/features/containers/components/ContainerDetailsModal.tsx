@@ -10,6 +10,7 @@
  */
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useAuth } from '@/features/auth/AuthContext'
 import { X, Play, RotateCw, Circle, Trash2, Skull, PenLine } from 'lucide-react'
 import { Tabs } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
@@ -48,6 +49,11 @@ export function ContainerDetailsModal({
   onClose,
   initialTab = 'info',
 }: ContainerDetailsModalProps) {
+  const { hasCapability } = useAuth()
+  const canOperate = hasCapability('containers.operate')
+  const canViewLogs = hasCapability('containers.logs')
+  const canShell = hasCapability('containers.shell')
+  const canViewHealthChecks = hasCapability('healthchecks.view')
   const queryClient = useQueryClient()
   const { containerStats } = useStatsContext()
   const { updateContainerId } = useContainerModal()
@@ -196,43 +202,16 @@ export function ContainerDetailsModal({
   const nameLower = container.name.toLowerCase()
   const isDockMon = nameLower === 'dockmon' || nameLower.startsWith('dockmon-')
 
-  const handleStart = async () => {
+  const handleAction = async (action: 'start' | 'stop' | 'restart') => {
     setIsPerformingAction(true)
     try {
       // CRITICAL: Use current tracked containerId, not container.id which may be stale from fallback
       const { hostId, containerId: currentId } = parseCompositeKey(containerId!)
-      await apiClient.post(`/hosts/${hostId}/containers/${currentId}/start`)
-      toast.success(`Started ${container.name}`)
+      await apiClient.post(`/hosts/${hostId}/containers/${currentId}/${action}`)
+      const labels = { start: 'Started', stop: 'Stopped', restart: 'Restarting' } as const
+      toast.success(`${labels[action]} ${container.name}`)
     } catch (error) {
-      toast.error(`Failed to start container: ${error instanceof Error ? error.message : 'Unknown error'}`)
-    } finally {
-      setIsPerformingAction(false)
-    }
-  }
-
-  const handleStop = async () => {
-    setIsPerformingAction(true)
-    try {
-      // CRITICAL: Use current tracked containerId, not container.id which may be stale from fallback
-      const { hostId, containerId: currentId } = parseCompositeKey(containerId!)
-      await apiClient.post(`/hosts/${hostId}/containers/${currentId}/stop`)
-      toast.success(`Stopped ${container.name}`)
-    } catch (error) {
-      toast.error(`Failed to stop container: ${error instanceof Error ? error.message : 'Unknown error'}`)
-    } finally {
-      setIsPerformingAction(false)
-    }
-  }
-
-  const handleRestart = async () => {
-    setIsPerformingAction(true)
-    try {
-      // CRITICAL: Use current tracked containerId, not container.id which may be stale from fallback
-      const { hostId, containerId: currentId } = parseCompositeKey(containerId!)
-      await apiClient.post(`/hosts/${hostId}/containers/${currentId}/restart`)
-      toast.success(`Restarting ${container.name}`)
-    } catch (error) {
-      toast.error(`Failed to restart container: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      toast.error(`Failed to ${action} container: ${error instanceof Error ? error.message : 'Unknown error'}`)
     } finally {
       setIsPerformingAction(false)
     }
@@ -322,16 +301,16 @@ export function ContainerDetailsModal({
       label: 'Info',
       content: <ContainerInfoTab container={container} />,
     },
-    {
+    ...(canViewLogs ? [{
       id: 'logs',
       label: 'Logs',
       content: <ContainerModalLogsTab hostId={container.host_id!} containerId={container.id} containerName={container.name} />,
-    },
-    {
+    }] : []),
+    ...(canShell ? [{
       id: 'shell',
       label: 'Shell',
       content: <ContainerShellTab hostId={container.host_id!} containerId={container.id} containerName={container.name} isRunning={isRunning} />,
-    },
+    }] : []),
     {
       id: 'events',
       label: 'Events',
@@ -347,11 +326,11 @@ export function ContainerDetailsModal({
       label: 'Updates',
       content: <ContainerUpdatesTab container={container} />,
     },
-    {
+    ...(canViewHealthChecks ? [{
       id: 'health',
       label: 'Health Check',
       content: <ContainerHealthCheckTab container={container} />,
-    },
+    }] : []),
   ]
 
   return (
@@ -405,73 +384,75 @@ export function ContainerDetailsModal({
 
           {/* Action Buttons */}
           <div className="flex items-center gap-2">
-            {!isRunning ? (
-              <Button
-                variant="default"
-                size="sm"
-                onClick={handleStart}
-                disabled={isPerformingAction}
-              >
-                <Play className="w-4 h-4 mr-2" />
-                Start
-              </Button>
-            ) : (
+            <fieldset disabled={!canOperate} className="flex items-center gap-2 disabled:opacity-60">
+              {!isRunning ? (
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={() => handleAction('start')}
+                  disabled={isPerformingAction}
+                >
+                  <Play className="w-4 h-4 mr-2" />
+                  Start
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleAction('stop')}
+                  disabled={isPerformingAction}
+                  className="border-red-500/50 text-red-400 hover:bg-red-500/10"
+                >
+                  <Circle className="w-4 h-4 mr-2" />
+                  Stop
+                </Button>
+              )}
               <Button
                 variant="outline"
                 size="sm"
-                onClick={handleStop}
+                onClick={() => handleAction('restart')}
                 disabled={isPerformingAction}
-                className="border-red-500/50 text-red-400 hover:bg-red-500/10"
               >
-                <Circle className="w-4 h-4 mr-2" />
-                Stop
+                <RotateCw className="w-4 h-4 mr-2" />
+                Restart
               </Button>
-            )}
-            {isKillable && (
+              {isKillable && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowKillConfirm(true)}
+                  disabled={isPerformingAction || isDockMon}
+                  className="border-red-700/50 text-red-500 hover:bg-red-700/10"
+                  title="Force kill (SIGKILL) - for unresponsive containers"
+                >
+                  <Skull className="w-4 h-4 mr-2" />
+                  Kill
+                </Button>
+              )}
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setShowKillConfirm(true)}
+                onClick={() => {
+                  setRenameValue(container.name)
+                  setRenameError('')
+                  setShowRenameDialog(true)
+                }}
                 disabled={isPerformingAction || isDockMon}
-                className="border-red-700/50 text-red-500 hover:bg-red-700/10"
-                title="Force kill (SIGKILL) - for unresponsive containers"
               >
-                <Skull className="w-4 h-4 mr-2" />
-                Kill
+                <PenLine className="w-4 h-4 mr-2" />
+                Rename
               </Button>
-            )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleRestart}
-              disabled={isPerformingAction}
-            >
-              <RotateCw className="w-4 h-4 mr-2" />
-              Restart
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setRenameValue(container.name)
-                setRenameError('')
-                setShowRenameDialog(true)
-              }}
-              disabled={isPerformingAction || isDockMon}
-            >
-              <PenLine className="w-4 h-4 mr-2" />
-              Rename
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => setShowDeleteDialog(true)}
-              disabled={isPerformingAction || isDockMon}
-              className="bg-red-600 hover:bg-red-700 text-white"
-            >
-              <Trash2 className="w-4 h-4 mr-2" />
-              Delete
-            </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setShowDeleteDialog(true)}
+                disabled={isPerformingAction || isDockMon}
+                className="bg-red-600 hover:bg-red-700 text-white"
+              >
+                <Trash2 className="w-4 h-4 mr-2" />
+                Delete
+              </Button>
+            </fieldset>
             <Button
               variant="ghost"
               size="icon"

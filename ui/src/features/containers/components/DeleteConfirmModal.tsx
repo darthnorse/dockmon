@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useAuth } from '@/features/auth/AuthContext'
 import { AlertTriangle } from 'lucide-react'
 import type { Container } from '../types'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
@@ -16,6 +17,8 @@ export function DeleteConfirmModal({
   onConfirm,
   containers,
 }: DeleteConfirmModalProps) {
+  const { hasCapability } = useAuth()
+  const canOperate = hasCapability('containers.operate')
   const [removeVolumes, setRemoveVolumes] = useState(false)
 
   if (!isOpen) return null
@@ -78,7 +81,7 @@ export function DeleteConfirmModal({
           </div>
 
           {/* Volume removal option */}
-          <div className="border-t border-border pt-4">
+          <fieldset disabled={!canOperate} className="border-t border-border pt-4 disabled:opacity-60">
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"
@@ -93,7 +96,7 @@ export function DeleteConfirmModal({
             <p className="text-xs text-muted-foreground mt-2">
               This will remove volumes that were created with the container but are not associated with a data volume.
             </p>
-          </div>
+          </fieldset>
         </div>
 
         {/* Footer */}
@@ -104,12 +107,14 @@ export function DeleteConfirmModal({
           >
             Cancel
           </button>
-          <button
-            onClick={handleConfirm}
-            className="px-4 py-2 text-sm font-medium rounded transition-colors bg-danger text-danger-foreground hover:bg-danger/90"
-          >
-            Delete {containers.length} Container{containers.length !== 1 ? 's' : ''}
-          </button>
+          <fieldset disabled={!canOperate} className="disabled:opacity-60">
+            <button
+              onClick={handleConfirm}
+              className="px-4 py-2 text-sm font-medium rounded transition-colors bg-danger text-danger-foreground hover:bg-danger/90"
+            >
+              Delete {containers.length} Container{containers.length !== 1 ? 's' : ''}
+            </button>
+          </fieldset>
         </div>
       </div>
     </div>

@@ -1,7 +1,7 @@
 /**
  * Stack List Panel Component
  *
- * Left column of the StackModal showing:
+ * Left column of the Stacks page showing:
  * - New Stack button
  * - Search input
  * - List of stacks with deployed host counts
@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
+import { useAuth } from '@/features/auth/AuthContext'
 import type { StackListItem } from '../types'
 
 interface StackListPanelProps {
@@ -32,6 +33,10 @@ export function StackListPanel({
   onStackSelect,
   onImport,
 }: StackListPanelProps) {
+  const { hasCapability } = useAuth()
+  const canEdit = hasCapability('stacks.edit')
+  const canDeploy = hasCapability('stacks.deploy')
+
   const [searchQuery, setSearchQuery] = useState('')
 
   // Filter stacks by search query
@@ -97,6 +102,7 @@ export function StackListPanel({
           variant="outline"
           size="sm"
           onClick={() => onStackSelect('__new__')}
+          disabled={!canEdit}
           className={cn(
             'flex-1 gap-2',
             isCreateMode && 'bg-primary text-primary-foreground hover:bg-primary/90'
@@ -110,6 +116,7 @@ export function StackListPanel({
             variant="outline"
             size="sm"
             onClick={onImport}
+            disabled={!canDeploy}
             className="flex-1 gap-2"
           >
             <Download className="h-4 w-4" />

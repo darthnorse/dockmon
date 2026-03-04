@@ -12,6 +12,7 @@
  */
 
 import { useState, KeyboardEvent, useRef, useEffect } from 'react'
+import { useAuth } from '@/features/auth/AuthContext'
 import { X, Tag, Edit, Lock } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -28,6 +29,8 @@ interface TagEditorProps {
 }
 
 export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
+  const { hasCapability } = useAuth()
+  const canManageTags = hasCapability('tags.manage')
   const [isEditing, setIsEditing] = useState(false)
   const [inputValue, setInputValue] = useState('')
   const [selectedTags, setSelectedTags] = useState<string[]>([])
@@ -160,7 +163,7 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
     queryClient.setQueryData<Container[]>(['containers'], (old) => {
       if (!old) return old
       return old.map((c) =>
-        c.id === containerId ? { ...c, tags: optimisticTags } : c
+        c.id === containerId && c.host_id === hostId ? { ...c, tags: optimisticTags } : c
       )
     })
 
@@ -205,7 +208,7 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
     queryClient.setQueryData<Container[]>(['containers'], (old) => {
       if (!old) return old
       return old.map((c) =>
-        c.id === containerId ? { ...c, tags: optimisticTags } : c
+        c.id === containerId && c.host_id === hostId ? { ...c, tags: optimisticTags } : c
       )
     })
 
@@ -234,7 +237,7 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
         </div>
 
         {/* Inline Editor */}
-        <div className="space-y-2">
+        <fieldset disabled={!canManageTags} className="space-y-2 disabled:opacity-60">
           {/* Selected tags as chips */}
           <div className="flex flex-wrap gap-1.5 min-h-[32px] items-center">
             {selectedTags.map((tag) => (
@@ -327,7 +330,7 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
               Cancel
             </button>
           </div>
-        </div>
+        </fieldset>
 
         {/* Derived tags (read-only in editor) */}
         {derivedTags.length > 0 && (
@@ -363,7 +366,8 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
         </div>
         <button
           onClick={() => setIsEditing(true)}
-          className="text-xs text-primary hover:text-primary/80 transition-colors flex items-center gap-1"
+          disabled={!canManageTags}
+          className="text-xs text-primary hover:text-primary/80 transition-colors flex items-center gap-1 disabled:opacity-60 disabled:cursor-not-allowed"
           title="Edit tags"
           aria-label="Edit container tags"
         >
@@ -383,7 +387,8 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
               <span>{tag}</span>
               <button
                 onClick={() => handleQuickRemove(tag)}
-                className="opacity-60 hover:opacity-100 hover:bg-black/10 dark:hover:bg-white/10 rounded p-0.5 transition-all"
+                disabled={!canManageTags}
+                className="opacity-60 hover:opacity-100 hover:bg-black/10 dark:hover:bg-white/10 rounded p-0.5 transition-all disabled:hidden"
                 aria-label={`Remove ${tag}`}
                 title="Remove tag"
               >
@@ -395,9 +400,10 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
       ) : (
         <button
           onClick={() => setIsEditing(true)}
-          className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+          disabled={!canManageTags}
+          className="text-sm text-muted-foreground hover:text-foreground transition-colors disabled:cursor-not-allowed"
         >
-          No tags · Click to add
+          {canManageTags ? 'No tags · Click to add' : 'No tags'}
         </button>
       )}
 

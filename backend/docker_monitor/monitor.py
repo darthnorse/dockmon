@@ -292,6 +292,7 @@ class DockerMonitor:
         self.last_reconnect_attempt: Dict[str, float] = {}  # Track last attempt time per host
         self.manager = ConnectionManager()
         self.realtime = RealtimeMonitor()  # Real-time monitoring
+        self.realtime.connection_manager = self.manager
         self.event_logger = EventLogger(self.db, self.manager)  # Event logging service with WebSocket support
         self.notification_service = NotificationService(self.db, self.event_logger)  # Notification service (v1 - for channels only)
         self._container_states: Dict[str, str] = {}  # Track container states for change detection
@@ -1902,10 +1903,11 @@ class DockerMonitor:
                         logger.debug(f"  {key}: cpu={len(sparklines['cpu'])}, mem={len(sparklines['mem'])}, net={len(sparklines['net'])}")
 
                     # Broadcast update to all connected clients
+                    # Enable container filtering for role-based env var visibility (v2.3.0+)
                     await self.manager.broadcast({
                         "type": "containers_update",
                         "data": broadcast_data
-                    })
+                    }, filter_containers=True)
 
             except Exception as e:
                 logger.error(f"Error in monitoring loop: {e}")

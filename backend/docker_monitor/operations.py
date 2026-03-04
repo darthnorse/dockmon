@@ -138,7 +138,7 @@ class ContainerOperations:
                 error_message=str(e),
                 duration_ms=duration_ms
             )
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Failed to restart container")
 
     async def stop_container(self, host_id: str, container_id: str) -> bool:
         """
@@ -231,7 +231,189 @@ class ContainerOperations:
                 error_message=str(e),
                 duration_ms=duration_ms
             )
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Failed to stop container")
+
+    async def kill_container(self, host_id: str, container_id: str) -> bool:
+        """
+        Kill a specific container (SIGKILL).
+
+        Routes through agent if available, otherwise uses direct Docker client.
+
+        Args:
+            host_id: Docker host ID
+            container_id: Container ID
+
+        Returns:
+            True if kill successful
+
+        Raises:
+            HTTPException: If host not found or kill fails
+        """
+        # Check if host has an agent - route through agent if available (v2.2.0)
+        agent_id = self.agent_manager.get_agent_for_host(host_id)
+        if agent_id:
+            logger.info(f"Routing kill_container for host {host_id} through agent {agent_id}")
+            return await self.agent_operations.kill_container(host_id, container_id)
+
+        # Legacy path: Direct Docker socket access
+        from utils.async_docker import async_docker_call, async_container_kill
+
+        if host_id not in self.clients:
+            raise HTTPException(status_code=404, detail="Host not found")
+
+        host = self.hosts.get(host_id)
+        host_name = host.name if host else 'Unknown Host'
+
+        start_time = time.time()
+        container_name = container_id  # Fallback if we can't get name
+
+        try:
+            client = self.clients[host_id]
+            container = await async_docker_call(client.containers.get, container_id)
+            container_name = container.name
+
+            # CRITICAL SAFETY CHECK: Prevent killing DockMon itself
+            container_name_lower = container_name.lower().lstrip('/')
+            if container_name_lower == 'dockmon' or container_name_lower.startswith('dockmon-'):
+                logger.warning(
+                    f"Blocked attempt to kill DockMon container '{container_name}'. "
+                    f"DockMon cannot kill itself."
+                )
+                raise HTTPException(
+                    status_code=403,
+                    detail="Cannot kill DockMon itself. Please stop manually via Docker CLI or another tool."
+                )
+
+            await async_container_kill(container)
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            logger.info(f"Killed container '{container_name}' on host '{host_name}'")
+
+            # Track this user action to suppress critical severity on expected state change
+            container_key = make_composite_key(host_id, container_id)
+            self._recent_user_actions[container_key] = time.time()
+            logger.info(f"Tracked user kill action for {container_key}")
+
+            # Log the successful kill
+            self.event_logger.log_container_action(
+                action="kill",
+                container_name=container_name,
+                container_id=container_id,
+                host_name=host_name,
+                host_id=host_id,
+                success=True,
+                triggered_by="user",
+                duration_ms=duration_ms
+            )
+            return True
+        except HTTPException:
+            raise
+        except Exception as e:
+            duration_ms = int((time.time() - start_time) * 1000)
+            logger.error(f"Failed to kill container '{container_name}' on host '{host_name}': {e}")
+
+            # Log the failed kill
+            self.event_logger.log_container_action(
+                action="kill",
+                container_name=container_name,
+                container_id=container_id,
+                host_name=host_name,
+                host_id=host_id,
+                success=False,
+                triggered_by="user",
+                error_message=str(e),
+                duration_ms=duration_ms
+            )
+            raise HTTPException(status_code=500, detail="Failed to kill container")
+
+    async def rename_container(self, host_id: str, container_id: str, new_name: str) -> bool:
+        """
+        Rename a specific container.
+
+        Routes through agent if available, otherwise uses direct Docker client.
+
+        Args:
+            host_id: Docker host ID
+            container_id: Container ID
+            new_name: New container name
+
+        Returns:
+            True if rename successful
+
+        Raises:
+            HTTPException: If host not found or rename fails
+        """
+        # Check if host has an agent - route through agent if available (v2.2.0)
+        agent_id = self.agent_manager.get_agent_for_host(host_id)
+        if agent_id:
+            logger.info(f"Routing rename_container for host {host_id} through agent {agent_id}")
+            return await self.agent_operations.rename_container(host_id, container_id, new_name)
+
+        # Legacy path: Direct Docker socket access
+        from utils.async_docker import async_docker_call, async_container_rename
+
+        if host_id not in self.clients:
+            raise HTTPException(status_code=404, detail="Host not found")
+
+        host = self.hosts.get(host_id)
+        host_name = host.name if host else 'Unknown Host'
+
+        start_time = time.time()
+        container_name = container_id  # Fallback if we can't get name
+
+        try:
+            client = self.clients[host_id]
+            container = await async_docker_call(client.containers.get, container_id)
+            container_name = container.name
+
+            # CRITICAL SAFETY CHECK: Prevent renaming DockMon itself
+            container_name_lower = container_name.lower().lstrip('/')
+            if container_name_lower == 'dockmon' or container_name_lower.startswith('dockmon-'):
+                logger.warning(
+                    f"Blocked attempt to rename DockMon container '{container_name}'. "
+                    f"DockMon cannot rename itself."
+                )
+                raise HTTPException(
+                    status_code=403,
+                    detail="Cannot rename DockMon itself."
+                )
+
+            await async_container_rename(container, new_name)
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            logger.info(f"Renamed container '{container_name}' to '{new_name}' on host '{host_name}'")
+
+            # Log the successful rename
+            self.event_logger.log_container_action(
+                action="rename",
+                container_name=container_name,
+                container_id=container_id,
+                host_name=host_name,
+                host_id=host_id,
+                success=True,
+                triggered_by="user",
+                duration_ms=duration_ms
+            )
+            return True
+        except HTTPException:
+            raise
+        except Exception as e:
+            duration_ms = int((time.time() - start_time) * 1000)
+            logger.error(f"Failed to rename container '{container_name}' on host '{host_name}': {e}")
+
+            # Log the failed rename
+            self.event_logger.log_container_action(
+                action="rename",
+                container_name=container_name,
+                container_id=container_id,
+                host_name=host_name,
+                host_id=host_id,
+                success=False,
+                triggered_by="user",
+                error_message=str(e),
+                duration_ms=duration_ms
+            )
+            raise HTTPException(status_code=500, detail="Failed to rename container")
 
     async def kill_container(self, host_id: str, container_id: str) -> bool:
         """
@@ -510,7 +692,7 @@ class ContainerOperations:
                 error_message=str(e),
                 duration_ms=duration_ms
             )
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Failed to start container")
 
     async def delete_container(self, host_id: str, container_id: str, container_name: str, remove_volumes: bool = False) -> dict:
         """
@@ -669,7 +851,7 @@ class ContainerOperations:
                 error_message=str(e),
                 duration_ms=duration_ms
             )
-            raise HTTPException(status_code=500, detail=f"Failed to delete container: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to delete container")
 
     async def _delete_container_via_agent(self, host_id: str, container_id: str, container_name: str, remove_volumes: bool = False) -> dict:
         """
@@ -775,7 +957,7 @@ class ContainerOperations:
                 error_message=str(e),
                 duration_ms=duration_ms
             )
-            raise HTTPException(status_code=500, detail=f"Failed to delete container via agent: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to delete container")
 
     async def get_container_logs(self, host_id: str, container_id: str, tail: int = 100, since: str = None) -> dict:
         """
@@ -876,7 +1058,7 @@ class ContainerOperations:
             raise
         except Exception as e:
             logger.error(f"Failed to get logs for {container_id}: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Failed to get container logs")
 
     def _parse_logs_response(self, container_id: str, raw_logs: str) -> dict:
         """
@@ -972,4 +1154,4 @@ class ContainerOperations:
             raise
         except Exception as e:
             logger.error(f"Failed to inspect container {container_id}: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Failed to inspect container")

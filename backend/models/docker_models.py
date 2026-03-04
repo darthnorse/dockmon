@@ -11,6 +11,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from utils.url_validation import is_ssrf_target
+
 
 logger = logging.getLogger(__name__)
 
@@ -108,25 +110,18 @@ class DockerHostConfig(BaseModel):
         if not any(v.startswith(proto) for proto in allowed_protocols):
             raise ValueError('URL must use tcp://, unix://, http://, https://, or agent:// protocol')
 
-        # Block ONLY the most dangerous SSRF targets (cloud metadata & loopback)
+        # Block dangerous SSRF targets (cloud metadata & loopback)
         # Allow private networks (10.*, 172.16-31.*, 192.168.*) for legitimate Docker hosts
-        extremely_dangerous_patterns = [
-            r'169\.254\.169\.254',                     # AWS/GCP metadata (specific)
-            r'169\.254\.',                             # Link-local range (broader)
-            r'metadata\.google\.internal',             # GCP metadata
-            r'metadata\.goog',                         # GCP metadata alternative
-            r'100\.100\.100\.200',                     # Alibaba Cloud metadata
-            r'fd00:ec2::254',                          # AWS IPv6 metadata
-            r'0\.0\.0\.0',                             # All interfaces binding
-            r'::1',                                    # IPv6 localhost
+        if is_ssrf_target(v):
+            raise ValueError('URL targets cloud metadata service or dangerous internal endpoint')
+
+        # Docker host URLs additionally allow localhost:port but block bare localhost
+        docker_extra_patterns = [
             r'localhost(?!\:|$)',                      # Localhost variations but allow localhost:port
             r'127\.0\.0\.(?!1$)',                      # 127.x.x.x but allow 127.0.0.1
         ]
-
-        # Check for extremely dangerous metadata service targets
-        for pattern in extremely_dangerous_patterns:
+        for pattern in docker_extra_patterns:
             if re.search(pattern, v, re.IGNORECASE):
-                # Special handling for localhost - allow localhost:port but block bare localhost
                 if 'localhost' in pattern.lower() and ':' in v:
                     continue  # Allow localhost:2376 etc
                 raise ValueError('URL targets cloud metadata service or dangerous internal endpoint')

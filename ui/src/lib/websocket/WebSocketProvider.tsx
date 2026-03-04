@@ -30,6 +30,7 @@ import { createContext, useContext, useCallback, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { debug } from '@/lib/debug'
+import { getBasePath } from '@/lib/utils/basePath'
 import { useWebSocket, type WebSocketMessage, type WebSocketStatus } from './useWebSocket'
 
 type MessageHandler = (message: WebSocketMessage) => void
@@ -203,10 +204,8 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
     [queryClient]
   )
 
-  // Determine WebSocket URL dynamically based on current host, protocol, and base URL
-  // For sub-path deployments (e.g., /dockmon/), configure base: '/dockmon/' in vite.config.ts
-  // import.meta.env.BASE_URL will then provide the app root path (not including current route)
-  const basePath = import.meta.env.BASE_URL.replace(/\/$/, '')
+  // For sub-path deployments, configure base in vite.config.ts (e.g., base: '/dockmon/')
+  const basePath = getBasePath()
   const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}${basePath}/ws/`
 
   const { status, send } = useWebSocket({

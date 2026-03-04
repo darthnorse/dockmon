@@ -541,7 +541,7 @@ async def create_deployment(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to create deployment: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to create deployment")
 
 
 @router.post("/{deployment_id}/execute", response_model=DeploymentResponse, dependencies=[Depends(require_capability("stacks.deploy"))])
@@ -626,7 +626,7 @@ async def execute_deployment(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to execute deployment: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to execute deployment")
 
 
 @router.get("", response_model=List[DeploymentResponse], dependencies=[Depends(require_capability("stacks.view"))])
@@ -680,7 +680,7 @@ async def list_deployments(
 
     except Exception as e:
         logger.error(f"Failed to list deployments: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to list deployments")
 
 
 # ==================== Import Stack Endpoints ====================
@@ -850,7 +850,7 @@ async def get_deployment(
         raise
     except Exception as e:
         logger.error(f"Failed to get deployment: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get deployment")
 
 
 @router.put("/{deployment_id}", response_model=DeploymentResponse, dependencies=[Depends(require_capability("stacks.deploy"))])
@@ -923,7 +923,7 @@ async def update_deployment(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to update deployment: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to update deployment")
 
 
 @router.delete("/{deployment_id}", dependencies=[Depends(require_capability("stacks.deploy"))])
@@ -970,7 +970,7 @@ async def delete_deployment(
         raise
     except Exception as e:
         logger.error(f"Failed to delete deployment: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to delete deployment")
 
 
 @router.get("/{deployment_id}/compose-preview", response_model=ComposePreviewResponse, dependencies=[Depends(require_capability("stacks.view"))])

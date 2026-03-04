@@ -457,10 +457,12 @@ print(response.json())
     root_path=get_base_path().rstrip('/')  # Strip trailing slash for FastAPI root_path
 )
 
-# Configure CORS - Production ready with environment-based configuration
+# Configure CORS - Only add middleware when explicitly configured
+# By default (no CORS_ORIGINS set), same-origin policy applies since frontend
+# is served from the same origin via nginx. CORS is only needed for split-origin
+# setups (e.g., development with vite dev server on a different port).
 cors_config = AppConfig.CORS_ORIGINS
 if cors_config:
-    # Specific origins configured
     origins_list = [origin.strip() for origin in cors_config.split(',')]
     app.add_middleware(
         CORSMiddleware,
@@ -471,15 +473,7 @@ if cors_config:
     )
     logger.info(f"CORS configured for specific origins: {origins_list}")
 else:
-    # Allow all origins (auth still required for all endpoints)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origin_regex=".*",
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type", "Authorization"],
-    )
-    logger.info("CORS configured to allow all origins (authentication required for all endpoints)")
+    logger.info("CORS not configured (same-origin only). Set CORS_ORIGINS to allow cross-origin requests.")
 
 # Custom exception handler for Pydantic validation errors
 @app.exception_handler(RequestValidationError)
@@ -894,7 +888,7 @@ async def test_host_connection(config: DockerHostConfig, current_user: dict = De
                 pass
 
         logger.error(f"Connection test failed for {config.url}: {str(e)}")
-        raise HTTPException(status_code=400, detail=f"Connection failed: {str(e)}")
+        raise HTTPException(status_code=400, detail="Connection failed. Check the host URL and credentials.")
 
 @app.put("/api/hosts/{host_id}", tags=["hosts"], dependencies=[Depends(require_capability("hosts.manage"))])
 async def update_host(host_id: str, config: DockerHostConfig, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
@@ -929,7 +923,7 @@ async def remove_host(host_id: str, request: Request, current_user: dict = Depen
     except Exception as e:
         # Unexpected error during removal
         logger.error(f"Error removing host {host_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to remove host: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to remove host")
 
 @app.patch("/api/hosts/{host_id}/tags", tags=["tags"], dependencies=[Depends(require_capability("tags.manage"))])
 async def update_host_tags(
@@ -1052,7 +1046,7 @@ async def get_host_metrics(host_id: str, current_user: dict = Depends(get_curren
         raise
     except Exception as e:
         logger.error(f"Error fetching metrics for host {host_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to fetch host metrics")
 
 
 @app.get("/api/hosts/{host_id}/agent", tags=["hosts"], dependencies=[Depends(require_capability("agents.view"))])
@@ -1227,7 +1221,7 @@ async def trigger_agent_update(host_id: str, request: Request, current_user: dic
         raise
     except Exception as e:
         logger.error(f"Error triggering agent update: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to trigger agent update")
 
 
 @app.get("/api/hosts/{host_id}/images", tags=["hosts"], dependencies=[Depends(require_capability("containers.view"))])
@@ -3130,7 +3124,7 @@ async def create_batch_job(request: BatchJobCreate, http_request: Request, curre
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error creating batch job: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to create batch job")
 
 
 @app.post("/api/batch/validate-update", tags=["batch-operations"], dependencies=[Depends(require_capability("batch.create"))])
@@ -4003,7 +3997,7 @@ async def create_alert_rule_v2(
         }
     except Exception as e:
         logger.error(f"Failed to create alert rule v2: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to create alert rule")
 
 
 @app.put("/api/alerts/rules/{rule_id}", tags=["alerts"], dependencies=[Depends(require_capability("alerts.manage"))])
@@ -4046,7 +4040,7 @@ async def update_alert_rule_v2(
         raise
     except Exception as e:
         logger.error(f"Failed to update alert rule v2: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to update alert rule")
 
 
 @app.delete("/api/alerts/rules/{rule_id}", tags=["alerts"], dependencies=[Depends(require_capability("alerts.manage"))])
@@ -4085,7 +4079,7 @@ async def delete_alert_rule_v2(
         raise
     except Exception as e:
         logger.error(f"Failed to delete alert rule v2: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to delete alert rule")
 
 
 @app.patch("/api/alerts/rules/{rule_id}/toggle", tags=["alerts"], dependencies=[Depends(require_capability("alerts.manage"))])
@@ -4116,7 +4110,7 @@ async def toggle_alert_rule_v2(
         raise
     except Exception as e:
         logger.error(f"Failed to toggle alert rule v2: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to toggle alert rule")
 
 
 # ==================== Register Alerts Router (AFTER v2 rules routes) ====================
@@ -4287,7 +4281,7 @@ async def create_notification_channel(channel: NotificationChannelCreate, reques
         }
     except Exception as e:
         logger.error(f"Failed to create notification channel: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to create notification channel")
 
 @app.put("/api/notifications/channels/{channel_id}", tags=["notifications"], dependencies=[Depends(require_capability("notifications.manage"))])
 async def update_notification_channel(channel_id: int, updates: NotificationChannelUpdate, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
@@ -4314,7 +4308,7 @@ async def update_notification_channel(channel_id: int, updates: NotificationChan
         raise
     except Exception as e:
         logger.error(f"Failed to update notification channel: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to update notification channel")
 
 @app.delete("/api/notifications/channels/{channel_id}", tags=["notifications"], dependencies=[Depends(require_capability("notifications.manage"))])
 async def delete_notification_channel(channel_id: int, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
@@ -4366,7 +4360,7 @@ async def delete_notification_channel(channel_id: int, request: Request, current
         raise
     except Exception as e:
         logger.error(f"Failed to delete notification channel: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to delete notification channel")
 
 @app.post("/api/notifications/channels/{channel_id}/test", tags=["notifications"], dependencies=[Depends(require_capability("notifications.manage"))])
 async def test_notification_channel(channel_id: int, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
@@ -4384,7 +4378,7 @@ async def test_notification_channel(channel_id: int, request: Request, current_u
         raise
     except Exception as e:
         logger.error(f"Failed to test notification channel: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to test notification channel")
 
 @app.get("/api/notifications/channels/{channel_id}/dependent-alerts", tags=["notifications"], dependencies=[Depends(require_capability("notifications.view"))])
 async def get_dependent_alerts(channel_id: int, current_user: dict = Depends(get_current_user)):
@@ -4431,7 +4425,7 @@ async def get_dependent_alerts(channel_id: int, current_user: dict = Depends(get
         raise
     except Exception as e:
         logger.error(f"Failed to get dependent alerts for channel {channel_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get dependent alerts: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to get dependent alerts")
 
 # ==================== Event Log Routes ====================
 
@@ -4551,7 +4545,7 @@ async def get_events(
         raise
     except Exception as e:
         logger.error(f"Failed to get events: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get events")
 
 @app.get("/api/events/{event_id}", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
 async def get_event_by_id(
@@ -4588,7 +4582,7 @@ async def get_event_by_id(
         raise
     except Exception as e:
         logger.error(f"Failed to get event: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get event")
 
 @app.get("/api/events/correlation/{correlation_id}", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
 async def get_events_by_correlation(
@@ -4625,7 +4619,7 @@ async def get_events_by_correlation(
         return {"events": events_json, "count": len(events_json)}
     except Exception as e:
         logger.error(f"Failed to get events by correlation: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get events by correlation")
 
 # ==================== User Dashboard Routes ====================
 
@@ -4671,7 +4665,7 @@ async def save_event_sort_order(request: Request, current_user: dict = Depends(g
         raise
     except Exception as e:
         logger.error(f"Failed to save event sort order: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to save event sort order")
 
 @app.get("/api/user/container-sort-order", tags=["user-preferences"])
 async def get_container_sort_order(request: Request, current_user: dict = Depends(get_current_user)):
@@ -4713,7 +4707,7 @@ async def save_container_sort_order(request: Request, current_user: dict = Depen
         raise
     except Exception as e:
         logger.error(f"Failed to save container sort order: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to save container sort order")
 
 @app.get("/api/user/modal-preferences", tags=["user-preferences"])
 async def get_modal_preferences(request: Request, current_user: dict = Depends(get_current_user)):
@@ -4754,7 +4748,7 @@ async def save_modal_preferences(request: Request, current_user: dict = Depends(
         raise
     except Exception as e:
         logger.error(f"Failed to save modal preferences: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to save modal preferences")
 
 # ==================== Phase 4: View Mode Preference ====================
 
@@ -4778,7 +4772,7 @@ async def get_view_mode(request: Request, current_user: dict = Depends(get_curre
             session.close()
     except Exception as e:
         logger.error(f"Failed to get view mode: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get view mode")
 
 @app.post("/api/user/view-mode", tags=["user-preferences"])
 async def save_view_mode(request: Request, current_user: dict = Depends(get_current_user)):
@@ -4815,7 +4809,7 @@ async def save_view_mode(request: Request, current_user: dict = Depends(get_curr
         raise
     except Exception as e:
         logger.error(f"Failed to save view mode: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to save view mode")
 
 @app.post("/api/user/dismiss-dockmon-update", tags=["user-preferences"])
 async def dismiss_dockmon_update(request: Request, current_user: dict = Depends(get_current_user)):
@@ -4867,7 +4861,7 @@ async def dismiss_dockmon_update(request: Request, current_user: dict = Depends(
         raise
     except Exception as e:
         logger.error(f"Failed to dismiss DockMon update: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to dismiss update")
 
 
 @app.post("/api/user/dismiss-agent-update", tags=["user-preferences"])
@@ -4920,7 +4914,7 @@ async def dismiss_agent_update(request: Request, current_user: dict = Depends(ge
         raise
     except Exception as e:
         logger.error(f"Failed to dismiss Agent update: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to dismiss update")
 
 
 # ==================== Phase 4c: Dashboard Hosts with Stats ====================
@@ -5091,7 +5085,7 @@ async def get_dashboard_hosts(
 
     except Exception as e:
         logger.error(f"Failed to get dashboard hosts: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get dashboard data")
 
 
 # ==================== Dashboard Summary (Homepage Integration) ====================
@@ -5197,7 +5191,7 @@ async def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
 
     except Exception as e:
         logger.error(f"Failed to get dashboard summary: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get dashboard summary")
 
 # ==================== Event Log Routes ====================
 # Note: Main /api/events endpoints are defined earlier (lines 1185-1367) with full feature set
@@ -5235,7 +5229,7 @@ async def get_event_statistics(start_date: Optional[str] = None,
         raise
     except Exception as e:
         logger.error(f"Failed to get event statistics: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get event statistics")
 
 @app.get("/api/hosts/{host_id}/events/container/{container_id}", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
 async def get_container_events(host_id: str, container_id: str, limit: int = 50, current_user: dict = Depends(get_current_user)):
@@ -5277,7 +5271,7 @@ async def get_container_events(host_id: str, container_id: str, limit: int = 50,
         }
     except Exception as e:
         logger.error(f"Failed to get events for container {container_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get container events")
 
 @app.get("/api/events/host/{host_id}", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
 async def get_host_events(host_id: str, limit: int = 50, current_user: dict = Depends(get_current_user)):
@@ -5314,7 +5308,7 @@ async def get_host_events(host_id: str, limit: int = 50, current_user: dict = De
         }
     except Exception as e:
         logger.error(f"Failed to get events for host {host_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get host events")
 
 @app.delete("/api/events/cleanup", tags=["events"], dependencies=[Depends(require_capability("settings.manage"))])
 async def cleanup_old_events(request: Request, days: int = 30, current_user: dict = Depends(get_current_user)):
@@ -5346,7 +5340,7 @@ async def cleanup_old_events(request: Request, days: int = 30, current_user: dic
         raise
     except Exception as e:
         logger.error(f"Failed to cleanup events: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to cleanup events")
 
 
 # ==================== Registry Credentials Endpoints ====================
@@ -5377,7 +5371,7 @@ async def get_registry_credentials(current_user: dict = Depends(get_current_user
 
     except Exception as e:
         logger.error(f"Failed to get registry credentials: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get credentials: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to get credentials")
 
 
 @app.post("/api/registry-credentials", tags=["registry"], dependencies=[Depends(require_capability("registry.manage"))])
@@ -5472,7 +5466,7 @@ async def create_registry_credential(
         raise
     except Exception as e:
         logger.error(f"Failed to create registry credential: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create credential: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to create credential")
 
 
 @app.put("/api/registry-credentials/{credential_id}", tags=["registry"], dependencies=[Depends(require_capability("registry.manage"))])
@@ -5550,7 +5544,7 @@ async def update_registry_credential(
         raise
     except Exception as e:
         logger.error(f"Failed to update registry credential: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to update credential: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to update credential")
 
 
 @app.delete("/api/registry-credentials/{credential_id}", tags=["registry"], dependencies=[Depends(require_capability("registry.manage"))])
@@ -5602,7 +5596,7 @@ async def delete_registry_credential(
         raise
     except Exception as e:
         logger.error(f"Failed to delete registry credential: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete credential: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to delete credential")
 
 
 # ==================== Agent Management Routes (v2.2.0) ====================
@@ -5642,7 +5636,7 @@ async def generate_agent_registration_token(
 
     except Exception as e:
         logger.error(f"Failed to generate agent registration token: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to generate token: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to generate token")
 
 
 @app.get("/api/agent/list", dependencies=[Depends(require_capability("agents.view"))])
@@ -5684,7 +5678,7 @@ async def list_agents(
 
     except Exception as e:
         logger.error(f"Failed to list agents: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to list agents: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to list agents")
 
 
 @app.get("/api/agent/{agent_id}/status", dependencies=[Depends(require_capability("agents.view"))])
@@ -5726,7 +5720,7 @@ async def get_agent_status(
         raise
     except Exception as e:
         logger.error(f"Failed to get agent status: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to get agent status: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to get agent status")
 
 
 @app.post("/api/agent/{agent_id}/migrate-from/{source_host_id}", dependencies=[Depends(require_capability("agents.manage"))])
@@ -5775,7 +5769,7 @@ async def migrate_agent_from_host(
         raise
     except Exception as e:
         logger.error(f"Migration failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Migration failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Migration failed")
 
 
 @app.websocket("/api/agent/ws")

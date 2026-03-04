@@ -10,6 +10,8 @@ from typing import Optional, List, Dict, Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from utils.url_validation import is_ssrf_target
+
 
 class ContainerHostPair(BaseModel):
     """Container and host pair for alert rules"""
@@ -484,7 +486,7 @@ class HttpHealthCheckConfig(BaseModel):
     @field_validator('url')
     @classmethod
     def validate_url(cls, v: str) -> str:
-        """Validate URL format"""
+        """Validate URL format and block SSRF targets"""
         if not v or not v.strip():
             raise ValueError('URL cannot be empty')
 
@@ -497,6 +499,10 @@ class HttpHealthCheckConfig(BaseModel):
         # Basic sanity checks
         if ' ' in v:
             raise ValueError('URL cannot contain spaces')
+
+        # Block cloud metadata and dangerous internal endpoints
+        if is_ssrf_target(v):
+            raise ValueError('URL targets a cloud metadata service or dangerous internal endpoint')
 
         return v
 

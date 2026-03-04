@@ -190,4 +190,4 @@ class StateManager:
             raise HTTPException(status_code=404, detail="Container not found")
         except Exception as e:
             logger.error(f"Failed to update tags for container {container_id}: {str(e)}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Failed to update container tags")

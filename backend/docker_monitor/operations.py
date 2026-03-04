@@ -138,7 +138,7 @@ class ContainerOperations:
                 error_message=str(e),
                 duration_ms=duration_ms
             )
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Failed to restart container")
 
     async def stop_container(self, host_id: str, container_id: str) -> bool:
         """
@@ -231,7 +231,7 @@ class ContainerOperations:
                 error_message=str(e),
                 duration_ms=duration_ms
             )
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Failed to stop container")
 
     async def kill_container(self, host_id: str, container_id: str) -> bool:
         """
@@ -324,7 +324,7 @@ class ContainerOperations:
                 error_message=str(e),
                 duration_ms=duration_ms
             )
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Failed to kill container")
 
     async def rename_container(self, host_id: str, container_id: str, new_name: str) -> bool:
         """
@@ -413,7 +413,7 @@ class ContainerOperations:
                 error_message=str(e),
                 duration_ms=duration_ms
             )
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Failed to rename container")
 
     async def start_container(self, host_id: str, container_id: str) -> bool:
         """
@@ -510,7 +510,7 @@ class ContainerOperations:
                 error_message=str(e),
                 duration_ms=duration_ms
             )
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Failed to start container")
 
     async def delete_container(self, host_id: str, container_id: str, container_name: str, remove_volumes: bool = False) -> dict:
         """
@@ -669,7 +669,7 @@ class ContainerOperations:
                 error_message=str(e),
                 duration_ms=duration_ms
             )
-            raise HTTPException(status_code=500, detail=f"Failed to delete container: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to delete container")
 
     async def _delete_container_via_agent(self, host_id: str, container_id: str, container_name: str, remove_volumes: bool = False) -> dict:
         """
@@ -775,7 +775,7 @@ class ContainerOperations:
                 error_message=str(e),
                 duration_ms=duration_ms
             )
-            raise HTTPException(status_code=500, detail=f"Failed to delete container via agent: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to delete container")
 
     async def get_container_logs(self, host_id: str, container_id: str, tail: int = 100, since: str = None) -> dict:
         """
@@ -876,7 +876,7 @@ class ContainerOperations:
             raise
         except Exception as e:
             logger.error(f"Failed to get logs for {container_id}: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Failed to get container logs")
 
     def _parse_logs_response(self, container_id: str, raw_logs: str) -> dict:
         """
@@ -972,4 +972,4 @@ class ContainerOperations:
             raise
         except Exception as e:
             logger.error(f"Failed to inspect container {container_id}: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Failed to inspect container")

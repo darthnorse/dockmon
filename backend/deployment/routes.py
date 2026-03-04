@@ -399,7 +399,7 @@ async def deploy_stack(
 
             except Exception as e:
                 await broadcast_event(make_event(
-                    'deployment_failed', 'failed', error=str(e),
+                    'deployment_failed', 'failed', error="Deployment failed. Check server logs for details.",
                 ))
                 logger.error(f"Agent deployment failed: {e}", exc_info=True)
 
@@ -474,7 +474,7 @@ async def deploy_stack(
 
             except Exception as e:
                 await broadcast_event(make_event(
-                    'deployment_failed', 'failed', error=str(e),
+                    'deployment_failed', 'failed', error="Deployment failed. Check server logs for details.",
                 ))
                 logger.error(f"Deployment failed: {e}", exc_info=True)
 

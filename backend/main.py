@@ -5990,7 +5990,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
                             for c in containers
                         )
                         if container_exists:
-                            monitor.stats_manager.add_modal_container(container_id, host_id)
+                            monitor.stats_manager.add_modal_container(container_id, host_id, connection_id)
                         else:
                             logger.warning(f"User attempted to access stats for non-existent container: {container_id[:12]} on host {host_id[:8]}")
                     except Exception as e:
@@ -6001,7 +6001,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
                 container_id = message.get("container_id")
                 host_id = message.get("host_id")
                 if container_id and host_id:
-                    monitor.stats_manager.remove_modal_container(container_id, host_id)
+                    monitor.stats_manager.remove_modal_container(container_id, host_id, connection_id)
 
             elif message.get("type") == "ping":
                 await websocket.send_text(json.dumps({"type": "pong"}, cls=DateTimeEncoder))
@@ -6017,8 +6017,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         # Unsubscribe from all stats
         for container_id in list(monitor.realtime.stats_subscribers):
             await monitor.realtime.unsubscribe_from_stats(websocket, container_id)
-        # Clear modal containers (user disconnected, modals are closed)
-        monitor.stats_manager.clear_modal_containers()
+        # Clear modal containers for this connection only (not all users)
+        monitor.stats_manager.clear_modal_containers_for_connection(connection_id)
 
         # Event-driven stats control: Stop stats streams when last viewer disconnects
         if len(monitor.manager.active_connections) == 0:

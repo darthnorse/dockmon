@@ -5,7 +5,8 @@ Centralized logic for determining which containers need stats collection
 
 import asyncio
 import logging
-from typing import Set, List
+from collections import defaultdict
+from typing import Dict, Set, List
 from models.docker_models import Container
 from database import GlobalSettings
 from utils.keys import make_composite_key
@@ -20,25 +21,43 @@ class StatsManager:
         """Initialize stats manager"""
         self.streaming_containers: Set[str] = set()  # Currently streaming container keys (host_id:container_id)
         self.modal_containers: Set[str] = set()  # Composite keys (host_id:container_id) with open modals
+        self._connection_modals: Dict[str, Set[str]] = defaultdict(set)  # connection_id -> set of composite keys
         self._streaming_lock = asyncio.Lock()  # Protect streaming_containers set from race conditions
 
-    def add_modal_container(self, container_id: str, host_id: str) -> None:
+    def _rebuild_modal_containers(self) -> None:
+        """Rebuild the global modal_containers set from per-connection tracking."""
+        self.modal_containers = set().union(*self._connection_modals.values()) if self._connection_modals else set()
+
+    def add_modal_container(self, container_id: str, host_id: str, connection_id: str = "") -> None:
         """Track that a container modal is open"""
         composite_key = make_composite_key(host_id, container_id)
         self.modal_containers.add(composite_key)
+        if connection_id:
+            self._connection_modals[connection_id].add(composite_key)
         logger.debug(f"Container modal opened for {container_id[:12]} on host {host_id[:8]} - stats tracking enabled")
 
-    def remove_modal_container(self, container_id: str, host_id: str) -> None:
+    def remove_modal_container(self, container_id: str, host_id: str, connection_id: str = "") -> None:
         """Remove container from modal tracking"""
         composite_key = make_composite_key(host_id, container_id)
-        self.modal_containers.discard(composite_key)
+        if connection_id:
+            self._connection_modals[connection_id].discard(composite_key)
+        self._rebuild_modal_containers()
         logger.debug(f"Container modal closed for {container_id[:12]} on host {host_id[:8]}")
 
+    def clear_modal_containers_for_connection(self, connection_id: str) -> None:
+        """Clear modal containers for a specific connection (on WebSocket disconnect)."""
+        if connection_id in self._connection_modals:
+            removed = self._connection_modals.pop(connection_id)
+            if removed:
+                logger.debug(f"Clearing {len(removed)} modal containers for connection {connection_id}")
+            self._rebuild_modal_containers()
+
     def clear_modal_containers(self) -> None:
-        """Clear all modal containers (e.g., on WebSocket disconnect)"""
+        """Clear all modal containers (e.g., when last connection disconnects)"""
         if self.modal_containers:
             logger.debug(f"Clearing {len(self.modal_containers)} modal containers")
         self.modal_containers.clear()
+        self._connection_modals.clear()
 
     def determine_containers_needing_stats(
         self,

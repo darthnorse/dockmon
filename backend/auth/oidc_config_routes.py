@@ -390,10 +390,10 @@ async def discover_oidc_provider(
                 message=f"Provider returned HTTP {e.response.status_code}{hint}",
             )
         except Exception as e:
-            logger.error(f"OIDC provider discovery error: {e}")
+            logger.error(f"OIDC provider discovery error: {e}", exc_info=True)
             return OIDCDiscoveryResponse(
                 success=False,
-                message=f"Discovery failed: {str(e)}",
+                message="Discovery failed due to an unexpected error. Check server logs for details.",
             )
 
 

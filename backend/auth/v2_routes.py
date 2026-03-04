@@ -4,20 +4,24 @@ DockMon v2 Authentication Routes - Cookie-Based Sessions
 SECURITY IMPROVEMENTS over v1:
 1. HttpOnly cookies (XSS protection - JS can't access)
 2. Secure flag (HTTPS only in production)
-3. SameSite=strict (CSRF protection)
+3. SameSite=lax (CSRF protection)
 4. Argon2id password hashing (better than bcrypt)
 5. IP validation (prevent session hijacking)
 """
 
 import logging
+import re
+from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 import httpx
 from fastapi import APIRouter, HTTPException, Response, Cookie, Request, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 import argon2
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, InvalidHashError
 
 from auth.cookie_sessions import cookie_session_manager, get_session_cookie_max_age
+from utils.client_ip import get_client_ip
 from security.rate_limiting import rate_limit_auth
 from audit import log_login, log_logout, log_login_failure, AuditAction
 from audit.audit_logger import get_client_info, log_audit, AuditEntityType
@@ -56,6 +60,10 @@ from auth.api_key_auth import (
 from config.settings import AppConfig
 from utils.base_path import get_base_path
 
+# Account lockout constants
+MAX_FAILED_ATTEMPTS = 5
+LOCKOUT_DURATION_MINUTES = 15
+
 
 # Argon2 password hasher (more secure than bcrypt)
 # SECURITY: Argon2id is resistant to GPU attacks
@@ -66,6 +74,17 @@ ph = PasswordHasher(
     hash_len=32,        # Hash length in bytes
     salt_len=16         # Salt length in bytes
 )
+
+# Dummy hash for constant-time rejection of unknown/OIDC users
+_DUMMY_HASH = ph.hash("dummy-timing-constant")
+
+
+def _verify_dummy(password: str) -> None:
+    """Verify against dummy hash to maintain constant timing."""
+    try:
+        ph.verify(_DUMMY_HASH, password)
+    except (VerifyMismatchError, InvalidHashError):
+        pass
 
 
 class LoginRequest(BaseModel):
@@ -83,13 +102,24 @@ class LoginResponse(BaseModel):
 class ChangePasswordRequest(BaseModel):
     """Change password request with validation"""
     current_password: str
-    new_password: str
+    new_password: str = Field(..., min_length=8, max_length=128)
 
 
 class UpdateProfileRequest(BaseModel):
     """Update profile request with validation"""
-    display_name: str | None = None
+    display_name: str | None = Field(None, max_length=128)
     username: str | None = None
+
+    @field_validator('username')
+    @classmethod
+    def validate_username(cls, v):
+        if v is None:
+            return v
+        if len(v) < 2 or len(v) > 64:
+            raise ValueError('Username must be between 2 and 64 characters')
+        if not re.match(r'^[a-zA-Z][a-zA-Z0-9_-]*$', v):
+            raise ValueError('Username must start with a letter and contain only letters, numbers, underscores, and hyphens')
+        return v
 
 
 class LogoutResponse(BaseModel):
@@ -176,10 +206,59 @@ async def login_v2(
         user = session.query(User).filter(User.username == credentials.username).first()
 
         if not user:
+            _verify_dummy(credentials.password)
             safe_username = _sanitize_for_log(credentials.username)
             logger.warning(f"Login failed: user '{safe_username}' not found")
             try:
                 log_login_failure(session, credentials.username, request, "user_not_found")
+                session.commit()
+            except Exception as audit_err:
+                logger.warning(f"Failed to log audit entry: {audit_err}")
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid username or password"
+            )
+
+        # Block OIDC users from local login (constant-time rejection)
+        if user.auth_provider == 'oidc':
+            _verify_dummy(credentials.password)
+            safe_username = _sanitize_for_log(credentials.username)
+            logger.warning(f"Login failed: OIDC user '{safe_username}' attempted local login")
+            try:
+                log_login_failure(session, credentials.username, request, "oidc_user_local_attempt")
+                session.commit()
+            except Exception as audit_err:
+                logger.warning(f"Failed to log audit entry: {audit_err}")
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid username or password"
+            )
+
+        # Check account lockout
+        if user.locked_until and user.locked_until.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc):
+            _verify_dummy(credentials.password)
+            safe_username = _sanitize_for_log(credentials.username)
+            logger.warning(f"Login failed: account '{safe_username}' is locked")
+            try:
+                log_login_failure(session, credentials.username, request, "account_locked")
+                session.commit()
+            except Exception as audit_err:
+                logger.warning(f"Failed to log audit entry: {audit_err}")
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid username or password"
+            )
+
+        # Check for soft-deleted user (constant-time: still verify against real hash)
+        if user.is_deleted:
+            try:
+                ph.verify(user.password_hash, credentials.password)
+            except (VerifyMismatchError, InvalidHashError):
+                pass
+            safe_username = _sanitize_for_log(credentials.username)
+            logger.warning(f"Login failed: user '{safe_username}' is deactivated")
+            try:
+                log_login_failure(session, credentials.username, request, "user_deactivated")
                 session.commit()
             except Exception as audit_err:
                 logger.warning(f"Failed to log audit entry: {audit_err}")
@@ -216,31 +295,28 @@ async def login_v2(
                 logger.debug(f"bcrypt verification failed: {bcrypt_error}")
 
         if not password_valid:
+            # Increment failed login attempts + audit in single commit
+            user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+            if user.failed_login_attempts >= MAX_FAILED_ATTEMPTS:
+                user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
+                logger.warning(f"Account '{user.username}' locked after {user.failed_login_attempts} failed attempts")
+
             safe_username = _sanitize_for_log(credentials.username)
             logger.warning(f"Login failed: invalid password for user '{safe_username}'")
             try:
                 log_login_failure(session, credentials.username, request, "invalid_password")
-                session.commit()
             except Exception as audit_err:
                 logger.warning(f"Failed to log audit entry: {audit_err}")
+            session.commit()
             raise HTTPException(
                 status_code=401,
                 detail="Invalid username or password"
             )
 
-        # Check for soft-deleted user (v2.3.0+)
-        if user.is_deleted:
-            safe_username = _sanitize_for_log(credentials.username)
-            logger.warning(f"Login failed: user '{safe_username}' is deactivated")
-            try:
-                log_login_failure(session, credentials.username, request, "user_deactivated")
-                session.commit()
-            except Exception as audit_err:
-                logger.warning(f"Failed to log audit entry: {audit_err}")
-            raise HTTPException(
-                status_code=401,
-                detail="Account is deactivated"
-            )
+        # Successful login - reset failed attempts
+        if user.failed_login_attempts or user.locked_until:
+            user.failed_login_attempts = 0
+            user.locked_until = None
 
         # Upgrade to Argon2id if needed (bcrypt -> Argon2id or old Argon2id params)
         if needs_upgrade:
@@ -249,7 +325,7 @@ async def login_v2(
             logger.info(f"Password hash upgraded to Argon2id for user '{user.username}'")
 
         # Create session
-        client_ip = request.client.host if request.client else "unknown"
+        client_ip = get_client_ip(request)
         signed_token = cookie_session_manager.create_session(
             user_id=user.id,
             username=user.username,
@@ -264,7 +340,7 @@ async def login_v2(
             key="session_id",
             value=signed_token,
             httponly=True,          # Prevents XSS
-            secure=not AppConfig.REVERSE_PROXY_MODE,  # HTTPS mode unless reverse proxy
+            secure=True,            # Always set Secure flag (browser enforces HTTPS)
             samesite="lax",         # CSRF protection (allows same-origin GET requests)
             max_age=get_session_cookie_max_age(),
             path="/",               # Available to all routes
@@ -309,7 +385,7 @@ async def logout_v2(
 
     if session_id:
         # Get user info from session before deleting
-        client_ip = request.client.host if request.client else "unknown"
+        client_ip = get_client_ip(request)
         session_data = cookie_session_manager.validate_session(session_id, client_ip)
         if session_data:
             user_id = session_data.get("user_id")
@@ -317,10 +393,13 @@ async def logout_v2(
 
         cookie_session_manager.delete_session(session_id)
 
-    # Delete cookie
+    # Delete cookie (must match attributes from set_cookie for browser to recognize it)
     response.delete_cookie(
         key="session_id",
-        path="/"
+        path="/",
+        secure=True,
+        samesite="lax",
+        httponly=True,
     )
 
     # Check if OIDC user and build provider logout URL
@@ -348,11 +427,15 @@ async def logout_v2(
                             if resp.status_code == 200:
                                 end_session = resp.json().get('end_session_endpoint')
                                 if end_session:
-                                    scheme = request.headers.get('X-Forwarded-Proto', request.url.scheme)
-                                    host = request.headers.get('X-Forwarded-Host', request.headers.get('Host', request.url.netloc))
+                                    if AppConfig.REVERSE_PROXY_MODE:
+                                        scheme = request.headers.get('X-Forwarded-Proto', request.url.scheme)
+                                        host = request.headers.get('X-Forwarded-Host', request.headers.get('Host', request.url.netloc))
+                                    else:
+                                        scheme = request.url.scheme
+                                        host = request.headers.get('Host', request.url.netloc)
                                     base_path = get_base_path().rstrip('/')
                                     post_logout_uri = f"{scheme}://{host}{base_path}/login"
-                                    oidc_logout_url = f"{end_session}?post_logout_redirect_uri={post_logout_uri}"
+                                    oidc_logout_url = f"{end_session}?post_logout_redirect_uri={quote(post_logout_uri, safe='')}"
                     except Exception as e:
                         logger.warning(f"Failed to fetch OIDC end_session_endpoint: {e}")
 
@@ -389,7 +472,7 @@ async def get_current_user_dependency(
             detail="Not authenticated - no session cookie"
         )
 
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_client_ip(request)
     session_data = cookie_session_manager.validate_session(session_id, client_ip)
 
     if not session_data:
@@ -502,13 +585,25 @@ async def change_password_v2(
     user_id = current_user["user_id"]
     username = current_user["username"]
 
-    # Verify current password
-    user_info = db.verify_user_credentials(username, current_password)
-    if not user_info:
-        raise HTTPException(
-            status_code=401,
-            detail="Current password is incorrect"
-        )
+    # Guard: block OIDC users, locked accounts, and soft-deleted users
+    with db.get_session() as session:
+        user = session.query(User).filter(User.username == username).first()
+        if user:
+            if user.auth_provider == 'oidc':
+                raise HTTPException(status_code=400, detail="Password change not available for this account")
+            if user.is_deleted:
+                raise HTTPException(status_code=403, detail="Account is deactivated")
+            if user.locked_until and user.locked_until.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc):
+                raise HTTPException(status_code=403, detail="Account is locked")
+
+    # Verify current password (without updating last_login)
+    with db.get_session() as session:
+        user = session.query(User).filter(User.username == username).first()
+        if not user or not db._verify_password(current_password, user.password_hash):
+            raise HTTPException(
+                status_code=401,
+                detail="Current password is incorrect"
+            )
 
     # Change password (also sets is_first_login=False)
     success = db.change_user_password(username, new_password)
@@ -517,6 +612,9 @@ async def change_password_v2(
             status_code=500,
             detail="Failed to change password"
         )
+
+    # Invalidate all other sessions for this user (compromised sessions should not survive)
+    cookie_session_manager.delete_sessions_for_user(user_id)
 
     logger.info(f"Password changed successfully for user: {username}")
 
@@ -543,6 +641,7 @@ async def change_password_v2(
 async def update_profile_v2(
     profile_data: UpdateProfileRequest,
     request: Request,
+    session_id: str = Cookie(None),
     current_user: dict = Depends(get_current_user_dependency)
 ) -> UpdateProfileResponse:
     """
@@ -569,19 +668,23 @@ async def update_profile_v2(
 
         # Update username if provided and different
         if new_username and new_username != username:
-            # Check if new username already exists
-            if db.username_exists(new_username):
+            from sqlalchemy.exc import IntegrityError as SAIntegrityError
+            try:
+                if not db.change_username(username, new_username):
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Failed to update username"
+                    )
+            except SAIntegrityError:
                 raise HTTPException(
                     status_code=400,
                     detail="Username already taken"
                 )
-
-            if not db.change_username(username, new_username):
-                raise HTTPException(
-                    status_code=500,
-                    detail="Failed to update username"
-                )
             changes['username'] = {'old': username, 'new': new_username}
+
+            # Update session with new username
+            if session_id:
+                cookie_session_manager.update_session_username(session_id, new_username)
 
         logger.info(f"Profile updated for user: {username}")
 

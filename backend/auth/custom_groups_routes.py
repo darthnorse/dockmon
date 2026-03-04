@@ -186,6 +186,13 @@ def _validate_group_name(name: str) -> str:
             detail=f"Group name cannot exceed {MAX_GROUP_NAME_LENGTH} characters"
         )
 
+    # Restrict to printable ASCII to prevent homoglyph attacks
+    if not all(32 <= ord(c) <= 126 for c in sanitized):
+        raise HTTPException(
+            status_code=400,
+            detail="Group name must contain only printable ASCII characters"
+        )
+
     return sanitized
 
 
@@ -552,6 +559,30 @@ async def delete_group(
                        "Assign them to another group first."
             )
 
+        # Check critical capability guardrail: ensure another group retains each critical capability
+        CRITICAL_CAPABILITIES = {"groups.manage", "users.manage", "settings.manage", "oidc.manage"}
+        group_perms = session.query(GroupPermission).filter(
+            GroupPermission.group_id == group_id,
+            GroupPermission.allowed == True,  # noqa: E712
+        ).all()
+        for perm in group_perms:
+            if perm.capability not in CRITICAL_CAPABILITIES:
+                continue
+            other_group_has_cap = session.query(GroupPermission).filter(
+                GroupPermission.group_id != group_id,
+                GroupPermission.capability == perm.capability,
+                GroupPermission.allowed == True,  # noqa: E712
+            ).first()
+            if not other_group_has_cap:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Cannot delete group '{group.name}' because no other group has "
+                        f"'{perm.capability}' granted. At least one group must retain "
+                        f"this capability to prevent system lockout."
+                    ),
+                )
+
         group_name = group.name
         member_count = len(memberships)
         user_id, display_name = get_auditable_user_info(current_user)
@@ -892,6 +923,12 @@ async def update_group_permissions(
                     status_code=400,
                     detail=f"Unknown capability: {perm_update.capability}"
                 )
+
+        # Deduplicate: last-write-wins for duplicate capabilities
+        deduped = {}
+        for perm_update in request.permissions:
+            deduped[perm_update.capability] = perm_update
+        request.permissions = list(deduped.values())
 
         CRITICAL_CAPABILITIES = {"groups.manage", "users.manage", "settings.manage", "oidc.manage"}
 

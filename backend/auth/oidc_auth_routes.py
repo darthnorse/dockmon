@@ -45,6 +45,7 @@ from database import User, OIDCConfig, OIDCGroupMapping, PendingOIDCAuth, Custom
 from security.rate_limiting import rate_limit_auth
 from audit import log_login, log_login_failure, get_client_info, AuditAction
 from audit.audit_logger import AuditEntityType
+from utils.client_ip import get_client_ip
 from utils.encryption import decrypt_password
 
 logger = logging.getLogger(__name__)
@@ -149,7 +150,7 @@ async def _exchange_code_for_tokens(
     async with httpx.AsyncClient(timeout=OIDC_HTTP_TIMEOUT) as client:
         response = await client.post(token_endpoint, data=data)
         if response.status_code >= 400:
-            logger.error(f"OIDC token endpoint returned {response.status_code}: {response.text[:500]}")
+            logger.error(f"OIDC token endpoint returned {response.status_code}")
         response.raise_for_status()
         return response.json()
 
@@ -239,21 +240,38 @@ _JWKS_CACHE_TTL_SECONDS = 3600  # 1 hour
 
 
 async def _fetch_jwks(jwks_uri: str) -> dict:
-    """Fetch and cache the provider's JWKS (JSON Web Key Set)."""
+    """Fetch and cache the provider's JWKS (JSON Web Key Set).
+
+    Falls back to stale cache on fetch failure to maintain availability.
+    """
     now = time.monotonic()
     cached = _jwks_cache.get(jwks_uri)
 
     if cached and (now - cached["fetched_at"]) < _JWKS_CACHE_TTL_SECONDS:
         return cached["jwks"]
 
-    async with httpx.AsyncClient(timeout=OIDC_HTTP_TIMEOUT) as client:
-        response = await client.get(jwks_uri)
-        response.raise_for_status()
-        jwks = response.json()
+    try:
+        async with httpx.AsyncClient(timeout=OIDC_HTTP_TIMEOUT) as client:
+            response = await client.get(jwks_uri)
+            response.raise_for_status()
+            jwks = response.json()
+    except Exception as e:
+        if cached:
+            logger.warning(f"JWKS fetch failed ({e}), using stale cache for {jwks_uri}")
+            return cached["jwks"]
+        raise
 
     _jwks_cache[jwks_uri] = {"jwks": jwks, "fetched_at": now}
     logger.debug(f"JWKS fetched and cached from {jwks_uri} ({len(jwks.get('keys', []))} keys)")
     return jwks
+
+
+ALLOWED_JWT_ALGORITHMS = ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"]
+
+_JWK_KTY_TO_ALGORITHM_CLASS = {
+    "RSA": jwt.algorithms.RSAAlgorithm,
+    "EC": jwt.algorithms.ECAlgorithm,
+}
 
 
 def _verify_id_token(
@@ -272,18 +290,32 @@ def _verify_id_token(
     kid = unverified_header.get("kid")
     alg = unverified_header.get("alg", "RS256")
 
+    if alg not in ALLOWED_JWT_ALGORITHMS:
+        raise jwt.InvalidTokenError(
+            f"JWT algorithm '{alg}' is not allowed. "
+            f"Allowed algorithms: {ALLOWED_JWT_ALGORITHMS}"
+        )
+
     signing_key = None
+    key_data_match = None
     jwk_keys = jwks_data.get("keys", [])
 
     if kid:
         for key_data in jwk_keys:
             if key_data.get("kid") == kid:
-                signing_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(key_data))
+                key_data_match = key_data
                 break
     else:
         if jwk_keys:
-            signing_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(jwk_keys[0]))
+            key_data_match = jwk_keys[0]
             logger.warning("JWT has no 'kid' header, using first JWKS key")
+
+    if key_data_match is not None:
+        kty = key_data_match.get("kty", "RSA")
+        alg_class = _JWK_KTY_TO_ALGORITHM_CLASS.get(kty)
+        if alg_class is None:
+            raise jwt.InvalidTokenError(f"Unsupported JWK key type: {kty}")
+        signing_key = alg_class.from_jwk(json.dumps(key_data_match))
 
     if signing_key is None:
         raise jwt.InvalidTokenError(
@@ -292,39 +324,22 @@ def _verify_id_token(
 
     expected_issuer = provider_url.rstrip("/")
 
-    try:
-        claims = jwt.decode(
-            id_token,
-            signing_key,
-            algorithms=[alg],
-            audience=client_id,
-            issuer=expected_issuer,
-            options={
-                "verify_exp": True,
-                "verify_iss": True,
-                "verify_aud": True,
-            },
-        )
-    except jwt.InvalidIssuerError:
-        logger.warning(
-            f"OIDC issuer mismatch: expected={expected_issuer}, "
-            f"retrying without strict issuer check"
-        )
-        claims = jwt.decode(
-            id_token,
-            signing_key,
-            algorithms=[alg],
-            audience=client_id,
-            options={
-                "verify_exp": True,
-                "verify_iss": False,
-                "verify_aud": True,
-            },
-        )
-        actual_issuer = claims.get("iss", "unknown")
-        logger.warning(
-            f"OIDC issuer accepted despite mismatch: "
-            f"expected={expected_issuer}, actual={actual_issuer}"
+    claims = jwt.decode(
+        id_token,
+        signing_key,
+        algorithms=[alg],
+        audience=client_id,
+        options={
+            "verify_exp": True,
+            "verify_iss": False,
+            "verify_aud": True,
+        },
+    )
+
+    actual_issuer = claims.get("iss", "").rstrip("/")
+    if actual_issuer != expected_issuer:
+        raise jwt.InvalidTokenError(
+            f"Issuer mismatch: expected={expected_issuer}, got={actual_issuer}"
         )
 
     token_nonce = claims.get("nonce")
@@ -384,9 +399,13 @@ async def oidc_authorize(
         code_challenge = '' if has_secret else _generate_code_challenge(code_verifier)
 
         # Build callback URL
-        # Use request's base URL, respecting reverse proxy headers
-        scheme = request.headers.get('X-Forwarded-Proto', request.url.scheme)
-        host = request.headers.get('X-Forwarded-Host', request.headers.get('Host', request.url.netloc))
+        # Only trust proxy headers when REVERSE_PROXY_MODE is enabled
+        if AppConfig.REVERSE_PROXY_MODE:
+            scheme = request.headers.get('X-Forwarded-Proto', request.url.scheme)
+            host = request.headers.get('X-Forwarded-Host', request.headers.get('Host', request.url.netloc))
+        else:
+            scheme = request.url.scheme
+            host = request.headers.get('Host', request.url.netloc)
 
         base_path = get_base_path().rstrip('/')
         redirect_uri = f"{scheme}://{host}{base_path}/api/v2/auth/oidc/callback"
@@ -439,6 +458,7 @@ async def oidc_callback(
     state: Optional[str] = None,
     error: Optional[str] = None,
     error_description: Optional[str] = None,
+    rate_limit_check: bool = rate_limit_auth,
 ) -> RedirectResponse:
     """
     Handle OIDC provider callback.
@@ -446,16 +466,18 @@ async def oidc_callback(
     Validates state, exchanges code for tokens, validates nonce,
     fetches user info, provisions/updates user, and creates session.
     """
+    base = get_base_path().rstrip('/')
+
     # Handle provider errors
     if error:
         logger.warning(f"OIDC callback error: {error} - {error_description}")
         # Redirect to login with error (URL-encode to prevent XSS)
         error_msg = quote(str(error_description or error)[:100])
-        return RedirectResponse(url=f"/login?error=oidc_error&message={error_msg}")
+        return RedirectResponse(url=f"{base}/login?error=oidc_error&message={error_msg}")
 
     if not code or not state:
         logger.warning("OIDC callback missing code or state")
-        return RedirectResponse(url="/login?error=oidc_error&message=Missing+authorization+code")
+        return RedirectResponse(url=f"{base}/login?error=oidc_error&message=Missing+authorization+code")
 
     with db.get_session() as session:
         # Validate state from database
@@ -465,14 +487,14 @@ async def oidc_callback(
 
         if not pending:
             logger.warning(f"OIDC callback invalid state: {state[:8]}...")
-            return RedirectResponse(url="/login?error=oidc_error&message=Invalid+or+expired+state")
+            return RedirectResponse(url=f"{base}/login?error=oidc_error&message=Invalid+or+expired+state")
 
         # Check expiry
         if pending.is_expired:
             session.delete(pending)
             session.commit()
             logger.warning(f"OIDC callback expired state: {state[:8]}...")
-            return RedirectResponse(url="/login?error=oidc_error&message=Session+expired")
+            return RedirectResponse(url=f"{base}/login?error=oidc_error&message=Session+expired")
 
         # Extract values and delete pending request (one-time use)
         expected_nonce = pending.nonce
@@ -484,7 +506,10 @@ async def oidc_callback(
         config = session.query(OIDCConfig).filter(OIDCConfig.id == 1).first()
 
         if not config or not config.enabled:
-            return RedirectResponse(url="/login?error=oidc_error&message=OIDC+disabled")
+            return RedirectResponse(url=f"{base}/login?error=oidc_error&message=OIDC+disabled")
+
+        if not config.provider_url:
+            return RedirectResponse(url=f"{base}/login?error=oidc_error&message=OIDC+not+configured")
 
         try:
             # Fetch discovery document
@@ -518,6 +543,11 @@ async def oidc_callback(
 
             logger.info(f"OIDC token response keys: {list(tokens.keys())}, scope: {tokens.get('scope', 'not returned')}")
 
+            # Require id_token when openid scope is configured
+            configured_scopes = {s.strip() for s in config.scopes.replace(',', ' ').split() if s.strip()}
+            if 'openid' in configured_scopes and not id_token:
+                raise ValueError("Provider returned no id_token despite 'openid' scope")
+
             # Verify ID token JWT signature and validate claims
             id_token_claims = None
             if id_token:
@@ -537,10 +567,10 @@ async def oidc_callback(
                     logger.info("OIDC ID token verified successfully")
                 except jwt.InvalidTokenError as e:
                     logger.warning(f"OIDC ID token verification failed: {e}")
-                    return RedirectResponse(url="/login?error=oidc_error&message=ID+token+verification+failed")
+                    return RedirectResponse(url=f"{base}/login?error=oidc_error&message=ID+token+verification+failed")
                 except Exception as e:
                     logger.error(f"OIDC ID token verification error: {e}")
-                    return RedirectResponse(url="/login?error=oidc_error&message=ID+token+verification+failed")
+                    return RedirectResponse(url=f"{base}/login?error=oidc_error&message=ID+token+verification+failed")
 
             # Fetch user info from provider (server-to-server, authenticated via access token)
             userinfo = None
@@ -567,7 +597,8 @@ async def oidc_callback(
             groups_raw = userinfo.get(groups_claim)
             oidc_groups = _normalize_groups_claim(groups_raw)
 
-            logger.info(f"OIDC callback: sub={oidc_subject}, email={email}, oidc_groups={oidc_groups}")
+            logger.info(f"OIDC callback: sub={oidc_subject}, email={email}, groups_count={len(oidc_groups) if oidc_groups else 0}")
+            logger.debug(f"OIDC groups detail: {oidc_groups}")
 
             # Find or create user
             user = session.query(User).filter(User.oidc_subject == oidc_subject).first()
@@ -575,6 +606,22 @@ async def oidc_callback(
             now = datetime.now(timezone.utc)
 
             if user:
+                # Check soft-delete FIRST, before any mutations
+                if user.is_deleted:
+                    logger.warning(f"OIDC login blocked: user '{user.username}' is deactivated")
+                    safe_audit_log(
+                        session,
+                        user.id,
+                        user.effective_display_name,
+                        AuditAction.LOGIN_FAILED,
+                        AuditEntityType.SESSION,
+                        details={'reason': 'user_deactivated'},
+                        **get_client_info(request)
+                    )
+                    session.commit()
+                    base = get_base_path().rstrip('/')
+                    return RedirectResponse(url=f"{base}/login?error=oidc_error&message=Account+deactivated")
+
                 # Existing OIDC user - sync group memberships (full replacement)
                 new_group_ids = set(_get_groups_for_oidc_user(oidc_groups, session))
 
@@ -595,7 +642,7 @@ async def oidc_callback(
                     )
                     session.commit()
                     return RedirectResponse(
-                        url="/login?error=oidc_error&message=You+are+not+authorized+to+access+DockMon"
+                        url=f"{base}/login?error=oidc_error&message=You+are+not+authorized+to+access+DockMon"
                     )
 
                 # Track changes for logging
@@ -678,6 +725,7 @@ async def oidc_callback(
                     existing_email = session.query(User).filter(
                         User.email == email,
                         User.auth_provider == 'local',
+                        User.deleted_at.is_(None),
                     ).first()
                     if existing_email:
                         logger.warning(f"OIDC login blocked: email '{email}' exists as local user")
@@ -692,11 +740,12 @@ async def oidc_callback(
                         )
                         session.commit()  # Commit the audit log
                         return RedirectResponse(
-                            url="/login?error=oidc_error&message=Email+already+exists+as+local+account"
+                            url=f"{base}/login?error=oidc_error&message=Email+already+exists+as+local+account"
                         )
 
-                # Check for username conflict
-                username = preferred_username or email or oidc_subject[:20]
+                # Check for username conflict (truncate to reasonable length)
+                raw_username = preferred_username or email or oidc_subject[:20]
+                username = raw_username[:64]
                 base_username = username
                 counter = 1
                 while session.query(User).filter(User.username == username).first():
@@ -737,7 +786,7 @@ async def oidc_callback(
                     )
                     session.commit()  # Commit the audit log
                     return RedirectResponse(
-                        url="/login?error=oidc_error&message=No+matching+group+configuration"
+                        url=f"{base}/login?error=oidc_error&message=No+matching+group+configuration"
                     )
 
                 # Auto-provision new user (no role field - groups provide permissions)
@@ -757,61 +806,58 @@ async def oidc_callback(
                 )
 
                 session.add(user)
-                session.flush()  # Get user.id for group memberships
+                try:
+                    session.flush()  # Get user.id for group memberships
+                except IntegrityError:
+                    # Race condition: concurrent callback created this user first
+                    session.rollback()
+                    user = session.query(User).filter(User.oidc_subject == oidc_subject).first()
+                    if not user:
+                        logger.error("OIDC user creation race: IntegrityError but user not found on retry")
+                        return RedirectResponse(url=f"{base}/login?error=oidc_error&message=Authentication+failed")
+                    logger.info(f"OIDC user creation race resolved: found existing user '{user.username}'")
+                    # Fall through to session creation below
+                    session.commit()
+                    invalidate_user_groups_cache(user.id)
+                else:
+                    # Add user to all matching groups
+                    for gid in group_ids:
+                        session.add(UserGroupMembership(
+                            user_id=user.id,
+                            group_id=gid,
+                            added_by=None,  # System-assigned via OIDC
+                            added_at=now
+                        ))
 
-                # Add user to all matching groups
-                for gid in group_ids:
-                    session.add(UserGroupMembership(
-                        user_id=user.id,
-                        group_id=gid,
-                        added_by=None,  # System-assigned via OIDC
-                        added_at=now
-                    ))
+                    # Audit user creation (before commit for atomicity)
+                    safe_audit_log(
+                        session,
+                        user.id,
+                        user.effective_display_name,
+                        AuditAction.CREATE,
+                        AuditEntityType.USER,
+                        entity_id=str(user.id),
+                        entity_name=user.effective_display_name,
+                        details={
+                            'source': 'oidc_auto_provision',
+                            'groups': group_ids,
+                            'oidc_groups': oidc_groups,
+                            'email': email,
+                            'is_first_user': is_first_user
+                        },
+                        **get_client_info(request)
+                    )
 
-                # Audit user creation (before commit for atomicity)
-                safe_audit_log(
-                    session,
-                    user.id,
-                    user.effective_display_name,
-                    AuditAction.CREATE,
-                    AuditEntityType.USER,
-                    entity_id=str(user.id),
-                    entity_name=user.effective_display_name,
-                    details={
-                        'source': 'oidc_auto_provision',
-                        'groups': group_ids,
-                        'oidc_groups': oidc_groups,
-                        'email': email,
-                        'is_first_user': is_first_user
-                    },
-                    **get_client_info(request)
-                )
-
-                session.commit()
-                session.refresh(user)
+                    session.commit()
+                    session.refresh(user)
 
                 logger.info(f"OIDC user '{username}' auto-provisioned with groups {group_ids}")
 
                 # Invalidate cache for new user (defensive - ensures fresh state)
                 invalidate_user_groups_cache(user.id)
 
-            # Check if user is soft-deleted
-            if user.is_deleted:
-                logger.warning(f"OIDC login blocked: user '{user.username}' is deactivated")
-                safe_audit_log(
-                    session,
-                    user.id,
-                    user.effective_display_name,
-                    AuditAction.LOGIN_FAILED,
-                    AuditEntityType.SESSION,
-                    details={'reason': 'user_deactivated'},
-                    **get_client_info(request)
-                )
-                session.commit()  # Commit the audit log
-                return RedirectResponse(url="/login?error=oidc_error&message=Account+deactivated")
-
             # Create session
-            client_ip = request.client.host if request.client else "unknown"
+            client_ip = get_client_ip(request)
             signed_token = cookie_session_manager.create_session(
                 user_id=user.id,
                 username=user.username,
@@ -832,7 +878,7 @@ async def oidc_callback(
                 key="session_id",
                 value=signed_token,
                 httponly=True,
-                secure=not AppConfig.REVERSE_PROXY_MODE,
+                secure=True,
                 samesite="lax",
                 max_age=get_session_cookie_max_age(),
                 path="/",
@@ -849,10 +895,9 @@ async def oidc_callback(
             return redirect_response
 
         except httpx.HTTPStatusError as e:
-            body = e.response.text[:500] if e.response else "no response body"
-            logger.error(f"OIDC token exchange failed: {e} | response: {body}")
-            return RedirectResponse(url="/login?error=oidc_error&message=Token+exchange+failed")
+            logger.error(f"OIDC token exchange failed: status={e.response.status_code if e.response else 'unknown'}")
+            return RedirectResponse(url=f"{base}/login?error=oidc_error&message=Token+exchange+failed")
         except Exception as e:
             # Log full error for debugging, but return generic message to prevent info leakage
             logger.error(f"OIDC callback error: {e}")
-            return RedirectResponse(url="/login?error=oidc_error&message=Authentication+failed")
+            return RedirectResponse(url=f"{base}/login?error=oidc_error&message=Authentication+failed")

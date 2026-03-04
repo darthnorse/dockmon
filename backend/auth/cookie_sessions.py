@@ -4,7 +4,7 @@ Secure Cookie-Based Session Management for DockMon v2.0
 SECURITY FEATURES:
 - HttpOnly cookies (XSS protection)
 - Secure flag (HTTPS only in production)
-- SameSite=strict (CSRF protection)
+- SameSite=lax (CSRF protection)
 - Signed cookies with itsdangerous (tamper-proof)
 - Session expiry with automatic cleanup
 - IP validation to prevent session hijacking
@@ -123,6 +123,8 @@ SECRET_KEY = os.getenv('SESSION_SECRET_KEY') or _load_or_generate_secret()
 COOKIE_SIGNER = URLSafeTimedSerializer(SECRET_KEY, salt="dockmon-session")
 
 
+MAX_SESSIONS_PER_USER = 10
+
 _session_timeout_cache: dict = {"value": 24, "expires_at": 0.0}
 _SESSION_TIMEOUT_CACHE_TTL = 60  # seconds
 
@@ -240,6 +242,18 @@ class CookieSessionManager:
         capacity_timeout = timedelta(hours=timeout_hours) if timeout_hours > 0 else None
 
         with self._sessions_lock:
+            # Enforce per-user session limit
+            user_sessions = [
+                (sid, data) for sid, data in self.sessions.items()
+                if data.get("user_id") == user_id
+            ]
+            if len(user_sessions) >= MAX_SESSIONS_PER_USER:
+                # Evict oldest sessions
+                user_sessions.sort(key=lambda x: x[1]["created_at"])
+                excess = len(user_sessions) - MAX_SESSIONS_PER_USER + 1
+                for sid, _ in user_sessions[:excess]:
+                    del self.sessions[sid]
+                logger.info(f"Evicted {excess} oldest session(s) for user ID {user_id} (limit: {MAX_SESSIONS_PER_USER})")
             # Check if at capacity
             if len(self.sessions) >= self.max_sessions:
                 # Try cleanup first (only if sessions can expire)
@@ -332,14 +346,15 @@ class CookieSessionManager:
                 return None
 
             # 4. Validate IP consistency (prevent session hijacking)
-            # DISABLED: Causes issues behind proxies/CDNs like Cloudflare where IP varies
-            # if session["client_ip"] != client_ip:
-            #     logger.warning(
-            #         f"IP mismatch: Session created from {session['client_ip']}, "
-            #         f"accessed from {client_ip}. Invalidating session for user: {session['username']}"
-            #     )
-            #     del self.sessions[session_id]
-            #     return None
+            # Now safe in all modes: session creation and validation both use get_client_ip()
+            # which extracts real client IP from X-Forwarded-For in reverse proxy mode
+            if session["client_ip"] != client_ip:
+                logger.warning(
+                    f"IP mismatch: Session created from {session['client_ip']}, "
+                    f"accessed from {client_ip}. Invalidating session for user: {session['username']}"
+                )
+                del self.sessions[session_id]
+                return None
 
             # Update last accessed time
             session["last_accessed"] = now
@@ -373,6 +388,19 @@ class CookieSessionManager:
                 logger.info(f"Session deleted for user '{username}'")
                 return True
 
+        return False
+
+    def update_session_username(self, signed_token: str, new_username: str) -> bool:
+        """Update the username in an active session (e.g., after profile change)."""
+        try:
+            session_id = COOKIE_SIGNER.loads(signed_token)
+        except (SignatureExpired, BadSignature):
+            return False
+
+        with self._sessions_lock:
+            if session_id in self.sessions:
+                self.sessions[session_id]["username"] = new_username
+                return True
         return False
 
     def delete_sessions_for_user(self, user_id: int) -> int:

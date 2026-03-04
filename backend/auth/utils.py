@@ -80,12 +80,13 @@ def format_timestamp_required(dt: datetime | None) -> str:
     return _to_naive_utc(dt).isoformat() + 'Z'
 
 
-def get_user_or_404(session: Session, user_id: int) -> User:
+def get_user_or_404(session: Session, user_id: int, include_deleted: bool = False) -> User:
     """Get user by ID or raise 404 HTTPException.
 
     Args:
         session: Database session
         user_id: User ID to look up
+        include_deleted: If True, include soft-deleted users (for reactivation)
 
     Returns:
         User object
@@ -93,7 +94,10 @@ def get_user_or_404(session: Session, user_id: int) -> User:
     Raises:
         HTTPException: 404 if user not found
     """
-    user = session.query(User).filter(User.id == user_id).first()
+    query = session.query(User).filter(User.id == user_id)
+    if not include_deleted:
+        query = query.filter(User.deleted_at.is_(None))
+    user = query.first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return user

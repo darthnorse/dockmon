@@ -22,6 +22,8 @@ from database import DatabaseManager, AlertV2, AlertAnnotation
 from alerts.engine import AlertEngine
 from security.rate_limiting import get_rate_limit_dependency
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability  # v2 hybrid auth (cookies + API keys)
+from auth.utils import get_auditable_user_info
+from security.audit import security_audit
 
 logger = logging.getLogger(__name__)
 
@@ -199,9 +201,11 @@ async def resolve_alert(
     alert_id: str,
     request: ResolveAlertRequest,
     db: DatabaseManager = Depends(get_db),
-    engine: AlertEngine = Depends(get_alert_engine)
+    engine: AlertEngine = Depends(get_alert_engine),
+    current_user: dict = Depends(get_current_user)
 ):
     """Manually resolve an alert"""
+    user_id, display_name = get_auditable_user_info(current_user)
     with db.get_session() as session:
         alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
 
@@ -214,6 +218,13 @@ async def resolve_alert(
         # Resolve the alert
         alert = engine._resolve_alert(alert, request.reason)
 
+        security_audit(
+            action="alert.resolve",
+            user_id=user_id,
+            display_name=display_name,
+            details={"alert_id": alert_id, "reason": request.reason}
+        )
+
         labels = json.loads(alert.labels_json) if alert.labels_json else None
         return AlertResponse(
             **{k: v for k, v in alert.__dict__.items() if not k.startswith('_')},
@@ -225,9 +236,11 @@ async def resolve_alert(
 async def snooze_alert(
     alert_id: str,
     request: SnoozeAlertRequest,
-    db: DatabaseManager = Depends(get_db)
+    db: DatabaseManager = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
     """Snooze an alert for a specified duration"""
+    user_id, display_name = get_auditable_user_info(current_user)
     with db.get_session() as session:
         alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
 
@@ -242,6 +255,13 @@ async def snooze_alert(
         alert.snoozed_until = datetime.now(timezone.utc) + timedelta(minutes=request.duration_minutes)
         session.commit()
 
+        security_audit(
+            action="alert.snooze",
+            user_id=user_id,
+            display_name=display_name,
+            details={"alert_id": alert_id, "duration_minutes": request.duration_minutes}
+        )
+
         labels = json.loads(alert.labels_json) if alert.labels_json else None
         return AlertResponse(
             **{k: v for k, v in alert.__dict__.items() if not k.startswith('_')},
@@ -252,9 +272,11 @@ async def snooze_alert(
 @router.post("/{alert_id}/unsnooze", response_model=AlertResponse, dependencies=[Depends(get_rate_limit_dependency("alerts_write")), Depends(require_capability("alerts.manage"))])
 async def unsnooze_alert(
     alert_id: str,
-    db: DatabaseManager = Depends(get_db)
+    db: DatabaseManager = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
     """Unsnooze an alert"""
+    user_id, display_name = get_auditable_user_info(current_user)
     with db.get_session() as session:
         alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
 
@@ -269,6 +291,13 @@ async def unsnooze_alert(
         alert.snoozed_until = None
         session.commit()
 
+        security_audit(
+            action="alert.unsnooze",
+            user_id=user_id,
+            display_name=display_name,
+            details={"alert_id": alert_id}
+        )
+
         labels = json.loads(alert.labels_json) if alert.labels_json else None
         return AlertResponse(
             **{k: v for k, v in alert.__dict__.items() if not k.startswith('_')},
@@ -280,9 +309,11 @@ async def unsnooze_alert(
 async def add_annotation(
     alert_id: str,
     request: AddAnnotationRequest,
-    db: DatabaseManager = Depends(get_db)
+    db: DatabaseManager = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
     """Add an annotation to an alert"""
+    user_id, display_name = get_auditable_user_info(current_user)
     with db.get_session() as session:
         alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
 
@@ -299,6 +330,13 @@ async def add_annotation(
 
         session.add(annotation)
         session.commit()
+
+        security_audit(
+            action="alert.annotate",
+            user_id=user_id,
+            display_name=display_name,
+            details={"alert_id": alert_id}
+        )
 
         return {"status": "success", "annotation_id": annotation.id}
 

@@ -366,6 +366,8 @@ async def update_user(
     target_user_id = user_id
     user_id, display_name = get_auditable_user_info(current_user)
 
+    _needs_ws_refresh = None
+
     with db.get_session() as session:
         user = get_user_or_404(session, target_user_id)
 
@@ -434,6 +436,7 @@ async def update_user(
 
             # Invalidate cache for this user
             invalidate_user_groups_cache(target_user_id)
+            _needs_ws_refresh = target_user_id
 
         user.updated_at = datetime.now(timezone.utc)
 
@@ -456,7 +459,14 @@ async def update_user(
 
         logger.info(f"User '{user.username}' updated by {display_name}: {changes}")
 
-        return _user_to_response(user, session)
+        response = _user_to_response(user, session)
+
+    # Refresh WS capabilities outside the DB session
+    if _needs_ws_refresh is not None:
+        from auth.custom_groups_routes import _refresh_ws_capabilities
+        await _refresh_ws_capabilities(_needs_ws_refresh)
+
+    return response
 
 
 @router.delete("/{user_id}", dependencies=[Depends(require_capability("users.manage"))])
@@ -479,8 +489,9 @@ async def delete_user(
     with db.get_session() as session:
         user = get_user_or_404(session, target_user_id)
 
-        # Prevent self-deletion (only applies to session auth)
-        if current_user.get("auth_type") != "api_key" and user_id == target_user_id:
+        # Prevent self-deletion (applies to both session and API key auth)
+        acting_user_id = current_user.get("user_id") or current_user.get("created_by_user_id")
+        if acting_user_id == target_user_id:
             raise HTTPException(
                 status_code=400,
                 detail="Cannot delete your own account"
@@ -518,6 +529,7 @@ async def delete_user(
         evicted = cookie_session_manager.delete_sessions_for_user(target_user_id)
         if evicted:
             logger.info(f"Evicted {evicted} active session(s) for deactivated user '{user.username}'")
+        invalidate_user_groups_cache(target_user_id)
 
         logger.info(f"User '{user.username}' deactivated by {display_name}")
 
@@ -539,7 +551,7 @@ async def reactivate_user(
     user_id, display_name = get_auditable_user_info(current_user)
 
     with db.get_session() as session:
-        user = get_user_or_404(session, target_user_id)
+        user = get_user_or_404(session, target_user_id, include_deleted=True)
 
         if not user.is_deleted:
             raise HTTPException(
@@ -628,6 +640,11 @@ async def reset_user_password(
         )
 
         session.commit()
+
+        # Terminate all existing sessions for the target user
+        evicted = cookie_session_manager.delete_sessions_for_user(target_user_id)
+        if evicted:
+            logger.info(f"Evicted {evicted} session(s) for user '{user.username}' after password reset")
 
         logger.info(f"Password reset for user '{user.username}' by {display_name}")
 

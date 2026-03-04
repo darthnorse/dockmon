@@ -5,7 +5,7 @@ Covers:
 - _verify_id_token() - JWT signature verification and claim validation
 - _fetch_jwks() - JWKS fetching with caching
 - Nonce validation within JWT verification
-- Issuer mismatch tolerance (lenient comparison)
+- Issuer mismatch rejection (strict with trailing-slash normalization)
 - Audience validation (string and list formats)
 - Key matching by kid header
 - Error handling for invalid/malformed tokens
@@ -182,24 +182,23 @@ class TestVerifyIdToken:
 
         assert result["sub"] == "user-12345"
 
-    def test_issuer_mismatch_accepted_with_warning(self, rsa_keypair, jwks_data, valid_claims):
-        """Non-conformant issuer is accepted with a warning (lenient mode)."""
+    def test_issuer_mismatch_rejected(self, rsa_keypair, jwks_data, valid_claims):
+        """Non-conformant issuer is rejected (strict validation)."""
         from auth.oidc_auth_routes import _verify_id_token
 
         # Token has different issuer format
         valid_claims["iss"] = "https://provider.example.com/realms/main"
         id_token = _create_signed_id_token(rsa_keypair, valid_claims)
 
-        # Provider URL is different from issuer - should still work (lenient)
-        result = _verify_id_token(
-            id_token=id_token,
-            jwks_data=jwks_data,
-            provider_url="https://provider.example.com",
-            client_id="my-client-id",
-            expected_nonce="expected-nonce-value",
-        )
-
-        assert result["sub"] == "user-12345"
+        # Provider URL is different from issuer - should be rejected
+        with pytest.raises(pyjwt.InvalidTokenError, match="Issuer mismatch"):
+            _verify_id_token(
+                id_token=id_token,
+                jwks_data=jwks_data,
+                provider_url="https://provider.example.com",
+                client_id="my-client-id",
+                expected_nonce="expected-nonce-value",
+            )
 
     def test_audience_as_list(self, rsa_keypair, jwks_data, valid_claims):
         """Audience claim as a list is handled correctly."""

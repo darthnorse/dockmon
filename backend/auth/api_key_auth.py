@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 
 # Constants
 BEARER_PREFIX = "Bearer "
+_MUST_CHANGE_PASSWORD_ALLOWED_PATHS = frozenset({
+    "/api/v2/auth/change-password",
+    "/api/v2/auth/me",
+    "/api/v2/auth/logout",
+})
 
 
 def generate_api_key() -> Tuple[str, str, str]:
@@ -182,9 +187,23 @@ def validate_api_key(
             logger.error(f"API key {api_key_record.id} references non-existent group {api_key_record.group_id}")
             return None
 
-        # Get created_by user info for audit trail
+        # Get created_by user info and check if creator is still active
         created_by = session.query(User).filter(User.id == api_key_record.created_by_user_id).first()
         created_by_username = created_by.username if created_by else "unknown"
+
+        if created_by and created_by.is_deleted:
+            logger.warning(f"API key {api_key_record.name} rejected: creator account '{created_by_username}' is deactivated")
+            security_audit.log_event(
+                event_type="api_key_creator_deactivated",
+                severity="warning",
+                client_ip=client_ip,
+                details={
+                    "api_key_id": api_key_record.id,
+                    "api_key_name": api_key_record.name,
+                    "created_by_user_id": api_key_record.created_by_user_id,
+                }
+            )
+            return None
 
         # Update usage statistics
         api_key_record.last_used_at = datetime.now(timezone.utc)
@@ -246,29 +265,6 @@ def _check_ip_allowed(client_ip: str, allowed_ips: str) -> bool:
     return False
 
 
-def _get_user_scopes(user_role: str) -> list[str]:
-    """
-    Map user role to scopes.
-
-    Args:
-        user_role: User role from User.role column
-
-    Returns:
-        List of scopes for this role
-
-    Scope mapping:
-        admin → ["admin"] (full access)
-        user → ["read", "write"] (can manage containers)
-        readonly → ["read"] (view-only)
-        default → ["read"] (safe fallback)
-    """
-    role_map = {
-        "admin": ["admin"],
-        "user": ["read", "write"],
-        "readonly": ["read"]
-    }
-    return role_map.get(user_role, ["read"])  # Safe default
-
 
 async def get_current_user_or_api_key(
     request: Request,
@@ -318,14 +314,24 @@ async def get_current_user_or_api_key(
             user_id = None
             username = None
             display_name = None
+            must_change_password = False
             with db.get_session() as session:
                 user = session.query(User).filter(User.id == session_data["user_id"]).first()
                 if user and not user.is_deleted:
                     user_id = user.id
                     username = user.username
                     display_name = user.display_name
+                    must_change_password = user.must_change_password
 
             if user_id:
+                # Enforce must_change_password server-side
+                if must_change_password:
+                    if request.url.path.rstrip('/') not in _MUST_CHANGE_PASSWORD_ALLOWED_PATHS:
+                        raise HTTPException(
+                            status_code=403,
+                            detail="Password change required"
+                        )
+
                 # Get user's groups outside session (for API symmetry with API key auth)
                 user_groups = get_user_groups(user_id)
                 return {
@@ -449,6 +455,7 @@ class Capabilities:
     HEALTHCHECKS_MANAGE = 'healthchecks.manage'
     POLICIES_MANAGE = 'policies.manage'
     APIKEYS_MANAGE_OTHER = 'apikeys.manage_other'
+    OIDC_MANAGE = 'oidc.manage'
 
     # User capabilities (write scope)
     STACKS_DEPLOY = 'stacks.deploy'

@@ -3508,7 +3508,7 @@ async def get_upgrade_notice(current_user: dict = Depends(get_current_user), rat
         return {"show_notice": False, "version": "2.0.0"}
 
 
-@app.post("/api/upgrade-notice/dismiss", tags=["system"])
+@app.post("/api/upgrade-notice/dismiss", tags=["system"], dependencies=[Depends(require_capability("settings.manage"))])
 async def dismiss_upgrade_notice(current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_default):
     """Mark upgrade notice as dismissed"""
     try:
@@ -4637,11 +4637,9 @@ async def get_events_by_correlation(
 @app.get("/api/user/event-sort-order", tags=["events"])
 async def get_event_sort_order(request: Request, current_user: dict = Depends(get_current_user)):
     """Get event sort order preference for current user"""
-    from auth.shared import get_session_from_cookie
-    from auth.session_manager import session_manager
-
-    session_id = get_session_from_cookie(request)
-    username = session_manager.get_session_username(session_id)
+    username = current_user.get('username')
+    if not username:
+        raise HTTPException(status_code=401, detail="User not authenticated")
 
     sort_order = monitor.db.get_event_sort_order(username)
     return {"sort_order": sort_order}
@@ -4677,11 +4675,9 @@ async def save_event_sort_order(request: Request, current_user: dict = Depends(g
 @app.get("/api/user/container-sort-order", tags=["user-preferences"])
 async def get_container_sort_order(request: Request, current_user: dict = Depends(get_current_user)):
     """Get container sort order preference for current user"""
-    from auth.shared import get_session_from_cookie
-    from auth.session_manager import session_manager
-
-    session_id = get_session_from_cookie(request)
-    username = session_manager.get_session_username(session_id)
+    username = current_user.get('username')
+    if not username:
+        raise HTTPException(status_code=401, detail="User not authenticated")
 
     sort_order = monitor.db.get_container_sort_order(username)
     return {"sort_order": sort_order}
@@ -4689,11 +4685,9 @@ async def get_container_sort_order(request: Request, current_user: dict = Depend
 @app.post("/api/user/container-sort-order", tags=["user-preferences"])
 async def save_container_sort_order(request: Request, current_user: dict = Depends(get_current_user)):
     """Save container sort order preference for current user"""
-    from auth.shared import get_session_from_cookie
-    from auth.session_manager import session_manager
-
-    session_id = get_session_from_cookie(request)
-    username = session_manager.get_session_username(session_id)
+    username = current_user.get('username')
+    if not username:
+        raise HTTPException(status_code=401, detail="User not authenticated")
 
     try:
         body = await request.json()
@@ -4717,11 +4711,9 @@ async def save_container_sort_order(request: Request, current_user: dict = Depen
 @app.get("/api/user/modal-preferences", tags=["user-preferences"])
 async def get_modal_preferences(request: Request, current_user: dict = Depends(get_current_user)):
     """Get modal preferences for current user"""
-    from auth.shared import get_session_from_cookie
-    from auth.session_manager import session_manager
-
-    session_id = get_session_from_cookie(request)
-    username = session_manager.get_session_username(session_id)
+    username = current_user.get('username')
+    if not username:
+        raise HTTPException(status_code=401, detail="User not authenticated")
 
     preferences = monitor.db.get_modal_preferences(username)
     return {"preferences": preferences}
@@ -4729,11 +4721,9 @@ async def get_modal_preferences(request: Request, current_user: dict = Depends(g
 @app.post("/api/user/modal-preferences", tags=["user-preferences"])
 async def save_modal_preferences(request: Request, current_user: dict = Depends(get_current_user)):
     """Save modal preferences for current user"""
-    from auth.shared import get_session_from_cookie
-    from auth.session_manager import session_manager
-
-    session_id = get_session_from_cookie(request)
-    username = session_manager.get_session_username(session_id)
+    username = current_user.get('username')
+    if not username:
+        raise HTTPException(status_code=401, detail="User not authenticated")
 
     try:
         body = await request.json()

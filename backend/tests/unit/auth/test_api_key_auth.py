@@ -143,6 +143,7 @@ class TestValidateApiKey:
         self.created_by_user = Mock()
         self.created_by_user.id = 1
         self.created_by_user.username = "testuser"
+        self.created_by_user.is_deleted = False
 
         # Create mock API key record (v2.4.0: uses group_id instead of user_id/scopes)
         self.api_key = Mock()
@@ -267,6 +268,7 @@ class TestGetCurrentUserOrApiKey:
         """Session cookie authentication succeeds (v2.4.0: includes groups)"""
         request = Mock(spec=Request)
         request.client.host = "192.168.1.100"
+        request.url.path = "/api/v2/auth/me"
 
         with patch('auth.api_key_auth.cookie_session_manager') as mock_session_mgr, \
              patch('auth.api_key_auth.db') as mock_db, \
@@ -283,7 +285,9 @@ class TestGetCurrentUserOrApiKey:
             mock_user = Mock()
             mock_user.id = 1
             mock_user.username = "testuser"
+            mock_user.display_name = "Test User"
             mock_user.is_deleted = False
+            mock_user.must_change_password = False
             mock_session.query.return_value.filter.return_value.first.return_value = mock_user
             mock_db.get_session.return_value.__enter__ = Mock(return_value=mock_session)
             mock_db.get_session.return_value.__exit__ = Mock(return_value=False)

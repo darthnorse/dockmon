@@ -22,6 +22,7 @@ SECURITY:
 import hashlib
 import json
 import logging
+import re
 import secrets
 import time
 from base64 import urlsafe_b64encode
@@ -83,8 +84,8 @@ def _validate_redirect_url(redirect: Optional[str]) -> str:
         logger.warning(f"Rejected relative redirect URL not starting with /: {redirect[:50]}")
         return '/'
 
-    # Prevent protocol-relative URLs (//evil.com)
-    if redirect.startswith('//'):
+    # Prevent protocol-relative URLs (//evil.com) and backslash variants (\/evil.com)
+    if redirect.startswith('//') or redirect.startswith('/\\') or redirect.startswith('\\'):
         logger.warning(f"Rejected protocol-relative redirect URL: {redirect[:50]}")
         return '/'
 
@@ -117,12 +118,24 @@ async def _fetch_oidc_discovery(provider_url: str) -> dict:
     provider_url = provider_url.rstrip('/')
     if provider_url.endswith('/.well-known/openid-configuration'):
         provider_url = provider_url[:-len('/.well-known/openid-configuration')]
+
+    if not provider_url.startswith('https://'):
+        logger.warning(f"OIDC provider URL is not HTTPS: {provider_url}")
+
     discovery_url = f"{provider_url}/.well-known/openid-configuration"
 
     async with httpx.AsyncClient(timeout=OIDC_HTTP_TIMEOUT) as client:
         response = await client.get(discovery_url)
         response.raise_for_status()
-        return response.json()
+        discovery = response.json()
+
+    # Validate critical endpoints use HTTPS
+    for key in ('token_endpoint', 'userinfo_endpoint', 'jwks_uri'):
+        endpoint = discovery.get(key)
+        if endpoint and not endpoint.startswith('https://'):
+            logger.warning(f"OIDC discovery '{key}' is not HTTPS: {endpoint}")
+
+    return discovery
 
 
 async def _exchange_code_for_tokens(
@@ -582,7 +595,7 @@ async def oidc_callback(
             if not userinfo:
                 raise ValueError("Failed to fetch user information from provider")
 
-            # Extract user info
+            # Extract user info - prefer ID token claims where available
             logger.info(f"OIDC userinfo/claims keys: {list(userinfo.keys())}")
             oidc_subject = userinfo.get('sub')
             email = userinfo.get('email')
@@ -592,9 +605,22 @@ async def oidc_callback(
             if not oidc_subject:
                 raise ValueError("No 'sub' claim in userinfo")
 
+            # Cross-check: if ID token was verified, its 'sub' is authoritative
+            if id_token_claims:
+                id_token_sub = id_token_claims.get('sub')
+                if id_token_sub and id_token_sub != oidc_subject:
+                    raise ValueError(
+                        f"Subject mismatch: id_token sub='{id_token_sub}' vs userinfo sub='{oidc_subject}'"
+                    )
+                # Use ID token sub as authoritative
+                oidc_subject = id_token_sub or oidc_subject
+
             # Get groups from configured claim (with type safety)
+            # Try userinfo first, fall back to ID token claims
             groups_claim = config.claim_for_groups
             groups_raw = userinfo.get(groups_claim)
+            if groups_raw is None and id_token_claims:
+                groups_raw = id_token_claims.get(groups_claim)
             oidc_groups = _normalize_groups_claim(groups_raw)
 
             logger.info(f"OIDC callback: sub={oidc_subject}, email={email}, groups_count={len(oidc_groups) if oidc_groups else 0}")
@@ -693,7 +719,16 @@ async def oidc_callback(
                 if name and user.display_name != name:
                     user.display_name = name
                 if email and user.email != email:
-                    user.email = email
+                    # Check for email conflicts before updating
+                    email_conflict = session.query(User).filter(
+                        User.email == email,
+                        User.id != user.id,
+                        User.deleted_at.is_(None),
+                    ).first()
+                    if email_conflict:
+                        logger.warning(f"OIDC email sync skipped: '{email}' already used by user '{email_conflict.username}'")
+                    else:
+                        user.email = email
 
                 # Audit group sync if changes occurred (before commit for atomicity)
                 if added_groups or removed_groups:
@@ -724,11 +759,10 @@ async def oidc_callback(
                 if email:
                     existing_email = session.query(User).filter(
                         User.email == email,
-                        User.auth_provider == 'local',
                         User.deleted_at.is_(None),
                     ).first()
                     if existing_email:
-                        logger.warning(f"OIDC login blocked: email '{email}' exists as local user")
+                        logger.warning(f"OIDC login blocked: email '{email}' already used by user '{existing_email.username}'")
                         safe_audit_log(
                             session,
                             None,
@@ -740,12 +774,14 @@ async def oidc_callback(
                         )
                         session.commit()  # Commit the audit log
                         return RedirectResponse(
-                            url=f"{base}/login?error=oidc_error&message=Email+already+exists+as+local+account"
+                            url=f"{base}/login?error=oidc_error&message=Email+already+in+use+by+another+account"
                         )
 
-                # Check for username conflict (truncate to reasonable length)
+                # Sanitize username: only allow safe characters, truncate to reasonable length
                 raw_username = preferred_username or email or oidc_subject[:20]
-                username = raw_username[:64]
+                # Strip control chars and non-ASCII, keep alphanumeric + safe punctuation
+                sanitized = re.sub(r'[^a-zA-Z0-9._@-]', '_', raw_username)
+                username = sanitized[:64]
                 base_username = username
                 counter = 1
                 while session.query(User).filter(User.username == username).first():
@@ -813,10 +849,20 @@ async def oidc_callback(
                     session.rollback()
                     user = session.query(User).filter(User.oidc_subject == oidc_subject).first()
                     if not user:
-                        logger.error("OIDC user creation race: IntegrityError but user not found on retry")
+                        # May have been an email conflict instead of oidc_subject conflict
+                        logger.error("OIDC user creation race: IntegrityError but user not found by oidc_subject")
                         return RedirectResponse(url=f"{base}/login?error=oidc_error&message=Authentication+failed")
                     logger.info(f"OIDC user creation race resolved: found existing user '{user.username}'")
-                    # Fall through to session creation below
+                    # Perform group sync on the existing user (same logic as existing-user path)
+                    race_group_ids = set(_get_groups_for_oidc_user(oidc_groups, session))
+                    if race_group_ids:
+                        existing_memberships = session.query(UserGroupMembership).filter_by(user_id=user.id).all()
+                        existing_gids = {m.group_id for m in existing_memberships}
+                        for gid in race_group_ids - existing_gids:
+                            session.add(UserGroupMembership(
+                                user_id=user.id, group_id=gid,
+                                added_by=None, added_at=now
+                            ))
                     session.commit()
                     invalidate_user_groups_cache(user.id)
                 else:

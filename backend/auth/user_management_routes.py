@@ -421,9 +421,9 @@ async def update_user(
                 UserGroupMembership.user_id == target_user_id
             ).delete()
 
-            # Add new memberships
+            # Add new memberships (deduplicate to prevent unique constraint violations)
             now = datetime.now(timezone.utc)
-            for group_id in user_data.group_ids:
+            for group_id in set(user_data.group_ids):
                 membership = UserGroupMembership(
                     user_id=target_user_id,
                     group_id=group_id,

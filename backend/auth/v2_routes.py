@@ -313,7 +313,7 @@ async def login_v2(
                 detail="Invalid username or password"
             )
 
-        # Successful login - reset failed attempts
+        # Successful login - reset failed attempts and upgrade hash if needed
         if user.failed_login_attempts or user.locked_until:
             user.failed_login_attempts = 0
             user.locked_until = None
@@ -321,8 +321,14 @@ async def login_v2(
         # Upgrade to Argon2id if needed (bcrypt -> Argon2id or old Argon2id params)
         if needs_upgrade:
             user.password_hash = ph.hash(credentials.password)
-            session.commit()
             logger.info(f"Password hash upgraded to Argon2id for user '{user.username}'")
+            # Flag weak legacy passwords for mandatory change
+            if len(credentials.password) < 8:
+                user.must_change_password = True
+                logger.info(f"User '{user.username}' flagged to change sub-policy-length password")
+
+        # Commit counter reset + hash upgrade atomically (before session creation)
+        session.commit()
 
         # Create session
         client_ip = get_client_ip(request)
@@ -585,36 +591,36 @@ async def change_password_v2(
     user_id = current_user["user_id"]
     username = current_user["username"]
 
-    # Guard: block OIDC users, locked accounts, and soft-deleted users
+    # Reject same-password change (defeats must_change_password)
+    if current_password == new_password:
+        raise HTTPException(status_code=400, detail="New password must be different from current password")
+
+    # Single session: guard checks + verify + change (prevents TOCTOU race)
     with db.get_session() as session:
         user = session.query(User).filter(User.username == username).first()
-        if user:
-            if user.auth_provider == 'oidc':
-                raise HTTPException(status_code=400, detail="Password change not available for this account")
-            if user.is_deleted:
-                raise HTTPException(status_code=403, detail="Account is deactivated")
-            if user.locked_until and user.locked_until.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc):
-                raise HTTPException(status_code=403, detail="Account is locked")
+        if not user:
+            raise HTTPException(status_code=401, detail="Current password is incorrect")
+        if user.auth_provider == 'oidc':
+            raise HTTPException(status_code=400, detail="Password change not available for this account")
+        if user.is_deleted:
+            raise HTTPException(status_code=403, detail="Account is deactivated")
+        if user.locked_until and user.locked_until.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc):
+            raise HTTPException(status_code=403, detail="Account is locked")
 
-    # Verify current password (without updating last_login)
-    with db.get_session() as session:
-        user = session.query(User).filter(User.username == username).first()
-        if not user or not db._verify_password(current_password, user.password_hash):
-            raise HTTPException(
-                status_code=401,
-                detail="Current password is incorrect"
-            )
+        # Verify current password
+        if not db._verify_password(current_password, user.password_hash):
+            raise HTTPException(status_code=401, detail="Current password is incorrect")
 
-    # Change password (also sets is_first_login=False)
-    success = db.change_user_password(username, new_password)
-    if not success:
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to change password"
-        )
+        # Change password in the same session
+        user.password_hash = ph.hash(new_password)
+        user.is_first_login = False
+        user.must_change_password = False
+        user.updated_at = datetime.now(timezone.utc)
+        session.commit()
 
-    # Invalidate all other sessions for this user (compromised sessions should not survive)
-    cookie_session_manager.delete_sessions_for_user(user_id)
+    # Invalidate all OTHER sessions for this user (keep current session alive)
+    current_session_id = current_user.get("session_id")
+    cookie_session_manager.delete_sessions_for_user(user_id, exclude_session_id=current_session_id)
 
     logger.info(f"Password changed successfully for user: {username}")
 
@@ -642,7 +648,7 @@ async def update_profile_v2(
     profile_data: UpdateProfileRequest,
     request: Request,
     session_id: str = Cookie(None),
-    current_user: dict = Depends(get_current_user_dependency)
+    current_user: dict = Depends(get_current_user_or_api_key)
 ) -> UpdateProfileResponse:
     """
     Update user profile (display name, username).

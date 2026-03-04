@@ -25,6 +25,28 @@ from database import CustomGroup, UserGroupMembership, User, ApiKey, GroupPermis
 from audit.audit_logger import log_audit
 from auth.capabilities import ALL_CAPABILITIES, CAPABILITY_INFO
 
+import logging
+logger = logging.getLogger(__name__)
+
+CRITICAL_CAPABILITIES = frozenset({"groups.manage", "users.manage", "settings.manage", "oidc.manage"})
+
+
+def _another_group_has_capability_with_members(session, exclude_group_id: int, capability: str) -> bool:
+    """Check if any OTHER group (with at least one active member) has the given capability granted.
+
+    This prevents lockout by ensuring a real user can still exercise the capability.
+    """
+    return session.query(GroupPermission).join(
+        UserGroupMembership, GroupPermission.group_id == UserGroupMembership.group_id
+    ).join(
+        User, UserGroupMembership.user_id == User.id
+    ).filter(
+        GroupPermission.group_id != exclude_group_id,
+        GroupPermission.capability == capability,
+        GroupPermission.allowed == True,  # noqa: E712
+        User.deleted_at.is_(None),
+    ).first() is not None
+
 
 router = APIRouter(prefix="/api/v2/groups", tags=["groups"])
 
@@ -548,7 +570,7 @@ async def delete_group(
             ).count()
             if other_groups == 0:
                 user = session.query(User).filter(User.id == membership.user_id).first()
-                if user:
+                if user and not user.is_deleted:
                     users_with_only_this_group.append(user.username)
 
         if users_with_only_this_group:
@@ -559,8 +581,7 @@ async def delete_group(
                        "Assign them to another group first."
             )
 
-        # Check critical capability guardrail: ensure another group retains each critical capability
-        CRITICAL_CAPABILITIES = {"groups.manage", "users.manage", "settings.manage", "oidc.manage"}
+        # Check critical capability guardrail: ensure another group (with active members) retains each critical capability
         group_perms = session.query(GroupPermission).filter(
             GroupPermission.group_id == group_id,
             GroupPermission.allowed == True,  # noqa: E712
@@ -568,18 +589,13 @@ async def delete_group(
         for perm in group_perms:
             if perm.capability not in CRITICAL_CAPABILITIES:
                 continue
-            other_group_has_cap = session.query(GroupPermission).filter(
-                GroupPermission.group_id != group_id,
-                GroupPermission.capability == perm.capability,
-                GroupPermission.allowed == True,  # noqa: E712
-            ).first()
-            if not other_group_has_cap:
+            if not _another_group_has_capability_with_members(session, group_id, perm.capability):
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        f"Cannot delete group '{group.name}' because no other group has "
-                        f"'{perm.capability}' granted. At least one group must retain "
-                        f"this capability to prevent system lockout."
+                        f"Cannot delete group '{group.name}' because no other group "
+                        f"(with active members) has '{perm.capability}' granted. "
+                        f"At least one group with members must retain this capability."
                     ),
                 )
 
@@ -930,27 +946,19 @@ async def update_group_permissions(
             deduped[perm_update.capability] = perm_update
         request.permissions = list(deduped.values())
 
-        CRITICAL_CAPABILITIES = {"groups.manage", "users.manage", "settings.manage", "oidc.manage"}
-
         for perm_update in request.permissions:
             if perm_update.capability not in CRITICAL_CAPABILITIES:
                 continue
             if perm_update.allowed:
                 continue
 
-            other_group_has_cap = session.query(GroupPermission).filter(
-                GroupPermission.group_id != group_id,
-                GroupPermission.capability == perm_update.capability,
-                GroupPermission.allowed == True,  # noqa: E712
-            ).first()
-
-            if not other_group_has_cap:
+            if not _another_group_has_capability_with_members(session, group_id, perm_update.capability):
                 raise HTTPException(
                     status_code=400,
                     detail=(
                         f"Cannot remove '{perm_update.capability}' from this group "
-                        f"because no other group has it granted. "
-                        f"At least one group must retain this capability to prevent system lockout."
+                        f"because no other group (with active members) has it granted. "
+                        f"At least one group with members must retain this capability."
                     ),
                 )
 
@@ -1004,6 +1012,26 @@ async def update_group_permissions(
                 entity_name=group.name,
                 details={'changes': changes},
             )
+
+        # Post-mutation verification: re-check critical capabilities before committing
+        # Catches race conditions where concurrent requests both pass the pre-check
+        session.flush()
+        for cap in CRITICAL_CAPABILITIES:
+            has_any = session.query(GroupPermission).join(
+                UserGroupMembership, GroupPermission.group_id == UserGroupMembership.group_id
+            ).join(
+                User, UserGroupMembership.user_id == User.id
+            ).filter(
+                GroupPermission.capability == cap,
+                GroupPermission.allowed == True,  # noqa: E712
+                User.deleted_at.is_(None),
+            ).first()
+            if not has_any:
+                session.rollback()
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Operation would leave no group (with active members) having '{cap}'. Aborted."
+                )
 
         session.commit()
 
@@ -1059,7 +1087,6 @@ async def copy_group_permissions(
         if not source_permissions:
             warning = f"Source group '{source_group.name}' has no permissions. Target group permissions have been cleared."
 
-        CRITICAL_CAPABILITIES = {"groups.manage", "users.manage", "settings.manage", "oidc.manage"}
         source_granted = {p.capability for p in source_permissions if p.allowed}
         target_current = session.query(GroupPermission).filter(
             GroupPermission.group_id == target_group_id,
@@ -1070,18 +1097,13 @@ async def copy_group_permissions(
         for perm in target_current:
             if perm.capability in source_granted:
                 continue
-            other_group_has_cap = session.query(GroupPermission).filter(
-                GroupPermission.group_id != target_group_id,
-                GroupPermission.capability == perm.capability,
-                GroupPermission.allowed == True,  # noqa: E712
-            ).first()
-            if not other_group_has_cap:
+            if not _another_group_has_capability_with_members(session, target_group_id, perm.capability):
                 raise HTTPException(
                     status_code=400,
                     detail=(
                         f"Cannot copy permissions: this would remove '{perm.capability}' "
-                        f"from '{target_group.name}' and no other group has it granted. "
-                        f"At least one group must retain this capability to prevent system lockout."
+                        f"from '{target_group.name}' and no other group (with active members) "
+                        f"has it granted. At least one group with members must retain this capability."
                     ),
                 )
 

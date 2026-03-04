@@ -313,10 +313,13 @@ class CookieSessionManager:
         never_expire = timeout_hours == 0
         dynamic_timeout = timedelta(hours=timeout_hours) if not never_expire else None
 
+        # Absolute ceiling: even "never expire" uses a 400-day max_age on the signature
+        # to limit token validity if the SECRET_KEY is ever leaked
+        _SIGNATURE_MAX_AGE_CEILING = 86400 * 400  # 400 days
+
         try:
             if never_expire:
-                # Skip signature max_age check for "never expire"
-                session_id = COOKIE_SIGNER.loads(signed_token)
+                session_id = COOKIE_SIGNER.loads(signed_token, max_age=_SIGNATURE_MAX_AGE_CEILING)
             else:
                 max_age = max_age_seconds or int(dynamic_timeout.total_seconds())
                 session_id = COOKIE_SIGNER.loads(
@@ -403,12 +406,17 @@ class CookieSessionManager:
                 return True
         return False
 
-    def delete_sessions_for_user(self, user_id: int) -> int:
-        """Delete all sessions belonging to a specific user."""
+    def delete_sessions_for_user(self, user_id: int, exclude_session_id: str | None = None) -> int:
+        """Delete all sessions belonging to a specific user.
+
+        Args:
+            user_id: User ID whose sessions to delete
+            exclude_session_id: Optional session ID to keep alive (e.g., the current session)
+        """
         with self._sessions_lock:
             to_delete = [
                 sid for sid, data in self.sessions.items()
-                if data.get("user_id") == user_id
+                if data.get("user_id") == user_id and sid != exclude_session_id
             ]
             for sid in to_delete:
                 del self.sessions[sid]

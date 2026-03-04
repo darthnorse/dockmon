@@ -70,8 +70,6 @@ def main():
         'failed_login_attempts': 'INTEGER',
         'locked_until': 'DATETIME',
         'must_change_password': 'BOOLEAN',
-        'deleted_at': 'DATETIME',
-        'deleted_by': 'INTEGER',
     }
     for col_name, expected_type in required_cols.items():
         exists = col_name in cols
@@ -95,7 +93,7 @@ def main():
     check('uq_users_oidc_subject' in indexes, "Index: uq_users_oidc_subject (unique)")
 
     # Verify existing users have email set
-    null_emails = conn.execute("SELECT COUNT(*) FROM users WHERE email IS NULL AND deleted_at IS NULL").fetchone()[0]
+    null_emails = conn.execute("SELECT COUNT(*) FROM users WHERE email IS NULL").fetchone()[0]
     check(null_emails == 0, f"All active users have email set ({null_emails} missing)", warn_only=True)
 
     # ── Groups ──

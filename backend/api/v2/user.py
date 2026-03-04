@@ -87,10 +87,10 @@ class DashboardPreferences(BaseModel):
     compactHostOrder: Optional[list[str]] = Field(default=None)  # Host order for compact view (non-grouped)
     containerSortKey: str = Field(default="state", pattern="^(name|state|cpu|memory|start_time)$")
     hostContainerSorts: Dict[str, str] = Field(default_factory=dict)  # Per-host container sort preferences
-    hostCardLayout: Optional[Union[Dict[str, Any], list]] = Field(default=None)  # Layout data (dict for responsive, list for legacy)
-    hostCardLayoutStandard: Optional[Union[Dict[str, Any], list]] = Field(default=None)  # Layout data (dict for responsive, list for legacy)
-    hostCardLayoutGroupedStandard: Optional[Union[Dict[str, Any], list]] = Field(default=None)  # Layout data (dict for responsive, list for legacy)
-    hostCardLayoutGroupedExpanded: Optional[Union[Dict[str, Any], list]] = Field(default=None)  # Layout data (dict for responsive, list for legacy)
+    hostCardLayout: Optional[Union[Dict[str, Any], list]] = Field(default=None)
+    hostCardLayoutStandard: Optional[Union[Dict[str, Any], list]] = Field(default=None)
+    hostCardLayoutGroupedStandard: Optional[Union[Dict[str, Any], list]] = Field(default=None)
+    hostCardLayoutGroupedExpanded: Optional[Union[Dict[str, Any], list]] = Field(default=None)
     tagGroupOrder: Optional[list[str]] = Field(default=None)  # User-defined order of tag groups
     groupLayouts: Dict[str, Any] = Field(default_factory=dict)  # Dynamic group layouts/orders: supports both Layout[] and string[]
     showKpiBar: bool = Field(default=True)

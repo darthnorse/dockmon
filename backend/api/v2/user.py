@@ -12,7 +12,7 @@ SECURITY:
 
 import json
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 from collections import deque
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
@@ -87,10 +87,10 @@ class DashboardPreferences(BaseModel):
     compactHostOrder: Optional[list[str]] = Field(default=None)  # Host order for compact view (non-grouped)
     containerSortKey: str = Field(default="state", pattern="^(name|state|cpu|memory|start_time)$")
     hostContainerSorts: Dict[str, str] = Field(default_factory=dict)  # Per-host container sort preferences
-    hostCardLayout: Optional[Dict[str, Any]] = Field(default=None)  # Expanded mode layout (ungrouped) - Responsive Layouts object
-    hostCardLayoutStandard: Optional[Dict[str, Any]] = Field(default=None)  # Standard mode layout (ungrouped) - Responsive Layouts object
-    hostCardLayoutGroupedStandard: Optional[Dict[str, Any]] = Field(default=None)  # Standard mode layout (grouped by tags) - Responsive Layouts object
-    hostCardLayoutGroupedExpanded: Optional[Dict[str, Any]] = Field(default=None)  # Expanded mode layout (grouped by tags) - Responsive Layouts object
+    hostCardLayout: Optional[Union[Dict[str, Any], list]] = Field(default=None)  # Layout data (dict for responsive, list for legacy)
+    hostCardLayoutStandard: Optional[Union[Dict[str, Any], list]] = Field(default=None)  # Layout data (dict for responsive, list for legacy)
+    hostCardLayoutGroupedStandard: Optional[Union[Dict[str, Any], list]] = Field(default=None)  # Layout data (dict for responsive, list for legacy)
+    hostCardLayoutGroupedExpanded: Optional[Union[Dict[str, Any], list]] = Field(default=None)  # Layout data (dict for responsive, list for legacy)
     tagGroupOrder: Optional[list[str]] = Field(default=None)  # User-defined order of tag groups
     groupLayouts: Dict[str, Any] = Field(default_factory=dict)  # Dynamic group layouts/orders: supports both Layout[] and string[]
     showKpiBar: bool = Field(default=True)

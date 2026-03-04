@@ -6,7 +6,7 @@ Phase 4: Group-based permissions (v2.4.0)
 
 SECURITY:
 - All endpoints require users.manage capability
-- Soft delete preserves audit trail
+- Hard delete with pre-delete audit logging
 - Password changes trigger must_change_password flag
 - Users are assigned to groups for permissions
 """
@@ -18,12 +18,11 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field, field_validator, EmailStr
-from argon2 import PasswordHasher
-
+from auth.password import ph
 from auth.shared import db, safe_audit_log
 from auth.api_key_auth import require_capability, get_current_user_or_api_key, invalidate_user_groups_cache
 from auth.cookie_sessions import cookie_session_manager
-from auth.utils import format_timestamp, format_timestamp_required, get_user_or_404, validate_group_ids, get_auditable_user_info
+from auth.utils import format_timestamp, format_timestamp_required, get_user_or_404, validate_group_ids, get_auditable_user_info, ensure_not_last_admin, verify_critical_capabilities
 from database import User, CustomGroup, UserGroupMembership
 from audit import get_client_info, AuditAction
 from audit.audit_logger import AuditEntityType
@@ -31,14 +30,6 @@ from audit.audit_logger import AuditEntityType
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2/users", tags=["user-management"])
 
-# Argon2 password hasher (same config as v2_routes.py)
-ph = PasswordHasher(
-    time_cost=2,
-    memory_cost=65536,
-    parallelism=1,
-    hash_len=32,
-    salt_len=16
-)
 
 
 # ==================== Request/Response Models ====================
@@ -63,8 +54,6 @@ class UserResponse(BaseModel):
     last_login: str | None = None
     created_at: str
     updated_at: str
-    deleted_at: str | None = None
-    is_deleted: bool
 
 
 class UserListResponse(BaseModel):
@@ -104,46 +93,7 @@ class ResetPasswordRequest(BaseModel):
 
 
 # ==================== Helper Functions ====================
-# format_timestamp and format_timestamp_required imported from auth.utils
-
-
-def _ensure_not_last_admin(session, user_id: int, action: str) -> None:
-    """
-    Raise HTTPException if the user is the last member of the Administrators group.
-
-    Uses group-based permissions (v2.4.0) - checks Administrators group membership,
-    not the legacy role field.
-
-    Args:
-        session: Database session
-        user_id: ID of the user being modified
-        action: Description for error message (e.g., "delete", "remove from Administrators")
-    """
-    # Check if user is in Administrators group
-    admin_group = session.query(CustomGroup).filter(CustomGroup.name == "Administrators").first()
-    if not admin_group:
-        return  # No Administrators group exists, nothing to protect
-
-    user_is_admin = session.query(UserGroupMembership).filter(
-        UserGroupMembership.user_id == user_id,
-        UserGroupMembership.group_id == admin_group.id
-    ).first() is not None
-
-    if user_is_admin:
-        # Count other active admins (not deleted, not this user)
-        other_admin_count = session.query(UserGroupMembership).join(
-            User, UserGroupMembership.user_id == User.id
-        ).filter(
-            UserGroupMembership.group_id == admin_group.id,
-            UserGroupMembership.user_id != user_id,
-            User.deleted_at.is_(None)
-        ).count()
-
-        if other_admin_count == 0:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot {action}: this is the last member of the Administrators group"
-            )
+# format_timestamp, format_timestamp_required, ensure_not_last_admin imported from auth.utils
 
 
 def _get_user_groups(session, user_id: int) -> list[UserGroupResponse]:
@@ -201,8 +151,6 @@ def _user_to_response(
         last_login=format_timestamp(user.last_login),
         created_at=format_timestamp_required(user.created_at),
         updated_at=format_timestamp_required(user.updated_at),
-        deleted_at=format_timestamp(user.deleted_at),
-        is_deleted=user.is_deleted
     )
 
 
@@ -210,22 +158,11 @@ def _user_to_response(
 
 @router.get("", response_model=UserListResponse, dependencies=[Depends(require_capability("users.manage"))])
 async def list_users(
-    include_deleted: bool = False,
     current_user: dict = Depends(get_current_user_or_api_key)
 ) -> UserListResponse:
-    """
-    List all users (requires users.manage capability).
-
-    Args:
-        include_deleted: Include soft-deleted users in the list
-    """
+    """List all users (requires users.manage capability)."""
     with db.get_session() as session:
-        query = session.query(User)
-
-        if not include_deleted:
-            query = query.filter(User.deleted_at.is_(None))
-
-        users = query.order_by(User.created_at.desc()).all()
+        users = session.query(User).order_by(User.created_at.desc()).all()
 
         # Pre-fetch all groups in a single query to avoid N+1
         user_ids = [u.id for u in users]
@@ -260,10 +197,8 @@ async def create_user(
     user_id, display_name = get_auditable_user_info(current_user)
 
     with db.get_session() as session:
-        # Check if username already exists (among active users)
         existing = session.query(User).filter(
             User.username == user_data.username,
-            User.deleted_at.is_(None),
         ).first()
         if existing:
             raise HTTPException(
@@ -271,11 +206,10 @@ async def create_user(
                 detail="Username already exists"
             )
 
-        # Check if email already exists among active users (if provided)
+        # Check if email already exists (if provided)
         if user_data.email:
             existing_email = session.query(User).filter(
                 User.email == user_data.email,
-                User.deleted_at.is_(None),
             ).first()
             if existing_email:
                 raise HTTPException(
@@ -287,10 +221,8 @@ async def create_user(
         groups = validate_group_ids(session, user_data.group_ids)
         group_names = [g.name for g in groups]
 
-        # Hash password with Argon2id
         password_hash = ph.hash(user_data.password)
 
-        # Create user
         new_user = User(
             username=user_data.username,
             password_hash=password_hash,
@@ -307,7 +239,6 @@ async def create_user(
         session.add(new_user)
         session.flush()  # Get new_user.id for group memberships
 
-        # Add group memberships
         now = datetime.now(timezone.utc)
         for group_id in user_data.group_ids:
             membership = UserGroupMembership(
@@ -381,12 +312,10 @@ async def update_user(
 
         # Update email if provided
         if user_data.email is not None:
-            # Check for email uniqueness among active users
             if user_data.email:
                 existing = session.query(User).filter(
                     User.email == user_data.email,
                     User.id != target_user_id,
-                    User.deleted_at.is_(None),
                 ).first()
                 if existing:
                     raise HTTPException(
@@ -417,7 +346,7 @@ async def update_user(
                 CustomGroup.name == "Administrators"
             ).first()
             if admin_group and admin_group.id not in user_data.group_ids:
-                _ensure_not_last_admin(session, target_user_id, "remove from Administrators")
+                ensure_not_last_admin(session, target_user_id, "remove from Administrators")
 
             # Get current groups for audit log
             current_groups = _get_user_groups(session, target_user_id)
@@ -483,10 +412,10 @@ async def delete_user(
     current_user: dict = Depends(get_current_user_or_api_key)
 ) -> dict:
     """
-    Soft delete a user (requires users.manage capability).
+    Hard delete a user (requires users.manage capability).
 
-    Preserves audit trail by setting deleted_at timestamp.
-    User cannot log in after deletion but records are preserved.
+    The audit log captures user info before deletion. FK cascades handle
+    related data (memberships deleted, API keys orphaned via SET NULL).
     """
     # Get user info for audit (handles both session and API key auth)
     # NOTE: user_id path param = target; audit user_id = acting user
@@ -505,26 +434,13 @@ async def delete_user(
             )
 
         # Prevent deleting the last admin
-        _ensure_not_last_admin(session, target_user_id, "delete")
+        ensure_not_last_admin(session, target_user_id, "delete")
 
-        # Check if already deleted
-        if user.is_deleted:
-            raise HTTPException(
-                status_code=400,
-                detail="User is already deactivated"
-            )
+        # Capture info before deletion for audit and response
+        username = user.username
+        email = user.email
 
-        # Soft delete: mangle username/email so the unique constraints allow reuse
-        # Format: __deleted_{id}_{original} — reversible on reactivation
-        original_username = user.username
-        original_email = user.email  # Capture before nulling
-        user.deleted_at = datetime.now(timezone.utc)
-        user.deleted_by = user_id
-        user.updated_at = datetime.now(timezone.utc)
-        user.username = f"__deleted_{user.id}_{original_username}"
-        user.email = None  # Release email for reuse (nullable column)
-
-        # Audit log (before commit for atomicity)
+        # Audit log BEFORE delete (captures user info while row still exists)
         safe_audit_log(
             session,
             user_id,
@@ -532,89 +448,27 @@ async def delete_user(
             AuditAction.DELETE,
             AuditEntityType.USER,
             entity_id=str(user.id),
-            entity_name=original_username,
-            details={'original_username': original_username, 'original_email': original_email},
+            entity_name=username,
+            details={'username': username, 'email': email},
             **get_client_info(request)
         )
 
+        # Hard delete — FK cascades handle related data
+        session.delete(user)
+        session.flush()
+        verify_critical_capabilities(session)
         session.commit()
 
+        # Evict sessions and invalidate caches AFTER commit
+        # (avoids logging out a user if the delete fails)
         evicted = cookie_session_manager.delete_sessions_for_user(target_user_id)
         if evicted:
-            logger.info(f"Evicted {evicted} active session(s) for deactivated user '{original_username}'")
+            logger.info(f"Evicted {evicted} active session(s) for deleted user '{username}'")
         invalidate_user_groups_cache(target_user_id)
 
-        logger.info(f"User '{original_username}' deactivated by {display_name}")
+        logger.info(f"User '{username}' deleted by {display_name}")
 
-        return {"message": f"User '{original_username}' has been deactivated"}
-
-
-@router.post("/{user_id}/reactivate", response_model=UserResponse, dependencies=[Depends(require_capability("users.manage"))])
-async def reactivate_user(
-    user_id: int,
-    request: Request,
-    current_user: dict = Depends(get_current_user_or_api_key)
-) -> UserResponse:
-    """
-    Reactivate a soft-deleted user (requires users.manage capability).
-    """
-    # Get user info for audit (handles both session and API key auth)
-    # NOTE: user_id path param = target; audit user_id = acting user
-    target_user_id = user_id
-    user_id, display_name = get_auditable_user_info(current_user)
-
-    with db.get_session() as session:
-        user = get_user_or_404(session, target_user_id, include_deleted=True)
-
-        if not user.is_deleted:
-            raise HTTPException(
-                status_code=400,
-                detail="User is not deactivated"
-            )
-
-        # Restore original username from mangled format: __deleted_{id}_{original}
-        original_username = user.username
-        prefix = f"__deleted_{user.id}_"
-        if user.username.startswith(prefix):
-            original_username = user.username[len(prefix):]
-
-        # Check if original username is still available among active users
-        conflict = session.query(User).filter(
-            User.username == original_username,
-            User.id != user.id,
-            User.deleted_at.is_(None),
-        ).first()
-        if conflict:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot reactivate: username '{original_username}' is now taken by another user"
-            )
-
-        # Reactivate
-        user.username = original_username
-        user.deleted_at = None
-        user.deleted_by = None
-        user.updated_at = datetime.now(timezone.utc)
-
-        # Audit log (before commit for atomicity)
-        safe_audit_log(
-            session,
-            user_id,
-            display_name,
-            AuditAction.UPDATE,
-            AuditEntityType.USER,
-            entity_id=str(user.id),
-            entity_name=original_username,
-            details={'action': 'reactivate'},
-            **get_client_info(request)
-        )
-
-        session.commit()
-        session.refresh(user)
-
-        logger.info(f"User '{user.username}' reactivated by {display_name}")
-
-        return _user_to_response(user, session)
+        return {"message": f"User '{username}' has been deleted"}
 
 
 @router.post("/{user_id}/reset-password", dependencies=[Depends(require_capability("users.manage"))])
@@ -653,7 +507,6 @@ async def reset_user_password(
         else:
             new_password = secrets.token_urlsafe(12)
 
-        # Hash and set new password
         user.password_hash = ph.hash(new_password)
         user.must_change_password = True
         user.updated_at = datetime.now(timezone.utc)

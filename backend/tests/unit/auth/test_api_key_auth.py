@@ -143,7 +143,6 @@ class TestValidateApiKey:
         self.created_by_user = Mock()
         self.created_by_user.id = 1
         self.created_by_user.username = "testuser"
-        self.created_by_user.is_deleted = False
 
         # Create mock API key record (v2.4.0: uses group_id instead of user_id/scopes)
         self.api_key = Mock()
@@ -286,7 +285,6 @@ class TestGetCurrentUserOrApiKey:
             mock_user.id = 1
             mock_user.username = "testuser"
             mock_user.display_name = "Test User"
-            mock_user.is_deleted = False
             mock_user.must_change_password = False
             mock_session.query.return_value.filter.return_value.first.return_value = mock_user
             mock_db.get_session.return_value.__enter__ = Mock(return_value=mock_session)
@@ -305,40 +303,6 @@ class TestGetCurrentUserOrApiKey:
             assert result["username"] == "testuser"
             assert result["auth_type"] == "session"
             assert result["groups"] == [{"id": 1, "name": "Administrators"}]  # v2.4.0: Groups included
-
-    @pytest.mark.asyncio
-    async def test_get_current_user_session_auth_deleted_user(self):
-        """Session cookie authentication rejects deactivated users"""
-        request = Mock(spec=Request)
-        request.client.host = "192.168.1.100"
-
-        with patch('auth.api_key_auth.cookie_session_manager') as mock_session_mgr, \
-             patch('auth.api_key_auth.db') as mock_db:
-
-            # Mock session validation (session itself is valid)
-            mock_session_mgr.validate_session.return_value = {
-                "user_id": 1,
-                "username": "deleteduser"
-            }
-
-            # Mock user lookup - user is soft-deleted
-            mock_session = MagicMock()
-            mock_user = Mock()
-            mock_user.id = 1
-            mock_user.username = "deleteduser"
-            mock_user.is_deleted = True
-            mock_session.query.return_value.filter.return_value.first.return_value = mock_user
-            mock_db.get_session.return_value.__enter__ = Mock(return_value=mock_session)
-            mock_db.get_session.return_value.__exit__ = Mock(return_value=False)
-
-            with pytest.raises(HTTPException) as exc_info:
-                await get_current_user_or_api_key(
-                    request=request,
-                    session_id="valid-session-id",
-                    authorization=None
-                )
-
-            assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio
     async def test_get_current_user_api_key_auth(self):

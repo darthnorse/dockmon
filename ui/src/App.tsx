@@ -68,14 +68,27 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+/**
+ * Validate redirect URL to prevent open redirect attacks.
+ * Only allows relative paths starting with '/'.
+ */
+function getSafeRedirect(url: string | null): string {
+  if (!url) return '/'
+  // Only allow relative paths (must start with / and not //)
+  if (url.startsWith('/') && !url.startsWith('//')) {
+    return url
+  }
+  return '/'
+}
+
 // Login route wrapper - redirects authenticated users to redirect URL or home
 function LoginRoute() {
   const { isAuthenticated } = useAuth()
   const [searchParams] = useSearchParams()
-  const redirectUrl = searchParams.get('redirect')
+  const redirectUrl = getSafeRedirect(searchParams.get('redirect'))
 
   if (isAuthenticated) {
-    return <Navigate to={redirectUrl || '/'} replace />
+    return <Navigate to={redirectUrl} replace />
   }
 
   return <LoginPage />

@@ -17,6 +17,7 @@ v2.4.0 Refactor:
 
 import logging
 from datetime import datetime, timezone, timedelta
+from ipaddress import ip_address, ip_network
 
 from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, Field
@@ -31,6 +32,22 @@ from utils.client_ip import get_client_ip
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2/api-keys", tags=["api-keys"])
+
+
+def _validate_allowed_ips(allowed_ips: str) -> str:
+    """Validate each IP/CIDR entry. Raises HTTPException on invalid."""
+    for entry in allowed_ips.split(','):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            if '/' in entry:
+                ip_network(entry, strict=False)
+            else:
+                ip_address(entry)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid IP/CIDR: '{entry}'")
+    return allowed_ips
 
 
 # Request/Response Models
@@ -137,6 +154,10 @@ async def create_api_key(
     - [Security Guide](https://github.com/darthnorse/dockmon/blob/main/docs/API_KEY_SECURITY_CAVEATS.md)
     - [Wiki: API Access](https://github.com/darthnorse/dockmon/wiki/API-Access)
     """
+    # Validate allowed_ips format before storing
+    if data.allowed_ips:
+        _validate_allowed_ips(data.allowed_ips)
+
     # Generate cryptographically secure key
     plaintext_key, key_hash, key_prefix = generate_api_key()
 
@@ -320,6 +341,7 @@ async def update_api_key(
                 changes.append("allowed_ips cleared (no restrictions)")
                 api_key.allowed_ips = None
             else:
+                _validate_allowed_ips(data.allowed_ips)
                 changes.append("allowed_ips updated")
                 api_key.allowed_ips = data.allowed_ips
 

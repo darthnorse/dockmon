@@ -22,8 +22,6 @@ export interface User {
   last_login: string | null  // ISO timestamp
   created_at: string  // ISO timestamp
   updated_at: string  // ISO timestamp
-  deleted_at: string | null  // ISO timestamp - null = active
-  is_deleted: boolean
 }
 
 export interface UserListResponse {
@@ -61,8 +59,6 @@ export interface ResetPasswordResponse {
 export interface DeleteUserResponse {
   message: string
 }
-
-export interface ReactivateUserResponse extends User {}
 
 // ==================== Legacy Role Constants (for migration) ====================
 // Re-export from roles.ts for backward compatibility

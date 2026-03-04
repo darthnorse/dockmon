@@ -10,7 +10,7 @@ from typing import Literal, NotRequired, TypedDict
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from database import User, CustomGroup
+from database import User, CustomGroup, UserGroupMembership, GroupPermission
 
 
 # ==================== Auth Context Types ====================
@@ -80,13 +80,50 @@ def format_timestamp_required(dt: datetime | None) -> str:
     return _to_naive_utc(dt).isoformat() + 'Z'
 
 
-def get_user_or_404(session: Session, user_id: int, include_deleted: bool = False) -> User:
+def count_other_admins(session: Session, user_id: int) -> int:
+    """Count Administrators group members excluding the given user.
+
+    Returns 0 if no Administrators group exists.
+    """
+    admin_group = session.query(CustomGroup).filter(CustomGroup.name == "Administrators").first()
+    if not admin_group:
+        return 0
+    return session.query(UserGroupMembership).filter(
+        UserGroupMembership.group_id == admin_group.id,
+        UserGroupMembership.user_id != user_id,
+    ).count()
+
+
+def ensure_not_last_admin(session: Session, user_id: int, action: str) -> None:
+    """Raise HTTPException if the user is the last member of the Administrators group.
+
+    Args:
+        session: Database session
+        user_id: ID of the user being modified
+        action: Description for error message (e.g., "delete", "remove from Administrators")
+    """
+    admin_group = session.query(CustomGroup).filter(CustomGroup.name == "Administrators").first()
+    if not admin_group:
+        return
+
+    user_is_admin = session.query(UserGroupMembership).filter(
+        UserGroupMembership.user_id == user_id,
+        UserGroupMembership.group_id == admin_group.id
+    ).first() is not None
+
+    if user_is_admin and count_other_admins(session, user_id) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot {action}: this is the last member of the Administrators group"
+        )
+
+
+def get_user_or_404(session: Session, user_id: int) -> User:
     """Get user by ID or raise 404 HTTPException.
 
     Args:
         session: Database session
         user_id: User ID to look up
-        include_deleted: If True, include soft-deleted users (for reactivation)
 
     Returns:
         User object
@@ -94,10 +131,7 @@ def get_user_or_404(session: Session, user_id: int, include_deleted: bool = Fals
     Raises:
         HTTPException: 404 if user not found
     """
-    query = session.query(User).filter(User.id == user_id)
-    if not include_deleted:
-        query = query.filter(User.deleted_at.is_(None))
-    user = query.first()
+    user = session.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return user
@@ -155,3 +189,27 @@ def validate_group_ids(session: Session, group_ids: list[int]) -> list[CustomGro
         )
 
     return groups
+
+
+# Capabilities that must always be held by at least one group with members
+CRITICAL_CAPABILITIES = frozenset({"groups.manage", "users.manage", "settings.manage", "oidc.manage"})
+
+
+def verify_critical_capabilities(session: Session) -> None:
+    """Verify all critical capabilities are still granted to at least one group with members.
+
+    Must be called after flush() but before commit(). Rolls back and raises on violation.
+    """
+    for cap in CRITICAL_CAPABILITIES:
+        has_any = session.query(GroupPermission).join(
+            UserGroupMembership, GroupPermission.group_id == UserGroupMembership.group_id
+        ).filter(
+            GroupPermission.capability == cap,
+            GroupPermission.allowed == True,  # noqa: E712
+        ).first()
+        if not has_any:
+            session.rollback()
+            raise HTTPException(
+                status_code=400,
+                detail=f"Operation would leave no group (with members) having '{cap}'. Aborted."
+            )

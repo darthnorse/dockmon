@@ -23,12 +23,11 @@ const USERS_QUERY_KEY = ['users']
 /**
  * Fetch all users (admin only)
  */
-export function useUsers(includeDeleted = false) {
+export function useUsers() {
   return useQuery({
-    queryKey: [...USERS_QUERY_KEY, { includeDeleted }],
+    queryKey: USERS_QUERY_KEY,
     queryFn: async () => {
-      const params = includeDeleted ? { include_deleted: 'true' } : {}
-      const response = await apiClient.get<UserListResponse>('/v2/users', { params })
+      const response = await apiClient.get<UserListResponse>('/v2/users')
       return response
     },
     staleTime: 30 * 1000, // 30 seconds
@@ -94,7 +93,7 @@ export function useUpdateUser() {
 }
 
 /**
- * Soft delete a user (admin only)
+ * Delete a user (admin only)
  */
 export function useDeleteUser() {
   const queryClient = useQueryClient()
@@ -106,31 +105,11 @@ export function useDeleteUser() {
     },
     onSuccess: (response) => {
       queryClient.invalidateQueries({ queryKey: USERS_QUERY_KEY })
-      toast.success(response.message || 'User deactivated successfully')
+      queryClient.invalidateQueries({ queryKey: ['groups'] })
+      toast.success(response.message || 'User deleted successfully')
     },
     onError: (error: Error) => {
-      toast.error(error.message || 'Failed to deactivate user')
-    },
-  })
-}
-
-/**
- * Reactivate a soft-deleted user (admin only)
- */
-export function useReactivateUser() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async (userId: number) => {
-      const response = await apiClient.post<User>(`/v2/users/${userId}/reactivate`)
-      return response
-    },
-    onSuccess: (user) => {
-      queryClient.invalidateQueries({ queryKey: USERS_QUERY_KEY })
-      toast.success(`User "${user.username}" reactivated successfully`)
-    },
-    onError: (error: Error) => {
-      toast.error(error.message || 'Failed to reactivate user')
+      toast.error(error.message || 'Failed to delete user')
     },
   })
 }

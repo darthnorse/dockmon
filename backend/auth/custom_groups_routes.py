@@ -20,7 +20,10 @@ from auth.api_key_auth import (
     invalidate_user_groups_cache,
 )
 from auth.shared import db
-from auth.utils import format_timestamp, get_auditable_user_info
+from auth.utils import (
+    format_timestamp, get_auditable_user_info, ensure_not_last_admin, get_user_or_404,
+    CRITICAL_CAPABILITIES, verify_critical_capabilities,
+)
 from database import CustomGroup, UserGroupMembership, User, ApiKey, GroupPermission
 from audit.audit_logger import log_audit
 from auth.capabilities import ALL_CAPABILITIES, CAPABILITY_INFO
@@ -28,24 +31,27 @@ from auth.capabilities import ALL_CAPABILITIES, CAPABILITY_INFO
 import logging
 logger = logging.getLogger(__name__)
 
-CRITICAL_CAPABILITIES = frozenset({"groups.manage", "users.manage", "settings.manage", "oidc.manage"})
 
-
-def _another_group_has_capability_with_members(session, exclude_group_id: int, capability: str) -> bool:
-    """Check if any OTHER group (with at least one active member) has the given capability granted.
+def _any_group_has_capability_with_members(session, capability: str, exclude_group_id: int | None = None) -> bool:
+    """Check if any group (with at least one member) has the given capability granted.
 
     This prevents lockout by ensuring a real user can still exercise the capability.
+
+    Args:
+        session: Database session
+        capability: The capability to check
+        exclude_group_id: If set, exclude this group from the check
     """
-    return session.query(GroupPermission).join(
+    query = session.query(GroupPermission).join(
         UserGroupMembership, GroupPermission.group_id == UserGroupMembership.group_id
-    ).join(
-        User, UserGroupMembership.user_id == User.id
     ).filter(
-        GroupPermission.group_id != exclude_group_id,
         GroupPermission.capability == capability,
         GroupPermission.allowed == True,  # noqa: E712
-        User.deleted_at.is_(None),
-    ).first() is not None
+    )
+    if exclude_group_id is not None:
+        query = query.filter(GroupPermission.group_id != exclude_group_id)
+    return query.first() is not None
+
 
 
 router = APIRouter(prefix="/api/v2/groups", tags=["groups"])
@@ -237,12 +243,11 @@ def _validate_group_description(description: Optional[str]) -> Optional[str]:
 
 
 def _get_group_members(session, group_id: int) -> list[GroupMemberResponse]:
-    """Get all active members of a group with user details. Avoids N+1 queries."""
+    """Get all members of a group with user details. Avoids N+1 queries."""
     memberships = session.query(UserGroupMembership, User).join(
         User, UserGroupMembership.user_id == User.id
     ).filter(
         UserGroupMembership.group_id == group_id,
-        User.deleted_at.is_(None),
     ).all()
 
     if not memberships:
@@ -288,14 +293,10 @@ async def list_groups(
     with db.get_session() as session:
         groups = session.query(CustomGroup).all()
 
-        # Get member counts for each group (active users only)
+        # Get member counts for each group
         count_results = session.query(
             UserGroupMembership.group_id,
             func.count(UserGroupMembership.id)
-        ).join(
-            User, UserGroupMembership.user_id == User.id
-        ).filter(
-            User.deleted_at.is_(None)
         ).group_by(UserGroupMembership.group_id).all()
         count_map = {group_id: count for group_id, count in count_results}
 
@@ -490,12 +491,9 @@ async def update_group(
         group.updated_by = user_id
         group.updated_at = now
 
-        # Get member count (active users only)
-        member_count = session.query(UserGroupMembership).join(
-            User, UserGroupMembership.user_id == User.id
-        ).filter(
+        # Get member count
+        member_count = session.query(UserGroupMembership).filter(
             UserGroupMembership.group_id == group_id,
-            User.deleted_at.is_(None),
         ).count()
 
         # Audit log (before commit for atomicity)
@@ -578,7 +576,7 @@ async def delete_group(
             ).count()
             if other_groups == 0:
                 user = session.query(User).filter(User.id == membership.user_id).first()
-                if user and not user.is_deleted:
+                if user:
                     users_with_only_this_group.append(user.username)
 
         if users_with_only_this_group:
@@ -597,12 +595,12 @@ async def delete_group(
         for perm in group_perms:
             if perm.capability not in CRITICAL_CAPABILITIES:
                 continue
-            if not _another_group_has_capability_with_members(session, group_id, perm.capability):
+            if not _any_group_has_capability_with_members(session, perm.capability, exclude_group_id=group_id):
                 raise HTTPException(
                     status_code=400,
                     detail=(
                         f"Cannot delete group '{group.name}' because no other group "
-                        f"(with active members) has '{perm.capability}' granted. "
+                        f"(with members) has '{perm.capability}' granted. "
                         f"At least one group with members must retain this capability."
                     ),
                 )
@@ -650,7 +648,6 @@ async def add_member(
     Requires groups.manage capability.
     """
     with db.get_session() as session:
-        # Check group exists
         group = session.query(CustomGroup).filter(CustomGroup.id == group_id).first()
         if not group:
             raise HTTPException(
@@ -658,31 +655,18 @@ async def add_member(
                 detail=f"Group with ID {group_id} not found"
             )
 
-        # Check user exists and is not deleted
-        user = session.query(User).filter(
-            User.id == request.user_id,
-            User.deleted_at.is_(None)
-        ).first()
+        user = get_user_or_404(session, request.user_id)
 
-        if not user:
-            raise HTTPException(
-                status_code=404,
-                detail=f"User with ID {request.user_id} not found or is deactivated"
-            )
-
-        # Check if already a member
         existing = session.query(UserGroupMembership).filter(
             UserGroupMembership.group_id == group_id,
             UserGroupMembership.user_id == request.user_id
         ).first()
-
         if existing:
             raise HTTPException(
                 status_code=400,
                 detail=f"User '{user.username}' is already a member of group '{group.name}'"
             )
 
-        # Add membership
         now = datetime.now(timezone.utc)
         user_id, display_name = get_auditable_user_info(current_user)
         membership = UserGroupMembership(
@@ -761,19 +745,7 @@ async def remove_member(
             )
 
         if group.name == "Administrators":
-            other_admin_count = session.query(UserGroupMembership).join(
-                User, UserGroupMembership.user_id == User.id
-            ).filter(
-                UserGroupMembership.group_id == group_id,
-                UserGroupMembership.user_id != user_id,
-                User.deleted_at.is_(None)
-            ).count()
-
-            if other_admin_count == 0:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Cannot remove from Administrators: this is the last member of the Administrators group"
-                )
+            ensure_not_last_admin(session, user_id, "remove from Administrators")
 
         # Get username for audit - save member_user_id before get_auditable_user_info overwrites user_id
         member_user_id = user_id
@@ -960,12 +932,12 @@ async def update_group_permissions(
             if perm_update.allowed:
                 continue
 
-            if not _another_group_has_capability_with_members(session, group_id, perm_update.capability):
+            if not _any_group_has_capability_with_members(session, perm_update.capability, exclude_group_id=group_id):
                 raise HTTPException(
                     status_code=400,
                     detail=(
                         f"Cannot remove '{perm_update.capability}' from this group "
-                        f"because no other group (with active members) has it granted. "
+                        f"because no other group (with members) has it granted. "
                         f"At least one group with members must retain this capability."
                     ),
                 )
@@ -1021,25 +993,10 @@ async def update_group_permissions(
                 details={'changes': changes},
             )
 
-        # Post-mutation verification: re-check critical capabilities before committing
-        # Catches race conditions where concurrent requests both pass the pre-check
+        # Post-mutation verification: catches race conditions where concurrent
+        # requests both pass the pre-check
         session.flush()
-        for cap in CRITICAL_CAPABILITIES:
-            has_any = session.query(GroupPermission).join(
-                UserGroupMembership, GroupPermission.group_id == UserGroupMembership.group_id
-            ).join(
-                User, UserGroupMembership.user_id == User.id
-            ).filter(
-                GroupPermission.capability == cap,
-                GroupPermission.allowed == True,  # noqa: E712
-                User.deleted_at.is_(None),
-            ).first()
-            if not has_any:
-                session.rollback()
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Operation would leave no group (with active members) having '{cap}'. Aborted."
-                )
+        verify_critical_capabilities(session)
 
         session.commit()
 
@@ -1105,12 +1062,12 @@ async def copy_group_permissions(
         for perm in target_current:
             if perm.capability in source_granted:
                 continue
-            if not _another_group_has_capability_with_members(session, target_group_id, perm.capability):
+            if not _any_group_has_capability_with_members(session, perm.capability, exclude_group_id=target_group_id):
                 raise HTTPException(
                     status_code=400,
                     detail=(
                         f"Cannot copy permissions: this would remove '{perm.capability}' "
-                        f"from '{target_group.name}' and no other group (with active members) "
+                        f"from '{target_group.name}' and no other group (with members) "
                         f"has it granted. At least one group with members must retain this capability."
                     ),
                 )
@@ -1152,24 +1109,9 @@ async def copy_group_permissions(
             },
         )
 
-        # Post-mutation verification: re-check critical capabilities before committing
+        # Post-mutation verification: catches race conditions
         session.flush()
-        for cap in CRITICAL_CAPABILITIES:
-            has_any = session.query(GroupPermission).join(
-                UserGroupMembership, GroupPermission.group_id == UserGroupMembership.group_id
-            ).join(
-                User, UserGroupMembership.user_id == User.id
-            ).filter(
-                GroupPermission.capability == cap,
-                GroupPermission.allowed == True,  # noqa: E712
-                User.deleted_at.is_(None),
-            ).first()
-            if not has_any:
-                session.rollback()
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Operation would leave no group (with active members) having '{cap}'. Aborted."
-                )
+        verify_critical_capabilities(session)
 
         session.commit()
 

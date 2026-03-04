@@ -44,12 +44,11 @@ class User(Base):
     - Added email for password reset and OIDC matching
     - Added auth_provider for local vs OIDC authentication
     - Added oidc_subject for OIDC user identification
-    - Added soft delete support (deleted_at, deleted_by)
     """
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    username = Column(String, nullable=False)  # Uniqueness enforced by partial index (active users only)
+    username = Column(String, nullable=False, unique=True)
     password_hash = Column(String, nullable=False)
     display_name = Column(String, nullable=True)  # Optional friendly display name
     role = Column(Text, nullable=False, default="admin")  # "admin", "user", "readonly"
@@ -67,22 +66,13 @@ class User(Base):
     last_login = Column(DateTime, nullable=True)
 
     # v2.3.0 Multi-User Support
-    email = Column(Text, nullable=True)  # Uniqueness enforced by partial index (active users only)
+    email = Column(Text, nullable=True)  # Uniqueness enforced at application level
     auth_provider = Column(Text, nullable=False, default='local')  # 'local' or 'oidc'
     oidc_subject = Column(Text, nullable=True, unique=True, index=True)  # OIDC subject identifier for user matching
 
     # Account lockout (v2.5.0 security hardening)
     failed_login_attempts = Column(Integer, default=0, nullable=False)
     locked_until = Column(DateTime, nullable=True)
-
-    # Soft delete support - preserves audit trail
-    deleted_at = Column(DateTime, nullable=True)  # NULL = active, set = soft deleted
-    deleted_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
-
-    @property
-    def is_deleted(self) -> bool:
-        """Check if user is soft deleted"""
-        return self.deleted_at is not None
 
     @property
     def is_oidc_user(self) -> bool:
@@ -99,7 +89,7 @@ class UserPrefs(Base):
     """User preferences table (theme and defaults)"""
     __tablename__ = "user_prefs"
 
-    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete='CASCADE'), primary_key=True)
     theme = Column(String, default="dark")
     defaults_json = Column(Text, nullable=True)  # JSON string of default preferences
     dismissed_dockmon_update_version = Column(Text, nullable=True)  # Version user dismissed (v2.0.1+)
@@ -197,6 +187,9 @@ class OIDCConfig(Base):
     # v2.3.0 refactor: Default group for users with no OIDC group mappings
     default_group_id = Column(Integer, ForeignKey('custom_groups.id', ondelete='SET NULL'), nullable=True)
     sso_default = Column(Boolean, nullable=False, default=False)
+
+    # Provider compatibility: some providers (e.g. Authentik) reject client_secret + PKCE together
+    disable_pkce_with_secret = Column(Boolean, nullable=False, default=False)
 
     created_at = Column(DateTime, nullable=False, default=utcnow)
     updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
@@ -406,7 +399,7 @@ class ApiKey(Base):
 
     # Key storage (SECURITY CRITICAL)
     key_hash = Column(Text, nullable=False, unique=True)  # SHA256 hash of full key
-    key_prefix = Column(Text, nullable=False)  # First 12 chars for UI display
+    key_prefix = Column(Text, nullable=False)  # First 20 chars for UI display
 
     # IP restrictions (optional security layer)
     # WARNING: Only works correctly with REVERSE_PROXY_MODE=true
@@ -491,7 +484,7 @@ class RegistrationToken(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     token = Column(String, nullable=False, unique=True)  # UUID
-    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_by_user_id = Column(Integer, ForeignKey("users.id", ondelete='SET NULL'), nullable=True)
     created_at = Column(DateTime, default=utcnow, nullable=False)
     expires_at = Column(DateTime, nullable=False)  # 15 minute expiry
 
@@ -621,7 +614,7 @@ class BatchJob(Base):
     __tablename__ = "batch_jobs"
 
     id = Column(String, primary_key=True)  # e.g., "job_abc123"
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete='SET NULL'), nullable=True)
     scope = Column(String, nullable=False)  # 'container' (hosts in future)
     action = Column(String, nullable=False)  # 'start', 'stop', 'restart', etc.
     params = Column(Text, nullable=True)  # JSON string of action parameters
@@ -1251,7 +1244,7 @@ class Deployment(Base):
 
     id = Column(String, primary_key=True)  # Composite: {host_id}:{deployment_short_id}
     host_id = Column(String, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)  # User who created deployment (for authorization)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)  # User who created deployment
     stack_name = Column(String, nullable=False)  # References stack in /app/data/stacks/{stack_name}/
     status = Column(String, nullable=False, default='planning')  # planning, validating, pulling_image, creating, starting, running, failed, rolled_back
     error_message = Column(Text, nullable=True)
@@ -4011,39 +4004,8 @@ class DatabaseManager:
     # User management methods
     def _hash_password(self, password: str) -> str:
         """Hash a password using Argon2id (GPU-resistant)."""
-        from argon2 import PasswordHasher
-        ph = PasswordHasher(
-            time_cost=2, memory_cost=65536, parallelism=1,
-            hash_len=32, salt_len=16,
-        )
+        from auth.password import ph
         return ph.hash(password)
-
-    def _verify_password(self, password: str, hashed: str) -> bool:
-        """
-        Verify a password against a bcrypt or Argon2id hash.
-
-        BACKWARD COMPATIBILITY: Supports both bcrypt (v1) and Argon2id (v2) hashes.
-        """
-        # Try Argon2id first (v2 format: starts with $argon2id$)
-        if hashed.startswith('$argon2id$'):
-            try:
-                from argon2 import PasswordHasher
-                from argon2.exceptions import VerifyMismatchError
-                ph = PasswordHasher()
-                ph.verify(hashed, password)
-                return True
-            except VerifyMismatchError:
-                return False
-            except Exception as e:
-                logger.error(f"Argon2id verification failed: {e}")
-                return False
-
-        # Fall back to bcrypt (v1 format)
-        try:
-            return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
-        except Exception as e:
-            logger.error(f"bcrypt verification failed: {e}")
-            return False
 
     def get_or_create_default_user(self) -> None:
         """Create default admin user if no users exist"""
@@ -4065,45 +4027,6 @@ class DatabaseManager:
 
                 session.commit()
                 logger.info("Created default admin user")
-
-    def verify_user_credentials(self, username: str, password: str) -> Optional[Dict[str, Any]]:
-        """Verify user credentials and return user info if valid"""
-        with self.get_session() as session:
-            user = session.query(User).filter(User.username == username).first()
-
-            # Prevent timing attack: always run bcrypt even if user doesn't exist
-            if user:
-                is_valid = self._verify_password(password, user.password_hash)
-            else:
-                # Run dummy bcrypt to maintain constant time
-                dummy_hash = "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYFj.N/wx9S"
-                self._verify_password(password, dummy_hash)
-                is_valid = False
-
-            if user and is_valid:
-                # Update last login
-                user.last_login = datetime.now(timezone.utc)
-                session.commit()
-                return {
-                    "username": user.username,
-                    "is_first_login": user.is_first_login,
-                    "must_change_password": user.must_change_password
-                }
-            return None
-
-    def change_user_password(self, username: str, new_password: str) -> bool:
-        """Change user password"""
-        with self.get_session() as session:
-            user = session.query(User).filter(User.username == username).first()
-            if user:
-                user.password_hash = self._hash_password(new_password)
-                user.is_first_login = False
-                user.must_change_password = False
-                user.updated_at = datetime.now(timezone.utc)
-                session.commit()
-                logger.info(f"Password changed for user: {username}")
-                return True
-            return False
 
     def username_exists(self, username: str) -> bool:
         """Check if username already exists"""

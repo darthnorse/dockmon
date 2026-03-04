@@ -106,7 +106,6 @@ def validate_api_key(
         )
         return None
 
-    # Hash the provided key
     key_hash = hashlib.sha256(api_key.encode()).hexdigest()
 
     # Look up key in database
@@ -187,23 +186,9 @@ def validate_api_key(
             logger.error(f"API key {api_key_record.id} references non-existent group {api_key_record.group_id}")
             return None
 
-        # Get created_by user info and check if creator is still active
+        # Get created_by user info (may be None if creator was hard-deleted)
         created_by = session.query(User).filter(User.id == api_key_record.created_by_user_id).first()
         created_by_username = created_by.username if created_by else "unknown"
-
-        if created_by and created_by.is_deleted:
-            logger.warning(f"API key {api_key_record.name} rejected: creator account '{created_by_username}' is deactivated")
-            security_audit.log_event(
-                event_type="api_key_creator_deactivated",
-                severity="warning",
-                client_ip=client_ip,
-                details={
-                    "api_key_id": api_key_record.id,
-                    "api_key_name": api_key_record.name,
-                    "created_by_user_id": api_key_record.created_by_user_id,
-                }
-            )
-            return None
 
         # Update usage statistics
         api_key_record.last_used_at = datetime.now(timezone.utc)
@@ -317,7 +302,7 @@ async def get_current_user_or_api_key(
             must_change_password = False
             with db.get_session() as session:
                 user = session.query(User).filter(User.id == session_data["user_id"]).first()
-                if user and not user.is_deleted:
+                if user:
                     user_id = user.id
                     username = user.username
                     display_name = user.display_name

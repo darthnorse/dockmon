@@ -54,7 +54,7 @@ import { formatDateTime } from '@/lib/utils/timeFormat'
 
 export function GroupsSettings() {
   const { data: groupsData, isLoading, refetch } = useGroups()
-  const { data: usersData } = useUsers(false) // Active users only
+  const { data: usersData } = useUsers()
 
   const createGroup = useCreateGroup()
   const updateGroup = useUpdateGroup()
@@ -131,7 +131,7 @@ export function GroupsSettings() {
   const getAvailableUsers = () => {
     if (!expandedGroupData || !addingMemberGroupId) return []
     const memberIds = new Set(expandedGroupData.members.map((m) => m.user_id))
-    return users.filter((u) => !memberIds.has(u.id) && !u.is_deleted)
+    return users.filter((u) => !memberIds.has(u.id))
   }
 
   return (
@@ -413,7 +413,7 @@ function GroupRow({
 interface CreateGroupModalProps {
   isOpen: boolean
   onClose: () => void
-  onSubmit: (request: CreateGroupRequest) => void
+  onSubmit: (request: CreateGroupRequest) => Promise<void>
   isSubmitting: boolean
 }
 
@@ -421,11 +421,15 @@ function CreateGroupModal({ isOpen, onClose, onSubmit, isSubmitting }: CreateGro
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    onSubmit({ name, description: description || undefined })
-    setName('')
-    setDescription('')
+    try {
+      await onSubmit({ name, description: description || undefined })
+      setName('')
+      setDescription('')
+    } catch {
+      // Error handled by mutation - form values preserved for retry
+    }
   }
 
   return (
@@ -587,7 +591,7 @@ function AddMemberModal({
           <div className="grid gap-4 py-4">
             {availableUsers.length === 0 ? (
               <p className="text-sm text-gray-400">
-                All active users are already members of this group.
+                All users are already members of this group.
               </p>
             ) : (
               <div className="grid gap-2">

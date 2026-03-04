@@ -84,16 +84,26 @@ export function GroupPermissionsSettings() {
     return map
   }, [capabilitiesData])
 
-  // Check if there are unsaved changes
+  // Check if there are unsaved changes (bidirectional)
   const hasChanges = useMemo(() => {
     if (!permissionsData?.permissions) return false
 
+    // Forward: check if edited has values different from original
     for (const [groupId, caps] of Object.entries(editedPermissions)) {
       const original = permissionsData.permissions[parseInt(groupId, 10)] || {}
       for (const [cap, allowed] of Object.entries(caps)) {
         if (original[cap] !== allowed) return true
       }
     }
+
+    // Reverse: check if original has values not present in edited
+    for (const [groupId, caps] of Object.entries(permissionsData.permissions)) {
+      const edited = editedPermissions[parseInt(groupId, 10)] || {}
+      for (const [cap, allowed] of Object.entries(caps)) {
+        if (edited[cap] !== allowed) return true
+      }
+    }
+
     return false
   }, [permissionsData, editedPermissions])
 

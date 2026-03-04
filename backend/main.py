@@ -590,19 +590,13 @@ def _is_localhost_or_internal(ip: str) -> bool:
 # ==================== Frontend Authentication ====================
 
 async def verify_session_auth(request: Request):
-    """Verify authentication via session cookie only"""
-    from auth.shared import get_session_from_cookie
-    from auth.session_manager import session_manager
+    """Verify authentication via session cookie only (legacy - prefer v2 cookie auth)"""
+    session_id = request.cookies.get("dockmon_session")
+    if session_id:
+        from auth.session_manager import session_manager
+        if session_manager.validate_session(session_id, request):
+            return True
 
-    # Since backend only listens on 127.0.0.1, all requests must come through nginx
-    # No need to check client IP - the backend binding ensures security
-
-    # Check session authentication
-    session_id = get_session_from_cookie(request)
-    if session_id and session_manager.validate_session(session_id, request):
-        return True
-
-    # No valid session found
     raise HTTPException(
         status_code=401,
         detail="Authentication required - please login"
@@ -4639,7 +4633,10 @@ async def get_event_sort_order(request: Request, current_user: dict = Depends(ge
     """Get event sort order preference for current user"""
     username = current_user.get('username')
     if not username:
-        raise HTTPException(status_code=401, detail="User not authenticated")
+        raise HTTPException(
+            status_code=400,
+            detail="User preferences are not available for API key authentication"
+        )
 
     sort_order = monitor.db.get_event_sort_order(username)
     return {"sort_order": sort_order}
@@ -4651,7 +4648,10 @@ async def save_event_sort_order(request: Request, current_user: dict = Depends(g
         # Get username from current_user (already authenticated)
         username = current_user.get('username')
         if not username:
-            raise HTTPException(status_code=401, detail="User not authenticated")
+            raise HTTPException(
+                status_code=400,
+                detail="User preferences are not available for API key authentication"
+            )
 
         body = await request.json()
         sort_order = body.get('sort_order')
@@ -4677,7 +4677,10 @@ async def get_container_sort_order(request: Request, current_user: dict = Depend
     """Get container sort order preference for current user"""
     username = current_user.get('username')
     if not username:
-        raise HTTPException(status_code=401, detail="User not authenticated")
+        raise HTTPException(
+                status_code=400,
+                detail="User preferences are not available for API key authentication"
+            )
 
     sort_order = monitor.db.get_container_sort_order(username)
     return {"sort_order": sort_order}
@@ -4687,7 +4690,10 @@ async def save_container_sort_order(request: Request, current_user: dict = Depen
     """Save container sort order preference for current user"""
     username = current_user.get('username')
     if not username:
-        raise HTTPException(status_code=401, detail="User not authenticated")
+        raise HTTPException(
+                status_code=400,
+                detail="User preferences are not available for API key authentication"
+            )
 
     try:
         body = await request.json()
@@ -4713,7 +4719,10 @@ async def get_modal_preferences(request: Request, current_user: dict = Depends(g
     """Get modal preferences for current user"""
     username = current_user.get('username')
     if not username:
-        raise HTTPException(status_code=401, detail="User not authenticated")
+        raise HTTPException(
+                status_code=400,
+                detail="User preferences are not available for API key authentication"
+            )
 
     preferences = monitor.db.get_modal_preferences(username)
     return {"preferences": preferences}
@@ -4723,7 +4732,10 @@ async def save_modal_preferences(request: Request, current_user: dict = Depends(
     """Save modal preferences for current user"""
     username = current_user.get('username')
     if not username:
-        raise HTTPException(status_code=401, detail="User not authenticated")
+        raise HTTPException(
+                status_code=400,
+                detail="User preferences are not available for API key authentication"
+            )
 
     try:
         body = await request.json()
@@ -5784,6 +5796,20 @@ async def agent_websocket_endpoint(websocket: WebSocket):
     await handle_agent_websocket(websocket, monitor)
 
 
+async def _validate_ws_user(db_manager, websocket: WebSocket, user_id: int, label: str = "WebSocket") -> bool:
+    """Check that a user still exists in the database. Close WebSocket if not.
+
+    Returns True if valid, False if the connection was closed.
+    """
+    with db_manager.get_session() as db_session:
+        user = db_session.query(User).filter(User.id == user_id).first()
+        if not user:
+            logger.warning(f"{label} rejected: user ID {user_id} not found")
+            await websocket.close(code=1008, reason="User account not found")
+            return False
+    return True
+
+
 @app.websocket("/ws")
 @app.websocket("/ws/")
 async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = Cookie(None)):
@@ -5809,12 +5835,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
 
     ws_user_id = session_data.get("user_id")
     if ws_user_id:
-        with monitor.db.get_session() as db_session:
-            ws_user = db_session.query(User).filter(User.id == ws_user_id).first()
-            if not ws_user or ws_user.is_deleted:
-                logger.warning(f"WebSocket rejected: user ID {ws_user_id} is deactivated or missing")
-                await websocket.close(code=1008, reason="User account deactivated")
-                return
+        if not await _validate_ws_user(monitor.db, websocket, ws_user_id):
+            return
 
     # Get user_id for capability-based filtering
     user_id = ws_user_id
@@ -6062,12 +6084,8 @@ async def websocket_shell_endpoint(
 
     shell_user_id = session_data.get("user_id")
     if shell_user_id:
-        with monitor.db.get_session() as db_session:
-            shell_user = db_session.query(User).filter(User.id == shell_user_id).first()
-            if not shell_user or shell_user.is_deleted:
-                logger.warning(f"Shell WebSocket rejected: user ID {shell_user_id} is deactivated or missing")
-                await websocket.close(code=1008, reason="User account deactivated")
-                return
+        if not await _validate_ws_user(monitor.db, websocket, shell_user_id, "Shell WebSocket"):
+            return
 
     # CRITICAL: Check shell permission - essentially root access to container
     user_id = shell_user_id

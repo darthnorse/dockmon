@@ -19,7 +19,6 @@ SCHEMA CHANGES:
    - email (unique, for password reset and OIDC matching)
    - auth_provider ('local' or 'oidc')
    - oidc_subject (OIDC subject identifier, unique index)
-   - deleted_at/deleted_by (soft delete support)
    - failed_login_attempts (account lockout counter)
    - locked_until (account lockout expiry)
 
@@ -168,7 +167,7 @@ def upgrade():
     bind = op.get_bind()
 
     # =========================================================================
-    # 1. USER TABLE - Add OIDC and soft delete support
+    # 1. USER TABLE - Add OIDC and multi-user support
     # =========================================================================
     if table_exists('users'):
         # Use batch mode for SQLite compatibility when adding unique constraint
@@ -185,28 +184,13 @@ def upgrade():
             if not column_exists('users', 'oidc_subject'):
                 batch_op.add_column(sa.Column('oidc_subject', sa.Text(), nullable=True))
 
-            # Soft delete support
-            if not column_exists('users', 'deleted_at'):
-                batch_op.add_column(sa.Column('deleted_at', sa.DateTime(), nullable=True))
-
-            if not column_exists('users', 'deleted_by'):
-                batch_op.add_column(sa.Column('deleted_by', sa.Integer(), nullable=True))
-
-        # Set placeholder email for existing active users only
-        # (soft-deleted users intentionally have NULL email)
+        # Set placeholder email for existing users without one
         if column_exists('users', 'email'):
-            if column_exists('users', 'deleted_at'):
-                bind.execute(sa.text("""
-                    UPDATE users
-                    SET email = username || '@localhost'
-                    WHERE email IS NULL AND deleted_at IS NULL
-                """))
-            else:
-                bind.execute(sa.text("""
-                    UPDATE users
-                    SET email = username || '@localhost'
-                    WHERE email IS NULL
-                """))
+            bind.execute(sa.text("""
+                UPDATE users
+                SET email = username || '@localhost'
+                WHERE email IS NULL
+            """))
 
         # Account lockout columns (security hardening)
         with op.batch_alter_table('users', schema=None) as batch_op:
@@ -223,39 +207,52 @@ def upgrade():
         if column_exists('users', 'oidc_subject') and not index_exists('users', 'uq_users_oidc_subject'):
             op.create_index('uq_users_oidc_subject', 'users', ['oidc_subject'], unique=True)
 
-        # Drop old full unique constraints on username/email so soft-deleted users
-        # don't block reuse. Replace with partial unique indexes (active users only).
-        # batch_alter_table rebuilds the table without the old UNIQUE constraints.
-        with op.batch_alter_table('users', schema=None) as batch_op:
-            # Recreate username column without UNIQUE constraint
-            # (batch mode handles this by rebuilding the table)
-            try:
-                batch_op.drop_constraint('uq_users_username', type_='unique')
-            except Exception:
-                pass  # Constraint may not exist by that name
+    # =========================================================================
+    # 1b. FK FIXES - Ensure hard-delete safety
+    # =========================================================================
+    # SQLite cannot ALTER FK constraints in-place. We use batch mode with
+    # recreate='always' to rebuild each table, dropping the old FK and
+    # creating a new one with the correct ondelete policy.
 
-        # Mangle any already-soft-deleted users so they don't collide
-        if column_exists('users', 'deleted_at'):
-            bind.execute(sa.text("""
-                UPDATE users
-                SET username = '__deleted_' || CAST(id AS TEXT) || '_' || username,
-                    email = NULL
-                WHERE deleted_at IS NOT NULL
-                  AND username NOT LIKE '__deleted_%'
-            """))
+    fk_naming = {"fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s"}
 
-        # Partial unique indexes for soft-delete safety:
-        # Allow reuse of username/email after soft-delete, but enforce uniqueness among active users.
-        # SQLite supports partial indexes via CREATE INDEX ... WHERE.
-        if column_exists('users', 'deleted_at'):
-            if not index_exists('users', 'uq_users_username_active'):
-                bind.execute(sa.text(
-                    "CREATE UNIQUE INDEX uq_users_username_active ON users(username) WHERE deleted_at IS NULL"
-                ))
-            if not index_exists('users', 'uq_users_email_active'):
-                bind.execute(sa.text(
-                    "CREATE UNIQUE INDEX uq_users_email_active ON users(email) WHERE deleted_at IS NULL"
-                ))
+    # user_prefs: add CASCADE on delete (so deleting a user removes their prefs)
+    if table_exists('user_prefs'):
+        with op.batch_alter_table('user_prefs', schema=None, recreate='always',
+                                  naming_convention=fk_naming) as batch_op:
+            batch_op.drop_constraint('fk_user_prefs_user_id_users', type_='foreignkey')
+            batch_op.create_foreign_key('fk_user_prefs_user_id_users', 'users',
+                                        ['user_id'], ['id'], ondelete='CASCADE')
+
+    # registration_tokens.created_by_user_id: CASCADE -> SET NULL, make nullable
+    if table_exists('registration_tokens') and column_exists('registration_tokens', 'created_by_user_id'):
+        with op.batch_alter_table('registration_tokens', schema=None, recreate='always',
+                                  naming_convention=fk_naming) as batch_op:
+            batch_op.alter_column('created_by_user_id', existing_type=sa.Integer(),
+                                  nullable=True)
+            batch_op.drop_constraint('fk_registration_tokens_created_by_user_id_users',
+                                     type_='foreignkey')
+            batch_op.create_foreign_key('fk_registration_tokens_created_by_user_id_users',
+                                        'users', ['created_by_user_id'], ['id'],
+                                        ondelete='SET NULL')
+
+    # batch_jobs.user_id: add SET NULL on delete (already nullable)
+    if table_exists('batch_jobs') and column_exists('batch_jobs', 'user_id'):
+        with op.batch_alter_table('batch_jobs', schema=None, recreate='always',
+                                  naming_convention=fk_naming) as batch_op:
+            batch_op.drop_constraint('fk_batch_jobs_user_id_users', type_='foreignkey')
+            batch_op.create_foreign_key('fk_batch_jobs_user_id_users', 'users',
+                                        ['user_id'], ['id'], ondelete='SET NULL')
+
+    # deployments.user_id: CASCADE -> SET NULL, make nullable
+    if table_exists('deployments') and column_exists('deployments', 'user_id'):
+        with op.batch_alter_table('deployments', schema=None, recreate='always',
+                                  naming_convention=fk_naming) as batch_op:
+            batch_op.alter_column('user_id', existing_type=sa.Integer(),
+                                  nullable=True)
+            batch_op.drop_constraint('fk_deployments_user_id_users', type_='foreignkey')
+            batch_op.create_foreign_key('fk_deployments_user_id_users', 'users',
+                                        ['user_id'], ['id'], ondelete='SET NULL')
 
     # =========================================================================
     # 2. AUDIT COLUMNS - Add created_by/updated_by to 8 tables
@@ -688,10 +685,6 @@ def downgrade():
     # =========================================================================
     if table_exists('users'):
         # Drop indexes first
-        if index_exists('users', 'uq_users_username_active'):
-            op.drop_index('uq_users_username_active', 'users')
-        if index_exists('users', 'uq_users_email_active'):
-            op.drop_index('uq_users_email_active', 'users')
         if index_exists('users', 'uq_users_oidc_subject'):
             op.drop_index('uq_users_oidc_subject', 'users')
         if index_exists('users', 'ix_users_oidc_subject'):
@@ -700,7 +693,6 @@ def downgrade():
         with op.batch_alter_table('users', schema=None) as batch_op:
             user_columns = [
                 'email', 'auth_provider', 'oidc_subject',
-                'deleted_at', 'deleted_by',
                 'failed_login_attempts', 'locked_until',
             ]
             for col_name in user_columns:

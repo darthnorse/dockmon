@@ -2,8 +2,7 @@
  * Authentication Context
  *
  * SECURITY:
- * - Cookie-based authentication (HttpOnly, Secure, SameSite=strict)
- * - No tokens stored in localStorage/sessionStorage
+ * - Cookie-based authentication (HttpOnly, Secure, SameSite=lax)
  * - Automatic session validation on mount
  *
  * PATTERN:
@@ -63,11 +62,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Login mutation
   const loginMutation = useMutation({
     mutationFn: authApi.login,
-    onSuccess: (response, variables) => {
-      // If first login, temporarily store password for password change modal
-      if (response.user.is_first_login) {
-        sessionStorage.setItem('_tmp_pwd', variables.password)
-      }
+    onSuccess: () => {
       // Invalidate current user query to refetch
       void queryClient.invalidateQueries({ queryKey: ['auth', 'currentUser'] })
     },
@@ -79,8 +74,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     onSuccess: (response) => {
       queryClient.clear()
       if (response?.oidc_logout_url) {
-        // Redirect to OIDC provider to end their session too
-        window.location.href = response.oidc_logout_url
+        // Validate URL protocol before redirecting to prevent javascript: or data: URIs
+        try {
+          const url = new URL(response.oidc_logout_url)
+          if (url.protocol === 'https:' || url.protocol === 'http:') {
+            window.location.href = response.oidc_logout_url
+            return
+          }
+        } catch {
+          // Invalid URL - fall through to login redirect
+        }
+        navigate('/login', { replace: true })
       } else {
         navigate('/login', { replace: true })
       }
@@ -92,8 +96,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Check if user is admin (in Administrators group or has users.manage capability)
   const isAdmin =
-    data?.user?.groups?.some((g) => g.name === 'Administrators') ??
-    capabilities.includes('users.manage') ??
+    data?.user?.groups?.some((g) => g.name === 'Administrators') ||
+    capabilities.includes('users.manage') ||
     false
 
   // Helper to check if user has a specific capability

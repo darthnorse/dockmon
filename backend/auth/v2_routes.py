@@ -17,8 +17,9 @@ import httpx
 from fastapi import APIRouter, HTTPException, Response, Cookie, Request, Depends
 from pydantic import BaseModel, Field, field_validator
 import argon2
-from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, InvalidHashError
+
+from auth.password import ph
 
 from auth.cookie_sessions import cookie_session_manager, get_session_cookie_max_age
 from utils.client_ip import get_client_ip
@@ -60,20 +61,10 @@ from auth.api_key_auth import (
 from config.settings import AppConfig
 from utils.base_path import get_base_path
 
-# Account lockout constants
-MAX_FAILED_ATTEMPTS = 5
-LOCKOUT_DURATION_MINUTES = 15
+# Account lockout constants (higher threshold + shorter lockout to mitigate DoS)
+MAX_FAILED_ATTEMPTS = 10
+LOCKOUT_DURATION_MINUTES = 5
 
-
-# Argon2 password hasher (more secure than bcrypt)
-# SECURITY: Argon2id is resistant to GPU attacks
-ph = PasswordHasher(
-    time_cost=2,        # Number of iterations
-    memory_cost=65536,  # 64 MB memory
-    parallelism=1,      # Number of threads
-    hash_len=32,        # Hash length in bytes
-    salt_len=16         # Salt length in bytes
-)
 
 # Dummy hash for constant-time rejection of unknown/OIDC users
 _DUMMY_HASH = ph.hash("dummy-timing-constant")
@@ -87,10 +78,33 @@ def _verify_dummy(password: str) -> None:
         pass
 
 
+def verify_password(password: str, password_hash: str) -> tuple[bool, bool]:
+    """Verify a password against an Argon2id or legacy bcrypt hash.
+
+    Returns (is_valid, needs_rehash) tuple.
+    """
+    try:
+        ph.verify(password_hash, password)
+        return True, ph.check_needs_rehash(password_hash)
+    except (VerifyMismatchError, InvalidHashError):
+        pass
+
+    # Fall back to bcrypt (v1 compatibility)
+    try:
+        import bcrypt
+        if bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8')):
+            logger.info("User authenticated with legacy bcrypt hash")
+            return True, True  # Always upgrade bcrypt -> Argon2id
+    except Exception as bcrypt_error:
+        logger.debug(f"bcrypt verification failed: {bcrypt_error}")
+
+    return False, False
+
+
 class LoginRequest(BaseModel):
     """Login credentials"""
-    username: str
-    password: str
+    username: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=1, max_length=128)
 
 
 class LoginResponse(BaseModel):
@@ -195,35 +209,22 @@ async def login_v2(
     - Argon2id password verification (GPU-resistant)
     - HttpOnly cookie (XSS protection)
     - Secure flag for HTTPS (in production)
-    - SameSite=strict (CSRF protection)
+    - SameSite=lax (CSRF protection for cross-site POST)
     - IP binding (session hijack prevention)
 
     Returns:
         User data and session cookie
     """
-    # Get user from database (active users only — soft-deleted have mangled usernames)
     with db.get_session() as session:
         user = session.query(User).filter(
             User.username == credentials.username,
-            User.deleted_at.is_(None),
         ).first()
 
         if not user:
             _verify_dummy(credentials.password)
             safe_username = _sanitize_for_log(credentials.username)
-
-            # Check if this is a deactivated user (mangled username: __deleted_{id}_{original})
-            deactivated = session.query(User).filter(
-                User.username.like(f"%_{credentials.username}"),
-                User.deleted_at.isnot(None),
-            ).first()
-
-            if deactivated:
-                reason = "user_deactivated"
-                logger.warning(f"Login failed: user '{safe_username}' is deactivated")
-            else:
-                reason = "user_not_found"
-                logger.warning(f"Login failed: user '{safe_username}' not found")
+            reason = "user_not_found"
+            logger.warning(f"Login failed: user '{safe_username}' not found")
 
             try:
                 log_login_failure(session, credentials.username, request, reason)
@@ -266,31 +267,7 @@ async def login_v2(
             )
 
         # Verify password (with backward compatibility for bcrypt)
-        password_valid = False
-        needs_upgrade = False
-
-        try:
-            # Try Argon2id first (v2 default)
-            ph.verify(user.password_hash, credentials.password)
-            password_valid = True
-
-            # Check if password needs rehashing (security upgrade)
-            if ph.check_needs_rehash(user.password_hash):
-                needs_upgrade = True
-
-        except (VerifyMismatchError, InvalidHashError):
-            # Fall back to bcrypt (v1 compatibility)
-            try:
-                import bcrypt
-                if bcrypt.checkpw(
-                    credentials.password.encode('utf-8'),
-                    user.password_hash.encode('utf-8')
-                ):
-                    password_valid = True
-                    needs_upgrade = True  # Upgrade bcrypt -> Argon2id
-                    logger.info(f"User '{user.username}' authenticated with legacy bcrypt hash")
-            except Exception as bcrypt_error:
-                logger.debug(f"bcrypt verification failed: {bcrypt_error}")
+        password_valid, needs_upgrade = verify_password(credentials.password, user.password_hash)
 
         if not password_valid:
             # Increment failed login attempts + audit in single commit
@@ -565,7 +542,8 @@ async def get_current_user_v2(
 async def change_password_v2(
     password_data: ChangePasswordRequest,
     request: Request,
-    current_user: dict = Depends(get_current_user_dependency)
+    current_user: dict = Depends(get_current_user_dependency),
+    rate_limit_check: bool = rate_limit_auth,
 ) -> ChangePasswordResponse:
     """
     Change user password (v2 cookie-based auth).
@@ -600,16 +578,13 @@ async def change_password_v2(
             raise HTTPException(status_code=401, detail="Current password is incorrect")
         if user.auth_provider == 'oidc':
             raise HTTPException(status_code=400, detail="Password change not available for this account")
-        if user.is_deleted:
-            raise HTTPException(status_code=403, detail="Account is deactivated")
         if user.locked_until and user.locked_until.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc):
             raise HTTPException(status_code=403, detail="Account is locked")
 
-        # Verify current password
-        if not db._verify_password(current_password, user.password_hash):
+        password_valid, _ = verify_password(current_password, user.password_hash)
+        if not password_valid:
             raise HTTPException(status_code=401, detail="Current password is incorrect")
 
-        # Change password in the same session
         user.password_hash = ph.hash(new_password)
         user.is_first_login = False
         user.must_change_password = False
@@ -676,11 +651,9 @@ async def update_profile_v2(
 
         # Update username if provided and different
         if new_username and new_username != username:
-            # Check uniqueness among active users
             conflict = session.query(User).filter(
                 User.username == new_username,
                 User.id != user_id,
-                User.deleted_at.is_(None),
             ).first()
             if conflict:
                 raise HTTPException(status_code=400, detail="Username already taken")

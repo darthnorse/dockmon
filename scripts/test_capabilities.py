@@ -335,7 +335,6 @@ def build_endpoint_matrix(host_id: str, container_id: str) -> list[Endpoint]:
         Endpoint("PUT", f"/api/v2/users/{fake_id}", "users.manage",
                  body={"display_name": "test"}),
         Endpoint("DELETE", f"/api/v2/users/{fake_id}", "users.manage"),
-        Endpoint("POST", f"/api/v2/users/{fake_id}/reactivate", "users.manage"),
         Endpoint("POST", f"/api/v2/users/{fake_id}/reset-password", "users.manage",
                  body={}),
 
@@ -616,14 +615,10 @@ class CapabilityTester:
                 self.user_group_map[uid] = group_id
                 return uid
         if resp.status_code in (400, 409):
-            # User exists from a previous run (possibly soft-deleted).
-            # Reactivate if needed, reset password, and ensure correct group.
-            existing_id = self._find_resource("GET", "/api/v2/users?include_deleted=true",
+            # User exists from a previous run - reset password and ensure correct group.
+            existing_id = self._find_resource("GET", "/api/v2/users",
                                               "users", "username", username, [])
             if existing_id:
-                # Reactivate if soft-deleted
-                self._admin_request("POST", f"/api/v2/users/{existing_id}/reactivate")
-                # Reset password to known value
                 self._admin_request("POST", f"/api/v2/users/{existing_id}/reset-password",
                                     json={"new_password": TEST_PASSWORD})
                 # Ensure user is in the correct group (add target first, then remove others)
@@ -820,7 +815,7 @@ class CapabilityTester:
             print(ok(f"{deleted} deleted"))
             time.sleep(0.5)
 
-        # Step 3: Soft-delete test users
+        # Step 3: Delete test users
         if self.created_user_ids:
             print(f"[CLEANUP] Deleting {len(self.created_user_ids)} test users...", end=" ", flush=True)
             deleted = self._bulk_delete("/api/v2/users", self.created_user_ids)

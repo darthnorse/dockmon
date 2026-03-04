@@ -119,6 +119,31 @@ function LocalLoginForm({
   )
 }
 
+/**
+ * Validate redirect URL to prevent open redirect attacks.
+ * Only allows relative paths starting with '/'.
+ */
+function getSafeRedirect(url: string | null): string {
+  if (!url) return '/'
+  // Only allow relative paths (must start with / and not //)
+  if (url.startsWith('/') && !url.startsWith('//')) {
+    return url
+  }
+  return '/'
+}
+
+/** Safe OIDC error messages - prevents phishing via arbitrary URL text */
+const OIDC_ERROR_MESSAGES: Record<string, string> = {
+  access_denied: 'Access was denied by the identity provider.',
+  login_failed: 'SSO login failed. Please try again.',
+  invalid_state: 'SSO session expired. Please try again.',
+  provider_error: 'The identity provider returned an error.',
+  no_email: 'No email address was provided by the identity provider.',
+  account_disabled: 'Your account has been disabled.',
+}
+
+const DEFAULT_OIDC_ERROR = 'SSO authentication failed. Please try again or contact your administrator.'
+
 export function LoginPage() {
   const { login, isLoading } = useAuth()
   const { data: oidcStatus } = useOIDCStatus()
@@ -130,7 +155,7 @@ export function LoginPage() {
   const [showLocalLogin, setShowLocalLogin] = useState(false)
 
   // Get redirect URL from query params (e.g., /login?redirect=/quick-action?token=xxx)
-  const redirectUrl = searchParams.get('redirect')
+  const redirectUrl = getSafeRedirect(searchParams.get('redirect'))
 
   // Check for OIDC error from callback
   const oidcError = searchParams.get('error')
@@ -138,7 +163,7 @@ export function LoginPage() {
 
   useEffect(() => {
     if (oidcError === 'oidc_error' && oidcErrorMessage) {
-      setError(`SSO Error: ${decodeURIComponent(oidcErrorMessage.replace(/\+/g, ' '))}`)
+      setError(OIDC_ERROR_MESSAGES[oidcErrorMessage] || DEFAULT_OIDC_ERROR)
     }
   }, [oidcError, oidcErrorMessage])
 
@@ -169,7 +194,7 @@ export function LoginPage() {
         console.warn('Failed to sync timezone offset:', err)
       })
 
-      navigate(redirectUrl || '/', { replace: true })
+      navigate(redirectUrl, { replace: true })
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.status === 401) {

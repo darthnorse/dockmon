@@ -47,6 +47,7 @@ class OIDCConfigResponse(BaseModel):
     default_group_id: int | None = None
     default_group_name: str | None = None  # For display
     sso_default: bool
+    disable_pkce_with_secret: bool
     created_at: str
     updated_at: str
 
@@ -61,6 +62,7 @@ class OIDCConfigUpdateRequest(BaseModel):
     claim_for_groups: str | None = Field(None, max_length=100)
     default_group_id: int | None = None
     sso_default: bool | None = None
+    disable_pkce_with_secret: bool | None = None
 
     @field_validator('provider_url')
     @classmethod
@@ -139,6 +141,7 @@ def _config_to_response(config: OIDCConfig, session) -> OIDCConfigResponse:
         default_group_id=config.default_group_id,
         default_group_name=default_group_name,
         sso_default=config.sso_default,
+        disable_pkce_with_secret=config.disable_pkce_with_secret,
         created_at=format_timestamp_required(config.created_at),
         updated_at=format_timestamp_required(config.updated_at),
     )
@@ -298,6 +301,10 @@ async def update_oidc_config(
         if config_data.sso_default is not None:
             changes['sso_default'] = {'old': config.sso_default, 'new': config_data.sso_default}
             config.sso_default = config_data.sso_default
+
+        if config_data.disable_pkce_with_secret is not None:
+            changes['disable_pkce_with_secret'] = {'old': config.disable_pkce_with_secret, 'new': config_data.disable_pkce_with_secret}
+            config.disable_pkce_with_secret = config_data.disable_pkce_with_secret
 
         config.updated_at = datetime.now(timezone.utc)
         # Audit log (before commit for atomicity)

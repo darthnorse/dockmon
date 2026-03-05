@@ -258,7 +258,9 @@ func (c *WebSocketClient) connect(ctx context.Context) error {
 
 	// Send registration
 	if err := c.register(ctx); err != nil {
-		conn.Close()
+		if closeErr := conn.Close(); closeErr != nil {
+			c.log.WithError(closeErr).Debug("Failed to close connection")
+		}
 		c.connMu.Lock()
 		c.conn = nil
 		c.connMu.Unlock()
@@ -379,17 +381,27 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 	c.log.Debug("Sending registration message to backend")
 
 	// Set write deadline for registration message
-	c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		c.log.WithError(err).Debug("Failed to set write deadline")
+	}
 	err = c.conn.WriteMessage(websocket.TextMessage, data)
-	c.conn.SetWriteDeadline(time.Time{})  // Clear deadline
+	if err := c.conn.SetWriteDeadline(time.Time{}); err != nil {
+		c.log.WithError(err).Debug("Failed to clear write deadline")
+	}
 
 	if err != nil {
 		return fmt.Errorf("failed to send registration: %w", err)
 	}
 
 	// Wait for registration response
-	c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	defer c.conn.SetReadDeadline(time.Time{})
+	if err := c.conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		c.log.WithError(err).Debug("Failed to set read deadline")
+	}
+	defer func() {
+		if err := c.conn.SetReadDeadline(time.Time{}); err != nil {
+			c.log.WithError(err).Debug("Failed to clear read deadline")
+		}
+	}()
 
 	_, respData, err := c.conn.ReadMessage()
 	if err != nil {
@@ -467,7 +479,9 @@ func (c *WebSocketClient) handleConnection(ctx context.Context) error {
 	})
 
 	// Set initial read deadline
-	conn.SetReadDeadline(time.Now().Add(pingInterval + pongTimeout))
+	if err := conn.SetReadDeadline(time.Now().Add(pingInterval + pongTimeout)); err != nil {
+		c.log.WithError(err).Debug("Failed to set read deadline")
+	}
 
 	// Start shutdown watcher goroutine - closes connection when stop is signaled
 	// This makes shutdown responsive instead of waiting for read deadline (up to 40s)
@@ -484,7 +498,9 @@ func (c *WebSocketClient) handleConnection(ctx context.Context) error {
 			c.log.Debug("Stop signal received, closing connection to interrupt read")
 			c.connMu.Lock()
 			if c.conn != nil {
-				c.conn.Close()
+				if err := c.conn.Close(); err != nil {
+					c.log.WithError(err).Debug("Failed to close connection")
+				}
 				c.conn = nil  // Set to nil so other goroutines detect closure
 			}
 			c.connMu.Unlock()
@@ -516,9 +532,13 @@ func (c *WebSocketClient) handleConnection(ctx context.Context) error {
 				}
 
 				// Send ping with write deadline
-				c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+				if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+					c.log.WithError(err).Debug("Failed to set write deadline")
+				}
 				err := c.conn.WriteMessage(websocket.PingMessage, nil)
-				c.conn.SetWriteDeadline(time.Time{})  // Clear write deadline
+				if err := c.conn.SetWriteDeadline(time.Time{}); err != nil {
+					c.log.WithError(err).Debug("Failed to clear write deadline")
+				}
 				c.connMu.Unlock()
 
 				if err != nil {
@@ -617,7 +637,9 @@ func (c *WebSocketClient) handleConnection(ctx context.Context) error {
 		}
 
 		// Reset read deadline after successful read
-		conn.SetReadDeadline(time.Now().Add(pingInterval + pongTimeout))
+		if err := conn.SetReadDeadline(time.Now().Add(pingInterval + pongTimeout)); err != nil {
+			c.log.WithError(err).Debug("Failed to set read deadline")
+		}
 
 		// Decode message
 		msg, err := protocol.DecodeMessage(data)
@@ -1057,9 +1079,13 @@ func (c *WebSocketClient) sendMessage(msg *types.Message) error {
 	}
 
 	// Set write deadline to prevent blocking indefinitely on slow/congested networks
-	c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		c.log.WithError(err).Debug("Failed to set write deadline")
+	}
 	err = c.conn.WriteMessage(websocket.TextMessage, data)
-	c.conn.SetWriteDeadline(time.Time{})  // Clear deadline
+	if err := c.conn.SetWriteDeadline(time.Time{}); err != nil {
+		c.log.WithError(err).Debug("Failed to clear write deadline")
+	}
 
 	if err != nil {
 		return fmt.Errorf("failed to write message: %w", err)
@@ -1091,9 +1117,13 @@ func (c *WebSocketClient) sendJSON(data interface{}) error {
 	}
 
 	// Set write deadline to prevent blocking indefinitely on slow/congested networks
-	c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		c.log.WithError(err).Debug("Failed to set write deadline")
+	}
 	err = c.conn.WriteMessage(websocket.TextMessage, jsonData)
-	c.conn.SetWriteDeadline(time.Time{})  // Clear deadline
+	if err := c.conn.SetWriteDeadline(time.Time{}); err != nil {
+		c.log.WithError(err).Debug("Failed to clear write deadline")
+	}
 
 	if err != nil {
 		return fmt.Errorf("failed to write JSON message: %w", err)
@@ -1270,7 +1300,9 @@ func (c *WebSocketClient) closeConnection() {
 	// Close connection under lock (quick operation)
 	c.connMu.Lock()
 	if c.conn != nil {
-		c.conn.Close()
+		if err := c.conn.Close(); err != nil {
+			c.log.WithError(err).Debug("Failed to close connection")
+		}
 		c.conn = nil
 	}
 	c.connMu.Unlock()  // Release lock BEFORE waiting

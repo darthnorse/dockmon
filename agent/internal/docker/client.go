@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"strconv"
@@ -1027,8 +1028,16 @@ func (c *Client) PruneImages(ctx context.Context) (*ImagePruneResult, error) {
 
 	return &ImagePruneResult{
 		RemovedCount:   removedCount,
-		SpaceReclaimed: int64(report.SpaceReclaimed),
+		SpaceReclaimed: safeUint64ToInt64(report.SpaceReclaimed),
 	}, nil
+}
+
+// safeUint64ToInt64 converts uint64 to int64, clamping at math.MaxInt64 to prevent overflow.
+func safeUint64ToInt64(v uint64) int64 {
+	if v > uint64(math.MaxInt64) {
+		return math.MaxInt64
+	}
+	return int64(v)
 }
 
 // truncateID truncates an ID to 12 characters (Docker short ID format).
@@ -1307,7 +1316,7 @@ func (c *Client) PruneVolumes(ctx context.Context) (*VolumePruneResult, error) {
 
 	return &VolumePruneResult{
 		RemovedCount:   len(volumesRemoved),
-		SpaceReclaimed: int64(report.SpaceReclaimed),
+		SpaceReclaimed: safeUint64ToInt64(report.SpaceReclaimed),
 		VolumesRemoved: volumesRemoved,
 	}, nil
 }

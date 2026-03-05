@@ -236,6 +236,11 @@ func (h *ShellHandler) resize(sessionID string, cols, rows int) {
 		return
 	}
 
+	if rows <= 0 || cols <= 0 {
+		h.log.WithFields(logrus.Fields{"rows": rows, "cols": cols}).Debug("Invalid terminal dimensions for resize")
+		return
+	}
+
 	err := h.dockerClient.ExecResize(session.ctx, session.ExecID, uint(rows), uint(cols))
 	if err != nil {
 		h.log.WithError(err).Warn("Failed to resize shell session")

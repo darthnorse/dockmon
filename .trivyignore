@@ -1,0 +1,2 @@
+# agent/Dockerfile.multiarch runs as root intentionally for Docker socket access
+DS-0002

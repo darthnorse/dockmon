@@ -1,0 +1,9 @@
+ignored:
+  # Alpine removes old package versions quickly, pinning breaks builds
+  - DL3018
+  # pip install --upgrade pip doesn't need pinning (we want latest)
+  - DL3013
+  # Consecutive RUN instructions in build stages are acceptable for readability
+  - DL3059
+  # Single quotes are intentional in entrypoint scripts (no variable expansion wanted)
+  - SC2016

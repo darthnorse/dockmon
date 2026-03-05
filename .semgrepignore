@@ -1,0 +1,11 @@
+# Alembic migrations use f-string SQL with hardcoded table names (not user input)
+backend/alembic/
+
+# Validation scripts use raw SQL intentionally
+scripts/
+
+# Build artifacts and dependencies
+node_modules/
+venv/
+dist/
+test-results/

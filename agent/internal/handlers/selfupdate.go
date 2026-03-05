@@ -166,7 +166,7 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 		"original_name":      originalName,
 	}
 	if data, err := json.MarshalIndent(cleanupData, "", "  "); err == nil {
-		if err := os.WriteFile(cleanupFile, data, 0644); err != nil {
+		if err := os.WriteFile(cleanupFile, data, 0600); err != nil {
 			h.log.WithError(err).Error("Failed to write cleanup file")
 			// Continue anyway - cleanup can be done manually
 		}
@@ -625,7 +625,7 @@ func (h *SelfUpdateHandler) writeLockFile(path string, lockFile *UpdateLockFile)
 		return fmt.Errorf("failed to marshal lock file: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write lock file: %w", err)
 	}
 

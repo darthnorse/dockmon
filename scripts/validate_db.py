@@ -154,6 +154,21 @@ def main():
         check('audit_log_retention_days' in gs_cols, "Column: audit_log_retention_days")
         check('session_timeout_hours' in gs_cols, "Column: session_timeout_hours")
 
+    # ── FK on_delete policies ──
+    print("\n=== FK on_delete Policies ===")
+    fk_expectations = [
+        ('user_prefs', 'user_id', 'CASCADE'),
+        ('registration_tokens', 'created_by_user_id', 'SET NULL'),
+        ('batch_jobs', 'user_id', 'SET NULL'),
+        ('user_group_memberships', 'user_id', 'CASCADE'),
+        ('audit_log', 'user_id', 'SET NULL'),
+    ]
+    for table, col, expected in fk_expectations:
+        if table_exists(conn, table):
+            fks = conn.execute(f"PRAGMA foreign_key_list({table})").fetchall()
+            actual = next((fk[6] for fk in fks if fk[3] == col), 'MISSING')
+            check(actual == expected, f"{table}.{col}: on_delete={actual} (expected {expected})")
+
     # ── FK integrity spot check ──
     print("\n=== Foreign Key Integrity ===")
     # Memberships point to valid users and groups

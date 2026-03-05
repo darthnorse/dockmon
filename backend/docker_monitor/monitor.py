@@ -1333,6 +1333,23 @@ class DockerMonitor:
         """
         return self._last_containers
 
+    def resolve_container_name(self, host_id: str, container_id: str) -> str:
+        """Resolve container name from cache then DB. Falls back to container_id."""
+        short_id = container_id[:12]
+        try:
+            for c in self._last_containers:
+                if c.short_id == short_id and c.host_id == host_id:
+                    return c.name
+        except Exception:
+            pass
+        try:
+            db_name = self.db.get_container_name(host_id, short_id)
+            if db_name:
+                return db_name
+        except Exception:
+            pass
+        return short_id
+
     async def restart_container(self, host_id: str, container_id: str) -> bool:
         """Restart a specific container"""
         return await self.operations.restart_container(host_id, container_id)

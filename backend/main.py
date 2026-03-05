@@ -123,11 +123,8 @@ def is_compose_container(labels: Dict[str, str]) -> bool:
 
 
 def _get_container_name(host_id: str, container_id: str) -> str:
-    """Look up human-readable container name from cached container list. Falls back to container_id."""
-    for c in monitor.get_last_containers():
-        if (c.short_id == container_id or c.id == container_id) and c.host_id == host_id:
-            return c.name
-    return container_id
+    """Look up container name from cache or DB. Falls back to container_id."""
+    return monitor.resolve_container_name(host_id, container_id)
 
 
 def _get_host_name(host_id: str) -> str:
@@ -2289,25 +2286,7 @@ async def execute_container_update(
 
         # Get container info for validation
         if is_agent_host:
-            # For agent-based hosts, get container name from related tables
-            # Try AutoRestartConfig first (most likely to have container info)
-            auto_restart = session.query(AutoRestartConfig).filter_by(
-                container_id=composite_key
-            ).first()
-            if auto_restart and auto_restart.container_name:
-                container_name = auto_restart.container_name
-            else:
-                # Try ContainerDesiredState
-                desired_state = session.query(ContainerDesiredState).filter_by(
-                    container_id=composite_key
-                ).first()
-                if desired_state and desired_state.container_name:
-                    container_name = desired_state.container_name
-                else:
-                    # Fallback: use container ID as name
-                    container_name = short_id
-            # For agent-based hosts, we don't have direct access to labels
-            # Use empty dict - validation will still work on name and image patterns
+            container_name = monitor.resolve_container_name(host_id, short_id)
             labels = {}
             logger.debug(f"Agent-based host: using container info from database (name={container_name})")
         else:

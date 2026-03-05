@@ -2240,20 +2240,8 @@ class DatabaseManager:
             return ('unspecified', None)
 
     def get_container_name(self, host_id: str, container_id: str) -> Optional[str]:
-        """
-        Look up container name from database tables.
-
-        Searches AutoRestartConfig and ContainerDesiredState tables for the container name.
-
-        Args:
-            host_id: Docker host ID
-            container_id: Container ID (short 12-char format)
-
-        Returns:
-            Container name if found, None otherwise
-        """
+        """Look up container name from AutoRestartConfig, ContainerDesiredState, or ContainerUpdate."""
         with self.get_session() as session:
-            # Try AutoRestartConfig first
             config = session.query(AutoRestartConfig).filter(
                 AutoRestartConfig.host_id == host_id,
                 AutoRestartConfig.container_id == container_id
@@ -2261,13 +2249,19 @@ class DatabaseManager:
             if config and config.container_name:
                 return config.container_name
 
-            # Try ContainerDesiredState
             desired = session.query(ContainerDesiredState).filter(
                 ContainerDesiredState.host_id == host_id,
                 ContainerDesiredState.container_id == container_id
             ).first()
             if desired and desired.container_name:
                 return desired.container_name
+
+            composite_key = f"{host_id}:{container_id}"
+            update = session.query(ContainerUpdate).filter(
+                ContainerUpdate.container_id == composite_key
+            ).first()
+            if update and update.container_name:
+                return update.container_name
 
             return None
 

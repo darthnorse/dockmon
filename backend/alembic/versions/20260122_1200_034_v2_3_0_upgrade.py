@@ -650,6 +650,28 @@ def upgrade():
             if not column_exists('users', col_name):
                 op.add_column('users', col_def)
 
+        # Verify NOT NULL constraints (SQLite ADD COLUMN silently drops NOT NULL)
+        inspector = get_inspector()
+        user_cols = {col['name']: col for col in inspector.get_columns('users')}
+        not_null_cols = [
+            ('failed_login_attempts', sa.Integer(), '0'),
+            ('must_change_password', sa.Boolean(), '0'),
+        ]
+        needs_rebuild = any(
+            col_name in user_cols and user_cols[col_name].get('nullable', True)
+            for col_name, _, _ in not_null_cols
+        )
+        if needs_rebuild:
+            # Fill NULLs before enforcing NOT NULL
+            for col_name, _, default in not_null_cols:
+                bind.execute(sa.text(
+                    f"UPDATE users SET {col_name} = {default} WHERE {col_name} IS NULL"
+                ))
+            with op.batch_alter_table('users', schema=None, recreate='always') as batch_op:
+                for col_name, col_type, default in not_null_cols:
+                    batch_op.alter_column(col_name, existing_type=col_type,
+                                          nullable=False, server_default=default)
+
         # Verify unique index on oidc_subject
         if column_exists('users', 'oidc_subject'):
             if index_exists('users', 'ix_users_oidc_subject'):

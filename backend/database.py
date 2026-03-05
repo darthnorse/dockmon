@@ -68,7 +68,7 @@ class User(Base):
     # v2.3.0 Multi-User Support
     email = Column(Text, nullable=True)  # Uniqueness enforced at application level
     auth_provider = Column(Text, nullable=False, default='local')  # 'local' or 'oidc'
-    oidc_subject = Column(Text, nullable=True, unique=True, index=True)  # OIDC subject identifier for user matching
+    oidc_subject = Column(Text, nullable=True, unique=True)  # OIDC subject identifier for user matching
 
     # Account lockout (v2.5.0 security hardening)
     failed_login_attempts = Column(Integer, default=0, nullable=False)
@@ -226,7 +226,7 @@ class OIDCGroupMapping(Base):
     __tablename__ = "oidc_group_mappings"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    oidc_value = Column(Text, nullable=False, unique=True, index=True)  # Group value from OIDC provider
+    oidc_value = Column(Text, nullable=False, unique=True)  # Group value from OIDC provider
     group_id = Column(Integer, ForeignKey('custom_groups.id', ondelete='CASCADE'), nullable=False)
     priority = Column(Integer, nullable=False, default=0)  # Higher priority evaluated first
     created_at = Column(DateTime, nullable=False, default=utcnow)

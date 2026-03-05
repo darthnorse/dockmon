@@ -56,7 +56,7 @@ def main():
     print("=== Migration Version ===")
     ver = conn.execute("SELECT version_num FROM alembic_version LIMIT 1").fetchone()
     current = ver[0] if ver else "NONE"
-    check(current == '036_account_lockout_fixup', f"Version: {current} (expected 036_account_lockout_fixup)")
+    check(current == '034_v2_3_0', f"Version: {current} (expected 034_v2_3_0)")
 
     # ── Users table ──
     print("\n=== Users Table ===")
@@ -83,6 +83,10 @@ def main():
         check(cols['failed_login_attempts']['notnull'] == 1, "  failed_login_attempts: NOT NULL")
         check(cols['failed_login_attempts']['default'] == "'0'" or cols['failed_login_attempts']['default'] == '0',
               f"  failed_login_attempts: default={cols['failed_login_attempts']['default']} (expected 0)")
+
+    # must_change_password should be NOT NULL with default 0
+    if 'must_change_password' in cols:
+        check(cols['must_change_password']['notnull'] == 1, "  must_change_password: NOT NULL")
 
     # auth_provider should be NOT NULL with default 'local'
     if 'auth_provider' in cols:
@@ -124,6 +128,11 @@ def main():
         check('default_group_id' in oidc_cols, "Column: default_group_id")
         check('sso_default' in oidc_cols, "Column: sso_default")
         check('disable_pkce_with_secret' in oidc_cols, "Column: disable_pkce_with_secret")
+        # FK on default_group_id -> custom_groups with SET NULL
+        oidc_fks = conn.execute("PRAGMA foreign_key_list(oidc_config)").fetchall()
+        oidc_fk_map = {fk[3]: fk[6] for fk in oidc_fks}
+        check(oidc_fk_map.get('default_group_id') == 'SET NULL',
+              f"oidc_config.default_group_id: on_delete={oidc_fk_map.get('default_group_id', 'MISSING')} (expected SET NULL)")
 
     check(table_exists(conn, 'oidc_group_mappings'), "Table: oidc_group_mappings")
 
@@ -136,6 +145,10 @@ def main():
         ak_cols = get_columns(conn, 'api_keys')
         check('group_id' in ak_cols, "api_keys: group_id column")
         check('created_by_user_id' in ak_cols, "api_keys: created_by_user_id column")
+        ak_fks = conn.execute("PRAGMA foreign_key_list(api_keys)").fetchall()
+        ak_fk_map = {fk[3]: fk[6] for fk in ak_fks}
+        check(ak_fk_map.get('group_id') == 'RESTRICT', f"api_keys.group_id: on_delete={ak_fk_map.get('group_id', 'MISSING')} (expected RESTRICT)")
+        check(ak_fk_map.get('created_by_user_id') == 'SET NULL', f"api_keys.created_by_user_id: on_delete={ak_fk_map.get('created_by_user_id', 'MISSING')} (expected SET NULL)")
 
     # ── Audit columns on existing tables ──
     print("\n=== Audit Columns (created_by/updated_by) ===")
@@ -146,6 +159,13 @@ def main():
             cols = get_columns(conn, table)
             has_both = 'created_by' in cols and 'updated_by' in cols
             check(has_both, f"{table}: created_by + updated_by")
+            if has_both:
+                fks = conn.execute(f"PRAGMA foreign_key_list({table})").fetchall()
+                fk_map = {fk[3]: fk[6] for fk in fks}
+                check(fk_map.get('created_by') == 'SET NULL',
+                      f"  {table}.created_by: on_delete={fk_map.get('created_by', 'MISSING')} (expected SET NULL)")
+                check(fk_map.get('updated_by') == 'SET NULL',
+                      f"  {table}.updated_by: on_delete={fk_map.get('updated_by', 'MISSING')} (expected SET NULL)")
 
     # ── Global Settings ──
     print("\n=== Global Settings ===")
@@ -160,6 +180,7 @@ def main():
         ('user_prefs', 'user_id', 'CASCADE'),
         ('registration_tokens', 'created_by_user_id', 'SET NULL'),
         ('batch_jobs', 'user_id', 'SET NULL'),
+        ('deployments', 'user_id', 'SET NULL'),
         ('user_group_memberships', 'user_id', 'CASCADE'),
         ('audit_log', 'user_id', 'SET NULL'),
     ]
@@ -168,6 +189,12 @@ def main():
             fks = conn.execute(f"PRAGMA foreign_key_list({table})").fetchall()
             actual = next((fk[6] for fk in fks if fk[3] == col), 'MISSING')
             check(actual == expected, f"{table}.{col}: on_delete={actual} (expected {expected})")
+
+    # Columns with SET NULL FK must be nullable for the policy to work
+    if table_exists(conn, 'deployments'):
+        dep_cols = get_columns(conn, 'deployments')
+        if 'user_id' in dep_cols:
+            check(dep_cols['user_id']['notnull'] == 0, "deployments.user_id: nullable (required for SET NULL FK)")
 
     # ── FK integrity spot check ──
     print("\n=== Foreign Key Integrity ===")

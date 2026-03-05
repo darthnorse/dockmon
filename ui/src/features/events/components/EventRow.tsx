@@ -19,6 +19,10 @@ interface EventRowProps {
   onHostClick?: (hostId: string) => void
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 // Get color for state based on semantic meaning
 const getStateColor = (state: string): string => {
   const stateLower = state.toLowerCase()
@@ -44,7 +48,7 @@ const formatMessage = (event: Event) => {
   // Replace state names in the message with colored versions
   if (event.old_state && event.new_state) {
     // Handle "from X to Y" pattern
-    const pattern = new RegExp(`(from\\s+)(${event.old_state})(\\s+to\\s+)(${event.new_state})`, 'i')
+    const pattern = new RegExp(`(from\\s+)(${escapeRegExp(event.old_state)})(\\s+to\\s+)(${escapeRegExp(event.new_state)})`, 'i')
     if (pattern.test(message)) {
       return {
         hasStates: true,
@@ -54,12 +58,12 @@ const formatMessage = (event: Event) => {
         prefix: message.match(pattern)?.[1] || 'from ',
         infix: message.match(pattern)?.[3] || ' to ',
         beforeText: message.split(pattern)[0],
-        afterText: message.split(new RegExp(event.new_state, 'i'))[1] || '',
+        afterText: message.split(new RegExp(escapeRegExp(event.new_state), 'i'))[1] || '',
       }
     }
 
     // Handle "X → Y" pattern (using alternation instead of character class to avoid regex range error)
-    const arrowPattern = new RegExp(`(${event.old_state})\\s*(?:→|->)\\s*(${event.new_state})`, 'i')
+    const arrowPattern = new RegExp(`(${escapeRegExp(event.old_state)})\\s*(?:→|->)\\s*(${escapeRegExp(event.new_state)})`, 'i')
     if (arrowPattern.test(message)) {
       return {
         hasStates: true,

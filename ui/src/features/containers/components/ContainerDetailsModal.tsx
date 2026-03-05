@@ -416,19 +416,6 @@ export function ContainerDetailsModal({
                 <RotateCw className="w-4 h-4 mr-2" />
                 Restart
               </Button>
-              {isKillable && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setShowKillConfirm(true)}
-                  disabled={isPerformingAction || isDockMon}
-                  className="border-red-700/50 text-red-500 hover:bg-red-700/10"
-                  title="Force kill (SIGKILL) - for unresponsive containers"
-                >
-                  <Skull className="w-4 h-4 mr-2" />
-                  Kill
-                </Button>
-              )}
               <Button
                 variant="outline"
                 size="sm"
@@ -442,6 +429,19 @@ export function ContainerDetailsModal({
                 <PenLine className="w-4 h-4 mr-2" />
                 Rename
               </Button>
+              {isKillable && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowKillConfirm(true)}
+                  disabled={isPerformingAction || isDockMon}
+                  className="border-red-700/50 text-red-500 hover:bg-red-700/10"
+                  title="Force kill (SIGKILL) - for unresponsive containers"
+                >
+                  <Skull className="w-4 h-4 mr-2" />
+                  Kill
+                </Button>
+              )}
               <Button
                 variant="destructive"
                 size="sm"

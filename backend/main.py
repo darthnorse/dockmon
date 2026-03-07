@@ -242,6 +242,15 @@ async def lifespan(app: FastAPI):
     deployment_routes.set_docker_monitor(monitor)
     logger.info("Deployment services initialized")
 
+    # Initialize cascading RRD aggregator for historical stats persistence (v2.3.0+)
+    from cascading_aggregator import CascadingAggregator
+    settings = monitor.db.get_settings()
+    if getattr(settings, 'stats_retention_enabled', True):
+        ppv = getattr(settings, 'stats_points_per_view', 500)
+        poll = getattr(settings, 'polling_interval', 2)
+        monitor._rrd_aggregator = CascadingAggregator(monitor.db, ppv, poll)
+        logger.info(f"RRD aggregator initialized (points_per_view={ppv}, polling={poll}s)")
+
     yield
     # Shutdown
     logger.info("Shutting down DockMon backend...")
@@ -317,6 +326,8 @@ async def lifespan(app: FastAPI):
             logger.info("HTTP health checker stopped")
     except Exception as e:
         logger.error(f"Error stopping HTTP health checker: {e}")
+
+    # RRD aggregator has no background task — cleanup is inline, nothing to stop
 
     # Close stats client (HTTP session and WebSocket)
     try:
@@ -1834,6 +1845,125 @@ async def inspect_container(
     # Delegate to operations (handles agent routing)
     return await monitor.operations.inspect_container(host_id, container_id)
 
+# ── Historical Stats (v2.3.0+) ──────────────────────────────────────────
+
+@app.get("/api/hosts/{host_id}/containers/{container_id}/stats/history", tags=["containers"])
+async def get_container_stats_history(
+    host_id: str,
+    container_id: str,
+    range: str = Query("24h", pattern="^(1h|8h|24h|7d|30d)$"),
+    since: Optional[int] = Query(None, description="Unix timestamp (ms) for incremental updates"),
+    current_user: dict = Depends(get_current_user),
+):
+    """Get historical stats for a container — reads directly from RRD tier."""
+    from database import ContainerStatsHistory
+    from stats_config import VIEWS
+    composite_id = make_composite_key(host_id, container_id[:12])
+
+    view = next((v for v in VIEWS if v["name"] == range), None)
+    if not view:
+        raise HTTPException(status_code=400, detail=f"Invalid range: {range}")
+
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=view["seconds"])
+
+    with monitor.db.get_session() as session:
+        query = session.query(ContainerStatsHistory).filter(
+            ContainerStatsHistory.container_id == composite_id,
+            ContainerStatsHistory.resolution == range,
+            ContainerStatsHistory.timestamp >= cutoff,
+        )
+        if since:
+            query = query.filter(
+                ContainerStatsHistory.timestamp > datetime.fromtimestamp(since / 1000, tz=timezone.utc)
+            )
+        stats = query.order_by(ContainerStatsHistory.timestamp).all()
+
+    settings = monitor.db.get_settings()
+    ppv = getattr(settings, 'stats_points_per_view', 500)
+    poll = getattr(settings, 'polling_interval', 2)
+    interval = max(view["seconds"] / ppv, poll)
+
+    return {
+        "range": range,
+        "resolution": f"{interval:.1f}s" if interval < 60 else f"{interval / 60:.0f}m",
+        "interval": interval,
+        "points": len(stats),
+        "server_time": int(datetime.now(timezone.utc).timestamp() * 1000),
+        "data": [
+            {
+                "t": int(s.timestamp.replace(tzinfo=timezone.utc).timestamp() * 1000),
+                "cpu": s.cpu_percent,
+                "mem": round(s.memory_usage / s.memory_limit * 100, 1) if s.memory_usage and s.memory_limit else None,
+                "net_rx": s.network_rx_bytes,
+            }
+            for s in stats
+        ],
+    }
+
+
+@app.get("/api/hosts/{host_id}/stats/history", tags=["hosts"])
+async def get_host_stats_history(
+    host_id: str,
+    range: str = Query("24h", pattern="^(1h|8h|24h|7d|30d)$"),
+    current_user: dict = Depends(get_current_user),
+):
+    """Get aggregated historical stats for a host — reads from RRD tier."""
+    from database import ContainerStatsHistory, DockerHostDB
+    from sqlalchemy import func
+    from stats_config import VIEWS
+
+    view = next((v for v in VIEWS if v["name"] == range), None)
+    if not view:
+        raise HTTPException(status_code=400, detail=f"Invalid range: {range}")
+
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=view["seconds"])
+
+    with monitor.db.get_session() as session:
+        host = session.query(DockerHostDB).filter(DockerHostDB.id == host_id).first()
+        if not host:
+            raise HTTPException(status_code=404, detail="Host not found")
+
+        num_cpus = host.num_cpus or 4
+        total_memory = host.total_memory or (16 * 1024 * 1024 * 1024)
+
+        rows = session.query(
+            ContainerStatsHistory.timestamp,
+            func.sum(ContainerStatsHistory.cpu_percent).label('sum_cpu'),
+            func.sum(ContainerStatsHistory.memory_usage).label('sum_mem'),
+            func.sum(ContainerStatsHistory.network_rx_bytes).label('sum_net'),
+        ).filter(
+            ContainerStatsHistory.host_id == host_id,
+            ContainerStatsHistory.resolution == range,
+            ContainerStatsHistory.timestamp >= cutoff,
+        ).group_by(
+            ContainerStatsHistory.timestamp
+        ).order_by(
+            ContainerStatsHistory.timestamp
+        ).all()
+
+    settings = monitor.db.get_settings()
+    ppv = getattr(settings, 'stats_points_per_view', 500)
+    poll = getattr(settings, 'polling_interval', 2)
+    interval = max(view["seconds"] / ppv, poll)
+
+    return {
+        "range": range,
+        "resolution": f"{interval:.1f}s" if interval < 60 else f"{interval / 60:.0f}m",
+        "interval": interval,
+        "points": len(rows),
+        "server_time": int(datetime.now(timezone.utc).timestamp() * 1000),
+        "data": [
+            {
+                "t": int(r.timestamp.replace(tzinfo=timezone.utc).timestamp() * 1000),
+                "cpu": round((r.sum_cpu or 0) / num_cpus, 1),
+                "mem": round((r.sum_mem or 0) / total_memory * 100, 1),
+                "net_rx": r.sum_net,
+            }
+            for r in rows
+        ],
+    }
+
+
 # Container exec endpoint removed for security reasons
 # Users should use direct SSH, Docker CLI, or other appropriate tools for container access
 
@@ -3205,6 +3335,8 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "external_url_from_env": AppConfig.EXTERNAL_URL,  # Show env var value for UI placeholder
         # Editor theme preference (v2.2.8+)
         "editor_theme": getattr(settings, 'editor_theme', 'aura'),
+        # Stats RRD settings (v2.3.0+)
+        "stats_points_per_view": getattr(settings, 'stats_points_per_view', 500),
     }
 
 @app.post("/api/settings", tags=["system"], dependencies=[Depends(require_scope("admin"))])
@@ -3250,6 +3382,14 @@ async def update_settings(
     if 'update_check_time' in validated_dict:
         monitor.periodic_jobs.notify_schedule_changed()
 
+    # Reconfigure RRD aggregator if relevant settings changed
+    if any(k in validated_dict for k in ('stats_points_per_view', 'polling_interval')):
+        if hasattr(monitor, '_rrd_aggregator') and monitor._rrd_aggregator:
+            monitor._rrd_aggregator.reconfigure(
+                getattr(updated, 'stats_points_per_view', 500),
+                getattr(updated, 'polling_interval', 2),
+            )
+
     # Broadcast blackout status change to all clients
     is_blackout, window_name = monitor.notification_service.blackout_manager.is_in_blackout_window()
     await monitor.manager.broadcast({
@@ -3294,6 +3434,8 @@ async def update_settings(
         "external_url_from_env": AppConfig.EXTERNAL_URL,
         # Editor theme preference (v2.2.8+)
         "editor_theme": getattr(updated, 'editor_theme', 'aura'),
+        # Stats RRD settings (v2.3.0+)
+        "stats_points_per_view": getattr(updated, 'stats_points_per_view', 500),
     }
 
 
@@ -4728,7 +4870,7 @@ async def get_dashboard_hosts(
                 sparklines = monitor.stats_history.get_sparklines(host.id, num_points=30)
             else:
                 # Offline hosts get empty sparklines (no stale data)
-                sparklines = {"cpu": [], "mem": [], "net": []}
+                sparklines = {"cpu": [], "mem": [], "net": [], "timestamps": []}
 
             # Get actual host total memory (convert from bytes to GB)
             # FIX: Use real host memory instead of hard-coded 16 GB

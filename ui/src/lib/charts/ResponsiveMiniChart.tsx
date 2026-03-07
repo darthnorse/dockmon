@@ -33,6 +33,7 @@ interface ResponsiveMiniChartProps extends Omit<MiniChartProps, 'width'> {
 
 export function ResponsiveMiniChart({
   data,
+  timestamps,
   color,
   height = 32,
   minWidth = 60,
@@ -40,6 +41,7 @@ export function ResponsiveMiniChart({
   debounceMs = 100,
   label,
   showAxes,
+  timeWindow,
 }: ResponsiveMiniChartProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [containerWidth, setContainerWidth] = useState<number>(minWidth)
@@ -106,8 +108,10 @@ export function ResponsiveMiniChart({
         color={color}
         width={containerWidth}
         height={height}
+        {...(timestamps && { timestamps })}
         {...(showAxes !== undefined && { showAxes })}
         {...(label && { label })}
+        {...(timeWindow != null && { timeWindow })}
       />
     </div>
   )

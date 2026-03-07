@@ -20,10 +20,12 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '@/features/auth/AuthContext'
-import { Cpu, MemoryStick, Network } from 'lucide-react'
 import type { Container } from '../../types'
 import { useContainerSparklines } from '@/lib/stats/StatsProvider'
-import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
+import { StatsCharts } from '@/lib/charts/StatsCharts'
+import { StatsTimeRangeSelector } from '../StatsTimeRangeSelector'
+import { useStatsHistory, type TimeRange } from '../../hooks/useStatsHistory'
+import { VIEWS, LIVE_TIME_WINDOW, DEFAULT_HIST_TIME_WINDOW } from '@/lib/statsConfig'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
 import { TagInput } from '@/components/TagInput'
@@ -61,6 +63,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
   const sparklines = useContainerSparklines(makeCompositeKey(container))
   const [autoRestart, setAutoRestart] = useState(false)
   const [desiredState, setDesiredState] = useState<'should_run' | 'on_demand' | 'unspecified'>('unspecified')
+  const [timeRange, setTimeRange] = useState<TimeRange>('live')
   const [webUiUrl, setWebUiUrl] = useState('')
   const [isEditingWebUi, setIsEditingWebUi] = useState(false)
 
@@ -80,9 +83,18 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     currentTags
   })
 
-  const cpuData = sparklines?.cpu || []
-  const memData = sparklines?.mem || []
-  const netData = sparklines?.net || []
+  // Historical stats
+  const { data: historyData } = useStatsHistory(container.host_id, containerShortId, timeRange)
+  const hist = useMemo(() => {
+    const d = historyData?.data ?? []
+    return {
+      cpu: d.map((p) => p.cpu),
+      mem: d.map((p) => p.mem),
+      net: d.map((p) => p.net_rx),
+      timestamps: d.map((p) => p.t / 1000),
+    }
+  }, [historyData])
+  const histTimeWindow = VIEWS.find(v => v.name === timeRange)?.seconds
 
   useEffect(() => {
     setAutoRestart(container.auto_restart ?? false)
@@ -457,79 +469,35 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
               </div>
             </fieldset>
 
-            {/* Live Stats Header */}
-            <div className="-mb-3">
-              <h4 className="text-lg font-medium text-foreground">Live Stats</h4>
+            {/* Stats Header with Time Range Selector */}
+            <div className="flex items-center justify-between -mb-3">
+              <h4 className="text-lg font-medium text-foreground">
+                {timeRange === 'live' ? 'Live Stats' : 'Historical Stats'}
+              </h4>
+              <StatsTimeRangeSelector value={timeRange} onChange={setTimeRange} />
             </div>
 
-            {/* CPU */}
-            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden" data-testid="cpu-usage">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <Cpu className="h-4 w-4 text-amber-500" />
-                  <span className="font-medium text-sm">CPU Usage</span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  {container.cpu_percent !== null && container.cpu_percent !== undefined
-                    ? `${container.cpu_percent.toFixed(0)}%`
-                    : '-'}
-                </span>
-              </div>
-              {cpuData.length > 0 ? (
-                <div className="h-[120px] w-full">
-                  <ResponsiveMiniChart data={cpuData} color="cpu" height={120} showAxes={true} />
-                </div>
-              ) : (
-                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
-                  No data available
-                </div>
-              )}
-            </div>
-
-            {/* Memory */}
-            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden" data-testid="memory-usage">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <MemoryStick className="h-4 w-4 text-green-500" />
-                  <span className="font-medium text-sm">Memory Usage</span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  {container.memory_usage ? formatBytes(container.memory_usage) : '-'}
-                  {container.memory_limit && ` / ${formatBytes(container.memory_limit)}`}
-                </span>
-              </div>
-              {memData.length > 0 ? (
-                <div className="h-[120px] w-full">
-                  <ResponsiveMiniChart data={memData} color="memory" height={120} showAxes={true} />
-                </div>
-              ) : (
-                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
-                  No data available
-                </div>
-              )}
-            </div>
-
-            {/* Network */}
-            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden" data-testid="network-io">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <Network className="h-4 w-4 text-orange-500" />
-                  <span className="font-medium text-sm">Network I/O</span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  {formatNetworkRate(container.net_bytes_per_sec)}
-                </span>
-              </div>
-              {netData.length > 0 ? (
-                <div className="h-[120px] w-full">
-                  <ResponsiveMiniChart data={netData} color="network" height={120} showAxes={true} />
-                </div>
-              ) : (
-                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
-                  No data available
-                </div>
-              )}
-            </div>
+            {timeRange === 'live' ? (
+              <StatsCharts
+                cpu={sparklines?.cpu ?? []}
+                mem={sparklines?.mem ?? []}
+                net={sparklines?.net ?? []}
+                timestamps={sparklines?.timestamps ?? []}
+                timeWindow={LIVE_TIME_WINDOW}
+                cpuValue={container.cpu_percent != null ? `${container.cpu_percent.toFixed(0)}%` : undefined}
+                memValue={container.memory_usage ? `${formatBytes(container.memory_usage)}${container.memory_limit ? ` / ${formatBytes(container.memory_limit)}` : ''}` : undefined}
+                netValue={formatNetworkRate(container.net_bytes_per_sec)}
+              />
+            ) : (
+              <StatsCharts
+                cpu={hist.cpu}
+                mem={hist.mem}
+                net={hist.net}
+                timestamps={hist.timestamps}
+                timeWindow={histTimeWindow ?? DEFAULT_HIST_TIME_WINDOW}
+                footer={historyData ? `${historyData.points} data points (${historyData.resolution} resolution)` : undefined}
+              />
+            )}
           </div>
         </div>
       </div>

@@ -1,281 +1,122 @@
 /**
  * MiniChart Component - High-performance sparkline using uPlot
  *
- * FEATURES:
- * - Hardware-accelerated canvas rendering
- * - EMA smoothing (α=0.3) to reduce jitter
- * - Supports CPU (amber), Memory (blue), Network (green)
- * - 80-100px wide × 40-50px tall
- * - Renders up to 40 data points (2 minutes at 3s avg interval)
- *
- * PERFORMANCE:
- * - ~40KB bundle size (uPlot)
- * - < 16ms render time (60 FPS)
- * - Minimal re-renders via React.memo
- *
- * USAGE:
- * ```tsx
- * <MiniChart
- *   data={[12.3, 15.6, 18.2, ...]}
- *   color="cpu"     // 'cpu' | 'memory' | 'network'
- *   height={50}
- *   width={100}
- * />
- * ```
+ * Two modes determined by props:
+ * - Compact (no showAxes): tiny sparkline, index-based X, no interaction
+ * - Full (showAxes + timestamps + timeWindow): absolute-time X-axis, tooltip, fixed window
  */
 
 import React, { useEffect, useRef, useMemo } from 'react'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 import { debug } from '@/lib/debug'
-import { formatRelativeTime, formatYAxisValue } from './formatters'
+import { formatYAxisValue } from './formatters'
 
-// Color palette matching design system
 const CHART_COLORS = {
-  cpu: '#F59E0B',     // Amber
-  memory: '#3B82F6',  // Blue
-  network: '#22C55E', // Green
+  cpu: '#F59E0B',
+  memory: '#3B82F6',
+  network: '#22C55E',
 } as const
 
 type ChartColor = keyof typeof CHART_COLORS
 
 export interface MiniChartProps {
-  /** Array of data points (max 40) */
-  data: number[]
-  /** Chart color theme */
+  data: (number | null)[]
+  timestamps?: number[] | undefined
   color: ChartColor
-  /** Chart height in pixels */
   height?: number
-  /** Chart width in pixels */
   width?: number
-  /** Optional label for accessibility */
-  label?: string
-  /** Show axes and enhanced features (default: false for compact sparklines) */
-  showAxes?: boolean
+  label?: string | undefined
+  showAxes?: boolean | undefined
+  timeWindow?: number | undefined
 }
 
-/**
- * Round network scale to nice values to prevent flickering gridlines
- * Returns stable scale maxima like 10 B/s, 100 B/s, 1 KB/s, 10 KB/s, etc.
- */
 function getNiceNetworkScaleMax(maxValue: number): number {
-  if (maxValue < 1) return 10 // Minimum 10 B/s
-
+  if (maxValue < 1) return 10
   const k = 1024
-
-  // Define nice scale thresholds for consistent gridlines
   const niceValues = [
-    10, 50, 100, 500, 1000, // B/s
-    2 * k, 5 * k, 10 * k, 50 * k, 100 * k, 500 * k, // KB/s
-    k * k, 2 * k * k, 5 * k * k, 10 * k * k, 50 * k * k, 100 * k * k, // MB/s
-    k * k * k, // GB/s
+    10, 50, 100, 500, 1000,
+    2 * k, 5 * k, 10 * k, 50 * k, 100 * k, 500 * k,
+    k * k, 2 * k * k, 5 * k * k, 10 * k * k, 50 * k * k, 100 * k * k,
+    k * k * k,
   ]
-
-  // Find the smallest nice value that fits the data
   for (const nice of niceValues) {
     if (nice >= maxValue) return nice
   }
-
-  // Fallback for very large values
   return Math.ceil(maxValue / (k * k * k)) * (k * k * k)
 }
 
 export function MiniChart({
   data,
+  timestamps,
   color,
   height = 50,
   width = 100,
   label,
   showAxes = false,
+  timeWindow,
 }: MiniChartProps) {
   const chartRef = useRef<HTMLDivElement>(null)
   const plotRef = useRef<uPlot | null>(null)
   const [tooltip, setTooltip] = React.useState<{
-    show: boolean
-    x: number
-    y: number
-    time: string
-    value: string
-  }>({
-    show: false,
-    x: 0,
-    y: 0,
-    time: '',
-    value: '',
-  })
+    show: boolean; x: number; y: number; time: string; value: string
+  }>({ show: false, x: 0, y: 0, time: '', value: '' })
 
-  // Use raw data without smoothing to show actual values
-  const chartData = data
+  const hasTimestamps = !!(timestamps && timestamps.length > 0)
 
-  // Generate X-axis as time offset from start
-  // Left = oldest data (0), Right = newest data (max seconds)
   const xData = useMemo(() => {
-    const dataLength = chartData.length
-    // X values count up from 0 (oldest) to max (newest)
-    return Array.from({ length: dataLength }, (_, i) => i * 3)
-  }, [chartData.length])
+    if (hasTimestamps) return timestamps!
+    return Array.from({ length: data.length }, (_, i) => i)
+  }, [timestamps, hasTimestamps, data.length])
 
-  // Determine if this is a percentage metric (CPU/Memory) or bytes (Network)
   const isPercentage = color === 'cpu' || color === 'memory'
 
-  // uPlot configuration
   const opts = useMemo<uPlot.Options>(() => ({
     width,
     height,
     cursor: {
       show: showAxes,
-      x: false, // No vertical crosshair line
-      y: false, // No horizontal crosshair line
+      x: false,
+      y: false,
       points: {
         show: showAxes,
-        size: (_u, seriesIdx) => seriesIdx === 1 ? 10 : 0, // Larger hover point
+        size: (_u, seriesIdx) => seriesIdx === 1 ? 10 : 0,
         stroke: (_u, seriesIdx) => seriesIdx === 1 ? CHART_COLORS[color] : '',
         fill: () => '#ffffff',
         width: 2,
       },
-      drag: {
-        x: false,
-        y: false,
-      },
+      drag: { x: false, y: false },
     },
-    legend: {
-      show: false, // Disabled - we use hover points instead
-    },
+    legend: { show: false },
     axes: [
       {
-        // X-axis (time)
         show: showAxes,
-        space: 25,
+        space: 60,
         stroke: '#64748b',
-        grid: {
-          show: false,
-        },
-        ticks: {
-          show: true,
-          stroke: '#cbd5e1',
-          width: 1,
-          size: 4,
-        },
-        splits: (u: uPlot, _axisIdx: number, scaleMin: number, scaleMax: number) => {
-          // Check actual number of data points
-          const dataPointCount = u.data[0]?.length ?? 0
-
-          // Single data point - just show "now"
-          if (dataPointCount <= 1) {
-            return [scaleMax]
-          }
-
-          const totalSeconds = scaleMax
-          const chartWidth = u.width
-
-          // Very early data - just show "now"
-          if (totalSeconds < 5) {
-            return [scaleMax]
-          }
-
-          // Dynamically choose intervals based on both time range and chart width
-          let targetSecondsAgo: number[]
-
-          if (totalSeconds < 15) {
-            targetSecondsAgo = [0, 5, 10, 15]
-          } else if (totalSeconds < 30) {
-            // Very short range
-            if (chartWidth < 300) {
-              targetSecondsAgo = [0, 15, 30] // Minimal labels for narrow charts
-            } else {
-              targetSecondsAgo = [0, 5, 10, 15, 20, 25, 30]
-            }
-          } else if (totalSeconds < 60) {
-            // Short range
-            if (chartWidth < 300) {
-              targetSecondsAgo = [0, 30, 60]
-            } else if (chartWidth < 500) {
-              targetSecondsAgo = [0, 20, 40, 60]
-            } else {
-              targetSecondsAgo = [0, 15, 30, 45, 60]
-            }
-          } else {
-            // Normal 2-minute window
-            if (chartWidth < 300) {
-              targetSecondsAgo = [0, 60, 120] // Minimal: just now, 1m, 2m
-            } else if (chartWidth < 500) {
-              targetSecondsAgo = [0, 60, 120] // Medium: now, 1m, 2m
-            } else {
-              targetSecondsAgo = [0, 30, 60, 90, 120] // Full labels
-            }
-          }
-
-          // Convert to time offsets, only including values within our range
-          const ticks = targetSecondsAgo
-            .map(secondsAgo => totalSeconds - secondsAgo)
-            .filter(offset => offset >= scaleMin && offset <= scaleMax)
-
-          // Always include "now" (rightmost), but not the leftmost endpoint
-          // This avoids misleading labels like "2m" when we only have ~117s of data
-          const ticksWithNow = Array.from(new Set([...ticks, scaleMax]))
-            .sort((a, b) => a - b)
-
-          // Filter out ticks that would create duplicate labels
-          // This prevents showing "1m" twice when data is ~87s (rounds to 1m) and we have a 60s tick
-          const uniqueTicks: number[] = []
-          const seenLabels = new Set<string>()
-
-          for (const tick of ticksWithNow) {
-            const secondsAgo = totalSeconds - tick
-            const label = secondsAgo === 0 ? 'now' : formatRelativeTime(secondsAgo)
-
-            if (!seenLabels.has(label)) {
-              uniqueTicks.push(tick)
-              seenLabels.add(label)
-            }
-          }
-
-          return uniqueTicks
-        },
-        values: (_u: uPlot, vals: number[]) => {
-          // Convert time offsets to "seconds ago" labels
-          const maxVal = Math.max(...vals)
-          return vals.map((v: number) => {
-            const secondsAgo = maxVal - v
-            return secondsAgo === 0 ? 'now' : formatRelativeTime(secondsAgo)
-          })
-        },
+        grid: { show: showAxes, stroke: '#1e293b44', width: 1 },
+        ticks: { show: showAxes, stroke: '#cbd5e1', width: 1, size: 4 },
         font: '11px system-ui, -apple-system, sans-serif',
       },
       {
-        // Y-axis (values)
         show: showAxes,
         space: 40,
         stroke: '#64748b',
-        grid: {
-          show: showAxes,
-          stroke: '#1e293b',
-          width: 1,
-        },
-        ticks: {
-          show: true,
-          stroke: '#cbd5e1',
-          width: 1,
-          size: 4,
-        },
+        grid: { show: showAxes, stroke: '#1e293b', width: 1 },
+        ticks: { show: true, stroke: '#cbd5e1', width: 1, size: 4 },
         splits: (_u: uPlot, _axisIdx: number, _scaleMin: number, scaleMax: number) => {
-          // Generate nice round tick positions for gridlines
           if (isPercentage) {
-            // For CPU/Memory: fixed nice intervals based on range
             if (scaleMax <= 1) return [0, 1]
             if (scaleMax <= 5) return [0, 5]
             if (scaleMax <= 15) return [0, 5, 10, 15]
             if (scaleMax <= 40) return [0, 10, 20, 30, 40]
             if (scaleMax <= 60) return [0, 15, 30, 45, 60]
-            return [0, 25, 50, 75, 100]
+            const step = scaleMax <= 100 ? 25 : 50
+            const ticks = []
+            for (let i = 0; i <= scaleMax; i += step) ticks.push(i)
+            return ticks
           }
-
-          // For Network: generate 4-5 evenly spaced nice ticks
           const k = 1024
-          const numTicks = 4
-          const rawStep = scaleMax / numTicks
-
-          // Round step to nice values
+          const rawStep = scaleMax / 4
           let niceStep: number
           if (rawStep < 10) niceStep = 10
           else if (rawStep < 50) niceStep = 50
@@ -289,95 +130,65 @@ export function MiniChart({
           else if (rawStep < 500 * k) niceStep = 500 * k
           else if (rawStep < k * k) niceStep = k * k
           else niceStep = Math.ceil(rawStep / (k * k)) * (k * k)
-
-          // Generate ticks at nice intervals
           const ticks = [0]
-          for (let i = niceStep; i <= scaleMax; i += niceStep) {
-            ticks.push(i)
-          }
+          for (let i = niceStep; i <= scaleMax; i += niceStep) ticks.push(i)
           return ticks
         },
-        values: (_u: uPlot, vals: number[]) => {
-          // Format y-axis values based on metric type
-          return vals.map((v: number) => formatYAxisValue(v, isPercentage))
-        },
+        values: (_u: uPlot, vals: number[]) =>
+          vals.map((v: number) => formatYAxisValue(v, isPercentage)),
         font: '11px system-ui, -apple-system, sans-serif',
       },
     ],
     scales: {
       x: {
-        time: false, // We're using seconds-ago, not timestamps
+        time: hasTimestamps,
+        range: (_u: uPlot, dataMin: number, dataMax: number): uPlot.Range.MinMax => {
+          if (timeWindow) {
+            const now = Date.now() / 1000
+            return [now - timeWindow, now]
+          }
+          return [dataMin, dataMax]
+        },
       },
       y: {
         range: (_u: uPlot, dataMin: number, dataMax: number) => {
           if (showAxes) {
-            // Enhanced mode: Smart ranges with zero baseline
             if (isPercentage) {
-              // For CPU/Memory: dynamic range based on actual values
-              // Always anchor to 0, but adjust max to show detail
-              if (dataMax < 0.8) {
-                return [0, 1] // Extremely low usage: 0-1%
-              } else if (dataMax < 3) {
-                return [0, 5] // Very low usage: 0-5%
-              } else if (dataMax < 10) {
-                return [0, 15] // Low usage: 0-15%
-              } else if (dataMax < 30) {
-                return [0, 40] // Medium-low usage: 0-40%
-              } else if (dataMax < 50) {
-                return [0, 60] // Medium usage: 0-60%
-              } else if (dataMax < 80) {
-                return [0, 100] // High usage: 0-100%
-              } else {
-                return [0, 100] // Very high usage: 0-100%
-              }
+              if (dataMax < 0.8) return [0, 1]
+              if (dataMax < 3) return [0, 5]
+              if (dataMax < 10) return [0, 15]
+              if (dataMax < 30) return [0, 40]
+              if (dataMax < 50) return [0, 60]
+              if (dataMax < 80) return [0, 100]
+              return [0, Math.ceil(dataMax / 50) * 50]
             }
-            // For Network: use nice rounded scale values for stable gridlines
             if (dataMax - dataMin < 0.01) {
               return [0, getNiceNetworkScaleMax(Math.max(dataMax, 1))]
             }
-            // Add 10% padding then round to nice value for consistent display
             return [0, getNiceNetworkScaleMax(dataMax * 1.1)]
-          } else {
-            // Compact mode: Original auto-scaling with padding
-            if (dataMax - dataMin < 0.01) {
-              if (dataMax < 0.5) {
-                return [0, 1]
-              }
-              const center = dataMax
-              const margin = Math.max(center * 0.1, 0.1)
-              return [center - margin, center + margin]
-            }
-            const padding = (dataMax - dataMin) * 0.1
-            return [dataMin - padding, dataMax + padding]
           }
+          if (dataMax - dataMin < 0.01) {
+            if (dataMax < 0.5) return [0, 1]
+            const center = dataMax
+            const margin = Math.max(center * 0.1, 0.1)
+            return [center - margin, center + margin]
+          }
+          const padding = (dataMax - dataMin) * 0.1
+          return [dataMin - padding, dataMax + padding]
         },
       },
     },
     series: [
+      { label: 'Time' },
       {
-        // X-axis data series
-        label: 'Time',
-      },
-      {
-        // Y-axis data series
         label: label || 'Value',
         stroke: CHART_COLORS[color],
         width: 2,
-        points: {
-          show: showAxes, // Only show points in enhanced mode
-          size: 4,
-          stroke: CHART_COLORS[color],
-          fill: '#ffffff',
-          width: 2,
-        },
+        spanGaps: false,
+        points: { show: false },
         value: (_u: uPlot, v: number) => {
-          // Format tooltip value based on metric type
           if (v == null) return '—'
-          if (isPercentage) {
-            return `${v.toFixed(1)}%`
-          }
-          // Network bytes
-          return formatYAxisValue(v, false)
+          return isPercentage ? `${v.toFixed(1)}%` : formatYAxisValue(v, false)
         },
       },
     ],
@@ -386,102 +197,58 @@ export function MiniChart({
       setCursor: [
         (u: uPlot) => {
           const { idx } = u.cursor
-
-          if (idx === null || idx === undefined || !showAxes) {
+          if (idx == null || !showAxes) {
             setTooltip(prev => ({ ...prev, show: false }))
             return
           }
-
-          // Get data at cursor index
           const xVal = u.data[0]?.[idx]
           const yVal = u.data[1]?.[idx]
-
-          if (xVal === undefined || xVal === null || yVal === undefined || yVal === null) {
+          if (xVal == null || yVal == null) {
             setTooltip(prev => ({ ...prev, show: false }))
             return
           }
-
-          // Calculate time ago
-          const maxXVal = u.data[0]?.[u.data[0].length - 1] ?? 0
-          const secondsAgo = maxXVal - xVal
-          const timeLabel = secondsAgo === 0 ? 'now' : `${formatRelativeTime(secondsAgo)} ago`
-
-          // Format value
-          let valueLabel: string
-          if (isPercentage) {
-            valueLabel = `${yVal.toFixed(1)}%`
-          } else {
-            valueLabel = formatYAxisValue(yVal, false)
-          }
-
-          // Get position of the actual data point (not cursor)
-          const left = u.valToPos(xVal, 'x')
-          const top = u.valToPos(yVal, 'y')
-
+          const d = new Date(xVal * 1000)
+          const timeLabel = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          const valueLabel = isPercentage ? `${yVal.toFixed(1)}%` : formatYAxisValue(yVal, false)
           setTooltip({
             show: true,
-            x: left,
-            y: top,
+            x: u.valToPos(xVal, 'x'),
+            y: u.valToPos(yVal, 'y'),
             time: timeLabel,
             value: valueLabel,
           })
         },
       ],
     },
-  }), [width, height, color, label, isPercentage, showAxes, setTooltip])
+  }), [width, height, color, label, isPercentage, hasTimestamps, showAxes, timeWindow, setTooltip])
 
-  // Initialize chart
   useEffect(() => {
     if (!chartRef.current) return
-
-    // Destroy existing chart if any
     if (plotRef.current) {
       plotRef.current.destroy()
       plotRef.current = null
     }
-
     try {
-      // Create uPlot instance
-      const plot = new uPlot(
-        opts,
-        [xData, chartData],
-        chartRef.current
-      )
-
+      const plot = new uPlot(opts, [xData, data], chartRef.current)
       plotRef.current = plot
-      debug.log('MiniChart', `Initialized ${color} chart with ${chartData.length} points`)
-
-      // Cleanup on unmount
-      return () => {
-        plot.destroy()
-        plotRef.current = null
-      }
+      debug.log('MiniChart', `Initialized ${color} chart with ${data.length} points`)
+      return () => { plot.destroy(); plotRef.current = null }
     } catch (error) {
       debug.error('MiniChart', `Failed to initialize ${color} chart:`, error)
       return undefined
     }
-  }, [opts, xData, chartData, color]) // Reinitialize when config or data structure changes
+  }, [opts, color, data.length > 0])
 
-  // Update chart data when it changes
   useEffect(() => {
     if (!plotRef.current) return
+    try { plotRef.current.setData([xData, data]) }
+    catch (error) { debug.error('MiniChart', 'Failed to update chart data:', error) }
+  }, [xData, data])
 
-    try {
-      plotRef.current.setData([xData, chartData])
-    } catch (error) {
-      debug.error('MiniChart', 'Failed to update chart data:', error)
-    }
-  }, [xData, chartData])
-
-  // Handle resize
   useEffect(() => {
     if (!plotRef.current) return
-
-    try {
-      plotRef.current.setSize({ width, height })
-    } catch (error) {
-      debug.error('MiniChart', 'Failed to resize chart:', error)
-    }
+    try { plotRef.current.setSize({ width, height }) }
+    catch (error) { debug.error('MiniChart', 'Failed to resize chart:', error) }
   }, [width, height])
 
   return (
@@ -491,10 +258,7 @@ export function MiniChart({
         className="mini-chart"
         role="img"
         aria-label={label || `${color} chart`}
-        style={{
-          width: `${width}px`,
-          height: `${height}px`,
-        }}
+        style={{ width: `${width}px`, height: `${height}px` }}
       />
       {tooltip.show && showAxes && (
         <div
@@ -521,5 +285,4 @@ export function MiniChart({
   )
 }
 
-// Memoize to prevent unnecessary re-renders
 export default React.memo(MiniChart)

@@ -216,6 +216,9 @@ class GlobalSettingsUpdate(BaseModel):
     show_container_alerts_on_hosts: Optional[bool] = None
     editor_theme: Optional[str] = Field(None, pattern="^(github-dark|vscode-dark|dracula|material-dark|nord|atomone|aura|andromeda|copilot|gruvbox-dark|monokai|solarized-dark|sublime|tokyo-night|tokyo-night-storm|okaidia|abyss|kimbie)$", description="Editor theme for YAML/JSON editing")
 
+    # Stats RRD settings (v2.3.0+)
+    stats_points_per_view: Optional[int] = Field(None, ge=100, le=2000, description="Target data points per time range view (100-2000)")
+
     # Update settings
     auto_update_enabled_default: Optional[bool] = None
     update_check_interval_hours: Optional[int] = Field(None, ge=1, le=168, description="Update check interval (1-168 hours)")

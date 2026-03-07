@@ -57,6 +57,8 @@ export interface GlobalSettings {
   editor_theme?: string
   // Session timeout
   session_timeout_hours?: number
+  // Stats RRD settings (v2.3.0+)
+  stats_points_per_view?: number
 }
 
 export interface TemplateVariable {

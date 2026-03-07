@@ -463,6 +463,14 @@ class PeriodicJobsManager:
                 if cache_cleaned > 0:
                     logger.debug(f"Cleaned up {cache_cleaned} expired image cache entries")
 
+                # Stats retention: downsample old data and cleanup expired records (v2.3.0+)
+                try:
+                    from stats_retention import StatsRetentionManager
+                    stats_retention = StatsRetentionManager(self.db)
+                    await stats_retention.run_retention_job()
+                except Exception as e:
+                    logger.error(f"Stats retention job error: {e}", exc_info=True)
+
                 # Check SSL certificate expiry and regenerate if needed
                 cert_regenerated = await self.check_certificate_expiry()
                 if cert_regenerated:

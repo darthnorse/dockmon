@@ -311,9 +311,10 @@ class DockerMonitor:
         # Stats collection manager
         self.stats_manager = StatsManager()
 
-        # Stats history buffer for sparklines (Phase 4c)
-        self.stats_history = StatsHistoryBuffer()
-        self.container_stats_history = ContainerStatsHistoryBuffer()
+        # Stats history buffer for sparklines — sized by points_per_view setting
+        ppv = getattr(self.settings, 'stats_points_per_view', 500)
+        self.stats_history = StatsHistoryBuffer(max_points=ppv)
+        self.container_stats_history = ContainerStatsHistoryBuffer(max_points=ppv)
 
         # Track previous network stats for rate calculation (Phase 4c)
         self._last_net_stats: Dict[str, float] = {}  # host_id -> cumulative bytes
@@ -1806,7 +1807,7 @@ class DockerMonitor:
                             # We use is_agent_fed() to distinguish - it tracks if agent is actively sending stats
                             if (host.connection_type == 'agent' and host.status == 'online' and
                                     self.stats_history.is_agent_fed(host_id)):
-                                sparklines = self.stats_history.get_sparklines(host_id, num_points=30)
+                                sparklines = self.stats_history.get_sparklines(host_id)
                                 # Systemd agent is actively sending stats - use them (accurate host-level stats)
                                 host_sparklines[host_id] = sparklines
                                 # Calculate mem_bytes from containers for display purposes
@@ -1880,8 +1881,7 @@ class DockerMonitor:
                                     net=net_bytes_per_sec
                                 )
 
-                                # Get sparklines for this host (last 30 points)
-                                host_sparklines[host_id] = self.stats_history.get_sparklines(host_id, num_points=30)
+                                host_sparklines[host_id] = self.stats_history.get_sparklines(host_id)
 
                         broadcast_data["host_metrics"] = host_metrics
                         broadcast_data["host_sparklines"] = host_sparklines
@@ -1889,6 +1889,7 @@ class DockerMonitor:
 
                     # Collect container sparklines for all containers
                     container_sparklines = {}
+                    rrd_cycle_ts = datetime.now(timezone.utc)
                     for container in containers:
                         # Use composite key with SHORT ID: host_id:container_id (12 chars)
                         container_key = make_composite_key(container.host_id, container.short_id)
@@ -1908,8 +1909,20 @@ class DockerMonitor:
                                 net=net_val
                             )
 
+                            # Feed raw data into RRD cascading aggregator
+                            if hasattr(self, '_rrd_aggregator') and self._rrd_aggregator:
+                                self._rrd_aggregator.ingest(
+                                    container_id=container_key,
+                                    host_id=container.host_id,
+                                    timestamp=rrd_cycle_ts,
+                                    cpu=container.cpu_percent,
+                                    mem_usage=container.memory_usage,
+                                    mem_limit=container.memory_limit,
+                                    net_rx=container.net_bytes_per_sec,
+                                )
+
                         # Always get sparklines (even for stopped containers) to maintain consistency
-                        sparklines = self.container_stats_history.get_sparklines(container_key, num_points=30)
+                        sparklines = self.container_stats_history.get_sparklines(container_key)
                         container_sparklines[container_key] = sparklines
 
                     broadcast_data["container_sparklines"] = container_sparklines

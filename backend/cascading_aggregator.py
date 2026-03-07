@@ -7,6 +7,7 @@ Each tier aggregates from the previous using MAX within time windows.
 """
 
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -72,6 +73,13 @@ class CascadingAggregator:
         value = {"cpu": cpu, "mem_usage": mem_usage, "mem_limit": mem_limit, "net_rx": net_rx}
         self._feed_tier(0, container_id, host_id, timestamp, value)
 
+    @staticmethod
+    def _quantize_ts(timestamp: datetime, interval: float) -> datetime:
+        """Round timestamp down to the nearest tier-interval bucket."""
+        epoch = timestamp.replace(tzinfo=timezone.utc).timestamp()
+        quantized = math.floor(epoch / interval) * interval
+        return datetime.fromtimestamp(quantized, tz=timezone.utc)
+
     def _feed_tier(self, tier_idx: int, container_id: str, host_id: str,
                    timestamp: datetime, value: dict):
         if tier_idx >= len(self.tiers):
@@ -89,10 +97,10 @@ class CascadingAggregator:
         elapsed = (timestamp - state["window_start"]).total_seconds()
         if elapsed >= tier["interval"]:
             agg = self._aggregate_max(state["pending"])
-            self._write_point(tier["name"], container_id, host_id, timestamp, agg)
+            bucket_ts = self._quantize_ts(timestamp, tier["interval"])
+            self._write_point(tier["name"], container_id, host_id, bucket_ts, agg)
 
-            # Cascade to next tier
-            self._feed_tier(tier_idx + 1, container_id, host_id, timestamp, agg)
+            self._feed_tier(tier_idx + 1, container_id, host_id, bucket_ts, agg)
 
             state["pending"] = []
             state["window_start"] = timestamp

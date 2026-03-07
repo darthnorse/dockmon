@@ -55,6 +55,8 @@ export interface GlobalSettings {
   external_url_from_env?: string | null
   // Editor theme preference (v2.2.8+)
   editor_theme?: string
+  // Stats RRD settings (v2.3.0+)
+  stats_points_per_view?: number
 }
 
 export interface TemplateVariable {

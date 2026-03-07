@@ -14,6 +14,7 @@ export interface Sparklines {
   cpu: number[]
   mem: number[]
   net: number[]
+  timestamps: number[]
 }
 
 export interface ContainerStats {

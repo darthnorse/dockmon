@@ -8,11 +8,14 @@
  * - Agent info and updates for agent-based hosts
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Cpu, MemoryStick, Network, Calendar, AlertCircle, ArrowUpCircle, RefreshCw } from 'lucide-react'
+import { Calendar, AlertCircle, ArrowUpCircle, RefreshCw } from 'lucide-react'
 import { useHostMetrics, useHostSparklines } from '@/lib/stats/StatsProvider'
-import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
+import { StatsCharts } from '@/lib/charts/StatsCharts'
+import { StatsTimeRangeSelector } from '@/features/containers/components/StatsTimeRangeSelector'
+import { useStatsHistory, type TimeRange } from '@/features/containers/hooks/useStatsHistory'
+import { VIEWS, LIVE_TIME_WINDOW, DEFAULT_HIST_TIME_WINDOW } from '@/lib/statsConfig'
 import { TagInput } from '@/components/TagInput'
 import { TagChip } from '@/components/TagChip'
 import { Button } from '@/components/ui/button'
@@ -49,6 +52,19 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
   const sparklines = useHostSparklines(hostId)
   const { data: eventsData, isLoading: isLoadingEvents, error: eventsError } = useHostEvents(hostId, 3)
   const events = eventsData?.events ?? []
+
+  const [timeRange, setTimeRange] = useState<TimeRange>('live')
+  const { data: historyData } = useStatsHistory(hostId, undefined, timeRange)
+  const hist = useMemo(() => {
+    const d = historyData?.data ?? []
+    return {
+      cpu: d.map((p) => p.cpu),
+      mem: d.map((p) => p.mem),
+      net: d.map((p) => p.net_rx),
+      timestamps: d.map((p) => p.t / 1000),
+    }
+  }, [historyData])
+  const histTimeWindow = VIEWS.find(v => v.name === timeRange)?.seconds
 
   // Fetch agent info for agent-based hosts
   const { data: agent } = useQuery({
@@ -338,97 +354,35 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
 
           {/* RIGHT COLUMN */}
           <div className="space-y-4 sm:space-y-6">
-            {/* Live Stats Header */}
-            <div className="-mb-2 sm:-mb-3">
-              <h4 className="text-base sm:text-lg font-medium text-foreground">Live Stats</h4>
+            {/* Stats Header with Time Range */}
+            <div className="-mb-2 sm:-mb-3 flex items-center justify-between">
+              <h4 className="text-base sm:text-lg font-medium text-foreground">
+                {timeRange === 'live' ? 'Live Stats' : 'Historical Stats'}
+              </h4>
+              <StatsTimeRangeSelector value={timeRange} onChange={setTimeRange} />
             </div>
 
-            {/* CPU Usage */}
-            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <Cpu className="h-4 w-4 text-amber-500" />
-                  <span className="font-medium text-sm">CPU Usage</span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  {metrics?.cpu_percent !== undefined
-                    ? `${metrics.cpu_percent.toFixed(0)}%`
-                    : '—'}
-                </span>
-              </div>
-              {sparklines?.cpu && sparklines.cpu.length > 0 ? (
-                <div className="h-[120px] w-full">
-                  <ResponsiveMiniChart
-                    data={sparklines.cpu}
-                    color="cpu"
-                    height={120}
-                    showAxes={true}
-                  />
-                </div>
-              ) : (
-                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
-                  No data available
-                </div>
-              )}
-            </div>
-
-            {/* Memory Usage */}
-            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <MemoryStick className="h-4 w-4 text-green-500" />
-                  <span className="font-medium text-sm">Memory Usage</span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  {metrics?.mem_bytes
-                    ? `${formatBytes(metrics.mem_bytes)}`
-                    : '—'}
-                </span>
-              </div>
-              {sparklines?.mem && sparklines.mem.length > 0 ? (
-                <div className="h-[120px] w-full">
-                  <ResponsiveMiniChart
-                    data={sparklines.mem}
-                    color="memory"
-                    height={120}
-                    showAxes={true}
-                  />
-                </div>
-              ) : (
-                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
-                  No data available
-                </div>
-              )}
-            </div>
-
-            {/* Network Traffic */}
-            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <Network className="h-4 w-4 text-orange-500" />
-                  <span className="font-medium text-sm">Network Traffic</span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  {metrics?.net_bytes_per_sec !== undefined
-                    ? formatNetworkRate(metrics.net_bytes_per_sec)
-                    : '—'}
-                </span>
-              </div>
-              {sparklines?.net && sparklines.net.length > 0 ? (
-                <div className="h-[120px] w-full">
-                  <ResponsiveMiniChart
-                    data={sparklines.net}
-                    color="network"
-                    height={120}
-                    showAxes={true}
-                  />
-                </div>
-              ) : (
-                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
-                  No data available
-                </div>
-              )}
-            </div>
+            {timeRange === 'live' ? (
+              <StatsCharts
+                cpu={sparklines?.cpu ?? []}
+                mem={sparklines?.mem ?? []}
+                net={sparklines?.net ?? []}
+                timestamps={sparklines?.timestamps ?? []}
+                timeWindow={LIVE_TIME_WINDOW}
+                cpuValue={metrics?.cpu_percent !== undefined ? `${metrics.cpu_percent.toFixed(0)}%` : undefined}
+                memValue={metrics?.mem_bytes ? formatBytes(metrics.mem_bytes) : undefined}
+                netValue={metrics?.net_bytes_per_sec !== undefined ? formatNetworkRate(metrics.net_bytes_per_sec) : undefined}
+              />
+            ) : (
+              <StatsCharts
+                cpu={hist.cpu}
+                mem={hist.mem}
+                net={hist.net}
+                timestamps={hist.timestamps}
+                timeWindow={histTimeWindow ?? DEFAULT_HIST_TIME_WINDOW}
+                footer={historyData ? `${historyData.points} data points (${historyData.resolution} resolution)` : undefined}
+              />
+            )}
           </div>
         </div>
       </div>

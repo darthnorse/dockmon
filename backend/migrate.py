@@ -230,6 +230,13 @@ def _validate_schema(engine, version: str):
             'tables': ['registration_tokens', 'agents'],
             'docker_hosts_columns': ['connection_type', 'engine_id', 'replaced_by_host_id', 'host_ip'],
         },
+        '034_v2_3_0': {
+            'tables': ['container_stats_history'],
+            'global_settings_columns': ['stats_retention_enabled', 'stats_collection_interval', 'stats_retention_days'],
+        },
+        '035_v2_3_0_rrd': {
+            'global_settings_columns': ['stats_points_per_view'],
+        },
         # Add validations for future versions here:
     }
 

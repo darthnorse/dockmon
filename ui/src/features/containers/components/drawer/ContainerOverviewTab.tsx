@@ -10,9 +10,12 @@
  */
 
 import { useEffect, useState, useMemo } from 'react'
-import { Circle, Cpu, MemoryStick, Network } from 'lucide-react'
+import { Circle } from 'lucide-react'
 import { useContainer, useContainerSparklines } from '@/lib/stats/StatsProvider'
-import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
+import { StatsCharts } from '@/lib/charts/StatsCharts'
+import { StatsTimeRangeSelector } from '../StatsTimeRangeSelector'
+import { useStatsHistory, type TimeRange } from '../../hooks/useStatsHistory'
+import { VIEWS, LIVE_TIME_WINDOW, DEFAULT_HIST_TIME_WINDOW } from '@/lib/statsConfig'
 import { TagEditor } from './TagEditor'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
@@ -30,12 +33,21 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
   const [uptime, setUptime] = useState<string>('')
   const [autoRestart, setAutoRestart] = useState(false)
   const [desiredState, setDesiredState] = useState<'should_run' | 'on_demand' | 'unspecified'>('unspecified')
+  const [timeRange, setTimeRange] = useState<TimeRange>('live')
 
-  // Memoize sparkline arrays to prevent unnecessary MiniChart re-renders
-  // Use length and checksum for efficient array comparison instead of JSON.stringify
-  const cpuData = useMemo(() => sparklines?.cpu || [], [sparklines?.cpu?.length, sparklines?.cpu?.join(',')])
-  const memData = useMemo(() => sparklines?.mem || [], [sparklines?.mem?.length, sparklines?.mem?.join(',')])
-  const netData = useMemo(() => sparklines?.net || [], [sparklines?.net?.length, sparklines?.net?.join(',')])
+  const hostId = container?.host_id || ''
+  const shortId = containerId.includes(':') ? containerId.split(':')[1] : containerId
+  const { data: historyData } = useStatsHistory(hostId, shortId, timeRange)
+  const hist = useMemo(() => {
+    const d = historyData?.data ?? []
+    return {
+      cpu: d.map((p) => p.cpu),
+      mem: d.map((p) => p.mem),
+      net: d.map((p) => p.net_rx),
+      timestamps: d.map((p) => p.t / 1000),
+    }
+  }, [historyData])
+  const histTimeWindow = VIEWS.find(v => v.name === timeRange)?.seconds
 
   // Initialize auto-restart and desired state from container
   // Reset whenever containerId changes (drawer opens for different container)
@@ -299,86 +311,34 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
         </div>
       </div>
 
-      {/* Stats Section with Sparklines */}
+      {/* Stats Section */}
       <div className="border-t border-border pt-4 space-y-4">
-        <h4 className="text-sm font-medium text-foreground mb-3">Performance</h4>
-
-        {/* CPU Usage */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Cpu className="h-4 w-4 text-amber-500" />
-              <span className="text-sm font-medium">CPU Usage</span>
-            </div>
-            <span className="text-sm font-mono">
-              {container.cpu_percent?.toFixed(1) || '0.0'}%
-            </span>
-          </div>
-          {cpuData.length > 0 ? (
-            <ResponsiveMiniChart
-              data={cpuData}
-              color="cpu"
-              height={100}
-              showAxes={true}
-            />
-          ) : (
-            <div className="h-[100px] flex items-center justify-center bg-muted/20 rounded text-xs text-muted-foreground">
-              {container.state === 'running' ? 'Collecting data...' : 'No data available'}
-            </div>
-          )}
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="text-sm font-medium text-foreground">Performance</h4>
+          <StatsTimeRangeSelector value={timeRange} onChange={setTimeRange} />
         </div>
 
-        {/* Memory Usage */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <MemoryStick className="h-4 w-4 text-blue-500" />
-              <span className="text-sm font-medium">Memory Usage</span>
-            </div>
-            <span className="text-sm font-mono">
-              {formatBytes(container.memory_usage)}
-            </span>
-          </div>
-          {memData.length > 0 ? (
-            <ResponsiveMiniChart
-              data={memData}
-              color="memory"
-              height={100}
-              showAxes={true}
-            />
-          ) : (
-            <div className="h-[100px] flex items-center justify-center bg-muted/20 rounded text-xs text-muted-foreground">
-              {container.state === 'running' ? 'Collecting data...' : 'No data available'}
-            </div>
-          )}
-        </div>
-
-        {/* Network I/O */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Network className="h-4 w-4 text-green-500" />
-              <span className="text-sm font-medium">Network I/O</span>
-            </div>
-            <span className="text-sm font-mono text-xs">
-              {container.net_bytes_per_sec !== undefined && container.net_bytes_per_sec !== null
-                ? formatNetworkRate(container.net_bytes_per_sec)
-                : '-'}
-            </span>
-          </div>
-          {netData.length > 0 ? (
-            <ResponsiveMiniChart
-              data={netData}
-              color="network"
-              height={100}
-              showAxes={true}
-            />
-          ) : (
-            <div className="h-[100px] flex items-center justify-center bg-muted/20 rounded text-xs text-muted-foreground">
-              {container.state === 'running' ? 'Collecting data...' : 'No data available'}
-            </div>
-          )}
-        </div>
+        {timeRange === 'live' ? (
+          <StatsCharts
+            cpu={sparklines?.cpu ?? []}
+            mem={sparklines?.mem ?? []}
+            net={sparklines?.net ?? []}
+            timestamps={sparklines?.timestamps ?? []}
+            timeWindow={LIVE_TIME_WINDOW}
+            cpuValue={container.cpu_percent != null ? `${container.cpu_percent.toFixed(1)}%` : undefined}
+            memValue={container.memory_usage ? formatBytes(container.memory_usage) : undefined}
+            netValue={container.net_bytes_per_sec != null ? formatNetworkRate(container.net_bytes_per_sec) : undefined}
+          />
+        ) : (
+          <StatsCharts
+            cpu={hist.cpu}
+            mem={hist.mem}
+            net={hist.net}
+            timestamps={hist.timestamps}
+            timeWindow={histTimeWindow ?? DEFAULT_HIST_TIME_WINDOW}
+            footer={historyData ? `${historyData.points} data points (${historyData.resolution} resolution)` : undefined}
+          />
+        )}
       </div>
     </div>
   )

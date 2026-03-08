@@ -3,7 +3,8 @@ Cascading Round Robin Database aggregator for container statistics.
 Replaces the fixed-interval StatsCollector with time-window based cascading.
 
 Data flows: raw ingest -> tier_1h -> tier_8h -> tier_24h -> tier_7d -> tier_30d
-Each tier aggregates from the previous using MAX within time windows.
+Finest tier uses MAX (preserve spikes), coarsest uses AVG (smooth noise),
+intermediate tiers blend progressively between the two.
 """
 
 import logging
@@ -96,7 +97,8 @@ class CascadingAggregator:
 
         elapsed = (timestamp - state["window_start"]).total_seconds()
         if elapsed >= tier["interval"]:
-            agg = self._aggregate_max(state["pending"])
+            alpha = max(0.0, 0.75 - tier_idx * 0.25)
+            agg = self._aggregate_blend(state["pending"], alpha)
             bucket_ts = self._quantize_ts(timestamp, tier["interval"])
             self._write_point(tier["name"], container_id, host_id, bucket_ts, agg)
 
@@ -106,20 +108,22 @@ class CascadingAggregator:
             state["window_start"] = timestamp
 
     @staticmethod
-    def _aggregate_max(values: list[dict]) -> dict:
-        """MAX aggregation — preserves spikes."""
+    def _aggregate_blend(values: list[dict], alpha: float) -> dict:
+        """Blend MAX and AVG: alpha=1.0 → pure MAX, alpha=0.0 → pure AVG."""
         if not values:
             return {"cpu": None, "mem_usage": None, "mem_limit": None, "net_rx": None}
 
-        def safe_max(key):
+        def blended(key):
             nums = [v[key] for v in values if v.get(key) is not None]
-            return max(nums) if nums else None
+            if not nums:
+                return None
+            return alpha * max(nums) + (1 - alpha) * (sum(nums) / len(nums))
 
         return {
-            "cpu": safe_max("cpu"),
-            "mem_usage": safe_max("mem_usage"),
+            "cpu": blended("cpu"),
+            "mem_usage": blended("mem_usage"),
             "mem_limit": values[-1].get("mem_limit"),
-            "net_rx": safe_max("net_rx"),
+            "net_rx": blended("net_rx"),
         }
 
     def _write_point(self, tier_name: str, container_id: str, host_id: str,

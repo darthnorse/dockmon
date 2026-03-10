@@ -296,22 +296,40 @@ def upgrade():
                     ['updated_by'], ['id'], ondelete='SET NULL')
 
     # =========================================================================
-    # 3. GLOBAL_SETTINGS - Add audit_log_retention_days
+    # 3. GLOBAL_SETTINGS - Add audit_log_retention_days and session_timeout_hours
     # =========================================================================
-    if table_exists('global_settings') and not column_exists('global_settings', 'audit_log_retention_days'):
-        op.add_column(
-            'global_settings',
-            sa.Column('audit_log_retention_days', sa.Integer(), nullable=False, server_default='90')
-        )
+    if table_exists('global_settings'):
+        if not column_exists('global_settings', 'audit_log_retention_days'):
+            op.add_column(
+                'global_settings',
+                sa.Column('audit_log_retention_days', sa.Integer(), nullable=False, server_default='90')
+            )
+        if not column_exists('global_settings', 'session_timeout_hours'):
+            op.add_column(
+                'global_settings',
+                sa.Column('session_timeout_hours', sa.Integer(), nullable=False, server_default='24')
+            )
 
-    # =========================================================================
-    # 3b. GLOBAL_SETTINGS - Add session_timeout_hours
-    # =========================================================================
-    if table_exists('global_settings') and not column_exists('global_settings', 'session_timeout_hours'):
-        op.add_column(
-            'global_settings',
-            sa.Column('session_timeout_hours', sa.Integer(), nullable=False, server_default='24')
+        # SQLite ADD COLUMN silently drops NOT NULL — rebuild to enforce it
+        gs_cols_to_fix = [
+            ('audit_log_retention_days', sa.Integer(), '90'),
+            ('session_timeout_hours', sa.Integer(), '24'),
+        ]
+        inspector = get_inspector()
+        gs_col_info = {col['name']: col for col in inspector.get_columns('global_settings')}
+        gs_needs_rebuild = any(
+            col_name in gs_col_info and gs_col_info[col_name].get('nullable', True)
+            for col_name, _, _ in gs_cols_to_fix
         )
+        if gs_needs_rebuild:
+            for col_name, _, default in gs_cols_to_fix:
+                bind.execute(sa.text(
+                    f"UPDATE global_settings SET {col_name} = {default} WHERE {col_name} IS NULL"
+                ))
+            with op.batch_alter_table('global_settings', schema=None, recreate='always') as batch_op:
+                for col_name, col_type, default in gs_cols_to_fix:
+                    batch_op.alter_column(col_name, existing_type=col_type,
+                                          nullable=False, server_default=default)
 
     # =========================================================================
     # 4. NEW TABLES - Legacy role-based tables (kept for compatibility)
@@ -338,6 +356,9 @@ def upgrade():
             sa.Column('used_at', sa.DateTime(), nullable=True),
             sa.Column('created_at', sa.DateTime(), nullable=False, server_default=sa.func.current_timestamp()),
         )
+
+    # Create index outside table_exists guard (table may pre-exist without index)
+    if table_exists('password_reset_tokens') and not index_exists('password_reset_tokens', 'idx_password_reset_expires'):
         op.create_index('idx_password_reset_expires', 'password_reset_tokens', ['expires_at'])
 
     # 4c. custom_groups - Must be created before oidc_config (FK dependency)

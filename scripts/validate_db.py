@@ -177,7 +177,7 @@ def main():
     for table in ['custom_groups', 'group_permissions', 'user_group_memberships']:
         check(table_exists(conn, table), f"Table: {table}")
 
-    # custom_groups.name unique constraint
+    # custom_groups structure
     if table_exists(conn, 'custom_groups'):
         cg_indexes = get_indexes(conn, 'custom_groups')
         has_name_unique = any(
@@ -185,6 +185,11 @@ def main():
             for idx in cg_indexes.values()
         )
         check(has_name_unique, "custom_groups: name unique")
+        cg_fk_map = get_fk_map(conn, 'custom_groups')
+        check(cg_fk_map.get('created_by') == 'SET NULL',
+              f"custom_groups.created_by: on_delete={cg_fk_map.get('created_by', 'MISSING')} (expected SET NULL)")
+        check(cg_fk_map.get('updated_by') == 'SET NULL',
+              f"custom_groups.updated_by: on_delete={cg_fk_map.get('updated_by', 'MISSING')} (expected SET NULL)")
 
     # System groups exist with correct capabilities
     group_capability_map = {
@@ -237,6 +242,8 @@ def main():
         ugm_fk_map = get_fk_map(conn, 'user_group_memberships')
         check(ugm_fk_map.get('group_id') == 'CASCADE',
               f"user_group_memberships.group_id: on_delete={ugm_fk_map.get('group_id', 'MISSING')} (expected CASCADE)")
+        check(ugm_fk_map.get('added_by') == 'SET NULL',
+              f"user_group_memberships.added_by: on_delete={ugm_fk_map.get('added_by', 'MISSING')} (expected SET NULL)")
 
     # group_permissions unique constraint + index + FK
     if table_exists(conn, 'group_permissions'):

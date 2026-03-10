@@ -459,13 +459,20 @@ def upgrade():
             sa.Column('user_agent', sa.Text(), nullable=True),
             sa.Column('created_at', sa.DateTime(), nullable=False, server_default=sa.func.current_timestamp()),
         )
-        op.create_index('idx_audit_log_user', 'audit_log', ['user_id'])
-        op.create_index('idx_audit_log_entity', 'audit_log', ['entity_type', 'entity_id'])
-        op.create_index('idx_audit_log_created', 'audit_log', ['created_at'])
-        op.create_index('idx_audit_log_action', 'audit_log', ['action'])
     elif not column_exists('audit_log', 'host_name'):
         with op.batch_alter_table('audit_log') as batch_op:
             batch_op.add_column(sa.Column('host_name', sa.Text(), nullable=True))
+
+    # Create indexes outside table_exists guard (table may pre-exist without indexes)
+    if table_exists('audit_log'):
+        for idx_name, idx_cols in [
+            ('idx_audit_log_user', ['user_id']),
+            ('idx_audit_log_entity', ['entity_type', 'entity_id']),
+            ('idx_audit_log_created', ['created_at']),
+            ('idx_audit_log_action', ['action']),
+        ]:
+            if not index_exists('audit_log', idx_name):
+                op.create_index(idx_name, 'audit_log', idx_cols)
 
     # =========================================================================
     # 5. NEW TABLES - Group-based permissions system
@@ -483,8 +490,13 @@ def upgrade():
             sa.Column('added_at', sa.DateTime(), nullable=False, server_default=sa.func.current_timestamp()),
             sa.UniqueConstraint('user_id', 'group_id', name='uq_user_group_membership'),
         )
-        op.create_index('idx_user_group_user', 'user_group_memberships', ['user_id'])
-        op.create_index('idx_user_group_group', 'user_group_memberships', ['group_id'])
+
+    # Create indexes outside table_exists guard (table may pre-exist without indexes)
+    if table_exists('user_group_memberships'):
+        if not index_exists('user_group_memberships', 'idx_user_group_user'):
+            op.create_index('idx_user_group_user', 'user_group_memberships', ['user_id'])
+        if not index_exists('user_group_memberships', 'idx_user_group_group'):
+            op.create_index('idx_user_group_group', 'user_group_memberships', ['group_id'])
 
     # 5c. group_permissions - Capabilities assigned to groups
     if not table_exists('group_permissions'):
@@ -498,6 +510,9 @@ def upgrade():
             sa.Column('updated_at', sa.DateTime(), nullable=False, server_default=sa.func.current_timestamp()),
             sa.UniqueConstraint('group_id', 'capability', name='uq_group_capability'),
         )
+
+    # Create index outside table_exists guard (table may pre-exist without index)
+    if table_exists('group_permissions') and not index_exists('group_permissions', 'idx_group_permissions_group'):
         op.create_index('idx_group_permissions_group', 'group_permissions', ['group_id'])
 
     # 5d. oidc_group_mappings - OIDC to DockMon group mapping

@@ -73,6 +73,7 @@ export interface AuditLogEntry {
   entity_id: string | null
   entity_name: string | null
   host_id: string | null
+  host_name: string | null
   details: Record<string, unknown> | null
   ip_address: string | null
   user_agent: string | null

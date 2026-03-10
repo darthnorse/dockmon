@@ -13,7 +13,7 @@ from typing import Optional, Dict, Any, Union
 from fastapi import Request
 from sqlalchemy.orm import Session
 
-from database import AuditLog
+from database import AuditLog, DockerHostDB
 from utils.client_ip import get_client_ip
 
 logger = logging.getLogger(__name__)
@@ -110,6 +110,7 @@ def log_audit(
     entity_id: Optional[str] = None,
     entity_name: Optional[str] = None,
     host_id: Optional[str] = None,
+    host_name: Optional[str] = None,
     details: Optional[Dict[str, Any]] = None,
     ip_address: Optional[str] = None,
     user_agent: Optional[str] = None,
@@ -121,24 +122,15 @@ def log_audit(
     IMPORTANT: This function does NOT commit by default. The caller is responsible
     for managing the transaction and calling commit() when appropriate. This allows
     audit logging to be part of larger transactions without causing unexpected commits.
-
-    Args:
-        db: Database session
-        user_id: ID of user performing action (None for failed logins)
-        username: Username (stored separately for audit trail preservation)
-        action: Type of action being performed
-        entity_type: Type of entity being acted upon
-        entity_id: ID of the entity (optional)
-        entity_name: Human-readable name of entity (optional)
-        host_id: Host ID for container operations (optional)
-        details: Additional context as JSON (optional)
-        ip_address: Client IP address (optional)
-        user_agent: Client user agent (optional)
-        auto_commit: If True, commit after adding the audit entry (default: False)
-
-    Returns:
-        Created AuditLog entry
     """
+    if host_id and not host_name:
+        try:
+            host = db.query(DockerHostDB).filter_by(id=host_id).first()
+            if host:
+                host_name = host.name
+        except Exception:
+            logger.debug("Failed to resolve host_name for audit entry", exc_info=True)
+
     audit_entry = AuditLog(
         user_id=user_id,
         username=username,
@@ -147,6 +139,7 @@ def log_audit(
         entity_id=entity_id,
         entity_name=entity_name,
         host_id=host_id,
+        host_name=host_name,
         details=json.dumps(details) if details else None,
         ip_address=ip_address,
         user_agent=user_agent,
@@ -232,7 +225,7 @@ def log_login_failure(
     client_info = get_client_info(request)
     return log_audit(
         db=db,
-        user_id=None,  # No user ID for failed logins
+        user_id=None,
         username=username,
         action=AuditAction.LOGIN_FAILED,
         entity_type=AuditEntityType.SESSION,
@@ -273,6 +266,8 @@ def log_host_change(
         entity_type=AuditEntityType.HOST,
         entity_id=host_id,
         entity_name=host_name,
+        host_id=host_id,
+        host_name=host_name,
         details=details,
         **client_info,
     )
@@ -325,21 +320,9 @@ def log_container_action(
     container_name: str,
     request: Optional[Request],
     details: Optional[Dict[str, Any]] = None,
+    host_name: Optional[str] = None,
 ) -> AuditLog:
-    """
-    Log a container action (start, stop, restart, shell, update).
-
-    Args:
-        db: Database session
-        user_id: User ID
-        username: Username
-        action: START, STOP, RESTART, SHELL, SHELL_END, CONTAINER_UPDATE
-        host_id: Host ID
-        container_id: Container ID (short, 12 chars)
-        container_name: Container name
-        request: FastAPI request
-        details: Additional context
-    """
+    """Log a container action (start, stop, restart, shell, update)."""
     client_info = get_client_info(request)
     return log_audit(
         db=db,
@@ -350,6 +333,7 @@ def log_container_action(
         entity_id=container_id,
         entity_name=container_name,
         host_id=host_id,
+        host_name=host_name,
         details=details,
         **client_info,
     )

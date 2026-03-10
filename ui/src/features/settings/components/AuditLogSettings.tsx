@@ -124,6 +124,9 @@ function AuditEntryRow({
               {entityTypeLabel}
             </span>
             {entry.entity_name && <span className="truncate text-white">{entry.entity_name}</span>}
+            {entry.host_name && (
+              <span className="text-gray-400">({entry.host_name})</span>
+            )}
           </div>
         </td>
         <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-400">
@@ -144,8 +147,8 @@ function AuditEntryRow({
                 )}
                 {entry.host_id && (
                   <div>
-                    <span className="text-gray-400">Host ID:</span>{' '}
-                    <span className="font-mono text-white">{entry.host_id}</span>
+                    <span className="text-gray-400">Host:</span>{' '}
+                    <span className="text-white">{entry.host_name || entry.host_id}</span>
                   </div>
                 )}
                 {entry.user_agent && (
@@ -457,7 +460,7 @@ export function AuditLogSettings() {
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-              placeholder="Search username, entity name, or entity ID..."
+              placeholder="Search username, entity name, entity ID, or host name..."
               className={`${INPUT_CLASS} pl-10`}
             />
           </div>

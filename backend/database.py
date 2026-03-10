@@ -348,6 +348,7 @@ class AuditLog(Base):
     entity_id = Column(Text, nullable=True)  # ID of affected entity
     entity_name = Column(Text, nullable=True)  # Human-readable name
     host_id = Column(Text, nullable=True)  # For container operations
+    host_name = Column(Text, nullable=True)  # Stored at write time for audit trail preservation
     details = Column(Text, nullable=True)  # JSON with additional context
     ip_address = Column(Text, nullable=True)
     user_agent = Column(Text, nullable=True)

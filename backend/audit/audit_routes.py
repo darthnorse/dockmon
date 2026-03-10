@@ -52,6 +52,7 @@ class AuditLogEntry(BaseModel):
     entity_id: Optional[str]
     entity_name: Optional[str]
     host_id: Optional[str]
+    host_name: Optional[str]
     details: Optional[dict]
     ip_address: Optional[str]
     user_agent: Optional[str]
@@ -123,6 +124,13 @@ def _escape_like_pattern(value: str) -> str:
     return value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
 
+def _sanitize_csv_field(value: str) -> str:
+    """Prevent CSV formula injection by prefixing dangerous characters with a single quote."""
+    if value and value[0] in ('=', '+', '-', '@', '\t', '\r'):
+        return "'" + value
+    return value
+
+
 def _parse_iso_date(date_str: str, field_name: str) -> datetime:
     """Parse ISO date string, raising HTTPException on failure."""
     try:
@@ -152,6 +160,7 @@ def _entry_to_response(entry: AuditLog) -> AuditLogEntry:
         entity_id=entry.entity_id,
         entity_name=entry.entity_name,
         host_id=entry.host_id,
+        host_name=entry.host_name,
         details=_parse_details(entry.details),
         ip_address=entry.ip_address,
         user_agent=entry.user_agent,
@@ -186,6 +195,7 @@ def _build_audit_filters(params: AuditFilterParams) -> list:
             AuditLog.username.ilike(pattern, escape='\\'),
             AuditLog.entity_name.ilike(pattern, escape='\\'),
             AuditLog.entity_id.ilike(pattern, escape='\\'),
+            AuditLog.host_name.ilike(pattern, escape='\\'),
         ))
 
     if params.start_date:
@@ -217,7 +227,7 @@ async def list_audit_log(
     action: Optional[str] = Query(None, description="Filter by action type"),
     entity_type: Optional[str] = Query(None, description="Filter by entity type"),
     entity_id: Optional[str] = Query(None, description="Filter by entity ID"),
-    search: Optional[str] = Query(None, description="Search in username, entity_name, entity_id"),
+    search: Optional[str] = Query(None, description="Search in username, entity_name, entity_id, host_name"),
     start_date: Optional[str] = Query(None, description="Start date (ISO format)"),
     end_date: Optional[str] = Query(None, description="End date (ISO format)"),
 ):
@@ -365,29 +375,30 @@ async def export_audit_log(
 
         writer.writerow([
             'ID', 'Timestamp', 'Username', 'User ID', 'Action', 'Entity Type',
-            'Entity ID', 'Entity Name', 'Host ID', 'IP Address', 'User Agent', 'Details',
+            'Entity ID', 'Entity Name', 'Host ID', 'Host Name', 'IP Address', 'User Agent', 'Details',
         ])
 
         for entry in entries:
             writer.writerow([
                 entry.id,
                 format_timestamp(entry.created_at),
-                entry.username,
+                _sanitize_csv_field(entry.username),
                 entry.user_id or '',
                 entry.action,
                 entry.entity_type,
-                entry.entity_id or '',
-                entry.entity_name or '',
+                _sanitize_csv_field(entry.entity_id or ''),
+                _sanitize_csv_field(entry.entity_name or ''),
                 entry.host_id or '',
+                _sanitize_csv_field(entry.host_name or ''),
                 entry.ip_address or '',
-                entry.user_agent or '',
-                entry.details or '',
+                _sanitize_csv_field(entry.user_agent or ''),
+                _sanitize_csv_field(entry.details or ''),
             ])
 
         output.seek(0)
         filename = f"audit_log_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
 
-        headers = {"Content-Disposition": f"attachment; filename={filename}"}
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
         if is_truncated:
             headers["X-Export-Truncated"] = "true"
             headers["X-Export-Total-Matching"] = str(total_matching)

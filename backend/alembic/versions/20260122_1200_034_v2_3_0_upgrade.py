@@ -429,6 +429,7 @@ def upgrade():
             sa.Column('entity_id', sa.Text(), nullable=True),
             sa.Column('entity_name', sa.Text(), nullable=True),
             sa.Column('host_id', sa.Text(), nullable=True),
+            sa.Column('host_name', sa.Text(), nullable=True),
             sa.Column('details', sa.Text(), nullable=True),
             sa.Column('ip_address', sa.Text(), nullable=True),
             sa.Column('user_agent', sa.Text(), nullable=True),
@@ -438,6 +439,9 @@ def upgrade():
         op.create_index('idx_audit_log_entity', 'audit_log', ['entity_type', 'entity_id'])
         op.create_index('idx_audit_log_created', 'audit_log', ['created_at'])
         op.create_index('idx_audit_log_action', 'audit_log', ['action'])
+    elif not column_exists('audit_log', 'host_name'):
+        with op.batch_alter_table('audit_log') as batch_op:
+            batch_op.add_column(sa.Column('host_name', sa.Text(), nullable=True))
 
     # =========================================================================
     # 5. NEW TABLES - Group-based permissions system

@@ -166,10 +166,25 @@ def main():
     null_emails = conn.execute("SELECT COUNT(*) FROM users WHERE email IS NULL").fetchone()[0]
     check(null_emails == 0, f"All active users have email set ({null_emails} missing)", warn_only=True)
 
+    # OIDC password sentinel: OIDC users must not have empty/null password_hash
+    oidc_bad_pw = conn.execute(
+        "SELECT COUNT(*) FROM users WHERE auth_provider = 'oidc' AND (password_hash = '' OR password_hash IS NULL)"
+    ).fetchone()[0]
+    check(oidc_bad_pw == 0, f"OIDC users: no empty/null password_hash ({oidc_bad_pw} found)", warn_only=True)
+
     # ── Groups ──
     print("\n=== Groups & Permissions ===")
     for table in ['custom_groups', 'group_permissions', 'user_group_memberships']:
         check(table_exists(conn, table), f"Table: {table}")
+
+    # custom_groups.name unique constraint
+    if table_exists(conn, 'custom_groups'):
+        cg_indexes = get_indexes(conn, 'custom_groups')
+        has_name_unique = any(
+            idx['unique'] == 1 and 'name' in idx['columns']
+            for idx in cg_indexes.values()
+        )
+        check(has_name_unique, "custom_groups: name unique")
 
     # System groups exist with correct capabilities
     group_capability_map = {
@@ -209,7 +224,7 @@ def main():
         members = conn.execute("SELECT COUNT(*) FROM user_group_memberships WHERE group_id=?", (admin_gid,)).fetchone()[0]
         check(members >= 1, f"Administrators has {members} member(s)")
 
-    # user_group_memberships unique constraint
+    # user_group_memberships unique constraint + indexes
     if table_exists(conn, 'user_group_memberships'):
         ugm_indexes = get_indexes(conn, 'user_group_memberships')
         has_unique = any(
@@ -217,8 +232,10 @@ def main():
             for idx in ugm_indexes.values()
         )
         check(has_unique, "user_group_memberships: unique(user_id, group_id)")
+        check('idx_user_group_user' in ugm_indexes, "user_group_memberships: idx_user_group_user")
+        check('idx_user_group_group' in ugm_indexes, "user_group_memberships: idx_user_group_group")
 
-    # group_permissions unique constraint
+    # group_permissions unique constraint + index
     if table_exists(conn, 'group_permissions'):
         gp_indexes = get_indexes(conn, 'group_permissions')
         has_unique = any(
@@ -226,6 +243,7 @@ def main():
             for idx in gp_indexes.values()
         )
         check(has_unique, "group_permissions: unique(group_id, capability)")
+        check('idx_group_permissions_group' in gp_indexes, "group_permissions: idx_group_permissions_group")
 
     # ── OIDC Config ──
     print("\n=== OIDC Config ===")
@@ -278,6 +296,8 @@ def main():
         orm_cols = get_columns(conn, 'oidc_role_mappings')
         check('oidc_value' in orm_cols and 'dockmon_role' in orm_cols,
               "oidc_role_mappings: has oidc_value, dockmon_role columns")
+        orm_indexes = get_indexes(conn, 'oidc_role_mappings')
+        check('idx_oidc_mapping_value' in orm_indexes, "oidc_role_mappings: idx_oidc_mapping_value")
 
     check(table_exists(conn, 'stack_metadata'), "Table: stack_metadata")
     if table_exists(conn, 'stack_metadata'):

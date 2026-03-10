@@ -425,6 +425,9 @@ def upgrade():
             sa.Column('priority', sa.Integer(), nullable=False, server_default='0'),
             sa.Column('created_at', sa.DateTime(), nullable=False, server_default=sa.func.current_timestamp()),
         )
+
+    # Create index outside table_exists guard (table may pre-exist without index)
+    if table_exists('oidc_role_mappings') and not index_exists('oidc_role_mappings', 'idx_oidc_mapping_value'):
         op.create_index('idx_oidc_mapping_value', 'oidc_role_mappings', ['oidc_value'])
 
     # 4e. stack_metadata - Audit trail for filesystem-based stacks

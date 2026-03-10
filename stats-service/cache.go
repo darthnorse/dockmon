@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"sync"
 	"time"
 )
@@ -109,7 +110,18 @@ func (c *StatsCache) UpdateContainerStats(stats *ContainerStats) {
 
 	if baseline, exists := c.lastNetStats[compositeKey]; exists {
 		// Calculate delta
-		deltaBytes := int64(currentTotal) - int64(baseline.totalBytes)
+		// Calculate delta using unsigned arithmetic to avoid int64 overflow
+		var deltaBytes int64
+		if currentTotal >= baseline.totalBytes {
+			diff := currentTotal - baseline.totalBytes
+			if diff > uint64(math.MaxInt64) {
+				diff = uint64(math.MaxInt64)
+			}
+			deltaBytes = int64(diff) // #nosec G115
+		} else {
+			// Counter reset (container restart) - negative delta
+			deltaBytes = -1
+		}
 		deltaTime := now.Sub(baseline.timestamp).Seconds()
 
 		if deltaTime > 0 {

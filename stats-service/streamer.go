@@ -179,7 +179,7 @@ func (sm *StreamManager) StartStream(ctx context.Context, containerID, container
 	}
 
 	// Create cancellable context for this stream
-	streamCtx, cancel := context.WithCancel(ctx)
+	streamCtx, cancel := context.WithCancel(ctx) // #nosec G118
 	sm.streams[compositeKey] = cancel
 
 	// Release locks before acquiring containersMu to prevent nested locking

@@ -263,7 +263,7 @@ func (h *HealthCheckHandler) performCheck(ctx context.Context, config *HealthChe
 	// Create HTTP client with appropriate settings
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: !config.VerifySSL,
+			InsecureSkipVerify: !config.VerifySSL, // #nosec G402
 		},
 	}
 

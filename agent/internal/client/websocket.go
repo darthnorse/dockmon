@@ -241,7 +241,7 @@ func (c *WebSocketClient) connect(ctx context.Context) error {
 	dialer := websocket.DefaultDialer
 	if c.cfg.InsecureSkipVerify {
 		dialer.TLSClientConfig = &tls.Config{
-			InsecureSkipVerify: true,
+			InsecureSkipVerify: true, // #nosec G402
 		}
 		c.log.Warn("TLS certificate verification disabled (INSECURE_SKIP_VERIFY=true)")
 	}
@@ -713,7 +713,7 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 			// Run update in background and respond immediately
 			// Use background context so update continues even if WebSocket disconnects
 			c.backgroundWg.Add(1)
-			go func() {
+			go func() { // #nosec G118
 				defer c.backgroundWg.Done()
 				// Use background context instead of connection context
 				// This allows updates to complete even if connection drops
@@ -738,7 +738,7 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 			// Run self-update in background and respond immediately
 			// Use background context so update continues even if WebSocket disconnects
 			c.backgroundWg.Add(1)
-			go func() {
+			go func() { // #nosec G118
 				defer c.backgroundWg.Done()
 				// Use background context for self-update
 				updateCtx := context.Background()
@@ -764,7 +764,7 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 				// Run deployment in background and respond immediately
 				// Use background context so deployment continues even if WebSocket disconnects
 				c.backgroundWg.Add(1)
-				go func() {
+				go func() { // #nosec G118
 					defer c.backgroundWg.Done()
 					// Use background context for deployment
 					deployCtx := context.Background()

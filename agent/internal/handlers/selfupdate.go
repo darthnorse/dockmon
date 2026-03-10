@@ -176,8 +176,12 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 	h.sendProgress("start", "Starting new container")
 	if err := h.dockerClient.StartContainer(ctx, newContainerID); err != nil {
 		// Cleanup: remove the failed container and cleanup file
-		h.dockerClient.RemoveContainer(ctx, newContainerID, true)
-		os.Remove(cleanupFile)
+		if rmErr := h.dockerClient.RemoveContainer(ctx, newContainerID, true); rmErr != nil {
+			h.log.WithError(rmErr).Warn("Failed to remove container during start rollback")
+		}
+		if rmErr := os.Remove(cleanupFile); rmErr != nil {
+			h.log.WithError(rmErr).Warn("Failed to remove cleanup file during start rollback")
+		}
 		h.sendProgressError("start", err)
 		return fmt.Errorf("failed to start new container: %w", err)
 	}
@@ -187,9 +191,15 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 	if err := h.waitForHealthy(ctx, newContainerID, 60); err != nil {
 		h.log.WithError(err).Warn("New container failed health check, rolling back")
 		// Rollback: stop and remove new container, remove cleanup file
-		h.dockerClient.StopContainer(ctx, newContainerID, 10)
-		h.dockerClient.RemoveContainer(ctx, newContainerID, true)
-		os.Remove(cleanupFile)
+		if stopErr := h.dockerClient.StopContainer(ctx, newContainerID, 10); stopErr != nil {
+			h.log.WithError(stopErr).Warn("Failed to stop container during health rollback")
+		}
+		if rmErr := h.dockerClient.RemoveContainer(ctx, newContainerID, true); rmErr != nil {
+			h.log.WithError(rmErr).Warn("Failed to remove container during health rollback")
+		}
+		if rmErr := os.Remove(cleanupFile); rmErr != nil {
+			h.log.WithError(rmErr).Warn("Failed to remove cleanup file during health rollback")
+		}
 		h.sendProgressError("health", err)
 		return fmt.Errorf("new container health check failed: %w", err)
 	}
@@ -240,14 +250,18 @@ func (h *SelfUpdateHandler) performNativeSelfUpdate(ctx context.Context, req Sel
 		actualChecksum, err := h.computeFileChecksum(newBinaryPath)
 		if err != nil {
 			h.sendProgressError("verify", err)
-			os.Remove(newBinaryPath)
+			if rmErr := os.Remove(newBinaryPath); rmErr != nil {
+				h.log.WithError(rmErr).Warn("Failed to remove new binary after checksum error")
+			}
 			return fmt.Errorf("failed to compute checksum: %w", err)
 		}
 
 		if actualChecksum != req.Checksum {
 			err := fmt.Errorf("checksum mismatch: expected %s, got %s", req.Checksum, actualChecksum)
 			h.sendProgressError("verify", err)
-			os.Remove(newBinaryPath)
+			if rmErr := os.Remove(newBinaryPath); rmErr != nil {
+				h.log.WithError(rmErr).Warn("Failed to remove new binary after checksum mismatch")
+			}
 			return err
 		}
 
@@ -296,7 +310,9 @@ func (h *SelfUpdateHandler) performNativeSelfUpdate(ctx context.Context, req Sel
 	// The stopSignal only closes the WebSocket connection, but main.go waits on sigChan
 	// Send SIGTERM to ourselves to trigger proper shutdown
 	h.log.Info("Sending SIGTERM to self for native restart")
-	syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
+		h.log.WithError(err).Error("Failed to send SIGTERM to self")
+	}
 
 	return nil
 }
@@ -328,14 +344,18 @@ func (h *SelfUpdateHandler) applyNativeUpdate(lockFilePath string) error {
 	lockFile, err := h.readLockFile(lockFilePath)
 	if err != nil {
 		h.log.WithError(err).Error("Failed to read lock file")
-		os.Remove(lockFilePath)
+		if rmErr := os.Remove(lockFilePath); rmErr != nil {
+			h.log.WithError(rmErr).Warn("Failed to remove lock file after read error")
+		}
 		return fmt.Errorf("failed to read lock file: %w", err)
 	}
 
 	// Check if new binary exists
 	if _, err := os.Stat(lockFile.NewBinaryPath); os.IsNotExist(err) {
 		h.log.Error("New binary not found, aborting update")
-		os.Remove(lockFilePath)
+		if rmErr := os.Remove(lockFilePath); rmErr != nil {
+			h.log.WithError(rmErr).Warn("Failed to remove lock file after missing binary")
+		}
 		return fmt.Errorf("new binary not found: %s", lockFile.NewBinaryPath)
 	}
 
@@ -353,7 +373,9 @@ func (h *SelfUpdateHandler) applyNativeUpdate(lockFilePath string) error {
 		if backupErr := os.Rename(backupPath, lockFile.OldBinaryPath); backupErr != nil {
 			h.log.WithError(backupErr).Fatal("Failed to restore backup, agent may be broken!")
 		}
-		os.Remove(lockFilePath)
+		if rmErr := os.Remove(lockFilePath); rmErr != nil {
+			h.log.WithError(rmErr).Warn("Failed to remove lock file after replace error")
+		}
 		return fmt.Errorf("failed to replace binary: %w", err)
 	}
 
@@ -363,15 +385,30 @@ func (h *SelfUpdateHandler) applyNativeUpdate(lockFilePath string) error {
 	}
 
 	// Clean up
-	os.Remove(backupPath)
-	os.Remove(lockFilePath)
+	if rmErr := os.Remove(backupPath); rmErr != nil && !os.IsNotExist(rmErr) {
+		h.log.WithError(rmErr).Warn("Failed to remove backup binary")
+	}
+	if rmErr := os.Remove(lockFilePath); rmErr != nil {
+		h.log.WithError(rmErr).Warn("Failed to remove lock file after update")
+	}
 
 	h.log.WithField("version", lockFile.Version).Info("Native self-update applied successfully")
 
 	// Exec into the new binary to run the updated version
 	// This replaces the current process with the new binary
+	// Validate the binary path is the expected location (not from untrusted input)
+	absPath, err := filepath.Abs(lockFile.OldBinaryPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve binary path: %w", err)
+	}
+	if absPath != lockFile.OldBinaryPath {
+		return fmt.Errorf("binary path must be absolute, got: %s", lockFile.OldBinaryPath)
+	}
+	if _, err := os.Stat(absPath); err != nil {
+		return fmt.Errorf("binary not found at %s: %w", absPath, err)
+	}
 	h.log.Info("Restarting with new binary...")
-	if err := syscall.Exec(lockFile.OldBinaryPath, os.Args, os.Environ()); err != nil {
+	if err := syscall.Exec(absPath, os.Args, os.Environ()); err != nil { // #nosec G702
 		h.log.WithError(err).Error("Failed to exec into new binary, will continue with old version")
 		return fmt.Errorf("failed to exec new binary: %w", err)
 	}
@@ -388,14 +425,18 @@ func (h *SelfUpdateHandler) performContainerCleanup(cleanupFilePath string) erro
 	data, err := os.ReadFile(cleanupFilePath)
 	if err != nil {
 		h.log.WithError(err).Error("Failed to read cleanup file")
-		os.Remove(cleanupFilePath)
+		if rmErr := os.Remove(cleanupFilePath); rmErr != nil {
+			h.log.WithError(rmErr).Warn("Failed to remove unreadable cleanup file")
+		}
 		return err
 	}
 
 	var cleanup map[string]string
 	if err := json.Unmarshal(data, &cleanup); err != nil {
 		h.log.WithError(err).Error("Failed to parse cleanup file")
-		os.Remove(cleanupFilePath)
+		if rmErr := os.Remove(cleanupFilePath); rmErr != nil {
+			h.log.WithError(rmErr).Warn("Failed to remove unparseable cleanup file")
+		}
 		return err
 	}
 
@@ -404,7 +445,9 @@ func (h *SelfUpdateHandler) performContainerCleanup(cleanupFilePath string) erro
 
 	if h.dockerClient == nil {
 		h.log.Warn("Docker client not available for cleanup")
-		os.Remove(cleanupFilePath)
+		if rmErr := os.Remove(cleanupFilePath); rmErr != nil {
+			h.log.WithError(rmErr).Warn("Failed to remove cleanup file")
+		}
 		return nil
 	}
 
@@ -414,7 +457,9 @@ func (h *SelfUpdateHandler) performContainerCleanup(cleanupFilePath string) erro
 	// Stop and remove old container
 	if oldContainerID != "" {
 		h.log.WithField("container_id", safeShortID(oldContainerID)).Info("Removing old container")
-		h.dockerClient.StopContainer(ctx, oldContainerID, 10)
+		if stopErr := h.dockerClient.StopContainer(ctx, oldContainerID, 10); stopErr != nil {
+			h.log.WithError(stopErr).Warn("Failed to stop old container during cleanup")
+		}
 		if err := h.dockerClient.RemoveContainer(ctx, oldContainerID, true); err != nil {
 			h.log.WithError(err).Warn("Failed to remove old container")
 		}
@@ -429,7 +474,9 @@ func (h *SelfUpdateHandler) performContainerCleanup(cleanupFilePath string) erro
 	}
 
 	// Clean up the cleanup file
-	os.Remove(cleanupFilePath)
+	if rmErr := os.Remove(cleanupFilePath); rmErr != nil {
+		h.log.WithError(rmErr).Warn("Failed to remove cleanup file after completion")
+	}
 
 	h.log.Info("Container cleanup completed")
 

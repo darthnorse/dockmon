@@ -65,8 +65,8 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	s.listener = listener
 
-	// Set socket permissions (owner read/write, group read/write)
-	if err := os.Chmod(s.socketPath, 0660); err != nil {
+	// Set socket permissions (owner read/write only)
+	if err := os.Chmod(s.socketPath, 0600); err != nil {
 		listener.Close()
 		return fmt.Errorf("failed to set socket permissions: %w", err)
 	}
@@ -87,12 +87,14 @@ func (s *Server) Start(ctx context.Context) error {
 	s.log.WithField("socket", s.socketPath).Info("Compose service starting")
 
 	// Handle graceful shutdown
-	go func() {
+	go func() { // #nosec G118
 		<-ctx.Done()
 		s.log.Info("Shutting down compose service...")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // #nosec G118
 		defer cancel()
-		s.httpServer.Shutdown(shutdownCtx)
+		if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
+			s.log.WithError(err).Error("HTTP server shutdown error")
+		}
 	}()
 
 	// Start serving (blocks until shutdown)
@@ -237,7 +239,9 @@ func (s *Server) handleDeployJSON(w http.ResponseWriter, r *http.Request, req co
 
 	// Return result
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		s.log.WithError(err).Error("Failed to encode deploy response")
+	}
 }
 
 // handleDeploySSE handles deployment with SSE streaming progress
@@ -467,11 +471,13 @@ func (s *Server) handleUpdateJSON(w http.ResponseWriter, r *http.Request, req Up
 		s.log.WithError(err).Error("Failed to create Docker client")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(update.UpdateResult{
+		if encErr := json.NewEncoder(w).Encode(update.UpdateResult{
 			Success:        false,
 			OldContainerID: req.ContainerID,
 			Error:          fmt.Sprintf("Failed to create Docker client: %v", err),
-		})
+		}); encErr != nil {
+			s.log.WithError(encErr).Error("Failed to encode error response")
+		}
 		return
 	}
 	defer dockerClient.Close()
@@ -505,7 +511,9 @@ func (s *Server) handleUpdateJSON(w http.ResponseWriter, r *http.Request, req Up
 
 	// Return result
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		s.log.WithError(err).Error("Failed to encode update response")
+	}
 }
 
 // handleUpdateSSE handles update with SSE streaming progress

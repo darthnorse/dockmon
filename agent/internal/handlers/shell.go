@@ -72,7 +72,7 @@ func (h *ShellHandler) startSession(parentCtx context.Context, containerID, sess
 	}
 
 	// Create context for this session
-	ctx, cancel := context.WithCancel(parentCtx)
+	ctx, cancel := context.WithCancel(parentCtx) // #nosec G118
 
 	session := &ShellSession{
 		SessionID:   sessionID,

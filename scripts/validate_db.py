@@ -224,7 +224,7 @@ def main():
         members = conn.execute("SELECT COUNT(*) FROM user_group_memberships WHERE group_id=?", (admin_gid,)).fetchone()[0]
         check(members >= 1, f"Administrators has {members} member(s)")
 
-    # user_group_memberships unique constraint + indexes
+    # user_group_memberships unique constraint + indexes + FKs
     if table_exists(conn, 'user_group_memberships'):
         ugm_indexes = get_indexes(conn, 'user_group_memberships')
         has_unique = any(
@@ -234,8 +234,11 @@ def main():
         check(has_unique, "user_group_memberships: unique(user_id, group_id)")
         check('idx_user_group_user' in ugm_indexes, "user_group_memberships: idx_user_group_user")
         check('idx_user_group_group' in ugm_indexes, "user_group_memberships: idx_user_group_group")
+        ugm_fk_map = get_fk_map(conn, 'user_group_memberships')
+        check(ugm_fk_map.get('group_id') == 'CASCADE',
+              f"user_group_memberships.group_id: on_delete={ugm_fk_map.get('group_id', 'MISSING')} (expected CASCADE)")
 
-    # group_permissions unique constraint + index
+    # group_permissions unique constraint + index + FK
     if table_exists(conn, 'group_permissions'):
         gp_indexes = get_indexes(conn, 'group_permissions')
         has_unique = any(
@@ -244,15 +247,19 @@ def main():
         )
         check(has_unique, "group_permissions: unique(group_id, capability)")
         check('idx_group_permissions_group' in gp_indexes, "group_permissions: idx_group_permissions_group")
+        gp_fk_map = get_fk_map(conn, 'group_permissions')
+        check(gp_fk_map.get('group_id') == 'CASCADE',
+              f"group_permissions.group_id: on_delete={gp_fk_map.get('group_id', 'MISSING')} (expected CASCADE)")
 
     # ── OIDC Config ──
     print("\n=== OIDC Config ===")
     check(table_exists(conn, 'oidc_config'), "Table: oidc_config")
     if table_exists(conn, 'oidc_config'):
         oidc_cols = get_columns(conn, 'oidc_config')
-        check('default_group_id' in oidc_cols, "Column: default_group_id")
-        check('sso_default' in oidc_cols, "Column: sso_default")
-        check('disable_pkce_with_secret' in oidc_cols, "Column: disable_pkce_with_secret")
+        for col in ['enabled', 'provider_url', 'client_id', 'client_secret_encrypted',
+                     'scopes', 'claim_for_groups', 'default_group_id', 'sso_default',
+                     'disable_pkce_with_secret']:
+            check(col in oidc_cols, f"Column: {col}")
 
         # FK on default_group_id -> custom_groups with SET NULL
         oidc_fk_map = get_fk_map(conn, 'oidc_config')
@@ -275,6 +282,7 @@ def main():
     if table_exists(conn, 'oidc_group_mappings'):
         ogm_cols = get_columns(conn, 'oidc_group_mappings')
         check('oidc_value' in ogm_cols, "oidc_group_mappings: oidc_value column")
+        check('group_id' in ogm_cols, "oidc_group_mappings: group_id column")
         # oidc_value should be unique
         ogm_indexes = get_indexes(conn, 'oidc_group_mappings')
         has_unique_oidc_val = any(
@@ -282,6 +290,10 @@ def main():
             for idx in ogm_indexes.values()
         )
         check(has_unique_oidc_val, "oidc_group_mappings: oidc_value unique")
+        # group_id FK CASCADE
+        ogm_fk_map = get_fk_map(conn, 'oidc_group_mappings')
+        check(ogm_fk_map.get('group_id') == 'CASCADE',
+              f"oidc_group_mappings.group_id: on_delete={ogm_fk_map.get('group_id', 'MISSING')} (expected CASCADE)")
 
     # ── Legacy tables ──
     print("\n=== Legacy Tables ===")

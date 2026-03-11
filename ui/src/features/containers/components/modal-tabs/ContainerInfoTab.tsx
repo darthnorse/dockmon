@@ -118,7 +118,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
       await apiClient.post(`/hosts/${container.host_id}/containers/${containerShortId}/desired-state`, {
         desired_state: newState,
         container_name: container.name,
-        web_ui_url: webUiUrl || null
+        web_ui_url: isEditingWebUi ? (container.web_ui_url || null) : (webUiUrl || null)
       })
       toast.success(`Desired state set to "${newState}"`)
     } catch (error) {

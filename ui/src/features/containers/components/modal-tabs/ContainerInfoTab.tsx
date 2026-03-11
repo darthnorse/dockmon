@@ -18,6 +18,7 @@
  */
 
 import { useState, useEffect, useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '@/features/auth/AuthContext'
 import { Cpu, MemoryStick, Network } from 'lucide-react'
 import type { Container } from '../../types'
@@ -44,6 +45,16 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
   const canViewEnv = hasCapability('containers.view_env')
   // CRITICAL: Always use 12-char short ID for API calls (backend expects short IDs)
   const containerShortId = container.id.slice(0, 12)
+
+  const { data: inspectData, isError: inspectError } = useQuery({
+    queryKey: ['container-inspect', container.host_id, containerShortId],
+    queryFn: () => apiClient.get<Record<string, unknown>>(
+      `/hosts/${container.host_id}/containers/${containerShortId}/inspect`
+    ),
+    enabled: canViewEnv,
+    staleTime: 30_000,
+    retry: 1,
+  })
 
   const sparklines = useContainerSparklines(makeCompositeKey(container))
   const [autoRestart, setAutoRestart] = useState(false)
@@ -139,13 +150,30 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     return `${(bytesPerSec / (k * k)).toFixed(2)} MB/s`
   }
 
-  // Filter out common system env vars for cleaner display (skip if user can't view env)
-  const filteredEnv = canViewEnv && container.env
-    ? Object.entries(container.env).filter(([key]) => {
-        // Show app-specific variables, hide common system paths
-        return !['PATH', 'HOME', 'HOSTNAME', 'TERM'].includes(key)
-      })
-    : []
+  // Prefer inspect data (works for both agent and legacy hosts)
+  // Fall back to container.env (populated for legacy hosts via HTTP)
+  const filteredEnv = useMemo(() => {
+    if (!canViewEnv) return []
+
+    let envEntries: [string, string][] = []
+
+    if (inspectData) {
+      const config = inspectData.Config as Record<string, unknown> | undefined
+      const envList = (config?.Env ?? []) as string[]
+      envEntries = envList
+        .filter((e): e is string => typeof e === 'string' && e.includes('='))
+        .map((e) => {
+          const idx = e.indexOf('=')
+          return [e.slice(0, idx), e.slice(idx + 1)] as [string, string]
+        })
+    } else if (container.env) {
+      envEntries = Object.entries(container.env)
+    }
+
+    return envEntries.filter(([key]) =>
+      !['PATH', 'HOME', 'HOSTNAME', 'TERM'].includes(key)
+    )
+  }, [canViewEnv, inspectData, container.env])
 
   // Get state color based on desired state and current state
   const getStateColor = () => {
@@ -362,6 +390,12 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
             )}
 
             {/* Environment Variables */}
+            {canViewEnv && inspectError && filteredEnv.length === 0 && (
+              <div>
+                <h4 className="text-lg font-medium text-foreground mb-3">Environment Variables</h4>
+                <p className="text-sm text-muted-foreground">Failed to load environment variables</p>
+              </div>
+            )}
             {filteredEnv.length > 0 && (
               <div>
                 <h4 className="text-lg font-medium text-foreground mb-3">Environment Variables</h4>

@@ -198,8 +198,9 @@ def _normalize_groups_claim(groups_value) -> list:
     Normalize groups claim to a list of strings.
 
     Handles various formats that OIDC providers might return:
-    - list of strings (standard)
+    - list of strings (standard: Entra ID, Okta, Auth0)
     - single string (some providers)
+    - dict with role/group keys (Zitadel, Keycloak resource_access)
     - None (no groups)
     - Invalid types (logged and ignored)
     """
@@ -218,6 +219,13 @@ def _normalize_groups_claim(groups_value) -> list:
             else:
                 logger.warning(f"Ignoring non-string group value: {type(item).__name__}")
         return result
+
+    if isinstance(groups_value, dict):
+        # Some providers (e.g. Zitadel) return roles as object keys:
+        # {"dev-team": {"orgid": "..."}, "ops": {"orgid": "..."}}
+        keys = [k for k in groups_value.keys() if isinstance(k, str)]
+        logger.debug(f"Extracted {len(keys)} group(s) from dict-shaped claim")
+        return keys
 
     # Unexpected type - log warning and return empty
     logger.warning(f"Unexpected groups claim type: {type(groups_value).__name__}, ignoring")

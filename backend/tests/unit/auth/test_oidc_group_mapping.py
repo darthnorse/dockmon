@@ -196,15 +196,22 @@ class TestGetGroupsForOidcUser:
         result = _get_groups_for_oidc_user([], db_session)
         assert result == [default_group.id]
 
-    def test_handles_none_oidc_groups(self, db_session: Session):
-        """Handles None OIDC groups (normalized to empty list)."""
+    def test_normalize_groups_claim_standard_formats(self, db_session: Session):
+        """Normalizes None, string, and list claim formats."""
         from auth.oidc_auth_routes import _normalize_groups_claim
 
-        # Test the normalization function
         assert _normalize_groups_claim(None) == []
         assert _normalize_groups_claim("single") == ["single"]
         assert _normalize_groups_claim(["a", "b"]) == ["a", "b"]
         assert _normalize_groups_claim(["a", 123, "b"]) == ["a", "b"]  # Filters non-strings
+
+    def test_normalize_groups_claim_dict_format(self, db_session: Session):
+        """Normalizes dict-shaped claims (Zitadel, Keycloak)."""
+        from auth.oidc_auth_routes import _normalize_groups_claim
+
+        assert sorted(_normalize_groups_claim({"dev-team": {"orgid": "123"}, "ops": {"orgid": "456"}})) == ["dev-team", "ops"]
+        assert _normalize_groups_claim({}) == []
+        assert _normalize_groups_claim({"single-role": {}}) == ["single-role"]
 
 
 class TestOidcUserProvisioning:

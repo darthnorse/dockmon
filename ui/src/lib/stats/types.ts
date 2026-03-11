@@ -26,6 +26,7 @@ export interface ContainerStats {
   host_name: string
   image: string
   created: string
+  started_at?: string
   auto_restart: boolean
   restart_attempts: number
   desired_state?: string
@@ -33,6 +34,11 @@ export interface ContainerStats {
   ports?: string[]
   restart_policy?: string
   tags?: string[]  // Container tags (from labels + custom)
+  volumes?: string[]
+  labels?: Record<string, string>
+  env?: Record<string, string>
+  docker_ip?: string | null
+  docker_ips?: Record<string, string> | null
   cpu_percent: number | null
   memory_usage: number | null
   memory_limit: number | null

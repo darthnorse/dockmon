@@ -504,7 +504,7 @@ export function EventsPage() {
 
           <button
             onClick={() => goToPage(currentPage + 1)}
-            disabled={currentPage === totalPages}
+            disabled={totalPages === 0 || currentPage >= totalPages}
             className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-border hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
           >
             Next

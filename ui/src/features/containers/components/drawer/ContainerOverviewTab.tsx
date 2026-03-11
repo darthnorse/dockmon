@@ -80,7 +80,7 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
     const interval = setInterval(updateUptime, 60000) // Update every minute
 
     return () => clearInterval(interval)
-  }, [container?.created])
+  }, [container?.created, container?.started_at])
 
   if (!container) {
     return (

@@ -173,7 +173,6 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
       return <span className="text-warning">Stopped (Should Run)</span>
     }
 
-    // Otherwise use standard colors
     switch (state) {
       case 'running':
         return <span className="text-success">Running</span>

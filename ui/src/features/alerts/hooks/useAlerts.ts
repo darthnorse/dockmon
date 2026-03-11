@@ -24,7 +24,7 @@ export function useAlerts(filters: AlertFilters = {}, options = {}) {
     queryFn: async () => {
       return await apiClient.get<AlertListResponse>(`/alerts/?${queryParams}`)
     },
-    staleTime: 30000, // Cache for 30s
+    staleTime: 30000,
     ...options,
   })
 }
@@ -38,7 +38,7 @@ export function useAlert(alertId: string | null) {
       return await apiClient.get<Alert>(`/alerts/${alertId}`)
     },
     enabled: !!alertId,
-    staleTime: 30000, // Cache for 30s
+    staleTime: 30000,
   })
 }
 
@@ -49,8 +49,8 @@ export function useAlertStats() {
     queryFn: async () => {
       return await apiClient.get<AlertStats>(`/alerts/stats/`)
     },
-    staleTime: 30000, // Cache for 30s
-    refetchInterval: 30000, // Refresh every 30 seconds
+    staleTime: 30000,
+    refetchInterval: 30000,
   })
 }
 
@@ -113,8 +113,8 @@ export function useAlertCounts(scope_type: 'container' | 'host') {
 
       return counts
     },
-    staleTime: 30000, // Cache for 30s
-    refetchInterval: 30000, // Refresh every 30 seconds
+    staleTime: 30000,
+    refetchInterval: 30000,
   })
 }
 
@@ -127,7 +127,7 @@ export function useAlertAnnotations(alertId: string | null) {
       return await apiClient.get<{ annotations: AlertAnnotation[] }>(`/alerts/${alertId}/annotations`)
     },
     enabled: !!alertId,
-    staleTime: 60000, // Cache for 60s (annotations rarely change)
+    staleTime: 60000,
   })
 }
 
@@ -235,6 +235,6 @@ export function useAlertEvents(alert: Alert | null | undefined) {
       return await apiClient.get<EventsResponse>(`/events?${queryParams}`)
     },
     enabled: !!alert && !!alert.scope_id,
-    staleTime: 60000, // Cache for 60s (historical events are stable)
+    staleTime: 60000,
   })
 }

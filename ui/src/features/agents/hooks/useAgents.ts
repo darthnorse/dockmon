@@ -44,7 +44,6 @@ export function useAgents() {
     queryFn: async (): Promise<AgentListResponse> => {
       return apiClient.get<AgentListResponse>('/agent/list')
     },
-    // Refetch every 10 seconds to keep agent status up-to-date
     refetchInterval: 10000,
   })
 }
@@ -61,7 +60,6 @@ export function useAgentStatus(agentId: string | null) {
       return apiClient.get<AgentStatusResponse>(`/agent/${agentId}/status`)
     },
     enabled: !!agentId,
-    // Refetch every 5 seconds for individual agent status
     refetchInterval: 5000,
   })
 }

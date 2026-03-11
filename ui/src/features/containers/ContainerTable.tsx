@@ -1,26 +1,8 @@
 /**
- * Container Table Component - Phase 3b/3d
+ * Container Table Component
  *
- * FEATURES:
- * - Sortable, filterable table (TanStack Table)
- * - Real-time status updates via WebSocket
- * - Container actions (start/stop/restart)
- * - CPU/Memory sparklines with adaptive polling
- * - Status icons with color coding
- * - Tag chips for container organization
- *
- * PHASE 3d UPDATES:
- * - Status icons instead of badges (per UX spec)
- * - Image:Tag split with tooltip
- * - CPU/Memory sparklines using MiniChart
- * - Network I/O column
- * - Tag chips in host column
- *
- * ARCHITECTURE:
- * - TanStack Table v8 for table logic
- * - TanStack Query for data fetching
- * - Mutation hooks for actions
- * - WebSocket for real-time stats
+ * Sortable, filterable container table with real-time WebSocket updates,
+ * sparklines, and container actions.
  */
 
 import { useMemo, useState, useEffect, useCallback } from 'react'
@@ -99,9 +81,7 @@ import { HostDetailsModal } from '@/features/hosts/components/HostDetailsModal'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 
 /**
- * Update badge component showing if updates are available
- *
- * Uses updatesSummary batch data to determine if update is available
+ * Update badge showing if updates are available
  */
 function UpdateBadge({
   onClick,
@@ -132,9 +112,8 @@ function UpdateBadge({
 }
 
 /**
- * Policy icons component showing auto-restart, HTTP health check, desired state, and auto-update
- *
- * Performance: Uses batch data to avoid N+1 queries. Falls back to individual hooks if needed.
+ * Policy icons for auto-restart, HTTP health check, desired state, and auto-update.
+ * Uses batch data to avoid N+1 queries; falls back to individual hooks if needed.
  */
 function PolicyIcons({
   container,

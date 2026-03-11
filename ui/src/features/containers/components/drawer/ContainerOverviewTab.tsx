@@ -34,20 +34,14 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
   const [autoRestart, setAutoRestart] = useState(false)
   const [desiredState, setDesiredState] = useState<'should_run' | 'on_demand' | 'unspecified'>('unspecified')
 
-  // Memoize sparkline arrays to prevent unnecessary MiniChart re-renders
-  // Use length and checksum for efficient array comparison instead of JSON.stringify
   const cpuData = useMemo(() => sparklines?.cpu || [], [sparklines?.cpu?.length, sparklines?.cpu?.join(',')])
   const memData = useMemo(() => sparklines?.mem || [], [sparklines?.mem?.length, sparklines?.mem?.join(',')])
   const netData = useMemo(() => sparklines?.net || [], [sparklines?.net?.length, sparklines?.net?.join(',')])
 
-  // Initialize auto-restart and desired state from container
-  // Reset whenever containerId changes (drawer opens for different container)
   useEffect(() => {
     if (container) {
-      // Set auto-restart value (default to false if undefined)
       setAutoRestart(container.auto_restart ?? false)
 
-      // Set desired state (default to 'unspecified' if not valid)
       const validStates: Array<'should_run' | 'on_demand' | 'unspecified'> = ['should_run', 'on_demand', 'unspecified']
       const containerState = container.desired_state as 'should_run' | 'on_demand' | 'unspecified' | undefined
       const newState = containerState && validStates.includes(containerState) ? containerState : 'unspecified'
@@ -77,10 +71,12 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
     }
 
     updateUptime()
-    const interval = setInterval(updateUptime, 60000) // Update every minute
 
+    if (container.state !== 'running') return
+
+    const interval = setInterval(updateUptime, 60000)
     return () => clearInterval(interval)
-  }, [container?.created, container?.started_at])
+  }, [container?.created, container?.started_at, container?.state])
 
   if (!container) {
     return (
@@ -120,7 +116,6 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
     } catch (error) {
       debug.error('ContainerOverviewTab', 'Error toggling auto-restart:', error)
       toast.error(`Failed to update auto-restart: ${error instanceof Error ? error.message : 'Unknown error'}`)
-      // Revert the checkbox on error
       setAutoRestart(!checked)
     }
   }
@@ -141,7 +136,6 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
     } catch (error) {
       debug.error('ContainerOverviewTab', 'Error setting desired state:', error)
       toast.error(`Failed to update desired state: ${error instanceof Error ? error.message : 'Unknown error'}`)
-      // Revert on error
       setDesiredState(previousState)
     }
   }

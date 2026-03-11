@@ -95,7 +95,6 @@ export function useImportDeployment() {
       return apiClient.post<ImportDeploymentResponse>('/deployments/import', request)
     },
     onSuccess: (result) => {
-      // Invalidate stacks list to refetch
       queryClient.invalidateQueries({ queryKey: ['stacks'] })
 
       if (result.success && result.deployments_created.length > 0) {

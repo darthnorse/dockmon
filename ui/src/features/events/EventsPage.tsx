@@ -37,7 +37,6 @@ const TIME_RANGE_OPTIONS = [
 export function EventsPage() {
   const queryClient = useQueryClient()
 
-  // Dynamic page size based on viewport height
   const { pageSize, containerRef } = useDynamicPageSize({
     rowHeight: 35, // Height of each event row in table (34 + 1px padding)
     minRows: 15,
@@ -117,7 +116,6 @@ export function EventsPage() {
       return false
     }
 
-    // Apply search filter
     return (
       c.name.toLowerCase().includes(containerSearchInput.toLowerCase()) ||
       (c.host_name && c.host_name.toLowerCase().includes(containerSearchInput.toLowerCase()))
@@ -204,7 +202,6 @@ export function EventsPage() {
     updateFilter('offset', offset)
   }
 
-  // Export events to CSV
   const exportToCSV = () => {
     if (events.length === 0) return
 

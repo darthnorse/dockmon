@@ -6,11 +6,17 @@
  * - Credentials always included for cookie transmission
  * - CSRF protection via SameSite=strict
  *
+ * NORMALIZATION:
+ * - Container IDs normalized to 12-char short format at this boundary
+ * - Defense-in-depth: WebSocket boundary also normalizes independently
+ *
  * SWAPPABLE:
  * - Can swap to Orval-generated client later
  * - Can swap to gRPC without changing consuming code
  * - All API calls go through this single client
  */
+
+import { normalizeContainers } from '@/utils/containerNormalization'
 
 export class ApiError extends Error {
   constructor(
@@ -94,7 +100,14 @@ class ApiClient {
       return {} as T
     }
 
-    return response.json() as Promise<T>
+    const data = await response.json() as T
+
+    // Normalize container IDs at API boundary (defense-in-depth)
+    if (endpoint === '/containers' && Array.isArray(data)) {
+      return normalizeContainers(data) as T
+    }
+
+    return data
   }
 
   // HTTP methods

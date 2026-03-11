@@ -34,6 +34,8 @@ import { makeCompositeKey } from '@/lib/utils/containerKeys'
 import { formatBytes } from '@/lib/utils/formatting'
 import { sanitizeHref } from '@/lib/utils/urlSanitize'
 
+const SYSTEM_ENV_VARS = ['PATH', 'HOME', 'HOSTNAME', 'TERM']
+
 interface ContainerInfoTabProps {
   container: Container
 }
@@ -53,6 +55,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     ),
     enabled: canViewEnv,
     staleTime: 30_000,
+    gcTime: 60_000,
     retry: 1,
   })
 
@@ -79,9 +82,9 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     currentTags
   })
 
-  const cpuData = useMemo(() => sparklines?.cpu || [], [sparklines?.cpu])
-  const memData = useMemo(() => sparklines?.mem || [], [sparklines?.mem])
-  const netData = useMemo(() => sparklines?.net || [], [sparklines?.net])
+  const cpuData = sparklines?.cpu || []
+  const memData = sparklines?.mem || []
+  const netData = sparklines?.net || []
 
   // Initialize auto-restart, desired state, and web UI URL
   useEffect(() => {
@@ -169,9 +172,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
       envEntries = Object.entries(container.env)
     }
 
-    return envEntries.filter(([key]) =>
-      !['PATH', 'HOME', 'HOSTNAME', 'TERM'].includes(key)
-    )
+    return envEntries.filter(([key]) => !SYSTEM_ENV_VARS.includes(key))
   }, [canViewEnv, inspectData, container.env])
 
   // Get state color based on desired state and current state
@@ -389,25 +390,25 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
             )}
 
             {/* Environment Variables */}
-            {canViewEnv && inspectError && filteredEnv.length === 0 && (
+            {canViewEnv && (filteredEnv.length > 0 || inspectError) && (
               <div>
                 <h4 className="text-lg font-medium text-foreground mb-3">Environment Variables</h4>
-                <p className="text-sm text-muted-foreground">Failed to load environment variables</p>
-              </div>
-            )}
-            {filteredEnv.length > 0 && (
-              <div>
-                <h4 className="text-lg font-medium text-foreground mb-3">Environment Variables</h4>
-                <div className="space-y-1.5 max-h-64 overflow-y-auto">
-                  {filteredEnv.map(([key, value]) => (
-                    <div key={key} className="flex justify-between text-sm gap-4">
-                      <span className="text-muted-foreground font-mono flex-shrink-0">
-                        {key}
-                      </span>
-                      <span className="font-mono truncate text-right">{value}</span>
-                    </div>
-                  ))}
-                </div>
+                {inspectError && filteredEnv.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Failed to load environment variables</p>
+                ) : filteredEnv.length > 0 ? (
+                  <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                    {filteredEnv.map(([key, value]) => (
+                      <div key={key} className="flex justify-between text-sm gap-4">
+                        <span className="text-muted-foreground font-mono flex-shrink-0">
+                          {key}
+                        </span>
+                        <span className="font-mono truncate text-right">{value}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No application environment variables</p>
+                )}
               </div>
             )}
           </div>

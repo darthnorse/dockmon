@@ -101,22 +101,16 @@ import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 /**
  * Update badge component showing if updates are available
  *
- * Performance: Uses batch data from useContainerUpdateStatus (cached) to avoid N+1 queries
+ * Uses updatesSummary batch data to determine if update is available
  */
 function UpdateBadge({
-  container,
   onClick,
-  updateStatus
+  hasUpdate
 }: {
-  container: Container
   onClick?: () => void
-  updateStatus?: { update_available: boolean } | null | undefined
+  hasUpdate: boolean
 }) {
-  // Fall back to individual hook if batch data not available (shouldn't happen)
-  const fallbackQuery = useContainerUpdateStatus(container.host_id, container.id)
-  const status = updateStatus ?? fallbackQuery.data
-
-  if (!status?.update_available) {
+  if (!hasUpdate) {
     return null
   }
 
@@ -1435,7 +1429,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
 
               {/* Update badge - shows if update available */}
               <UpdateBadge
-                container={container}
+                hasUpdate={updatesSummary?.containers_with_updates?.includes(makeCompositeKey(container)) ?? false}
                 onClick={() => {
                   openModal(makeCompositeKey(container), 'updates')
                 }}

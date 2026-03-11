@@ -59,7 +59,7 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
     if (!container?.created) return
 
     const updateUptime = () => {
-      const startTime = new Date(container.created)
+      const startTime = new Date(container.started_at || container.created)
       const now = new Date()
       const diff = now.getTime() - startTime.getTime()
 

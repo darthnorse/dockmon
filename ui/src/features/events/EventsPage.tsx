@@ -169,7 +169,7 @@ export function EventsPage() {
   }
 
   const resetFilters = () => {
-    setFilters({ limit: 20, offset: 0, hours: 24 })
+    setFilters({ limit: pageSize, offset: 0, hours: 24 })
     setSearchInput('')
     setSelectedHostIds([])
     setHostSearchInput('')

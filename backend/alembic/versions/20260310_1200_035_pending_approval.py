@@ -1,4 +1,4 @@
-"""Pending Approval for OIDC Users (v2.6.0)
+"""Pending Approval for OIDC Users
 
 Revision ID: 035_pending_approval
 Revises: 034_v2_3_0

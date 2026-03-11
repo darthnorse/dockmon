@@ -1075,8 +1075,8 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
           return (
             <PolicyIcons
               container={row.original}
-              autoUpdateConfig={allAutoUpdateConfigs?.[compositeKey]}
-              healthCheckConfig={allHealthCheckConfigs?.[compositeKey]}
+              autoUpdateConfig={allAutoUpdateConfigs === undefined ? undefined : (allAutoUpdateConfigs[compositeKey] ?? null)}
+              healthCheckConfig={allHealthCheckConfigs === undefined ? undefined : (allHealthCheckConfigs[compositeKey] ?? null)}
             />
           )
         },

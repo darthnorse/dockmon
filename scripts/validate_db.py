@@ -122,7 +122,7 @@ def main():
     print("=== Migration Version ===")
     ver = conn.execute("SELECT version_num FROM alembic_version LIMIT 1").fetchone()
     current = ver[0] if ver else "NONE"
-    check(current == '034_v2_3_0', f"Version: {current} (expected 034_v2_3_0)")
+    check(current == '035_pending_approval', f"Version: {current} (expected 035_pending_approval)")
 
     # ── Users table ──
     print("\n=== Users Table ===")
@@ -157,6 +157,16 @@ def main():
     # auth_provider should be NOT NULL with default 'local'
     if 'auth_provider' in cols:
         check(cols['auth_provider']['notnull'] == 1, "  auth_provider: NOT NULL")
+
+    # approved should exist, be BOOLEAN, NOT NULL, default 1
+    check('approved' in cols, "Column: approved")
+    if 'approved' in cols:
+        actual_type = cols['approved']['type'].upper()
+        check('BOOLEAN' in actual_type, f"  approved type: {actual_type} (expected BOOLEAN)")
+        check(cols['approved']['notnull'] == 1, "  approved: NOT NULL")
+        default = cols['approved']['default']
+        check(default in ("'1'", '1'),
+              f"  approved: default={default} (expected 1)")
 
     # Check unique index on oidc_subject
     indexes = get_indexes(conn, 'users')
@@ -267,6 +277,22 @@ def main():
                      'scopes', 'claim_for_groups', 'default_group_id', 'sso_default',
                      'disable_pkce_with_secret']:
             check(col in oidc_cols, f"Column: {col}")
+
+        # require_approval: BOOLEAN, NOT NULL, default 0
+        check('require_approval' in oidc_cols, "Column: require_approval")
+        if 'require_approval' in oidc_cols:
+            actual_type = oidc_cols['require_approval']['type'].upper()
+            check('BOOLEAN' in actual_type,
+                  f"  require_approval type: {actual_type} (expected BOOLEAN)")
+            check(oidc_cols['require_approval']['notnull'] == 1,
+                  "  require_approval: NOT NULL")
+            default = oidc_cols['require_approval']['default']
+            check(default in ("'0'", '0'),
+                  f"  require_approval: default={default} (expected 0)")
+
+        # approval_notify_channel_ids: TEXT, nullable
+        check('approval_notify_channel_ids' in oidc_cols,
+              "Column: approval_notify_channel_ids")
 
         # FK on default_group_id -> custom_groups with SET NULL
         oidc_fk_map = get_fk_map(conn, 'oidc_config')

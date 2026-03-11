@@ -53,6 +53,9 @@ class AuditAction(str, Enum):
     TOGGLE = 'toggle'
     TEST = 'test'
 
+    # User approval
+    APPROVE = 'approve'
+
     # Settings
     SETTINGS_CHANGE = 'settings_change'
     ROLE_CHANGE = 'role_change'

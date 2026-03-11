@@ -272,6 +272,54 @@ async def create_user(
         return _user_to_response(new_user, session)
 
 
+@router.get("/pending-count", dependencies=[Depends(require_capability("users.manage"))])
+async def get_pending_count(
+    current_user: dict = Depends(get_current_user_or_api_key)
+) -> dict:
+    """Get count of users pending approval (requires users.manage capability)."""
+    with db.get_session() as session:
+        count = session.query(User).filter(User.approved == False).count()  # noqa: E712
+        return {"count": count}
+
+
+@router.post("/approve-all", dependencies=[Depends(require_capability("users.manage"))])
+async def approve_all_users(
+    request: Request,
+    current_user: dict = Depends(get_current_user_or_api_key)
+) -> dict:
+    """Approve all pending users (requires users.manage capability)."""
+    user_id, display_name = get_auditable_user_info(current_user)
+
+    with db.get_session() as session:
+        pending_users = session.query(User).filter(User.approved == False).all()  # noqa: E712
+
+        if not pending_users:
+            return {"message": "No pending users", "count": 0}
+
+        usernames = [u.username for u in pending_users]
+        now = datetime.now(timezone.utc)
+
+        for user in pending_users:
+            user.approved = True
+            user.updated_at = now
+
+        safe_audit_log(
+            session,
+            user_id,
+            display_name,
+            AuditAction.APPROVE,
+            AuditEntityType.USER,
+            details={'action': 'approve_all', 'count': len(usernames), 'usernames': usernames},
+            **get_client_info(request)
+        )
+
+        session.commit()
+
+        logger.info(f"Approved {len(usernames)} pending user(s) by {display_name}: {usernames}")
+
+        return {"message": f"Approved {len(usernames)} user(s)", "count": len(usernames)}
+
+
 @router.get("/{user_id}", response_model=UserResponse, dependencies=[Depends(require_capability("users.manage"))])
 async def get_user(
     user_id: int,
@@ -405,6 +453,48 @@ async def update_user(
         await _refresh_ws_capabilities(_needs_ws_refresh)
 
     return response
+
+
+@router.post("/{user_id}/approve", dependencies=[Depends(require_capability("users.manage"))])
+async def approve_user(
+    user_id: int,
+    request: Request,
+    current_user: dict = Depends(get_current_user_or_api_key)
+) -> dict:
+    """
+    Approve a single user (requires users.manage capability).
+
+    Sets the user's approved flag to True. If already approved, returns a no-op message.
+    """
+    target_user_id = user_id
+    user_id, display_name = get_auditable_user_info(current_user)
+
+    with db.get_session() as session:
+        user = get_user_or_404(session, target_user_id)
+
+        if user.approved:
+            return {"message": f"User '{user.username}' is already approved"}
+
+        user.approved = True
+        user.updated_at = datetime.now(timezone.utc)
+
+        safe_audit_log(
+            session,
+            user_id,
+            display_name,
+            AuditAction.APPROVE,
+            AuditEntityType.USER,
+            entity_id=str(user.id),
+            entity_name=user.username,
+            details={'action': 'approve'},
+            **get_client_info(request)
+        )
+
+        session.commit()
+
+        logger.info(f"User '{user.username}' approved by {display_name}")
+
+        return {"message": f"User '{user.username}' approved"}
 
 
 @router.delete("/{user_id}", dependencies=[Depends(require_capability("users.manage"))])

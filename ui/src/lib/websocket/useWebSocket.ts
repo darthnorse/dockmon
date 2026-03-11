@@ -55,9 +55,9 @@ export type WebSocketMessage =
   | { type: 'deployment_completed'; deployment_id: string; host_id: string; name: string; status: string; progress: { overall_percent: number; stage: string }; created_at: string | null; completed_at: string | null; error?: string }
   | { type: 'deployment_failed'; deployment_id: string; host_id: string; name: string; status: string; progress: { overall_percent: number; stage: string }; created_at: string | null; completed_at: string | null; error?: string }
   | { type: 'deployment_rolled_back'; deployment_id: string; host_id: string; name: string; status: string; progress: { overall_percent: number; stage: string }; created_at: string | null; completed_at: string | null; error?: string }
-  | { type: 'deployment_layer_progress'; data: { host_id: string; entity_id: string; overall_progress: number; layers: Array<any>; total_layers: number; remaining_layers: number; summary: string; speed_mbps?: number } }
+  | { type: 'deployment_layer_progress'; data: { host_id: string; entity_id: string; overall_progress: number; layers: Array<{ id: string; status: string; progress: number; size?: number }>; total_layers: number; remaining_layers: number; summary: string; speed_mbps?: number } }
   | { type: 'container_update_progress'; data: { host_id: string; entity_id: string; stage: string; progress: number; message: string } }
-  | { type: 'container_update_layer_progress'; data: { host_id: string; entity_id: string; overall_progress: number; layers: Array<any>; total_layers: number; remaining_layers: number; summary: string; speed_mbps?: number } }
+  | { type: 'container_update_layer_progress'; data: { host_id: string; entity_id: string; overall_progress: number; layers: Array<{ id: string; status: string; progress: number; size?: number }>; total_layers: number; remaining_layers: number; summary: string; speed_mbps?: number } }
   | { type: 'container_update_warning'; data: { host_id: string; container_id: string; container_name: string; failed_dependents: string[]; warning: string } }
   | { type: 'container_update_complete'; data: { host_id: string; old_container_id: string; new_container_id: string; container_name: string; failed_dependents?: string[]; warning?: string } }
   | { type: 'pong'; data?: unknown }

@@ -212,10 +212,10 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
     url: wsUrl,
     onMessage: handleMessage,
     onConnect: () => {
-      debug.log('WebSocket', '✅ Connected')
+      debug.log('WebSocket', 'Connected')
     },
     onDisconnect: () => {
-      debug.log('WebSocket', '❌ Disconnected')
+      debug.log('WebSocket', 'Disconnected')
     },
     onError: (error) => {
       debug.error('WebSocket', 'Connection error:', error)

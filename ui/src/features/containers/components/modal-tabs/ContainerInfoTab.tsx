@@ -79,10 +79,9 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     currentTags
   })
 
-  // Memoize sparkline arrays - using length and checksum for efficient comparison
-  const cpuData = useMemo(() => sparklines?.cpu || [], [sparklines?.cpu?.length, sparklines?.cpu?.join(',')])
-  const memData = useMemo(() => sparklines?.mem || [], [sparklines?.mem?.length, sparklines?.mem?.join(',')])
-  const netData = useMemo(() => sparklines?.net || [], [sparklines?.net?.length, sparklines?.net?.join(',')])
+  const cpuData = useMemo(() => sparklines?.cpu || [], [sparklines?.cpu])
+  const memData = useMemo(() => sparklines?.mem || [], [sparklines?.mem])
+  const netData = useMemo(() => sparklines?.net || [], [sparklines?.net])
 
   // Initialize auto-restart, desired state, and web UI URL
   useEffect(() => {

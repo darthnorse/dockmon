@@ -8,11 +8,12 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Container, Activity, Square, Circle } from 'lucide-react'
+import { Container as ContainerIcon, Activity, Square, Circle } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { apiClient } from '@/lib/api/client'
 import { POLLING_CONFIG } from '@/lib/config/polling'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
+import type { Container } from '@/features/containers/types'
 
 interface ContainerStatus {
   running: number
@@ -25,10 +26,9 @@ export function ContainerStatsWidget() {
   const navigate = useNavigate()
   const { status: wsStatus } = useWebSocketContext()
 
-  // Backend returns array directly, not wrapped in object
-  const { data, isLoading, error } = useQuery<unknown[]>({
+  const { data, isLoading, error } = useQuery<Container[]>({
     queryKey: ['containers'],
-    queryFn: () => apiClient.get('/containers'),
+    queryFn: () => apiClient.get<Container[]>('/containers'),
     refetchInterval: wsStatus === 'connected' ? false : POLLING_CONFIG.CONTAINER_DATA,
   })
 
@@ -43,7 +43,7 @@ export function ContainerStatsWidget() {
   if (data) {
     stats.total = data.length
     // Parse actual container states from backend data
-    data.forEach((container: any) => {
+    data.forEach((container) => {
       if (container.state === 'running') stats.running++
       else if (container.state === 'paused') stats.paused++
       else stats.stopped++ // stopped, exited, dead, etc.
@@ -55,7 +55,7 @@ export function ContainerStatsWidget() {
       <Card className="h-full">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
-            <Container className="h-5 w-5" />
+            <ContainerIcon className="h-5 w-5" />
             Containers
           </CardTitle>
         </CardHeader>
@@ -75,7 +75,7 @@ export function ContainerStatsWidget() {
       <Card className="h-full">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
-            <Container className="h-5 w-5" />
+            <ContainerIcon className="h-5 w-5" />
             Containers
           </CardTitle>
         </CardHeader>
@@ -90,7 +90,7 @@ export function ContainerStatsWidget() {
     <Card className="h-full">
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
-          <Container className="h-5 w-5" />
+          <ContainerIcon className="h-5 w-5" />
           Containers
         </CardTitle>
       </CardHeader>

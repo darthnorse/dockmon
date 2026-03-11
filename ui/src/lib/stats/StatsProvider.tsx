@@ -97,7 +97,7 @@ export function StatsProvider({ children }: StatsProviderProps) {
       // Update React Query cache so ContainerTable/Dashboard get real-time data
       // without HTTP polling. The containers array from WebSocket is the same
       // shape as GET /api/containers (backend sends Container.dict() for both).
-      if (normalized.length) {
+      if (containers) {
         queryClient.setQueryData(['containers'], normalized)
       }
 

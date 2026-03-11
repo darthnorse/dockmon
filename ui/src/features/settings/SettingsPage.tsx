@@ -19,6 +19,7 @@ import { GroupsSettings } from './components/GroupsSettings'
 import { GroupPermissionsSettings } from './components/GroupPermissionsSettings'
 import { AuditLogSettings } from './components/AuditLogSettings'
 import { useAuth } from '@/features/auth/AuthContext'
+import { usePendingUserCount } from '@/hooks/useUsers'
 
 type TabId = 'dashboard' | 'alerts' | 'notifications' | 'updates' | 'events' | 'api-keys' | 'users' | 'groups' | 'permissions' | 'oidc' | 'audit-log' | 'system'
 
@@ -49,6 +50,7 @@ const TABS: Tab[] = [
 
 export function SettingsPage() {
   const { hasCapability } = useAuth()
+  const { data: pendingData } = usePendingUserCount()
   const [activeTab, setActiveTab] = useState<TabId>('dashboard')
 
   // Filter tabs based on user capabilities
@@ -88,6 +90,11 @@ export function SettingsPage() {
               >
                 <Icon className="h-4 w-4" />
                 {tab.label}
+                {tab.id === 'users' && (pendingData?.count ?? 0) > 0 && (
+                  <span className="ml-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 text-xs font-medium text-black">
+                    {pendingData?.count}
+                  </span>
+                )}
               </button>
             )
           })}

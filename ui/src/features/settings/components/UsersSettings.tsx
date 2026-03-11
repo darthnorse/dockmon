@@ -17,7 +17,7 @@ import {
   RefreshCw,
 } from 'lucide-react'
 import { useAuth } from '@/features/auth/AuthContext'
-import { useUsers, useDeleteUser } from '@/hooks/useUsers'
+import { useUsers, useDeleteUser, useApproveUser } from '@/hooks/useUsers'
 import { CreateUserModal } from './Users/CreateUserModal'
 import { EditUserModal } from './Users/EditUserModal'
 import { ResetPasswordModal } from './Users/ResetPasswordModal'
@@ -37,6 +37,7 @@ export function UsersSettings() {
   const { user: currentUser } = useAuth()
   const { data, isLoading, refetch } = useUsers()
   const deleteUser = useDeleteUser()
+  const { mutate: approveUser, isPending: isApproving } = useApproveUser()
 
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [editingUserId, setEditingUserId] = useState<number | null>(null)
@@ -127,6 +128,11 @@ export function UsersSettings() {
                           Password Reset Required
                         </span>
                       )}
+                      {!user.approved && (
+                        <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-xs font-medium text-amber-400">
+                          Pending
+                        </span>
+                      )}
                     </div>
 
                     {user.email && (
@@ -148,6 +154,15 @@ export function UsersSettings() {
                   </div>
 
                   <div className="ml-4 flex gap-2">
+                    {!user.approved && (
+                      <button
+                        onClick={() => approveUser(user.id)}
+                        disabled={isApproving}
+                        className="rounded bg-green-600 px-3 py-1 text-xs font-medium text-white hover:bg-green-500 disabled:opacity-50"
+                      >
+                        Approve
+                      </button>
+                    )}
                     <button
                       onClick={() => setEditingUserId(user.id)}
                       className="rounded p-2 text-gray-400 transition-colors hover:bg-gray-700 hover:text-gray-300"

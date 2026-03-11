@@ -6,13 +6,13 @@
  */
 
 import { useState } from 'react'
-import { Maximize2, MoreVertical, Play, Square, RotateCw, BellOff, EyeOff, Pin } from 'lucide-react'
+import { useAuth } from '@/features/auth/AuthContext'
+import { Maximize2, Play, Square, RotateCw } from 'lucide-react'
 import { Drawer } from '@/components/ui/drawer'
 import { Tabs } from '@/components/ui/tabs'
 import { ContainerOverviewTab } from './drawer/ContainerOverviewTab'
 import { ContainerEventsTab } from './drawer/ContainerEventsTab'
 import { ContainerLogsTab } from './drawer/ContainerLogsTab'
-import { DropdownMenu, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { useContainer } from '@/lib/stats/StatsProvider'
 import { Button } from '@/components/ui/button'
 import { toast } from 'sonner'
@@ -27,6 +27,9 @@ interface ContainerDrawerProps {
 }
 
 export function ContainerDrawer({ isOpen, onClose, containerId, onExpand }: ContainerDrawerProps) {
+  const { hasCapability } = useAuth()
+  const canOperate = hasCapability('containers.operate')
+  const canViewLogs = hasCapability('containers.logs')
   const [activeTab, setActiveTab] = useState('overview')
   const [isActionLoading, setIsActionLoading] = useState(false)
   const container = useContainer(containerId)
@@ -50,7 +53,7 @@ export function ContainerDrawer({ isOpen, onClose, containerId, onExpand }: Cont
 
   // Action buttons to pass to Overview tab
   const actionButtons = (
-    <>
+    <fieldset disabled={!canOperate} className="flex gap-2 disabled:opacity-60">
       {container?.state === 'running' ? (
         <>
           <Button
@@ -86,7 +89,7 @@ export function ContainerDrawer({ isOpen, onClose, containerId, onExpand }: Cont
           Start
         </Button>
       )}
-    </>
+    </fieldset>
   )
 
   const tabs = [
@@ -106,11 +109,11 @@ export function ContainerDrawer({ isOpen, onClose, containerId, onExpand }: Cont
         </div>
       ),
     },
-    {
+    ...(canViewLogs ? [{
       id: 'logs',
       label: 'Logs',
       content: <ContainerLogsTab containerId={containerId} />,
-    },
+    }] : []),
   ]
 
   return (
@@ -122,40 +125,6 @@ export function ContainerDrawer({ isOpen, onClose, containerId, onExpand }: Cont
     >
       {/* Header Actions */}
       <div className="absolute top-6 right-16 flex gap-2">
-        {/* Actions Menu */}
-        <DropdownMenu
-          trigger={
-            <button
-              className="p-2 text-muted-foreground hover:text-foreground transition-colors"
-              aria-label="More actions"
-            >
-              <MoreVertical className="w-4 h-4" />
-            </button>
-          }
-          align="end"
-        >
-          {onExpand && (
-            <>
-              <DropdownMenuItem onClick={onExpand} icon={<Maximize2 className="w-4 h-4" />}>
-                Open Full Details
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-            </>
-          )}
-
-          <DropdownMenuItem onClick={() => debug.log('ContainerDrawer', 'Silence alerts - Not yet implemented')} icon={<BellOff className="w-4 h-4" />}>
-            Silence Alerts…
-          </DropdownMenuItem>
-
-          <DropdownMenuItem onClick={() => debug.log('ContainerDrawer', 'Toggle visibility - Not yet implemented')} icon={<EyeOff className="w-4 h-4" />}>
-            Hide on Dashboard
-          </DropdownMenuItem>
-
-          <DropdownMenuItem onClick={() => debug.log('ContainerDrawer', 'Toggle pin - Not yet implemented')} icon={<Pin className="w-4 h-4" />}>
-            Pin on Dashboard
-          </DropdownMenuItem>
-        </DropdownMenu>
-
         {/* Expand Button */}
         {onExpand && (
           <button

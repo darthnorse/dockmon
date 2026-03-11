@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useState, useMemo } from 'react'
+import { useAuth } from '@/features/auth/AuthContext'
 import { Circle, Cpu, MemoryStick, Network } from 'lucide-react'
 import { useContainer, useContainerSparklines } from '@/lib/stats/StatsProvider'
 import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
@@ -17,7 +18,7 @@ import { TagEditor } from './TagEditor'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
 import { debug } from '@/lib/debug'
-import { formatBytes } from '@/lib/utils/formatting'
+import { formatBytes, formatNetworkRate } from '@/lib/utils/formatting'
 
 interface ContainerOverviewTabProps {
   containerId: string
@@ -25,26 +26,22 @@ interface ContainerOverviewTabProps {
 }
 
 export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOverviewTabProps) {
+  const { hasCapability } = useAuth()
+  const canOperate = hasCapability('containers.operate')
   const container = useContainer(containerId)
   const sparklines = useContainerSparklines(containerId)
   const [uptime, setUptime] = useState<string>('')
   const [autoRestart, setAutoRestart] = useState(false)
   const [desiredState, setDesiredState] = useState<'should_run' | 'on_demand' | 'unspecified'>('unspecified')
 
-  // Memoize sparkline arrays to prevent unnecessary MiniChart re-renders
-  // Use length and checksum for efficient array comparison instead of JSON.stringify
   const cpuData = useMemo(() => sparklines?.cpu || [], [sparklines?.cpu?.length, sparklines?.cpu?.join(',')])
   const memData = useMemo(() => sparklines?.mem || [], [sparklines?.mem?.length, sparklines?.mem?.join(',')])
   const netData = useMemo(() => sparklines?.net || [], [sparklines?.net?.length, sparklines?.net?.join(',')])
 
-  // Initialize auto-restart and desired state from container
-  // Reset whenever containerId changes (drawer opens for different container)
   useEffect(() => {
     if (container) {
-      // Set auto-restart value (default to false if undefined)
       setAutoRestart(container.auto_restart ?? false)
 
-      // Set desired state (default to 'unspecified' if not valid)
       const validStates: Array<'should_run' | 'on_demand' | 'unspecified'> = ['should_run', 'on_demand', 'unspecified']
       const containerState = container.desired_state as 'should_run' | 'on_demand' | 'unspecified' | undefined
       const newState = containerState && validStates.includes(containerState) ? containerState : 'unspecified'
@@ -56,7 +53,7 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
     if (!container?.created) return
 
     const updateUptime = () => {
-      const startTime = new Date(container.created)
+      const startTime = new Date(container.started_at || container.created)
       const now = new Date()
       const diff = now.getTime() - startTime.getTime()
 
@@ -74,10 +71,12 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
     }
 
     updateUptime()
-    const interval = setInterval(updateUptime, 60000) // Update every minute
 
+    if (container.state !== 'running') return
+
+    const interval = setInterval(updateUptime, 60000)
     return () => clearInterval(interval)
-  }, [container?.created])
+  }, [container?.created, container?.started_at, container?.state])
 
   if (!container) {
     return (
@@ -117,7 +116,6 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
     } catch (error) {
       debug.error('ContainerOverviewTab', 'Error toggling auto-restart:', error)
       toast.error(`Failed to update auto-restart: ${error instanceof Error ? error.message : 'Unknown error'}`)
-      // Revert the checkbox on error
       setAutoRestart(!checked)
     }
   }
@@ -138,17 +136,8 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
     } catch (error) {
       debug.error('ContainerOverviewTab', 'Error setting desired state:', error)
       toast.error(`Failed to update desired state: ${error instanceof Error ? error.message : 'Unknown error'}`)
-      // Revert on error
       setDesiredState(previousState)
     }
-  }
-
-  const formatNetworkRate = (bytesPerSec: number) => {
-    if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`
-    const kb = bytesPerSec / 1024
-    if (kb < 1024) return `${kb.toFixed(1)} KB/s`
-    const mb = kb / 1024
-    return `${mb.toFixed(1)} MB/s`
   }
 
   return (
@@ -201,7 +190,7 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
       </div>
 
       {/* Controls Section */}
-      <div className="border-t border-border pt-4 space-y-4">
+      <fieldset disabled={!canOperate} className="border-t border-border pt-4 space-y-4 disabled:opacity-60">
         <h4 className="text-sm font-medium text-foreground mb-3">Controls</h4>
 
         {/* Auto-Restart Checkbox */}
@@ -262,7 +251,7 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
             </button>
           </div>
         </div>
-      </div>
+      </fieldset>
 
       {/* Information Section */}
       <div className="border-t border-border pt-4 space-y-2">

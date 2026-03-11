@@ -231,6 +231,9 @@ class GlobalSettingsUpdate(BaseModel):
     # External URL for notification action links (v2.2.0+)
     external_url: Optional[str] = Field(None, max_length=500, description="External URL for notification action links (e.g., https://dockmon.example.com)")
 
+    # Session timeout
+    session_timeout_hours: Optional[int] = Field(None, ge=0, le=8760, description="Session timeout in hours (0=never, 1-8760)")
+
     model_config = ConfigDict(extra="forbid")  # Reject unknown keys (typos, attacks)
 
     @field_validator('update_check_time')

@@ -71,7 +71,7 @@ func (h *StatsHandler) StartContainerStats(parentCtx context.Context, containerI
 	}
 
 	// Create cancellable context for this stream
-	ctx, cancel := context.WithCancel(parentCtx)
+	ctx, cancel := context.WithCancel(parentCtx) // #nosec G118
 	h.streams[containerID] = cancel
 
 	// Start stats collection in goroutine

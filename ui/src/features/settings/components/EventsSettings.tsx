@@ -8,8 +8,11 @@ import { useGlobalSettings, useUpdateGlobalSettings } from '@/hooks/useSettings'
 import { toast } from 'sonner'
 import { X, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { useAuth } from '@/features/auth/AuthContext'
 
 export function EventsSettings() {
+  const { hasCapability } = useAuth()
+  const canManage = hasCapability('settings.manage')
   const { data: settings } = useGlobalSettings()
   const updateSettings = useUpdateGlobalSettings()
 
@@ -80,7 +83,7 @@ export function EventsSettings() {
   }
 
   return (
-    <div className="space-y-6">
+    <fieldset disabled={!canManage} className="space-y-6 disabled:opacity-60">
       {/* Event Suppression */}
       <div>
         <div className="mb-4">
@@ -166,6 +169,6 @@ export function EventsSettings() {
           </div>
         </div>
       </div>
-    </div>
+    </fieldset>
   )
 }

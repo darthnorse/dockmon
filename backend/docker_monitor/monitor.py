@@ -292,6 +292,7 @@ class DockerMonitor:
         self.last_reconnect_attempt: Dict[str, float] = {}  # Track last attempt time per host
         self.manager = ConnectionManager()
         self.realtime = RealtimeMonitor()  # Real-time monitoring
+        self.realtime.connection_manager = self.manager
         self.event_logger = EventLogger(self.db, self.manager)  # Event logging service with WebSocket support
         self.notification_service = NotificationService(self.db, self.event_logger)  # Notification service (v1 - for channels only)
         self._container_states: Dict[str, str] = {}  # Track container states for change detection
@@ -1332,6 +1333,23 @@ class DockerMonitor:
         """
         return self._last_containers
 
+    def resolve_container_name(self, host_id: str, container_id: str) -> str:
+        """Resolve container name from cache then DB. Falls back to container_id."""
+        short_id = container_id[:12]
+        try:
+            for c in self._last_containers:
+                if c.short_id == short_id and c.host_id == host_id:
+                    return c.name
+        except Exception:
+            pass
+        try:
+            db_name = self.db.get_container_name(host_id, short_id)
+            if db_name:
+                return db_name
+        except Exception:
+            pass
+        return short_id
+
     async def restart_container(self, host_id: str, container_id: str) -> bool:
         """Restart a specific container"""
         return await self.operations.restart_container(host_id, container_id)
@@ -1902,10 +1920,11 @@ class DockerMonitor:
                         logger.debug(f"  {key}: cpu={len(sparklines['cpu'])}, mem={len(sparklines['mem'])}, net={len(sparklines['net'])}")
 
                     # Broadcast update to all connected clients
+                    # Enable container filtering for role-based env var visibility (v2.3.0+)
                     await self.manager.broadcast({
                         "type": "containers_update",
                         "data": broadcast_data
-                    })
+                    }, filter_containers=True)
 
             except Exception as e:
                 logger.error(f"Error in monitoring loop: {e}")

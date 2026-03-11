@@ -1,10 +1,12 @@
 /**
  * Display New API Key Modal
  * Shows the newly created API key with copy-to-clipboard and usage examples
+ *
+ * Group-Based Permissions Refactor (v2.4.0)
  */
 
 import { useState } from 'react'
-import { Copy, Check, Code, Terminal } from 'lucide-react'
+import { Copy, Check, Code, Terminal, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { CreateApiKeyResponse } from '@/types/api-keys'
 
@@ -77,8 +79,11 @@ print(response.json())`
               <p className="text-white font-medium">{keyData.name}</p>
             </div>
             <div className="rounded border border-gray-800 bg-gray-800/30 p-3">
-              <p className="text-gray-400 text-xs mb-1">Scopes</p>
-              <p className="text-white font-medium">{keyData.scopes}</p>
+              <p className="text-gray-400 text-xs mb-1">Permissions Group</p>
+              <p className="text-white font-medium flex items-center gap-1">
+                <Users className="h-3 w-3 text-blue-400" />
+                {keyData.group_name}
+              </p>
             </div>
             {keyData.expires_at && (
               <div className="rounded border border-gray-800 bg-gray-800/30 p-3">

@@ -157,7 +157,7 @@ func (em *EventManager) AddHost(hostID, hostName, hostAddress, tlsCACert, tlsCer
 	}
 
 	// Create context for this stream
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background()) // #nosec G118
 
 	stream := &eventStream{
 		hostID:   hostID,

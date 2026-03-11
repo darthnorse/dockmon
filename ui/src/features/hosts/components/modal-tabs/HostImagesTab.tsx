@@ -13,6 +13,7 @@ import { ConfirmModal } from '@/components/shared/ConfirmModal'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { ContainerLinkList } from '@/components/shared/ContainerLinkList'
 import { formatBytes, pluralize } from '@/lib/utils/formatting'
+import { useAuth } from '@/features/auth/AuthContext'
 import { formatRelativeTime } from '@/lib/utils/eventUtils'
 import { getImageDisplayName, makeImageCompositeKey } from '@/lib/utils/image'
 import type { DockerImage } from '@/types/api'
@@ -44,6 +45,8 @@ function ImageStatusBadge({ image }: { image: DockerImage }) {
 }
 
 export function HostImagesTab({ hostId }: HostImagesTabProps) {
+  const { hasCapability } = useAuth()
+  const canOperate = hasCapability('containers.operate')
   const { data: images, isLoading, error } = useHostImages(hostId)
   const pruneMutation = usePruneImages(hostId)
   const deleteMutation = useDeleteImages()
@@ -192,44 +195,42 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
           />
         </div>
 
-        {/* Actions */}
-        <div className="flex items-center gap-2">
-          {/* Show unused toggle */}
-          <button
-            onClick={() => setShowUnusedOnly(!showUnusedOnly)}
-            className={`flex items-center gap-2 px-3 py-2 text-sm rounded-lg border transition-colors ${
-              showUnusedOnly
-                ? 'bg-accent text-accent-foreground border-accent'
-                : 'bg-surface-2 text-foreground border-border hover:bg-surface-3'
-            }`}
-          >
-            <Filter className="h-4 w-4" />
-            Unused Only
-            {unusedCount > 0 && (
-              <span className="ml-1 px-1.5 py-0.5 bg-black/20 rounded text-xs">
-                {unusedCount}
-              </span>
-            )}
-          </button>
-
-          {/* Prune button */}
-          <button
-            onClick={() => setShowPruneConfirm(true)}
-            disabled={pruneMutation.isPending || unusedCount === 0}
-            className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg bg-warning/10 text-warning border border-warning/30 hover:bg-warning/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            <Trash2 className="h-4 w-4" />
-            Prune All Unused
-          </button>
-        </div>
+        {/* Filter toggle */}
+        <button
+          onClick={() => setShowUnusedOnly(!showUnusedOnly)}
+          className={`flex items-center gap-2 px-3 py-2 text-sm rounded-lg border transition-colors ${
+            showUnusedOnly
+              ? 'bg-accent text-accent-foreground border-accent'
+              : 'bg-surface-2 text-foreground border-border hover:bg-surface-3'
+          }`}
+        >
+          <Filter className="h-4 w-4" />
+          Unused Only
+          {unusedCount > 0 && (
+            <span className="ml-1 px-1.5 py-0.5 bg-black/20 rounded text-xs">
+              {unusedCount}
+            </span>
+          )}
+        </button>
       </div>
 
-      {/* Image count */}
-      <div className="text-sm text-muted-foreground">
-        Showing {filteredImages.length} of {images.length} images
-        {selectedCount > 0 && (
-          <span className="ml-2 text-accent">({selectedCount} selected)</span>
-        )}
+      <fieldset disabled={!canOperate} className="space-y-4 disabled:opacity-60">
+      {/* Prune button */}
+      <div className="flex items-center justify-between">
+        <div className="text-sm text-muted-foreground">
+          Showing {filteredImages.length} of {images.length} images
+          {selectedCount > 0 && (
+            <span className="ml-2 text-accent">({selectedCount} selected)</span>
+          )}
+        </div>
+        <button
+          onClick={() => setShowPruneConfirm(true)}
+          disabled={pruneMutation.isPending || unusedCount === 0}
+          className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg bg-warning/10 text-warning border border-warning/30 hover:bg-warning/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          <Trash2 className="h-4 w-4" />
+          Prune All Unused
+        </button>
       </div>
 
       {/* Images table */}
@@ -242,7 +243,8 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
                   type="checkbox"
                   checked={allSelected}
                   onChange={toggleSelectAll}
-                  className="w-4 h-4 rounded border-border cursor-pointer"
+                  disabled={filteredImages.length === 0}
+                  className="w-4 h-4 rounded border-border cursor-pointer disabled:opacity-50"
                 />
               </th>
               <th className="text-left p-3 text-sm font-medium text-muted-foreground">Image</th>
@@ -355,6 +357,8 @@ export function HostImagesTab({ hostId }: HostImagesTabProps) {
           </div>
         </div>
       )}
+
+      </fieldset>
 
       {/* Delete confirmation modal */}
       <ImageDeleteConfirmModal

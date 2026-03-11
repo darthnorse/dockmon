@@ -34,6 +34,14 @@ def _handle_task_exception(task):
         logger.error(f"Unhandled exception in background task: {e}", exc_info=True)
 
 
+def _port_sort_key(port_str: str) -> tuple:
+    """Numeric sort key for port strings like '8080:80/tcp' or '443/tcp'."""
+    try:
+        return (int(port_str.split(':')[0].split('/')[0]), port_str)
+    except ValueError:
+        return (0, port_str)
+
+
 def parse_container_ports(port_bindings: dict) -> list[str]:
     """
     Parse Docker port bindings into human-readable format.
@@ -68,7 +76,7 @@ def parse_container_ports(port_bindings: dict) -> list[str]:
             # Port is exposed but not bound to host
             ports_set.add(container_port)
 
-    return sorted(list(ports_set))
+    return sorted(ports_set, key=_port_sort_key)
 
 
 def parse_restart_policy(host_config: dict) -> str:
@@ -540,26 +548,19 @@ class ContainerDiscovery:
                         # Get desired state and web UI URL from database
                         desired_state, web_ui_url = self.db.get_desired_state(host_id, container_id)
 
-                        # Extract ports - convert Docker API format to string list
-                        # Docker API returns: [{"PrivatePort": 80, "PublicPort": 8080, "Type": "tcp", "IP": "0.0.0.0"}]
-                        # We need: ["8080:80/tcp"]
-                        # Use `or []` pattern to handle both missing keys AND null values
                         ports_data = dc_data.get("Ports") or []
-                        ports = []
+                        ports_set: set[str] = set()
                         for port in ports_data:
                             private_port = port.get("PrivatePort")
                             public_port = port.get("PublicPort")
                             port_type = port.get("Type", "tcp")
 
                             if public_port:
-                                # Published port: "host:container/type"
-                                ports.append(f"{public_port}:{private_port}/{port_type}")
+                                ports_set.add(f"{public_port}:{private_port}/{port_type}")
                             elif private_port:
-                                # Exposed but not published: "container/type"
-                                ports.append(f"{private_port}/{port_type}")
+                                ports_set.add(f"{private_port}/{port_type}")
+                        ports = sorted(ports_set, key=_port_sort_key)
 
-                        # Extract mounts/volumes - use existing helper function
-                        # Use `or []` pattern to handle both missing keys AND null values
                         mounts = dc_data.get("Mounts") or []
                         volumes = parse_container_volumes(mounts)
 

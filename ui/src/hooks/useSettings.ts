@@ -55,6 +55,8 @@ export interface GlobalSettings {
   external_url_from_env?: string | null
   // Editor theme preference (v2.2.8+)
   editor_theme?: string
+  // Session timeout
+  session_timeout_hours?: number
 }
 
 export interface TemplateVariable {

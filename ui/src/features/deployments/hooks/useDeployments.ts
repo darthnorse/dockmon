@@ -6,6 +6,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
+import { apiClient } from '@/lib/api/client'
 import type {
   ImportDeploymentRequest,
   ImportDeploymentResponse,
@@ -16,8 +17,6 @@ import type {
   GenerateFromContainersRequest,
   RunningProject,
 } from '../types'
-
-const API_BASE = '/api'
 
 export type StackAction = 'up' | 'down' | 'restart'
 
@@ -46,28 +45,14 @@ export function useStackAction() {
       action,
       remove_volumes,
     }: StackActionParams): Promise<{ deployment_id: string }> => {
-      const response = await fetch(`${API_BASE}/deployments/deploy`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify({
-          stack_name,
-          host_id,
-          action,
-          force_recreate: action === 'up',
-          pull_images: action === 'up',
-          remove_volumes,
-        }),
+      return apiClient.post<{ deployment_id: string }>('/deployments/deploy', {
+        stack_name,
+        host_id,
+        action,
+        force_recreate: action === 'up',
+        pull_images: action === 'up',
+        remove_volumes,
       })
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: response.statusText }))
-        throw new Error(error.detail || 'Failed to perform stack action')
-      }
-
-      return response.json()
     },
     onSuccess: () => {
       // Invalidate stacks to refresh deployed_to info
@@ -107,24 +92,9 @@ export function useImportDeployment() {
 
   return useMutation({
     mutationFn: async (request: ImportDeploymentRequest) => {
-      const response = await fetch(`${API_BASE}/deployments/import`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify(request),
-      })
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: response.statusText }))
-        throw new Error(error.detail || 'Failed to import deployment')
-      }
-
-      return response.json() as Promise<ImportDeploymentResponse>
+      return apiClient.post<ImportDeploymentResponse>('/deployments/import', request)
     },
     onSuccess: (result) => {
-      // Invalidate stacks list to refetch
       queryClient.invalidateQueries({ queryKey: ['stacks'] })
 
       if (result.success && result.deployments_created.length > 0) {
@@ -151,24 +121,10 @@ export function useScanComposeDirs() {
       hostId: string
       request?: ScanComposeDirsRequest
     }) => {
-      const response = await fetch(
-        `${API_BASE}/deployments/scan-compose-dirs/${hostId}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          credentials: 'include',
-          body: request ? JSON.stringify(request) : '{}',
-        }
+      return apiClient.post<ScanComposeDirsResponse>(
+        `/deployments/scan-compose-dirs/${hostId}`,
+        request ?? {},
       )
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: response.statusText }))
-        throw new Error(error.detail || 'Failed to scan directories')
-      }
-
-      return response.json() as Promise<ScanComposeDirsResponse>
     },
     onError: (error: Error) => {
       toast.error(`Failed to scan directories: ${error.message}`)
@@ -188,24 +144,10 @@ export function useReadComposeFile() {
       hostId: string
       path: string
     }) => {
-      const response = await fetch(
-        `${API_BASE}/deployments/read-compose-file/${hostId}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          credentials: 'include',
-          body: JSON.stringify({ path }),
-        }
+      return apiClient.post<ReadComposeFileResponse>(
+        `/deployments/read-compose-file/${hostId}`,
+        { path },
       )
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: response.statusText }))
-        throw new Error(error.detail || 'Failed to read compose file')
-      }
-
-      return response.json() as Promise<ReadComposeFileResponse>
     },
     onError: (error: Error) => {
       toast.error(`Failed to read compose file: ${error.message}`)
@@ -223,16 +165,7 @@ export function useRunningProjects() {
   return useQuery({
     queryKey: ['running-projects'],
     queryFn: async () => {
-      const response = await fetch(`${API_BASE}/deployments/running-projects`, {
-        credentials: 'include',
-      })
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: response.statusText }))
-        throw new Error(error.detail || 'Failed to fetch running projects')
-      }
-
-      return response.json() as Promise<RunningProject[]>
+      return apiClient.get<RunningProject[]>('/deployments/running-projects')
     },
   })
 }
@@ -243,21 +176,7 @@ export function useRunningProjects() {
 export function useGenerateFromContainers() {
   return useMutation({
     mutationFn: async (request: GenerateFromContainersRequest) => {
-      const response = await fetch(`${API_BASE}/deployments/generate-from-containers`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify(request),
-      })
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: response.statusText }))
-        throw new Error(error.detail || 'Failed to generate compose from containers')
-      }
-
-      return response.json() as Promise<ComposePreviewResponse>
+      return apiClient.post<ComposePreviewResponse>('/deployments/generate-from-containers', request)
     },
     onError: (error: Error) => {
       toast.error(`Failed to generate compose: ${error.message}`)

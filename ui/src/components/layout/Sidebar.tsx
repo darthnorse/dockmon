@@ -36,25 +36,28 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 import { useSidebarCollapsed } from '@/lib/hooks/useUserPreferences'
+import { useAuth } from '@/features/auth/AuthContext'
 import { UserMenu } from './UserMenu'
 import { DockMonUpdateBanner } from './DockMonUpdateBanner'
 import { AgentUpdateBanner } from './AgentUpdateBanner'
+import { usePendingUserCount } from '@/hooks/useUsers'
 
 interface NavItem {
   label: string
   icon: LucideIcon
   path: string
   badge?: number
+  capability?: string
 }
 
 const navigationItems: NavItem[] = [
   { label: 'Dashboard', icon: LayoutDashboard, path: '/' },
-  { label: 'Hosts', icon: Server, path: '/hosts' },
-  { label: 'Containers', icon: Container, path: '/containers' },
-  { label: 'Stacks', icon: Layers, path: '/stacks' },
-  { label: 'Container Logs', icon: FileText, path: '/logs' },
-  { label: 'Events', icon: Activity, path: '/events' },
-  { label: 'Alerts', icon: Bell, path: '/alerts' },
+  { label: 'Hosts', icon: Server, path: '/hosts', capability: 'hosts.view' },
+  { label: 'Containers', icon: Container, path: '/containers', capability: 'containers.view' },
+  { label: 'Stacks', icon: Layers, path: '/stacks', capability: 'stacks.view' },
+  { label: 'Container Logs', icon: FileText, path: '/logs', capability: 'containers.logs' },
+  { label: 'Events', icon: Activity, path: '/events', capability: 'events.view' },
+  { label: 'Alerts', icon: Bell, path: '/alerts', capability: 'alerts.view' },
   { label: 'Settings', icon: Settings, path: '/settings' },
 ]
 
@@ -66,6 +69,13 @@ interface SidebarProps {
 export function Sidebar({ isMobileMenuOpen = false, onMobileClose }: SidebarProps) {
   const { status: wsStatus } = useWebSocketContext()
   const { isCollapsed, setCollapsed } = useSidebarCollapsed()
+  const { hasCapability } = useAuth()
+  const { data: pendingData } = usePendingUserCount()
+  const pendingCount = pendingData?.count ?? 0
+
+  const visibleNavItems = navigationItems.filter(
+    (item) => !item.capability || hasCapability(item.capability)
+  )
 
   // Notify AppLayout when collapsed state changes (for layout adjustments)
   useEffect(() => {
@@ -102,25 +112,19 @@ export function Sidebar({ isMobileMenuOpen = false, onMobileClose }: SidebarProp
       <div className="flex h-16 items-center justify-between border-b border-border px-4">
         {/* Mobile: always show full logo, Desktop: conditional */}
         <div className="flex items-center gap-2 md:hidden">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-            <Container className="h-5 w-5 text-primary" />
-          </div>
+          <img src={`${import.meta.env.BASE_URL}logo-192.png`} alt="DockMon" className="h-8 w-8 rounded-lg" />
           <span className="text-lg font-semibold">DockMon</span>
         </div>
 
         {/* Desktop logo (conditional on collapsed state) */}
         {!isCollapsed && (
           <div className="hidden md:flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-              <Container className="h-5 w-5 text-primary" />
-            </div>
+            <img src={`${import.meta.env.BASE_URL}logo-192.png`} alt="DockMon" className="h-8 w-8 rounded-lg" />
             <span className="text-lg font-semibold">DockMon</span>
           </div>
         )}
         {isCollapsed && (
-          <div className="hidden md:flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-            <Container className="h-5 w-5 text-primary" />
-          </div>
+          <img src={`${import.meta.env.BASE_URL}logo-192.png`} alt="DockMon" className="hidden md:block h-8 w-8 rounded-lg" />
         )}
 
         {/* Toggle Button - X on mobile, chevron on desktop */}
@@ -150,7 +154,7 @@ export function Sidebar({ isMobileMenuOpen = false, onMobileClose }: SidebarProp
 
       {/* Navigation Items */}
       <nav className="flex flex-col gap-1 p-3" role="navigation">
-        {navigationItems.map((item) => {
+        {visibleNavItems.map((item) => {
           const Icon = item.icon
 
           return (
@@ -178,6 +182,21 @@ export function Sidebar({ isMobileMenuOpen = false, onMobileClose }: SidebarProp
                 <span className="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-danger px-1.5 text-xs font-semibold text-white">
                   {item.badge > 99 ? '99+' : item.badge}
                 </span>
+              )}
+              {item.path === '/settings' && pendingCount > 0 && (
+                <>
+                  {/* Collapsed: dot indicator only */}
+                  {isCollapsed && (
+                    <span className="absolute right-2 top-2 hidden h-2.5 w-2.5 rounded-full bg-amber-500 md:block" />
+                  )}
+                  {/* Expanded: count badge */}
+                  <span className={cn(
+                    'ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 text-xs font-medium text-black',
+                    isCollapsed && 'md:hidden'
+                  )}>
+                    {pendingCount}
+                  </span>
+                </>
               )}
             </NavLink>
           )

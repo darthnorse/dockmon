@@ -6,11 +6,17 @@
  * - Credentials always included for cookie transmission
  * - CSRF protection via SameSite=strict
  *
+ * NORMALIZATION:
+ * - Container IDs normalized to 12-char short format at this boundary
+ * - Defense-in-depth: WebSocket boundary also normalizes independently
+ *
  * SWAPPABLE:
  * - Can swap to Orval-generated client later
  * - Can swap to gRPC without changing consuming code
  * - All API calls go through this single client
  */
+
+import { normalizeContainers } from '@/utils/containerNormalization'
 
 export class ApiError extends Error {
   constructor(
@@ -44,7 +50,6 @@ class ApiClient {
   ): Promise<T> {
     const { params, ...fetchOptions } = options
 
-    // Build URL with query params
     let url = `${this.baseURL}${endpoint}`
     if (params) {
       const searchParams = new URLSearchParams()
@@ -63,7 +68,6 @@ class ApiClient {
       },
     })
 
-    // Handle error responses
     if (!response.ok) {
       const contentType = response.headers.get('content-type')
       let errorData: unknown
@@ -89,15 +93,20 @@ class ApiClient {
       )
     }
 
-    // Handle empty responses (204 No Content, etc.)
     if (response.status === 204 || response.headers.get('content-length') === '0') {
       return {} as T
     }
 
-    return response.json() as Promise<T>
+    const data = await response.json() as T
+
+    // Normalize container IDs at API boundary (defense-in-depth)
+    if (endpoint === '/containers' && Array.isArray(data)) {
+      return normalizeContainers(data) as T
+    }
+
+    return data
   }
 
-  // HTTP methods
   async get<T>(endpoint: string, options?: RequestOptions): Promise<T> {
     return this.request<T>(endpoint, { ...options, method: 'GET' })
   }
@@ -131,5 +140,4 @@ class ApiClient {
   }
 }
 
-// Export singleton instance
 export const apiClient = new ApiClient()

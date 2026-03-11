@@ -5,12 +5,14 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react'
+import { useAuth } from '@/features/auth/AuthContext'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { AlertCircle, Terminal as TerminalIcon, RotateCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { getBasePath } from '@/lib/utils/basePath'
 
 interface ContainerShellTabProps {
   hostId: string
@@ -25,6 +27,8 @@ export function ContainerShellTab({
   containerName,
   isRunning,
 }: ContainerShellTabProps) {
+  const { hasCapability } = useAuth()
+  const canShell = hasCapability('containers.shell')
   const terminalRef = useRef<HTMLDivElement>(null)
   const terminalInstance = useRef<Terminal | null>(null)
   const fitAddon = useRef<FitAddon | null>(null)
@@ -98,7 +102,7 @@ export function ContainerShellTab({
       fit.fit()
 
       // Construct WebSocket URL
-      const basePath = import.meta.env.BASE_URL.replace(/\/$/, '')
+      const basePath = getBasePath()
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const wsUrl = `${wsProtocol}//${window.location.host}${basePath}/ws/shell/${hostId}/${containerId}`
 
@@ -182,18 +186,18 @@ export function ContainerShellTab({
     }
   }, [containerId, cleanup])
 
-  // Cleanup when container stops running
+  // Cleanup when container stops running or permission revoked
   useEffect(() => {
-    if (!isRunning) {
+    if (!isRunning || !canShell) {
       cleanup()
       setIsConnected(false)
       setError(null)
     }
-  }, [isRunning, cleanup])
+  }, [isRunning, canShell, cleanup])
 
   // Auto-connect on mount (only once per container)
   useEffect(() => {
-    if (isRunning && !hasConnectedOnce.current) {
+    if (canShell && isRunning && !hasConnectedOnce.current) {
       hasConnectedOnce.current = true
       const timer = setTimeout(() => {
         connect()
@@ -201,7 +205,24 @@ export function ContainerShellTab({
       return () => clearTimeout(timer)
     }
     return undefined
-  }, [isRunning, connect])
+  }, [canShell, isRunning, connect])
+
+  // Permission denied - no shell access
+  if (!canShell) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <div className="text-center space-y-4">
+          <AlertCircle className="h-12 w-12 text-muted-foreground mx-auto" />
+          <div>
+            <h3 className="font-medium">Permission Denied</h3>
+            <p className="text-sm text-muted-foreground mt-1">
+              You do not have permission to access the container shell.
+            </p>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   // Show error if container not running
   if (!isRunning) {

@@ -1,0 +1,163 @@
+name: Security Scan
+
+on:
+  pull_request:
+    branches: [main, dev]
+  schedule:
+    # Weekly on Monday at 06:00 UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write  # Required for CodeQL
+
+jobs:
+  codeql:
+    name: CodeQL Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        language: [python, go]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+
+      - name: Setup Go
+        if: matrix.language == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+
+      - name: Build Go (for CodeQL)
+        if: matrix.language == 'go'
+        working-directory: agent
+        run: go build ./...
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+  go-security:
+    name: Go Security (gosec + govulncheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+
+      - name: Run gosec
+        working-directory: agent
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          gosec -exclude=G104,G117,G118,G204,G302,G304,G402,G702 ./...
+
+      - name: Run govulncheck
+        working-directory: agent
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  python-security:
+    name: Python Security (Bandit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Run Bandit
+        run: |
+          pip install bandit
+          bandit -r backend/ -ll \
+            -s B104,B108 \
+            -x backend/tests,backend/alembic
+
+  frontend-security:
+    name: Frontend Security (npm audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Run npm audit
+        working-directory: ui
+        run: npm audit
+
+  container-security:
+    name: Container Security (Trivy + Hadolint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          exit-code: 1
+          severity: HIGH,CRITICAL
+          trivyignores: .trivyignore
+
+      - name: Run Hadolint on Dockerfiles
+        run: |
+          curl -sL "https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64" -o hadolint
+          chmod +x hadolint
+          ./hadolint docker/Dockerfile agent/Dockerfile agent/Dockerfile.local agent/Dockerfile.multiarch
+
+  semgrep:
+    name: Semgrep
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: semgrep/semgrep
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        run: |
+          semgrep --config auto --error \
+            --exclude-rule "go.lang.security.audit.dangerous-syscall-exec.dangerous-syscall-exec" \
+            --exclude-rule "problem-based-packs.insecure-transport.go-stdlib.bypass-tls-verification.bypass-tls-verification" \
+            --exclude-rule "javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket" \
+            --exclude-rule "go.lang.security.audit.crypto.missing-ssl-minversion.missing-ssl-minversion" \
+            --exclude-rule "go.lang.security.audit.xss.no-fprintf-to-responsewriter.no-fprintf-to-responsewriter" \
+            --exclude-rule "python.lang.security.audit.insecure-file-permissions.insecure-file-permissions" \
+            --exclude-rule "python.django.security.injection.path-traversal.path-traversal-open.path-traversal-open" \
+            --exclude-rule "javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp" \
+            --exclude-rule "javascript.lang.security.audit.unsafe-formatstring.unsafe-formatstring" \
+            --exclude-rule "dockerfile.security.missing-user.missing-user" \
+            --exclude-rule "dockerfile.security.missing-user-entrypoint.missing-user-entrypoint" \
+            --exclude-rule "generic.nginx.security.possible-h2c-smuggling.possible-nginx-h2c-smuggling" \
+            --exclude-rule "generic.nginx.security.possible-nginx-h2c-smuggling.possible-nginx-h2c-smuggling" \
+            --exclude-rule "python.jwt.security.audit.jwt-exposed-data.jwt-python-exposed-data" \
+            .

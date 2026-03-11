@@ -16,7 +16,6 @@
 interface ContainerLike {
   id: string
   short_id?: string
-  [key: string]: unknown
 }
 
 /**
@@ -34,14 +33,19 @@ export function normalizeContainerId(id: string): string {
  * - container.short_id (if present)
  */
 export function normalizeContainer<T extends ContainerLike>(container: T): T {
+  const needsIdNorm = container.id.length > 12
+  const needsShortIdNorm = container.short_id != null && container.short_id.length > 12
+
+  // Skip cloning if IDs are already 12-char — avoids 70+ object spreads per WS message
+  if (!needsIdNorm && !needsShortIdNorm) return container
+
   const normalized: T = {
     ...container,
-    id: normalizeContainerId(container.id),
+    id: needsIdNorm ? normalizeContainerId(container.id) : container.id,
   }
 
-  // Only normalize short_id if it exists
-  if ('short_id' in container && container.short_id) {
-    normalized.short_id = normalizeContainerId(container.short_id)
+  if (needsShortIdNorm) {
+    normalized.short_id = normalizeContainerId(container.short_id!)
   }
 
   return normalized

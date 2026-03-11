@@ -8,6 +8,7 @@ import { Cpu, MemoryStick, Network } from 'lucide-react'
 import { DrawerSection } from '@/components/ui/drawer'
 import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
 import { useHostMetrics, useHostSparklines } from '@/lib/stats/StatsProvider'
+import { formatNetworkRate } from '@/lib/utils/formatting'
 
 interface HostPerformanceSectionProps {
   hostId: string
@@ -16,15 +17,6 @@ interface HostPerformanceSectionProps {
 export function HostPerformanceSection({ hostId }: HostPerformanceSectionProps) {
   const metrics = useHostMetrics(hostId)
   const sparklines = useHostSparklines(hostId)
-
-  // Format network rate (bytes/sec to KB/s or MB/s)
-  const formatNetworkRate = (bytesPerSec: number | undefined): string => {
-    if (!bytesPerSec) return '0 B/s'
-
-    if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`
-    if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`
-    return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
-  }
 
   return (
     <DrawerSection title="Performance">

@@ -10,6 +10,9 @@ import { useQuery } from '@tanstack/react-query'
 import { Calendar, AlertCircle, X, ArrowUpDown, Search, Check, Download, Bell } from 'lucide-react'
 import { useHostEvents } from '@/hooks/useEvents'
 import { EventRow } from '@/features/events/components/EventRow'
+import { apiClient } from '@/lib/api/client'
+import { exportToCsv } from '@/lib/utils/csvExport'
+import type { Container } from '@/features/containers/types'
 
 interface HostEventsTabProps {
   hostId: string
@@ -42,25 +45,20 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
   const [showContainerDropdown, setShowContainerDropdown] = useState(false)
   const containerDropdownRef = useRef<HTMLDivElement>(null)
 
-  // TODO: Update useHostEvents to support filtering parameters
   const { data: eventsData, isLoading, error } = useHostEvents(hostId, 200)
   const allEvents = eventsData?.events ?? []
 
-  // Fetch containers for this host
-  const { data: allContainers = [] } = useQuery<any[]>({
+  const { data: allContainers = [] } = useQuery<Container[]>({
     queryKey: ['containers'],
-    queryFn: () => fetch('/api/containers').then((res) => res.json()),
+    queryFn: () => apiClient.get<Container[]>('/containers'),
   })
 
-  // Filter to only show containers from this host
   const hostContainers = allContainers.filter((c) => c.host_id === hostId)
 
-  // Filter containers based on search
   const filteredContainers = hostContainers.filter((c) =>
     c.name.toLowerCase().includes(containerSearchInput.toLowerCase())
   )
 
-  // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (containerDropdownRef.current && !containerDropdownRef.current.contains(event.target as Node)) {
@@ -72,32 +70,26 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  // Client-side filtering (TODO: move to backend)
   const filteredEvents = allEvents
     .filter((event) => {
-      // Time range filter (skip if hours = 0 for "All time")
       if (filters.hours > 0) {
         const eventTime = new Date(event.timestamp).getTime()
         const cutoff = Date.now() - filters.hours * 60 * 60 * 1000
         if (eventTime < cutoff) return false
       }
 
-      // Severity filter
       if (filters.severity && event.severity.toLowerCase() !== filters.severity.toLowerCase()) {
         return false
       }
 
-      // Category filter
       if (filters.category && event.category?.toLowerCase() !== filters.category.toLowerCase()) {
         return false
       }
 
-      // Container filter
       if (selectedContainerIds.length > 0 && event.container_id && !selectedContainerIds.includes(event.container_id)) {
         return false
       }
 
-      // Search filter
       if (filters.search) {
         const searchLower = filters.search.toLowerCase()
         const titleMatch = event.title?.toLowerCase().includes(searchLower)
@@ -114,10 +106,9 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
       return sortOrder === 'desc' ? bTime - aTime : aTime - bTime
     })
 
-  // Count alert events in all (unfiltered) events
   const alertEventCount = allEvents.filter(e => e.category === 'alert').length
 
-  const updateFilter = (key: keyof typeof filters, value: any) => {
+  const updateFilter = (key: keyof typeof filters, value: string | number) => {
     setFilters((prev) => ({ ...prev, [key]: value }))
   }
 
@@ -142,11 +133,9 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
     setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'))
   }
 
-  // Export events to CSV
   const exportToCSV = () => {
     if (filteredEvents.length === 0) return
 
-    // CSV headers
     const headers = [
       'Timestamp',
       'Severity',
@@ -159,7 +148,6 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
       'New State',
     ]
 
-    // Convert events to CSV rows
     const rows = filteredEvents.map((event) => [
       event.timestamp,
       event.severity,
@@ -172,33 +160,7 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
       event.new_state || '',
     ])
 
-    // Escape CSV values (handle quotes and commas)
-    const escapeCSV = (value: string): string => {
-      if (value.includes('"') || value.includes(',') || value.includes('\n')) {
-        return `"${value.replace(/"/g, '""')}"`
-      }
-      return value
-    }
-
-    // Build CSV content
-    const csvContent = [
-      headers.map(escapeCSV).join(','),
-      ...rows.map((row) => row.map((cell) => escapeCSV(String(cell))).join(',')),
-    ].join('\n')
-
-    // Create download link
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
-    const link = document.createElement('a')
-    const url = URL.createObjectURL(blob)
-    link.setAttribute('href', url)
-    link.setAttribute('download', `dockmon-host-events-${new Date().toISOString().split('T')[0]}.csv`)
-    link.style.visibility = 'hidden'
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-
-    // Clean up object URL to prevent memory leak
-    URL.revokeObjectURL(url)
+    exportToCsv(headers, rows, `dockmon-host-events-${new Date().toISOString().split('T')[0]}.csv`)
   }
 
   if (isLoading) {

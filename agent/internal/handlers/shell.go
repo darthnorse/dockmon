@@ -72,7 +72,7 @@ func (h *ShellHandler) startSession(parentCtx context.Context, containerID, sess
 	}
 
 	// Create context for this session
-	ctx, cancel := context.WithCancel(parentCtx)
+	ctx, cancel := context.WithCancel(parentCtx) // #nosec G118
 
 	session := &ShellSession{
 		SessionID:   sessionID,
@@ -233,6 +233,11 @@ func (h *ShellHandler) resize(sessionID string, cols, rows int) {
 	}
 
 	if session.ExecID == "" {
+		return
+	}
+
+	if rows <= 0 || cols <= 0 {
+		h.log.WithFields(logrus.Fields{"rows": rows, "cols": cols}).Debug("Invalid terminal dimensions for resize")
 		return
 	}
 

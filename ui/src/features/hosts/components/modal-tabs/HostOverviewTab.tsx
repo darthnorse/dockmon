@@ -22,6 +22,8 @@ import { apiClient } from '@/lib/api/client'
 import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
 import { formatTime } from '@/lib/utils/timeFormat'
 import type { Host } from '@/types/api'
+import { useAuth } from '@/features/auth/AuthContext'
+import { formatBytes, formatNetworkRate } from '@/lib/utils/formatting'
 
 interface HostOverviewTabProps {
   hostId: string
@@ -41,6 +43,10 @@ interface AgentInfo {
 }
 
 export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
+  const { hasCapability } = useAuth()
+  const canManageAgents = hasCapability('agents.manage')
+  const canManageTags = hasCapability('tags.manage')
+
   const { timeFormat } = useTimeFormat()
   const queryClient = useQueryClient()
   const [updateTriggered, setUpdateTriggered] = useState(false)
@@ -89,28 +95,6 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
     handleSaveTags,
   } = useHostTagEditor({ hostId, currentTags })
 
-  // Format network rate (bytes/sec to KB/s or MB/s)
-  const formatNetworkRate = (bytesPerSec: number | undefined): string => {
-    if (!bytesPerSec) return '0 B/s'
-
-    if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`
-    if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`
-    return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
-  }
-
-  // Format bytes to human readable
-  const formatBytes = (bytes: number | undefined): string => {
-    if (!bytes) return '0 B'
-    const units = ['B', 'KB', 'MB', 'GB', 'TB']
-    let value = bytes
-    let unitIndex = 0
-    while (value >= 1024 && unitIndex < units.length - 1) {
-      value /= 1024
-      unitIndex++
-    }
-    return `${value.toFixed(value < 10 ? 1 : 0)} ${units[unitIndex]}`
-  }
-
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="p-3 sm:p-4 md:p-6">
@@ -130,7 +114,7 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
               {!agent.is_container_mode && (
                 <Button
                   onClick={() => triggerUpdate.mutate()}
-                  disabled={triggerUpdate.isPending}
+                  disabled={!canManageAgents || triggerUpdate.isPending}
                   size="sm"
                 >
                   {triggerUpdate.isPending ? (
@@ -266,7 +250,8 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
                     <h4 className="text-lg font-medium text-foreground">Tags</h4>
                     <button
                       onClick={handleStartEdit}
-                      className="text-xs text-primary hover:text-primary/80"
+                      disabled={!canManageTags}
+                      className="text-xs text-primary hover:text-primary/80 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       + Edit
                     </button>

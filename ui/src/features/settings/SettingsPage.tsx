@@ -3,8 +3,8 @@
  * User preferences and configuration
  */
 
-import { useState } from 'react'
-import { LayoutDashboard, Bell, AlertTriangle, Settings, Package, Key, ScrollText, LucideIcon } from 'lucide-react'
+import { useState, useMemo } from 'react'
+import { LayoutDashboard, Bell, AlertTriangle, Settings, Package, Key, ScrollText, Users, LucideIcon, KeyRound, Shield, UserSquare2, ClipboardList } from 'lucide-react'
 import { DashboardSettings } from './components/DashboardSettings'
 import { NotificationChannelsSection } from './components/NotificationChannelsSection'
 import { AlertTemplateSettings } from './components/AlertTemplateSettings'
@@ -13,27 +13,56 @@ import { SystemSettings } from './components/SystemSettings'
 import { ContainerUpdatesSettings } from './components/ContainerUpdatesSettings'
 import { ApiKeysSettings } from './components/ApiKeysSettings'
 import { EventsSettings } from './components/EventsSettings'
+import { UsersSettings } from './components/UsersSettings'
+import { OIDCSettings } from './components/OIDCSettings'
+import { GroupsSettings } from './components/GroupsSettings'
+import { GroupPermissionsSettings } from './components/GroupPermissionsSettings'
+import { AuditLogSettings } from './components/AuditLogSettings'
+import { useAuth } from '@/features/auth/AuthContext'
+import { usePendingUserCount } from '@/hooks/useUsers'
 
-type TabId = 'dashboard' | 'alerts' | 'notifications' | 'updates' | 'events' | 'api-keys' | 'system'
+type TabId = 'dashboard' | 'alerts' | 'notifications' | 'updates' | 'events' | 'api-keys' | 'users' | 'groups' | 'permissions' | 'oidc' | 'audit-log' | 'system'
 
 interface Tab {
   id: TabId
   label: string
   icon: LucideIcon
+  // Capabilities required to see this tab (any of these grants access)
+  capabilities?: string[]
+  // Use wider layout (max-w-7xl instead of max-w-4xl)
+  wideLayout?: boolean
 }
 
 const TABS: Tab[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'alerts', label: 'Alerts', icon: AlertTriangle },
-  { id: 'notifications', label: 'Notifications', icon: Bell },
-  { id: 'updates', label: 'Container Updates', icon: Package },
-  { id: 'events', label: 'Events', icon: ScrollText },
-  { id: 'api-keys', label: 'API Keys', icon: Key },
-  { id: 'system', label: 'System', icon: Settings },
+  { id: 'alerts', label: 'Alerts', icon: AlertTriangle, capabilities: ['alerts.view', 'alerts.manage'] },
+  { id: 'notifications', label: 'Notifications', icon: Bell, capabilities: ['notifications.view', 'notifications.manage'] },
+  { id: 'updates', label: 'Container Updates', icon: Package, capabilities: ['policies.view', 'policies.manage'] },
+  { id: 'events', label: 'Events', icon: ScrollText, capabilities: ['events.view'] },
+  { id: 'api-keys', label: 'API Keys', icon: Key, capabilities: ['apikeys.manage_other'] },
+  { id: 'users', label: 'Users', icon: Users, capabilities: ['users.manage'] },
+  { id: 'groups', label: 'Groups', icon: UserSquare2, capabilities: ['groups.manage'] },
+  { id: 'permissions', label: 'Permissions', icon: Shield, capabilities: ['groups.manage'] },
+  { id: 'oidc', label: 'OIDC', icon: KeyRound, capabilities: ['oidc.manage'] },
+  { id: 'audit-log', label: 'Audit Log', icon: ClipboardList, capabilities: ['audit.view'], wideLayout: true },
+  { id: 'system', label: 'System', icon: Settings, capabilities: ['settings.manage'] },
 ]
 
 export function SettingsPage() {
+  const { hasCapability } = useAuth()
+  const { data: pendingData } = usePendingUserCount()
   const [activeTab, setActiveTab] = useState<TabId>('dashboard')
+
+  // Filter tabs based on user capabilities
+  const visibleTabs = useMemo(
+    () => TABS.filter((tab) => {
+      // No capabilities required = visible to all
+      if (!tab.capabilities || tab.capabilities.length === 0) return true
+      // User has at least one of the required capabilities
+      return tab.capabilities.some((cap) => hasCapability(cap))
+    }),
+    [hasCapability]
+  )
 
   return (
     <div className="flex h-full flex-col bg-[#0a0e14]">
@@ -46,7 +75,7 @@ export function SettingsPage() {
       {/* Tabs */}
       <div className="border-b border-gray-800 bg-[#0d1117]">
         <div className="flex gap-1 px-3 sm:px-4 md:px-6 overflow-x-auto">
-          {TABS.map((tab) => {
+          {visibleTabs.map((tab) => {
             const Icon = tab.icon
             const isActive = activeTab === tab.id
             return (
@@ -61,6 +90,11 @@ export function SettingsPage() {
               >
                 <Icon className="h-4 w-4" />
                 {tab.label}
+                {tab.id === 'users' && (pendingData?.count ?? 0) > 0 && (
+                  <span className="ml-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 text-xs font-medium text-black">
+                    {pendingData?.count}
+                  </span>
+                )}
               </button>
             )
           })}
@@ -69,9 +103,9 @@ export function SettingsPage() {
 
       {/* Content */}
       <div className="flex-1 overflow-auto">
-        <div className="container mx-auto max-w-4xl px-3 sm:px-4 md:px-6 py-4 sm:py-6">
+        <div className={`container mx-auto px-3 sm:px-4 md:px-6 py-4 sm:py-6 ${TABS.find((t) => t.id === activeTab)?.wideLayout ? 'max-w-7xl' : 'max-w-4xl'}`}>
           {activeTab === 'dashboard' && <DashboardSettings />}
-          {activeTab === 'alerts' && (
+          {activeTab === 'alerts' && (hasCapability('alerts.view') || hasCapability('alerts.manage')) && (
             <div className="space-y-8">
               <div>
                 <h2 className="mb-4 text-lg font-semibold text-white">Blackout Windows</h2>
@@ -83,11 +117,16 @@ export function SettingsPage() {
               </div>
             </div>
           )}
-          {activeTab === 'notifications' && <NotificationChannelsSection />}
-          {activeTab === 'updates' && <ContainerUpdatesSettings />}
-          {activeTab === 'events' && <EventsSettings />}
-          {activeTab === 'api-keys' && <ApiKeysSettings />}
-          {activeTab === 'system' && <SystemSettings />}
+          {activeTab === 'notifications' && (hasCapability('notifications.view') || hasCapability('notifications.manage')) && <NotificationChannelsSection />}
+          {activeTab === 'updates' && (hasCapability('policies.view') || hasCapability('policies.manage')) && <ContainerUpdatesSettings />}
+          {activeTab === 'events' && hasCapability('events.view') && <EventsSettings />}
+          {activeTab === 'api-keys' && hasCapability('apikeys.manage_other') && <ApiKeysSettings />}
+          {activeTab === 'users' && hasCapability('users.manage') && <UsersSettings />}
+          {activeTab === 'groups' && hasCapability('groups.manage') && <GroupsSettings />}
+          {activeTab === 'permissions' && hasCapability('groups.manage') && <GroupPermissionsSettings />}
+          {activeTab === 'oidc' && hasCapability('oidc.manage') && <OIDCSettings />}
+          {activeTab === 'audit-log' && hasCapability('audit.view') && <AuditLogSettings />}
+          {activeTab === 'system' && hasCapability('settings.manage') && <SystemSettings />}
         </div>
       </div>
     </div>

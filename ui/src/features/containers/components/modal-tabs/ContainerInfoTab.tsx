@@ -18,6 +18,8 @@
  */
 
 import { useState, useEffect, useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { useAuth } from '@/features/auth/AuthContext'
 import { Cpu, MemoryStick, Network } from 'lucide-react'
 import type { Container } from '../../types'
 import { useContainerSparklines } from '@/lib/stats/StatsProvider'
@@ -29,15 +31,32 @@ import { TagChip } from '@/components/TagChip'
 import { Button } from '@/components/ui/button'
 import { useContainerTagEditor } from '@/hooks/useContainerTagEditor'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
-import { formatBytes } from '@/lib/utils/formatting'
+import { formatBytes, formatNetworkRate } from '@/lib/utils/formatting'
+import { sanitizeHref } from '@/lib/utils/urlSanitize'
+
+const SYSTEM_ENV_VARS = ['PATH', 'HOME', 'HOSTNAME', 'TERM']
 
 interface ContainerInfoTabProps {
   container: Container
 }
 
 export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
-  // CRITICAL: Always use 12-char short ID for API calls (backend expects short IDs)
+  const { hasCapability } = useAuth()
+  const canOperate = hasCapability('containers.operate')
+  const canManageTags = hasCapability('tags.manage')
+  const canViewEnv = hasCapability('containers.view_env')
   const containerShortId = container.id.slice(0, 12)
+
+  const { data: inspectData, isError: inspectError } = useQuery({
+    queryKey: ['container-inspect', container.host_id, containerShortId],
+    queryFn: () => apiClient.get<Record<string, unknown>>(
+      `/hosts/${container.host_id}/containers/${containerShortId}/inspect`
+    ),
+    enabled: canViewEnv,
+    staleTime: 30_000,
+    gcTime: 60_000,
+    retry: 1,
+  })
 
   const sparklines = useContainerSparklines(makeCompositeKey(container))
   const [autoRestart, setAutoRestart] = useState(false)
@@ -45,7 +64,6 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
   const [webUiUrl, setWebUiUrl] = useState('')
   const [isEditingWebUi, setIsEditingWebUi] = useState(false)
 
-  // Tag editor
   const currentTags = container.tags || []
   const {
     isEditing: isEditingTags,
@@ -62,12 +80,10 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     currentTags
   })
 
-  // Memoize sparkline arrays - using length and checksum for efficient comparison
-  const cpuData = useMemo(() => sparklines?.cpu || [], [sparklines?.cpu?.length, sparklines?.cpu?.join(',')])
-  const memData = useMemo(() => sparklines?.mem || [], [sparklines?.mem?.length, sparklines?.mem?.join(',')])
-  const netData = useMemo(() => sparklines?.net || [], [sparklines?.net?.length, sparklines?.net?.join(',')])
+  const cpuData = sparklines?.cpu || []
+  const memData = sparklines?.mem || []
+  const netData = sparklines?.net || []
 
-  // Initialize auto-restart, desired state, and web UI URL
   useEffect(() => {
     setAutoRestart(container.auto_restart ?? false)
 
@@ -102,7 +118,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
       await apiClient.post(`/hosts/${container.host_id}/containers/${containerShortId}/desired-state`, {
         desired_state: newState,
         container_name: container.name,
-        web_ui_url: webUiUrl || null
+        web_ui_url: isEditingWebUi ? (container.web_ui_url || null) : (webUiUrl || null)
       })
       toast.success(`Desired state set to "${newState}"`)
     } catch (error) {
@@ -125,23 +141,29 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     }
   }
 
-  const formatNetworkRate = (bytesPerSec: number | null | undefined): string => {
-    if (!bytesPerSec) return '0 B/s'
-    const k = 1024
-    if (bytesPerSec < k) return `${bytesPerSec.toFixed(0)} B/s`
-    if (bytesPerSec < k * k) return `${(bytesPerSec / k).toFixed(2)} KB/s`
-    return `${(bytesPerSec / (k * k)).toFixed(2)} MB/s`
-  }
+  // Prefer inspect data (works for both agent and legacy hosts)
+  // Fall back to container.env (populated for legacy hosts via HTTP)
+  const filteredEnv = useMemo(() => {
+    if (!canViewEnv) return []
 
-  // Filter out common system env vars for cleaner display
-  const filteredEnv = container.env
-    ? Object.entries(container.env).filter(([key]) => {
-        // Show app-specific variables, hide common system paths
-        return !['PATH', 'HOME', 'HOSTNAME', 'TERM'].includes(key)
-      })
-    : []
+    let envEntries: [string, string][] = []
 
-  // Get state color based on desired state and current state
+    if (inspectData) {
+      const config = inspectData.Config as Record<string, unknown> | undefined
+      const envList = (config?.Env ?? []) as string[]
+      envEntries = envList
+        .filter((e): e is string => typeof e === 'string' && e.includes('='))
+        .map((e) => {
+          const idx = e.indexOf('=')
+          return [e.slice(0, idx), e.slice(idx + 1)] as [string, string]
+        })
+    } else if (container.env) {
+      envEntries = Object.entries(container.env)
+    }
+
+    return envEntries.filter(([key]) => !SYSTEM_ENV_VARS.includes(key))
+  }, [canViewEnv, inspectData, container.env])
+
   const getStateColor = () => {
     const state = container.state.toLowerCase()
     const desired = desiredState
@@ -151,7 +173,6 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
       return <span className="text-warning">Stopped (Should Run)</span>
     }
 
-    // Otherwise use standard colors
     switch (state) {
       case 'running':
         return <span className="text-success">Running</span>
@@ -191,7 +212,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
             </div>
 
             {/* WebUI URL */}
-            <div>
+            <fieldset disabled={!canOperate} className="disabled:opacity-60">
               <h4 className="text-lg font-medium text-foreground mb-3">WebUI</h4>
               {isEditingWebUi ? (
                 <div className="space-y-2">
@@ -227,14 +248,20 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                 <div>
                   {webUiUrl ? (
                     <div className="flex items-center gap-2">
-                      <a
-                        href={webUiUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sm text-primary hover:underline truncate flex-1"
-                      >
-                        {webUiUrl}
-                      </a>
+                      {sanitizeHref(webUiUrl) ? (
+                        <a
+                          href={sanitizeHref(webUiUrl)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-sm text-primary hover:underline truncate flex-1"
+                        >
+                          {webUiUrl}
+                        </a>
+                      ) : (
+                        <span className="text-sm text-muted-foreground truncate flex-1">
+                          {webUiUrl}
+                        </span>
+                      )}
                       <button
                         onClick={() => setIsEditingWebUi(true)}
                         className="text-xs text-primary hover:text-primary/80"
@@ -252,12 +279,12 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                   )}
                 </div>
               )}
-            </div>
+            </fieldset>
 
             {/* Tags */}
             <div>
               {isEditingTags ? (
-                <div className="space-y-2">
+                <fieldset disabled={!canManageTags} className="space-y-2 disabled:opacity-60">
                   <div className="flex items-center justify-between">
                     <h4 className="text-lg font-medium text-foreground">Tags</h4>
                   </div>
@@ -287,14 +314,15 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                       Cancel
                     </Button>
                   </div>
-                </div>
+                </fieldset>
               ) : (
                 <div>
                   <div className="flex items-center justify-between mb-3">
                     <h4 className="text-lg font-medium text-foreground">Tags</h4>
                     <button
                       onClick={handleStartEdit}
-                      className="text-xs text-primary hover:text-primary/80"
+                      disabled={!canManageTags}
+                      className="text-xs text-primary hover:text-primary/80 disabled:opacity-60 disabled:cursor-not-allowed"
                     >
                       + Edit
                     </button>
@@ -349,77 +377,85 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
             )}
 
             {/* Environment Variables */}
-            {filteredEnv.length > 0 && (
+            {canViewEnv && (filteredEnv.length > 0 || inspectError) && (
               <div>
                 <h4 className="text-lg font-medium text-foreground mb-3">Environment Variables</h4>
-                <div className="space-y-1.5 max-h-64 overflow-y-auto">
-                  {filteredEnv.map(([key, value]) => (
-                    <div key={key} className="flex justify-between text-sm gap-4">
-                      <span className="text-muted-foreground font-mono flex-shrink-0">
-                        {key}
-                      </span>
-                      <span className="font-mono truncate text-right">{value}</span>
-                    </div>
-                  ))}
-                </div>
+                {inspectError && filteredEnv.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Failed to load environment variables</p>
+                ) : filteredEnv.length > 0 ? (
+                  <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                    {filteredEnv.map(([key, value]) => (
+                      <div key={key} className="flex justify-between text-sm gap-4">
+                        <span className="text-muted-foreground font-mono flex-shrink-0">
+                          {key}
+                        </span>
+                        <span className="font-mono truncate text-right">{value}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No application environment variables</p>
+                )}
               </div>
             )}
           </div>
 
           {/* RIGHT COLUMN */}
           <div className="space-y-6">
-            {/* Auto-restart Toggle */}
-            <div>
-              <h4 className="text-lg font-medium text-foreground mb-3">Auto-restart</h4>
-              <label className="flex items-center gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={autoRestart}
-                  onChange={(e) => handleAutoRestartToggle(e.target.checked)}
-                  className="w-4 h-4 rounded border-border bg-surface-1 checked:bg-primary"
-                />
-                <span className="text-sm">
-                  Automatically restart container if it stops unexpectedly
-                </span>
-              </label>
-            </div>
-
-            {/* Desired State */}
-            <div>
-              <h4 className="text-lg font-medium text-foreground mb-3">Desired State</h4>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => handleDesiredStateChange('should_run')}
-                  className={`flex-1 px-3 py-2 text-sm rounded transition-colors ${
-                    desiredState === 'should_run'
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-surface-1 hover:bg-surface-2'
-                  }`}
-                >
-                  Should Run
-                </button>
-                <button
-                  onClick={() => handleDesiredStateChange('on_demand')}
-                  className={`flex-1 px-3 py-2 text-sm rounded transition-colors ${
-                    desiredState === 'on_demand'
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-surface-1 hover:bg-surface-2'
-                  }`}
-                >
-                  On Demand
-                </button>
-                <button
-                  onClick={() => handleDesiredStateChange('unspecified')}
-                  className={`flex-1 px-3 py-2 text-sm rounded transition-colors ${
-                    desiredState === 'unspecified'
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-surface-1 hover:bg-surface-2'
-                  }`}
-                >
-                  Unspecified
-                </button>
+            <fieldset disabled={!canOperate} className="space-y-6 disabled:opacity-60">
+              {/* Auto-restart Toggle */}
+              <div>
+                <h4 className="text-lg font-medium text-foreground mb-3">Auto-restart</h4>
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={autoRestart}
+                    onChange={(e) => handleAutoRestartToggle(e.target.checked)}
+                    className="w-4 h-4 rounded border-border bg-surface-1 checked:bg-primary"
+                  />
+                  <span className="text-sm">
+                    Automatically restart container if it stops unexpectedly
+                  </span>
+                </label>
               </div>
-            </div>
+
+              {/* Desired State */}
+              <div>
+                <h4 className="text-lg font-medium text-foreground mb-3">Desired State</h4>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => handleDesiredStateChange('should_run')}
+                    className={`flex-1 px-3 py-2 text-sm rounded transition-colors ${
+                      desiredState === 'should_run'
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-surface-1 hover:bg-surface-2'
+                    }`}
+                  >
+                    Should Run
+                  </button>
+                  <button
+                    onClick={() => handleDesiredStateChange('on_demand')}
+                    className={`flex-1 px-3 py-2 text-sm rounded transition-colors ${
+                      desiredState === 'on_demand'
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-surface-1 hover:bg-surface-2'
+                    }`}
+                  >
+                    On Demand
+                  </button>
+                  <button
+                    onClick={() => handleDesiredStateChange('unspecified')}
+                    className={`flex-1 px-3 py-2 text-sm rounded transition-colors ${
+                      desiredState === 'unspecified'
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-surface-1 hover:bg-surface-2'
+                    }`}
+                  >
+                    Unspecified
+                  </button>
+                </div>
+              </div>
+            </fieldset>
 
             {/* Live Stats Header */}
             <div className="-mb-3">

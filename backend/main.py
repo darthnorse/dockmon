@@ -30,7 +30,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Requ
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html
-# Session-based auth - no longer need HTTPBearer
 from fastapi.responses import FileResponse, JSONResponse
 from database import (
     DatabaseManager,
@@ -71,9 +70,11 @@ from models.request_models import (
     ContainerTagUpdate, HostTagUpdate, HttpHealthCheckConfig, GenerateTokenRequest,
     RenameContainerRequest
 )
+from audit.audit_logger import AuditAction, AuditEntityType, log_audit, log_container_action, log_host_change, log_settings_change, get_client_info
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_scope  # v2 hybrid auth (cookies + API keys)
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, get_capabilities_for_user, Capabilities
+from auth.utils import get_auditable_user_info
 from websocket.connection import ConnectionManager, DateTimeEncoder
 from websocket.rate_limiter import ws_rate_limiter
 from docker_monitor.monitor import DockerMonitor
@@ -82,7 +83,9 @@ from utils.keys import make_composite_key
 from utils.encryption import encrypt_password, decrypt_password
 from utils.async_docker import async_docker_call, async_client_ping, async_client_version, async_containers_list
 from utils.base_path import get_base_path
+from utils.response_filtering import filter_container_env, filter_container_inspect_env, filter_ws_container_message
 from utils.host_ips import deserialize_host_ips
+from utils.client_ip import get_client_ip_ws
 from updates.container_validator import ContainerValidator, ValidationResult
 from agent.manager import AgentManager
 from agent import handle_agent_websocket
@@ -117,6 +120,32 @@ def is_compose_container(labels: Dict[str, str]) -> bool:
         True if container has com.docker.compose.* labels
     """
     return any(label.startswith("com.docker.compose") for label in labels.keys())
+
+
+def _get_container_name(host_id: str, container_id: str) -> str:
+    """Look up container name from cache or DB. Falls back to container_id."""
+    return monitor.resolve_container_name(host_id, container_id)
+
+
+def _get_host_name(host_id: str) -> str:
+    """Look up host name from monitor.hosts. Falls back to host_id."""
+    host = monitor.hosts.get(host_id)
+    return host.name if host else host_id
+
+
+def _safe_audit(current_user, log_fn, *args, **kwargs):
+    """Safely log an audit event. Prevents audit failures from causing HTTP 500.
+
+    Handles get_auditable_user_info, session management, and commit.
+    log_fn signature must be: log_fn(session, user_id, display_name, *args, **kwargs)
+    """
+    try:
+        user_id, display_name = get_auditable_user_info(current_user)
+        with monitor.db.get_session() as session:
+            log_fn(session, user_id, display_name, *args, **kwargs)
+            session.commit()
+    except Exception:
+        logger.error("Audit logging failed", exc_info=True)
 
 
 # ==================== Security Constants ====================
@@ -425,10 +454,12 @@ print(response.json())
     root_path=get_base_path().rstrip('/')  # Strip trailing slash for FastAPI root_path
 )
 
-# Configure CORS - Production ready with environment-based configuration
+# Configure CORS - Only add middleware when explicitly configured
+# By default (no CORS_ORIGINS set), same-origin policy applies since frontend
+# is served from the same origin via nginx. CORS is only needed for split-origin
+# setups (e.g., development with vite dev server on a different port).
 cors_config = AppConfig.CORS_ORIGINS
 if cors_config:
-    # Specific origins configured
     origins_list = [origin.strip() for origin in cors_config.split(',')]
     app.add_middleware(
         CORSMiddleware,
@@ -439,15 +470,7 @@ if cors_config:
     )
     logger.info(f"CORS configured for specific origins: {origins_list}")
 else:
-    # Allow all origins (auth still required for all endpoints)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origin_regex=".*",
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type", "Authorization"],
-    )
-    logger.info("CORS configured to allow all origins (authentication required for all endpoints)")
+    logger.info("CORS not configured (same-origin only). Set CORS_ORIGINS to allow cross-origin requests.")
 
 # Custom exception handler for Pydantic validation errors
 @app.exception_handler(RequestValidationError)
@@ -492,6 +515,26 @@ app.include_router(stack_routes.router)  # v2.2.7+ stacks endpoints
 # API key routes (v2.1.8+)
 from auth import api_key_routes
 app.include_router(api_key_routes.router)  # API key management
+
+# User management routes (v2.3.0+) - admin-only user CRUD
+from auth.user_management_routes import router as user_management_router
+app.include_router(user_management_router)  # User management (admin only)
+
+# OIDC routes (v2.3.0+) - OpenID Connect configuration and authentication
+from auth.oidc_config_routes import router as oidc_config_router
+from auth.oidc_auth_routes import router as oidc_auth_router
+app.include_router(oidc_config_router)  # OIDC configuration (admin only)
+app.include_router(oidc_auth_router)  # OIDC authentication flow
+
+# Custom groups routes - group-based permission management
+from auth.custom_groups_routes import router as custom_groups_router
+from auth.capabilities_routes import router as capabilities_router
+app.include_router(custom_groups_router)  # Custom group management (admin only)
+app.include_router(capabilities_router)  # Capabilities metadata for permissions UI
+
+# Audit log routes (v2.3.0 Phase 6) - audit log viewer and management
+from audit.audit_routes import router as audit_routes_router
+app.include_router(audit_routes_router)  # Audit log management (admin only)
 
 # Action token routes (v2.2.0+) - notification action links
 from auth import action_token_routes
@@ -539,19 +582,13 @@ def _is_localhost_or_internal(ip: str) -> bool:
 # ==================== Frontend Authentication ====================
 
 async def verify_session_auth(request: Request):
-    """Verify authentication via session cookie only"""
-    from auth.shared import get_session_from_cookie
-    from auth.session_manager import session_manager
+    """Verify authentication via session cookie only (legacy - prefer v2 cookie auth)"""
+    session_id = request.cookies.get("dockmon_session")
+    if session_id:
+        from auth.session_manager import session_manager
+        if session_manager.validate_session(session_id, request):
+            return True
 
-    # Since backend only listens on 127.0.0.1, all requests must come through nginx
-    # No need to check client IP - the backend binding ensures security
-
-    # Check session authentication
-    session_id = get_session_from_cookie(request)
-    if session_id and session_manager.validate_session(session_id, request):
-        return True
-
-    # No valid session found
     raise HTTPException(
         status_code=401,
         detail="Authentication required - please login"
@@ -559,7 +596,7 @@ async def verify_session_auth(request: Request):
 
 
 
-@app.get("/api/hosts", tags=["hosts"])
+@app.get("/api/hosts", tags=["hosts"], dependencies=[Depends(require_capability("hosts.view"))])
 async def get_hosts(current_user: dict = Depends(get_current_user)):
     """Get all configured Docker hosts
 
@@ -694,7 +731,7 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
 
         return enriched_hosts
 
-@app.post("/api/hosts", tags=["hosts"], dependencies=[Depends(require_scope("admin"))])
+@app.post("/api/hosts", tags=["hosts"], dependencies=[Depends(require_capability("hosts.manage"))])
 async def add_host(config: DockerHostConfig, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts, request: Request = None):
     """Add a new Docker host"""
     try:
@@ -709,6 +746,8 @@ async def add_host(config: DockerHostConfig, current_user: dict = Depends(get_cu
                 success=True,
                 user_agent=request.headers.get('user-agent', 'unknown')
             )
+
+        _safe_audit(current_user, log_host_change, AuditAction.CREATE, host.id, config.name, request, details={'url': config.url})
 
         # Broadcast host addition to WebSocket clients so they refresh
         await monitor.manager.broadcast({
@@ -729,7 +768,7 @@ async def add_host(config: DockerHostConfig, current_user: dict = Depends(get_cu
             )
         raise
 
-@app.post("/api/hosts/test-connection", tags=["hosts"], dependencies=[Depends(require_scope("admin"))])
+@app.post("/api/hosts/test-connection", tags=["hosts"], dependencies=[Depends(require_capability("hosts.manage"))])
 async def test_host_connection(config: DockerHostConfig, current_user: dict = Depends(get_current_user)):
     """Test connection to a Docker host without adding it
 
@@ -846,19 +885,26 @@ async def test_host_connection(config: DockerHostConfig, current_user: dict = De
                 pass
 
         logger.error(f"Connection test failed for {config.url}: {str(e)}")
-        raise HTTPException(status_code=400, detail=f"Connection failed: {str(e)}")
+        raise HTTPException(status_code=400, detail="Connection failed. Check the host URL and credentials.")
 
-@app.put("/api/hosts/{host_id}", tags=["hosts"], dependencies=[Depends(require_scope("admin"))])
-async def update_host(host_id: str, config: DockerHostConfig, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
+@app.put("/api/hosts/{host_id}", tags=["hosts"], dependencies=[Depends(require_capability("hosts.manage"))])
+async def update_host(host_id: str, config: DockerHostConfig, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
     """Update an existing Docker host"""
     host = await asyncio.to_thread(monitor.update_host, host_id, config)
+    _safe_audit(current_user, log_host_change, AuditAction.UPDATE, host_id, config.name, request)
     return host
 
-@app.delete("/api/hosts/{host_id}", tags=["hosts"], dependencies=[Depends(require_scope("admin"))])
-async def remove_host(host_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
+@app.delete("/api/hosts/{host_id}", tags=["hosts"], dependencies=[Depends(require_capability("hosts.manage"))])
+async def remove_host(host_id: str, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
     """Remove a Docker host"""
     try:
+        # Get host name before removal for audit
+        host = monitor.hosts.get(host_id)
+        host_name = host.name if host else host_id
+
         await monitor.remove_host(host_id)
+
+        _safe_audit(current_user, log_host_change, AuditAction.DELETE, host_id, host_name, request)
 
         # Broadcast host removal to WebSocket clients so they refresh
         await monitor.manager.broadcast({
@@ -874,12 +920,13 @@ async def remove_host(host_id: str, current_user: dict = Depends(get_current_use
     except Exception as e:
         # Unexpected error during removal
         logger.error(f"Error removing host {host_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to remove host: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to remove host")
 
-@app.patch("/api/hosts/{host_id}/tags", tags=["tags"], dependencies=[Depends(require_scope("admin"))])
+@app.patch("/api/hosts/{host_id}/tags", tags=["tags"], dependencies=[Depends(require_capability("tags.manage"))])
 async def update_host_tags(
     host_id: str,
     request: HostTagUpdate,
+    http_request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -910,11 +957,11 @@ async def update_host_tags(
     # Update in-memory host object so changes are immediately visible
     host.tags = updated_tags
 
-    logger.info(f"User {current_user.get('username')} updated tags for host {host.name}")
+    _safe_audit(current_user, log_host_change, AuditAction.UPDATE, host_id, host.name, http_request, details={'tags_to_add': request.tags_to_add, 'tags_to_remove': request.tags_to_remove})
 
     return {"tags": updated_tags}
 
-@app.get("/api/hosts/{host_id}/metrics", tags=["hosts"])
+@app.get("/api/hosts/{host_id}/metrics", tags=["hosts"], dependencies=[Depends(require_capability("hosts.view"))])
 async def get_host_metrics(host_id: str, current_user: dict = Depends(get_current_user)):
     """Get aggregated metrics for a Docker host (CPU, RAM, Network)"""
     try:
@@ -996,10 +1043,10 @@ async def get_host_metrics(host_id: str, current_user: dict = Depends(get_curren
         raise
     except Exception as e:
         logger.error(f"Error fetching metrics for host {host_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to fetch host metrics")
 
 
-@app.get("/api/hosts/{host_id}/agent", tags=["hosts"])
+@app.get("/api/hosts/{host_id}/agent", tags=["hosts"], dependencies=[Depends(require_capability("agents.view"))])
 async def get_host_agent_info(host_id: str, current_user: dict = Depends(get_current_user)):
     """
     Get agent info for a host including update availability.
@@ -1058,8 +1105,8 @@ async def get_host_agent_info(host_id: str, current_user: dict = Depends(get_cur
         }
 
 
-@app.post("/api/hosts/{host_id}/agent/update", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
-async def trigger_agent_update(host_id: str, current_user: dict = Depends(get_current_user)):
+@app.post("/api/hosts/{host_id}/agent/update", tags=["hosts"], dependencies=[Depends(require_capability("agents.manage"))])
+async def trigger_agent_update(host_id: str, request: Request, current_user: dict = Depends(get_current_user)):
     """
     Trigger agent self-update.
 
@@ -1158,6 +1205,8 @@ async def trigger_agent_update(host_id: str, current_user: dict = Depends(get_cu
                 detail=f"Failed to send update command: {result.error}"
             )
 
+        _safe_audit(current_user, log_host_change, AuditAction.UPDATE, host_id, host.name, request, details={'action': 'agent_update', 'target_version': latest_version})
+
         return {
             "success": True,
             "message": "Agent update initiated",
@@ -1169,10 +1218,10 @@ async def trigger_agent_update(host_id: str, current_user: dict = Depends(get_cu
         raise
     except Exception as e:
         logger.error(f"Error triggering agent update: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to trigger agent update")
 
 
-@app.get("/api/hosts/{host_id}/images", tags=["hosts"])
+@app.get("/api/hosts/{host_id}/images", tags=["hosts"], dependencies=[Depends(require_capability("containers.view"))])
 async def list_host_images(host_id: str, current_user: dict = Depends(get_current_user)):
     """
     List all Docker images on a host with usage information.
@@ -1252,8 +1301,8 @@ async def list_host_images(host_id: str, current_user: dict = Depends(get_curren
         raise HTTPException(status_code=500, detail="Failed to list images")
 
 
-@app.post("/api/hosts/{host_id}/images/prune", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
-async def prune_host_images(host_id: str, current_user: dict = Depends(get_current_user)):
+@app.post("/api/hosts/{host_id}/images/prune", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
+async def prune_host_images(host_id: str, request: Request, current_user: dict = Depends(get_current_user)):
     """
     Prune all unused images on a specific host.
 
@@ -1267,7 +1316,9 @@ async def prune_host_images(host_id: str, current_user: dict = Depends(get_curre
     agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
     if agent_id:
         logger.info(f"Routing prune_images for host {host_id} through agent {agent_id}")
-        return await monitor.operations.agent_operations.prune_images(host_id)
+        result = await monitor.operations.agent_operations.prune_images(host_id)
+        _safe_audit(current_user, log_host_change, AuditAction.PRUNE, host_id, _get_host_name(host_id), request, details={'resource': 'images', 'via': 'agent'})
+        return result
 
     # Legacy path: Direct Docker socket access
     client = monitor.clients.get(host_id)
@@ -1287,6 +1338,8 @@ async def prune_host_images(host_id: str, current_user: dict = Depends(get_curre
 
         logger.info(f"Pruned {removed_count} unused images from host {host_id}, reclaimed {space_reclaimed} bytes")
 
+        _safe_audit(current_user, log_host_change, AuditAction.PRUNE, host_id, _get_host_name(host_id), request, details={'resource': 'images', 'removed_count': removed_count, 'space_reclaimed': space_reclaimed})
+
         return {
             'removed_count': removed_count,
             'space_reclaimed': space_reclaimed
@@ -1301,7 +1354,7 @@ async def prune_host_images(host_id: str, current_user: dict = Depends(get_curre
 BUILTIN_NETWORKS = frozenset(['bridge', 'host', 'none'])
 
 
-@app.get("/api/hosts/{host_id}/networks", tags=["hosts"])
+@app.get("/api/hosts/{host_id}/networks", tags=["hosts"], dependencies=[Depends(require_capability("containers.view"))])
 async def list_host_networks(host_id: str, current_user: dict = Depends(get_current_user)):
     """
     List all Docker networks on a host with connected container info.
@@ -1386,10 +1439,11 @@ async def list_host_networks(host_id: str, current_user: dict = Depends(get_curr
         raise HTTPException(status_code=500, detail="Failed to list networks")
 
 
-@app.delete("/api/hosts/{host_id}/networks/{network_id}", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
+@app.delete("/api/hosts/{host_id}/networks/{network_id}", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
 async def delete_host_network(
     host_id: str,
     network_id: str,
+    request: Request,
     force: bool = False,
     current_user: dict = Depends(get_current_user)
 ):
@@ -1417,7 +1471,9 @@ async def delete_host_network(
     agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
     if agent_id:
         logger.info(f"Routing delete_network for host {host_id} through agent {agent_id}")
-        return await monitor.operations.agent_operations.delete_network(host_id, network_id, force)
+        result = await monitor.operations.agent_operations.delete_network(host_id, network_id, force)
+        _safe_audit(current_user, log_host_change, AuditAction.DELETE, host_id, _get_host_name(host_id), request, details={'resource': 'network', 'network_id': network_id})
+        return result
 
     # Legacy path: Direct Docker socket access
     client = monitor.clients.get(host_id)
@@ -1460,6 +1516,8 @@ async def delete_host_network(
         await async_docker_call(network.remove)
         logger.info(f"Deleted network {network_name} ({network_id}) from host {host_id}")
 
+        _safe_audit(current_user, log_host_change, AuditAction.DELETE, host_id, _get_host_name(host_id), request, details={'resource': 'network', 'network_name': network_name})
+
         return {
             "success": True,
             "message": f"Network '{network_name}' deleted"
@@ -1474,8 +1532,8 @@ async def delete_host_network(
         raise HTTPException(status_code=500, detail="Failed to delete network")
 
 
-@app.post("/api/hosts/{host_id}/networks/prune", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
-async def prune_host_networks(host_id: str, current_user: dict = Depends(get_current_user)):
+@app.post("/api/hosts/{host_id}/networks/prune", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
+async def prune_host_networks(host_id: str, request: Request, current_user: dict = Depends(get_current_user)):
     """
     Prune all unused networks on a specific host.
 
@@ -1490,7 +1548,9 @@ async def prune_host_networks(host_id: str, current_user: dict = Depends(get_cur
     agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
     if agent_id:
         logger.info(f"Routing prune_networks for host {host_id} through agent {agent_id}")
-        return await monitor.operations.agent_operations.prune_networks(host_id)
+        result = await monitor.operations.agent_operations.prune_networks(host_id)
+        _safe_audit(current_user, log_host_change, AuditAction.PRUNE, host_id, _get_host_name(host_id), request, details={'resource': 'networks', 'via': 'agent'})
+        return result
 
     # Legacy path: Direct Docker socket access
     client = monitor.clients.get(host_id)
@@ -1506,6 +1566,8 @@ async def prune_host_networks(host_id: str, current_user: dict = Depends(get_cur
 
         logger.info(f"Pruned {len(networks_deleted)} unused networks from host {host_id}: {networks_deleted}")
 
+        _safe_audit(current_user, log_host_change, AuditAction.PRUNE, host_id, _get_host_name(host_id), request, details={'resource': 'networks', 'removed_count': len(networks_deleted)})
+
         return {
             'removed_count': len(networks_deleted),
             'networks_removed': networks_deleted
@@ -1516,7 +1578,7 @@ async def prune_host_networks(host_id: str, current_user: dict = Depends(get_cur
         raise HTTPException(status_code=500, detail="Failed to prune networks")
 
 
-@app.get("/api/hosts/{host_id}/volumes", tags=["hosts"])
+@app.get("/api/hosts/{host_id}/volumes", tags=["hosts"], dependencies=[Depends(require_capability("containers.view"))])
 async def list_host_volumes(host_id: str, current_user: dict = Depends(get_current_user)):
     """
     List all Docker volumes on a host with usage information.
@@ -1596,10 +1658,11 @@ async def list_host_volumes(host_id: str, current_user: dict = Depends(get_curre
         raise HTTPException(status_code=500, detail="Failed to list volumes")
 
 
-@app.delete("/api/hosts/{host_id}/volumes/{volume_name:path}", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
+@app.delete("/api/hosts/{host_id}/volumes/{volume_name:path}", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
 async def delete_host_volume(
     host_id: str,
     volume_name: str,
+    request: Request,
     force: bool = False,
     current_user: dict = Depends(get_current_user)
 ):
@@ -1623,7 +1686,9 @@ async def delete_host_volume(
     agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
     if agent_id:
         logger.info(f"Routing delete_volume for host {host_id} through agent {agent_id}")
-        return await monitor.operations.agent_operations.delete_volume(host_id, volume_name, force)
+        result = await monitor.operations.agent_operations.delete_volume(host_id, volume_name, force)
+        _safe_audit(current_user, log_host_change, AuditAction.DELETE, host_id, _get_host_name(host_id), request, details={'resource': 'volume', 'volume_name': volume_name})
+        return result
 
     # Legacy path: Direct Docker socket access
     client = monitor.clients.get(host_id)
@@ -1653,6 +1718,8 @@ async def delete_host_volume(
         await async_docker_call(volume.remove, force=force)
         logger.info(f"Deleted volume {volume_name} from host {host_id}")
 
+        _safe_audit(current_user, log_host_change, AuditAction.DELETE, host_id, _get_host_name(host_id), request, details={'resource': 'volume', 'volume_name': volume_name})
+
         return {
             "success": True,
             "message": f"Volume '{volume_name}' deleted"
@@ -1669,8 +1736,8 @@ async def delete_host_volume(
         raise HTTPException(status_code=500, detail="Failed to delete volume")
 
 
-@app.post("/api/hosts/{host_id}/volumes/prune", tags=["hosts"], dependencies=[Depends(require_scope("write"))])
-async def prune_host_volumes(host_id: str, current_user: dict = Depends(get_current_user)):
+@app.post("/api/hosts/{host_id}/volumes/prune", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
+async def prune_host_volumes(host_id: str, request: Request, current_user: dict = Depends(get_current_user)):
     """
     Prune all unused volumes on a specific host.
 
@@ -1685,7 +1752,9 @@ async def prune_host_volumes(host_id: str, current_user: dict = Depends(get_curr
     agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
     if agent_id:
         logger.info(f"Routing prune_volumes for host {host_id} through agent {agent_id}")
-        return await monitor.operations.agent_operations.prune_volumes(host_id)
+        result = await monitor.operations.agent_operations.prune_volumes(host_id)
+        _safe_audit(current_user, log_host_change, AuditAction.PRUNE, host_id, _get_host_name(host_id), request, details={'resource': 'volumes', 'via': 'agent'})
+        return result
 
     # Legacy path: Direct Docker socket access
     client = monitor.clients.get(host_id)
@@ -1702,6 +1771,8 @@ async def prune_host_volumes(host_id: str, current_user: dict = Depends(get_curr
 
         logger.info(f"Pruned {len(volumes_removed)} volumes from host {host_id}, reclaimed {space_reclaimed} bytes")
 
+        _safe_audit(current_user, log_host_change, AuditAction.PRUNE, host_id, _get_host_name(host_id), request, details={'resource': 'volumes', 'removed_count': len(volumes_removed), 'space_reclaimed': space_reclaimed})
+
         return {
             "removed_count": len(volumes_removed),
             "space_reclaimed": space_reclaimed,
@@ -1713,50 +1784,68 @@ async def prune_host_volumes(host_id: str, current_user: dict = Depends(get_curr
         raise HTTPException(status_code=500, detail="Failed to prune volumes")
 
 
-@app.get("/api/containers", tags=["containers"])
+@app.get("/api/containers", tags=["containers"], dependencies=[Depends(require_capability("containers.view"))])
 async def get_containers(host_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
-    """Get all containers"""
-    return await monitor.get_containers(host_id)
+    """Get all containers.
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/restart", tags=["containers"], dependencies=[Depends(require_scope("write"))])
-async def restart_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
+    Note: Environment variables are filtered for users without containers.view_env capability (v2.3.0+).
+    """
+    containers = await monitor.get_containers(host_id)
+
+    # Filter env vars for users without containers.view_env capability
+    can_view_env = check_auth_capability(current_user, Capabilities.CONTAINERS_VIEW_ENV)
+    return filter_container_env(containers, can_view_env)
+
+@app.post("/api/hosts/{host_id}/containers/{container_id}/restart", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
+async def restart_container(host_id: str, container_id: str, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Restart a container"""
     container_id = normalize_container_id(container_id)
     success = await monitor.restart_container(host_id, container_id)
+    if success:
+        _safe_audit(current_user, log_container_action, AuditAction.RESTART, host_id, container_id, _get_container_name(host_id, container_id), request)
     return {"status": "success" if success else "failed"}
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/stop", tags=["containers"], dependencies=[Depends(require_scope("write"))])
-async def stop_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
+@app.post("/api/hosts/{host_id}/containers/{container_id}/stop", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
+async def stop_container(host_id: str, container_id: str, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Stop a container"""
     container_id = normalize_container_id(container_id)
     success = await monitor.stop_container(host_id, container_id)
+    if success:
+        _safe_audit(current_user, log_container_action, AuditAction.STOP, host_id, container_id, _get_container_name(host_id, container_id), request)
     return {"status": "success" if success else "failed"}
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/start", tags=["containers"], dependencies=[Depends(require_scope("write"))])
-async def start_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
+@app.post("/api/hosts/{host_id}/containers/{container_id}/start", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
+async def start_container(host_id: str, container_id: str, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Start a container"""
     container_id = normalize_container_id(container_id)
     success = await monitor.start_container(host_id, container_id)
+    if success:
+        _safe_audit(current_user, log_container_action, AuditAction.START, host_id, container_id, _get_container_name(host_id, container_id), request)
     return {"status": "success" if success else "failed"}
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/kill", tags=["containers"], dependencies=[Depends(require_scope("write"))])
-async def kill_container(host_id: str, container_id: str, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
+@app.post("/api/hosts/{host_id}/containers/{container_id}/kill", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
+async def kill_container(host_id: str, container_id: str, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Kill a container (SIGKILL) - for unresponsive containers that won't stop gracefully"""
     container_id = normalize_container_id(container_id)
     success = await monitor.kill_container(host_id, container_id)
+    if success:
+        _safe_audit(current_user, log_container_action, AuditAction.KILL, host_id, container_id, _get_container_name(host_id, container_id), request)
     return {"status": "success" if success else "failed"}
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/rename", tags=["containers"], dependencies=[Depends(require_scope("write"))])
-async def rename_container(host_id: str, container_id: str, body: RenameContainerRequest, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
+@app.post("/api/hosts/{host_id}/containers/{container_id}/rename", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
+async def rename_container(host_id: str, container_id: str, body: RenameContainerRequest, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Rename a container"""
     container_id = normalize_container_id(container_id)
     success = await monitor.rename_container(host_id, container_id, body.name)
+    if success:
+        _safe_audit(current_user, log_container_action, AuditAction.RENAME, host_id, container_id, _get_container_name(host_id, container_id), request, details={'new_name': body.name})
     return {"status": "success" if success else "failed"}
 
-@app.delete("/api/hosts/{host_id}/containers/{container_id}", tags=["containers"], dependencies=[Depends(require_scope("write"))])
+@app.delete("/api/hosts/{host_id}/containers/{container_id}", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
 async def delete_container(
     host_id: str,
     container_id: str,
+    request: Request,
     removeVolumes: bool = False,
     current_user: dict = Depends(get_current_user),
     rate_limit_check: bool = rate_limit_containers
@@ -1786,9 +1875,14 @@ async def delete_container(
     container_name = container.name if container else container_id
 
     # Delegate to monitor (which delegates to operations module)
-    return await monitor.delete_container(host_id, container_id, container_name, removeVolumes)
+    result = await monitor.delete_container(host_id, container_id, container_name, removeVolumes)
 
-@app.get("/api/hosts/{host_id}/containers/{container_id}/logs", tags=["containers"])
+    if result.get("success"):
+        _safe_audit(current_user, log_container_action, AuditAction.DELETE, host_id, normalize_container_id(container_id), container_name, request, details={'remove_volumes': removeVolumes})
+
+    return result
+
+@app.get("/api/hosts/{host_id}/containers/{container_id}/logs", tags=["containers"], dependencies=[Depends(require_capability("containers.logs"))])
 async def get_container_logs(
     host_id: str,
     container_id: str,
@@ -1811,7 +1905,7 @@ async def get_container_logs(
     # Delegate to operations (handles agent routing)
     return await monitor.operations.get_container_logs(host_id, container_id, tail, since)
 
-@app.get("/api/hosts/{host_id}/containers/{container_id}/inspect", tags=["containers"])
+@app.get("/api/hosts/{host_id}/containers/{container_id}/inspect", tags=["containers"], dependencies=[Depends(require_capability("containers.view"))])
 async def inspect_container(
     host_id: str,
     container_id: str,
@@ -1827,12 +1921,18 @@ async def inspect_container(
     - NetworkSettings: IP addresses, ports, DNS
     - Mounts: volumes, bind mounts
     - HostConfig: resource limits, restart policy
+
+    Note: Env vars in Config.Env are filtered for users without containers.view_env capability (v2.3.0+).
     """
     # Normalize container ID (defense-in-depth)
     container_id = normalize_container_id(container_id)
 
     # Delegate to operations (handles agent routing)
-    return await monitor.operations.inspect_container(host_id, container_id)
+    result = await monitor.operations.inspect_container(host_id, container_id)
+
+    # Filter env vars for users without containers.view_env capability
+    can_view_env = check_auth_capability(current_user, Capabilities.CONTAINERS_VIEW_ENV)
+    return filter_container_inspect_env(result, can_view_env)
 
 # Container exec endpoint removed for security reasons
 # Users should use direct SSH, Docker CLI, or other appropriate tools for container access
@@ -1842,27 +1942,30 @@ async def inspect_container(
 # This is more reliable for remote Docker hosts
 
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/auto-restart", tags=["containers"], dependencies=[Depends(require_scope("write"))])
-async def toggle_auto_restart(host_id: str, container_id: str, request: AutoRestartRequest, current_user: dict = Depends(get_current_user)):
+@app.post("/api/hosts/{host_id}/containers/{container_id}/auto-restart", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
+async def toggle_auto_restart(host_id: str, container_id: str, request: AutoRestartRequest, http_request: Request, current_user: dict = Depends(get_current_user)):
     """Toggle auto-restart for a container"""
     # Normalize to short ID (12 chars) for consistency with monitor's internal tracking
     short_id = container_id[:12] if len(container_id) > 12 else container_id
     monitor.toggle_auto_restart(host_id, short_id, request.container_name, request.enabled)
+    _safe_audit(current_user, log_container_action, AuditAction.TOGGLE, host_id, short_id, request.container_name, http_request, details={'auto_restart': request.enabled})
     return {"host_id": host_id, "container_id": container_id, "auto_restart": request.enabled}
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/desired-state", tags=["containers"], dependencies=[Depends(require_scope("write"))])
-async def set_desired_state(host_id: str, container_id: str, request: DesiredStateRequest, current_user: dict = Depends(get_current_user)):
+@app.post("/api/hosts/{host_id}/containers/{container_id}/desired-state", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
+async def set_desired_state(host_id: str, container_id: str, request: DesiredStateRequest, http_request: Request, current_user: dict = Depends(get_current_user)):
     """Set desired state for a container"""
     # Normalize to short ID (12 chars) for consistency
     short_id = container_id[:12] if len(container_id) > 12 else container_id
     monitor.set_container_desired_state(host_id, short_id, request.container_name, request.desired_state, request.web_ui_url)
+    _safe_audit(current_user, log_container_action, AuditAction.UPDATE, host_id, short_id, request.container_name, http_request, details={'desired_state': request.desired_state})
     return {"host_id": host_id, "container_id": container_id, "desired_state": request.desired_state, "web_ui_url": request.web_ui_url}
 
-@app.patch("/api/hosts/{host_id}/containers/{container_id}/tags", tags=["tags"], dependencies=[Depends(require_scope("write"))])
+@app.patch("/api/hosts/{host_id}/containers/{container_id}/tags", tags=["tags"], dependencies=[Depends(require_capability("tags.manage"))])
 async def update_container_tags(
     host_id: str,
     container_id: str,
     request: ContainerTagUpdate,
+    http_request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -1893,14 +1996,14 @@ async def update_container_tags(
         container_labels=container.labels
     )
 
-    logger.info(f"User {current_user.get('username')} updated tags for container {container.name}")
+    _safe_audit(current_user, log_container_action, AuditAction.UPDATE, host_id, normalize_container_id(container_id), container.name, http_request, details={'tags_to_add': request.tags_to_add, 'tags_to_remove': request.tags_to_remove})
 
     return result
 
 
 # ==================== Container Updates ====================
 
-@app.get("/api/hosts/{host_id}/containers/{container_id}/update-status", tags=["container-updates"])
+@app.get("/api/hosts/{host_id}/containers/{container_id}/update-status", tags=["container-updates"], dependencies=[Depends(require_capability("containers.view"))])
 async def get_container_update_status(
     host_id: str,
     container_id: str,
@@ -2016,7 +2119,7 @@ async def get_container_update_status(
         }
 
 
-@app.get("/api/updates/image-cache", tags=["container-updates"], dependencies=[Depends(require_scope("read"))])
+@app.get("/api/updates/image-cache", tags=["container-updates"], dependencies=[Depends(require_capability("containers.view"))])
 async def get_image_digest_cache(current_user: dict = Depends(get_current_user)):
     """
     Get the current state of the image digest cache.
@@ -2064,7 +2167,7 @@ async def get_image_digest_cache(current_user: dict = Depends(get_current_user))
         }
 
 
-@app.delete("/api/updates/image-cache/{cache_key:path}", tags=["container-updates"], dependencies=[Depends(require_scope("write"))])
+@app.delete("/api/updates/image-cache/{cache_key:path}", tags=["container-updates"], dependencies=[Depends(require_capability("containers.update"))])
 async def delete_image_cache_entry(cache_key: str, current_user: dict = Depends(get_current_user)):
     """
     Delete a specific image cache entry.
@@ -2084,7 +2187,7 @@ async def delete_image_cache_entry(cache_key: str, current_user: dict = Depends(
         return {"message": f"Deleted cache entry: {cache_key}"}
 
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/check-update", tags=["container-updates"], dependencies=[Depends(require_scope("write"))])
+@app.post("/api/hosts/{host_id}/containers/{container_id}/check-update", tags=["container-updates"], dependencies=[Depends(require_capability("containers.update"))])
 async def check_container_update(
     host_id: str,
     container_id: str,
@@ -2100,7 +2203,8 @@ async def check_container_update(
     # Normalize to short ID
     short_id = container_id[:12] if len(container_id) > 12 else container_id
 
-    logger.info(f"User {current_user.get('username')} triggered update check for container {short_id} on host {host_id}")
+    _, display_name = get_auditable_user_info(current_user)
+    logger.info(f"User {display_name} triggered update check for container {short_id} on host {host_id}")
 
     checker = get_update_checker(monitor.db, monitor)
     # Issue #101: bypass_cache=True ensures manual checks always query registry
@@ -2125,10 +2229,11 @@ async def check_container_update(
     }
 
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/execute-update", tags=["container-updates"], dependencies=[Depends(require_scope("write"))])
+@app.post("/api/hosts/{host_id}/containers/{container_id}/execute-update", tags=["container-updates"], dependencies=[Depends(require_capability("containers.update"))])
 async def execute_container_update(
     host_id: str,
     container_id: str,
+    request: Request,
     force: bool = Query(False),
     current_user: dict = Depends(get_current_user)
 ):
@@ -2153,7 +2258,8 @@ async def execute_container_update(
     # Normalize to short ID
     short_id = container_id[:12] if len(container_id) > 12 else container_id
 
-    logger.info(f"User {current_user.get('username')} triggered manual update for container {short_id} on host {host_id} (force={force})")
+    _, display_name = get_auditable_user_info(current_user)
+    logger.info(f"User {display_name} triggered manual update for container {short_id} on host {host_id} (force={force})")
 
     # Get update record from database
     with monitor.db.get_session() as session:
@@ -2180,25 +2286,7 @@ async def execute_container_update(
 
         # Get container info for validation
         if is_agent_host:
-            # For agent-based hosts, get container name from related tables
-            # Try AutoRestartConfig first (most likely to have container info)
-            auto_restart = session.query(AutoRestartConfig).filter_by(
-                container_id=composite_key
-            ).first()
-            if auto_restart and auto_restart.container_name:
-                container_name = auto_restart.container_name
-            else:
-                # Try ContainerDesiredState
-                desired_state = session.query(ContainerDesiredState).filter_by(
-                    container_id=composite_key
-                ).first()
-                if desired_state and desired_state.container_name:
-                    container_name = desired_state.container_name
-                else:
-                    # Fallback: use container ID as name
-                    container_name = short_id
-            # For agent-based hosts, we don't have direct access to labels
-            # Use empty dict - validation will still work on name and image patterns
+            container_name = monitor.resolve_container_name(host_id, short_id)
             labels = {}
             logger.debug(f"Agent-based host: using container info from database (name={container_name})")
         else:
@@ -2255,6 +2343,7 @@ async def execute_container_update(
     success = await executor.update_container(host_id, short_id, update_record, force=force)
 
     if success:
+        _safe_audit(current_user, log_container_action, AuditAction.CONTAINER_UPDATE, host_id, short_id, container_name, request, details={'previous_image': update_record.current_image, 'new_image': update_record.latest_image})
         return {
             "status": "success",
             "message": f"Container successfully updated to {update_record.latest_image}",
@@ -2271,11 +2360,12 @@ async def execute_container_update(
         }
 
 
-@app.put("/api/hosts/{host_id}/containers/{container_id}/auto-update-config", tags=["container-updates"], dependencies=[Depends(require_scope("write"))])
+@app.put("/api/hosts/{host_id}/containers/{container_id}/auto-update-config", tags=["container-updates"], dependencies=[Depends(require_capability("containers.update"))])
 async def update_auto_update_config(
     host_id: str,
     container_id: str,
     config: dict,
+    request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -2291,7 +2381,8 @@ async def update_auto_update_config(
     short_id = container_id[:12] if len(container_id) > 12 else container_id
     composite_key = make_composite_key(host_id, short_id)
 
-    logger.info(f"User {current_user.get('username')} updating auto-update config for {composite_key}: {config}")
+    _, display_name = get_auditable_user_info(current_user)
+    logger.info(f"User {display_name} updating auto-update config for {composite_key}: {config}")
 
     auto_update_enabled = config.get("auto_update_enabled", False)
     floating_tag_mode = config.get("floating_tag_mode", "exact")
@@ -2383,8 +2474,9 @@ async def update_auto_update_config(
 
         session.commit()
 
-        # Return the updated config
-        return {
+        # Capture values before closing session (ORM attributes need active session)
+        container_name = record.container_name
+        result = {
             "update_available": record.update_available,
             "current_image": record.current_image,
             "current_digest": record.current_digest,
@@ -2399,22 +2491,28 @@ async def update_auto_update_config(
             "registry_page_source": record.registry_page_source,  # v2.0.2+
         }
 
+    _safe_audit(current_user, log_container_action, AuditAction.UPDATE, host_id, short_id, container_name, request,
+                details={'auto_update_enabled': auto_update_enabled, 'floating_tag_mode': floating_tag_mode})
 
-@app.post("/api/updates/check-all", tags=["container-updates"], dependencies=[Depends(require_scope("write"))])
+    return result
+
+
+@app.post("/api/updates/check-all", tags=["container-updates"], dependencies=[Depends(require_capability("containers.update"))])
 async def check_all_updates(current_user: dict = Depends(get_current_user)):
     """
     Manually trigger an update check for all containers.
 
     Returns stats about the check.
     """
-    logger.info(f"User {current_user.get('username')} triggered global update check")
+    _, display_name = get_auditable_user_info(current_user)
+    logger.info(f"User {display_name} triggered global update check")
 
     stats = await monitor.periodic_jobs.check_updates_now()
     return stats
 
 
-@app.post("/api/images/prune", tags=["images"], dependencies=[Depends(require_scope("write"))])
-async def prune_images(current_user: dict = Depends(get_current_user)):
+@app.post("/api/images/prune", tags=["images"], dependencies=[Depends(require_capability("containers.operate"))])
+async def prune_images(request: Request, current_user: dict = Depends(get_current_user)):
     """
     Manually trigger Docker image pruning.
 
@@ -2424,13 +2522,19 @@ async def prune_images(current_user: dict = Depends(get_current_user)):
 
     Returns count of images removed.
     """
-    logger.info(f"User {current_user.get('username')} triggered manual image prune")
+    _, display_name = get_auditable_user_info(current_user)
+    logger.info(f"User {display_name} triggered manual image prune")
 
     removed_count = await monitor.periodic_jobs.cleanup_old_images()
+
+    _safe_audit(current_user, log_audit, AuditAction.PRUNE, AuditEntityType.CONTAINER,
+                details={'resource': 'images', 'scope': 'global', 'removed_count': removed_count},
+                **get_client_info(request))
+
     return {"removed": removed_count}
 
 
-@app.get("/api/updates/summary", tags=["container-updates"])
+@app.get("/api/updates/summary", tags=["container-updates"], dependencies=[Depends(require_capability("containers.view"))])
 async def get_updates_summary(current_user: dict = Depends(get_current_user)):
     """
     Get summary of available container updates.
@@ -2482,7 +2586,7 @@ async def get_updates_summary(current_user: dict = Depends(get_current_user)):
         }
 
 
-@app.get("/api/auto-update-configs", tags=["container-updates"])
+@app.get("/api/auto-update-configs", tags=["container-updates"], dependencies=[Depends(require_capability("containers.view"))])
 async def get_all_auto_update_configs(current_user: dict = Depends(get_current_user)):
     """
     Get all auto-update configurations for all containers (batch endpoint).
@@ -2511,7 +2615,7 @@ async def get_all_auto_update_configs(current_user: dict = Depends(get_current_u
         }
 
 
-@app.get("/api/deployment-metadata", tags=["container-updates"])
+@app.get("/api/deployment-metadata", tags=["container-updates"], dependencies=[Depends(require_capability("containers.view"))])
 async def get_all_deployment_metadata(current_user: dict = Depends(get_current_user)):
     """
     Get deployment metadata for all containers (batch endpoint).
@@ -2549,7 +2653,7 @@ async def get_all_deployment_metadata(current_user: dict = Depends(get_current_u
         }
 
 
-@app.get("/api/health-check-configs", tags=["container-health"])
+@app.get("/api/health-check-configs", tags=["container-health"], dependencies=[Depends(require_capability("healthchecks.view"))])
 async def get_all_health_check_configs(current_user: dict = Depends(get_current_user)):
     """
     Get all HTTP health check configurations for all containers (batch endpoint).
@@ -2582,7 +2686,7 @@ async def get_all_health_check_configs(current_user: dict = Depends(get_current_
 
 # ==================== Update Policy Endpoints ====================
 
-@app.get("/api/update-policies", tags=["container-updates"])
+@app.get("/api/update-policies", tags=["container-updates"], dependencies=[Depends(require_capability("policies.view"))])
 async def get_update_policies(current_user: dict = Depends(get_current_user)):
     """
     Get all update validation policies.
@@ -2612,9 +2716,10 @@ async def get_update_policies(current_user: dict = Depends(get_current_user)):
         }
 
 
-@app.put("/api/update-policies/{category}/toggle", tags=["container-updates"], dependencies=[Depends(require_scope("admin"))])
+@app.put("/api/update-policies/{category}/toggle", tags=["container-updates"], dependencies=[Depends(require_capability("policies.manage"))])
 async def toggle_update_policy_category(
     category: str,
+    request: Request,
     enabled: bool = Query(..., description="Enable or disable all patterns in category"),
     current_user: dict = Depends(get_current_user)
 ):
@@ -2635,16 +2740,22 @@ async def toggle_update_policy_category(
 
         logger.info(f"Toggled {count} patterns in category '{category}' to enabled={enabled}")
 
-        return {
-            "success": True,
-            "category": category,
-            "enabled": enabled,
-            "patterns_affected": count
-        }
+    _safe_audit(current_user, log_audit, AuditAction.TOGGLE, AuditEntityType.UPDATE_POLICY,
+                entity_name=category,
+                details={'enabled': enabled, 'patterns_affected': count},
+                **get_client_info(request))
+
+    return {
+        "success": True,
+        "category": category,
+        "enabled": enabled,
+        "patterns_affected": count
+    }
 
 
-@app.post("/api/update-policies/custom", tags=["container-updates"], dependencies=[Depends(require_scope("admin"))])
+@app.post("/api/update-policies/custom", tags=["container-updates"], dependencies=[Depends(require_capability("policies.manage"))])
 async def create_custom_update_policy(
+    request: Request,
     pattern: str = Query(..., description="Pattern to match against image/container name"),
     action: str = Query("warn", description="Action: 'warn' (show confirmation) or 'ignore' (skip update checks)"),
     current_user: dict = Depends(get_current_user)
@@ -2686,19 +2797,26 @@ async def create_custom_update_policy(
         session.add(policy)
         session.commit()
 
+        policy_id = policy.id
         logger.info(f"Created custom update policy pattern: {pattern} (action={action})")
 
-        return {
-            "success": True,
-            "id": policy.id,
-            "pattern": pattern,
-            "action": action
-        }
+    _safe_audit(current_user, log_audit, AuditAction.CREATE, AuditEntityType.UPDATE_POLICY,
+                entity_id=str(policy_id), entity_name=pattern,
+                details={'action': action},
+                **get_client_info(request))
+
+    return {
+        "success": True,
+        "id": policy_id,
+        "pattern": pattern,
+        "action": action
+    }
 
 
-@app.put("/api/update-policies/{policy_id}/action", tags=["container-updates"], dependencies=[Depends(require_scope("admin"))])
+@app.put("/api/update-policies/{policy_id}/action", tags=["container-updates"], dependencies=[Depends(require_capability("policies.manage"))])
 async def update_policy_action(
     policy_id: int,
+    request: Request,
     action: str = Query(..., description="Action: 'warn' (show confirmation) or 'ignore' (skip update checks)"),
     current_user: dict = Depends(get_current_user)
 ):
@@ -2726,22 +2844,29 @@ async def update_policy_action(
             )
 
         old_action = policy.action
+        policy_pattern = policy.pattern
         policy.action = action
         session.commit()
 
-        logger.info(f"Updated policy {policy.pattern} action: {old_action} -> {action}")
+        logger.info(f"Updated policy {policy_pattern} action: {old_action} -> {action}")
 
-        return {
-            "success": True,
-            "id": policy.id,
-            "pattern": policy.pattern,
-            "action": action
-        }
+    _safe_audit(current_user, log_audit, AuditAction.UPDATE, AuditEntityType.UPDATE_POLICY,
+                entity_id=str(policy_id), entity_name=policy_pattern,
+                details={'action': action, 'previous_action': old_action},
+                **get_client_info(request))
+
+    return {
+        "success": True,
+        "id": policy_id,
+        "pattern": policy_pattern,
+        "action": action
+    }
 
 
-@app.delete("/api/update-policies/custom/{policy_id}", tags=["container-updates"], dependencies=[Depends(require_scope("admin"))])
+@app.delete("/api/update-policies/custom/{policy_id}", tags=["container-updates"], dependencies=[Depends(require_capability("policies.manage"))])
 async def delete_custom_update_policy(
     policy_id: int,
+    request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -2769,16 +2894,21 @@ async def delete_custom_update_policy(
 
         logger.info(f"Deleted custom update policy: {pattern}")
 
-        return {
-            "success": True,
-            "deleted_pattern": pattern
-        }
+    _safe_audit(current_user, log_audit, AuditAction.DELETE, AuditEntityType.UPDATE_POLICY,
+                entity_id=str(policy_id), entity_name=pattern,
+                **get_client_info(request))
+
+    return {
+        "success": True,
+        "deleted_pattern": pattern
+    }
 
 
-@app.put("/api/hosts/{host_id}/containers/{container_id}/update-policy", tags=["container-updates"])
+@app.put("/api/hosts/{host_id}/containers/{container_id}/update-policy", tags=["container-updates"], dependencies=[Depends(require_capability("policies.manage"))])
 async def set_container_update_policy(
     host_id: str,
     container_id: str,
+    request: Request,
     policy: Optional[str] = Query(None, description="Policy: 'allow', 'warn', 'block', or null for auto-detect"),
     current_user: dict = Depends(get_current_user)
 ):
@@ -2825,19 +2955,23 @@ async def set_container_update_policy(
 
         # Update policy
         update_record.update_policy = policy
+        container_name = update_record.container_name
         session.commit()
 
         logger.info(f"Set update policy for {host_id}:{container_id} to {policy}")
 
-        return {
-            "success": True,
-            "host_id": host_id,
-            "container_id": container_id,
-            "update_policy": policy
-        }
+    _safe_audit(current_user, log_container_action, AuditAction.UPDATE, host_id, short_id, container_name, request,
+                details={'policy': policy})
+
+    return {
+        "success": True,
+        "host_id": host_id,
+        "container_id": container_id,
+        "update_policy": policy
+    }
 
 
-@app.get("/api/tags/suggest", tags=["tags"])
+@app.get("/api/tags/suggest", tags=["tags"], dependencies=[Depends(require_capability("tags.view"))])
 async def suggest_tags(
     q: str = "",
     limit: int = 20,
@@ -2915,7 +3049,7 @@ async def suggest_tags(
 
     return {"tags": result_tags}
 
-@app.get("/api/hosts/tags/suggest", tags=["tags"])
+@app.get("/api/hosts/tags/suggest", tags=["tags"], dependencies=[Depends(require_capability("tags.view"))])
 async def suggest_host_tags(
     q: str = "",
     limit: int = 20,
@@ -2934,8 +3068,8 @@ async def suggest_host_tags(
 
 # ==================== Batch Operations ====================
 
-@app.post("/api/batch", tags=["batch-operations"], status_code=201)
-async def create_batch_job(request: BatchJobCreate, current_user: dict = Depends(get_current_user)):
+@app.post("/api/batch", tags=["batch-operations"], status_code=201, dependencies=[Depends(require_capability("batch.create"))])
+async def create_batch_job(request: BatchJobCreate, http_request: Request, current_user: dict = Depends(get_current_user)):
     """
     Create a batch job for bulk operations on containers
 
@@ -2946,15 +3080,21 @@ async def create_batch_job(request: BatchJobCreate, current_user: dict = Depends
         raise HTTPException(status_code=500, detail="Batch manager not initialized")
 
     try:
+        user_id, display_name = get_auditable_user_info(current_user)
         job_id = await batch_manager.create_job(
-            user_id=current_user.get('id'),
+            user_id=user_id,
             scope=request.scope,
             action=request.action,
             container_ids=request.ids,
             params=request.params
         )
 
-        logger.info(f"User {current_user.get('username')} created batch job {job_id}: {request.action} on {len(request.ids)} containers")
+        logger.info(f"User {display_name} created batch job {job_id}: {request.action} on {len(request.ids)} containers")
+
+        _safe_audit(current_user, log_audit, AuditAction.CREATE, AuditEntityType.CONTAINER,
+                    entity_id=job_id, entity_name=f"batch:{request.action}",
+                    details={'type': 'batch_job', 'action': request.action, 'scope': request.scope, 'container_count': len(request.ids)},
+                    **get_client_info(http_request))
 
         return {"job_id": job_id}
     except ValueError as e:
@@ -2963,10 +3103,10 @@ async def create_batch_job(request: BatchJobCreate, current_user: dict = Depends
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error creating batch job: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to create batch job")
 
 
-@app.post("/api/batch/validate-update", tags=["batch-operations"])
+@app.post("/api/batch/validate-update", tags=["batch-operations"], dependencies=[Depends(require_capability("batch.create"))])
 async def validate_batch_update(request: dict, current_user: dict = Depends(get_current_user)):
     """
     Pre-flight validation for bulk container updates.
@@ -3063,7 +3203,7 @@ async def validate_batch_update(request: dict, current_user: dict = Depends(get_
     }
 
 
-@app.get("/api/batch/{job_id}", tags=["batch-operations"])
+@app.get("/api/batch/{job_id}", tags=["batch-operations"], dependencies=[Depends(require_capability("batch.view"))])
 async def get_batch_job(job_id: str, current_user: dict = Depends(get_current_user)):
     """Get status and results of a batch job"""
     if not batch_manager:
@@ -3076,12 +3216,12 @@ async def get_batch_job(job_id: str, current_user: dict = Depends(get_current_us
 
     return job_status
 
-@app.get("/api/rate-limit/stats", tags=["system"])
+@app.get("/api/rate-limit/stats", tags=["system"], dependencies=[Depends(require_capability("settings.manage"))])
 async def get_rate_limit_stats(current_user: dict = Depends(get_current_user)):
     """Get rate limiter statistics - admin only"""
     return rate_limiter.get_stats()
 
-@app.get("/api/security/audit", tags=["system"])
+@app.get("/api/security/audit", tags=["system"], dependencies=[Depends(require_capability("audit.view"))])
 async def get_security_audit_stats(current_user: dict = Depends(get_current_user), request: Request = None):
     """Get security audit statistics - admin only"""
     if request:
@@ -3205,12 +3345,15 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "external_url_from_env": AppConfig.EXTERNAL_URL,  # Show env var value for UI placeholder
         # Editor theme preference (v2.2.8+)
         "editor_theme": getattr(settings, 'editor_theme', 'aura'),
+        # Session timeout
+        "session_timeout_hours": getattr(settings, 'session_timeout_hours', 24),
     }
 
-@app.post("/api/settings", tags=["system"], dependencies=[Depends(require_scope("admin"))])
-@app.put("/api/settings", tags=["system"], dependencies=[Depends(require_scope("admin"))])
+@app.post("/api/settings", tags=["system"], dependencies=[Depends(require_capability("settings.manage"))])
+@app.put("/api/settings", tags=["system"], dependencies=[Depends(require_capability("settings.manage"))])
 async def update_settings(
     settings: GlobalSettingsUpdate,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     rate_limit_check: bool = rate_limit_default
 ):
@@ -3241,6 +3384,12 @@ async def update_settings(
     if 'show_container_stats' in validated_dict and old_show_container_stats != updated.show_container_stats:
         logger.info(f"Container stats collection {'enabled' if updated.show_container_stats else 'disabled'}")
 
+    # Invalidate session timeout cache so change takes effect immediately
+    if 'session_timeout_hours' in validated_dict:
+        from auth.cookie_sessions import invalidate_session_timeout_cache
+        invalidate_session_timeout_cache()
+        logger.info(f"Session timeout updated to {updated.session_timeout_hours}h")
+
     # Reload event suppression patterns if updated
     if 'event_suppression_patterns' in validated_dict:
         monitor.event_logger.reload_suppression_patterns()
@@ -3249,6 +3398,9 @@ async def update_settings(
     # Wake periodic job if update schedule changed (no restart required)
     if 'update_check_time' in validated_dict:
         monitor.periodic_jobs.notify_schedule_changed()
+
+    changed_keys = list(validated_dict.keys())
+    _safe_audit(current_user, log_settings_change, ', '.join(changed_keys), request)
 
     # Broadcast blackout status change to all clients
     is_blackout, window_name = monitor.notification_service.blackout_manager.is_in_blackout_window()
@@ -3294,6 +3446,8 @@ async def update_settings(
         "external_url_from_env": AppConfig.EXTERNAL_URL,
         # Editor theme preference (v2.2.8+)
         "editor_theme": getattr(updated, 'editor_theme', 'aura'),
+        # Session timeout
+        "session_timeout_hours": getattr(updated, 'session_timeout_hours', 24),
     }
 
 
@@ -3322,7 +3476,7 @@ async def get_upgrade_notice(current_user: dict = Depends(get_current_user), rat
         return {"show_notice": False, "version": "2.0.0"}
 
 
-@app.post("/api/upgrade-notice/dismiss", tags=["system"])
+@app.post("/api/upgrade-notice/dismiss", tags=["system"], dependencies=[Depends(require_capability("settings.manage"))])
 async def dismiss_upgrade_notice(current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_default):
     """Mark upgrade notice as dismissed"""
     try:
@@ -3331,7 +3485,8 @@ async def dismiss_upgrade_notice(current_user: dict = Depends(get_current_user),
             if settings:
                 settings.upgrade_notice_dismissed = True
                 session.commit()
-                logger.info(f"User '{current_user.get('username')}' dismissed upgrade notice")
+                _, display_name = get_auditable_user_info(current_user)
+                logger.info(f"User '{display_name}' dismissed upgrade notice")
                 return {"success": True}
             return {"success": False, "error": "Settings not found"}
     except Exception as e:
@@ -3341,7 +3496,7 @@ async def dismiss_upgrade_notice(current_user: dict = Depends(get_current_user),
 
 # ==================== HTTP Health Checks ====================
 
-@app.get("/api/containers/{host_id}/{container_id}/http-health-check", tags=["container-health"])
+@app.get("/api/containers/{host_id}/{container_id}/http-health-check", tags=["container-health"], dependencies=[Depends(require_capability("healthchecks.view"))])
 async def get_http_health_check(
     host_id: str,
     container_id: str,
@@ -3417,11 +3572,12 @@ async def get_http_health_check(
         }
 
 
-@app.put("/api/containers/{host_id}/{container_id}/http-health-check", tags=["container-health"])
+@app.put("/api/containers/{host_id}/{container_id}/http-health-check", tags=["container-health"], dependencies=[Depends(require_capability("healthchecks.manage"))])
 async def update_http_health_check(
     host_id: str,
     container_id: str,
     config: HttpHealthCheckConfig,
+    request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """Update or create HTTP health check configuration"""
@@ -3447,6 +3603,9 @@ async def update_http_health_check(
         # Track if check_from changed (for removing from agent if switched to backend)
         old_check_from = check.check_from if check else None
 
+        # Get user_id for audit tracking (v2.3.0+)
+        user_id, _ = get_auditable_user_info(current_user)
+
         if check:
             # Update existing
             check.enabled = config.enabled
@@ -3464,6 +3623,7 @@ async def update_http_health_check(
             check.max_restart_attempts = config.max_restart_attempts  # v2.0.2+
             check.restart_retry_delay_seconds = config.restart_retry_delay_seconds  # v2.0.2+
             check.updated_at = datetime.now(timezone.utc)
+            check.updated_by = user_id  # v2.3.0+
             if container_name:
                 check.container_name = container_name
         else:
@@ -3485,11 +3645,18 @@ async def update_http_health_check(
                 failure_threshold=config.failure_threshold,
                 success_threshold=config.success_threshold,
                 max_restart_attempts=config.max_restart_attempts,  # v2.0.2+
-                restart_retry_delay_seconds=config.restart_retry_delay_seconds  # v2.0.2+
+                restart_retry_delay_seconds=config.restart_retry_delay_seconds,  # v2.0.2+
+                created_by=user_id,  # v2.3.0+
+                updated_by=user_id   # v2.3.0+
             )
             session.add(check)
 
         session.commit()
+
+    _safe_audit(current_user, log_audit, AuditAction.UPDATE, AuditEntityType.HEALTH_CHECK,
+                entity_id=composite_key, entity_name=container_name,
+                details={'url': config.url, 'method': config.method, 'enabled': config.enabled, 'check_from': config.check_from},
+                **get_client_info(request))
 
     # Push config to agent if needed (after commit, outside session)
     if config.check_from == 'agent':
@@ -3502,10 +3669,11 @@ async def update_http_health_check(
     return {"success": True}
 
 
-@app.delete("/api/containers/{host_id}/{container_id}/http-health-check", tags=["container-health"])
+@app.delete("/api/containers/{host_id}/{container_id}/http-health-check", tags=["container-health"], dependencies=[Depends(require_capability("healthchecks.manage"))])
 async def delete_http_health_check(
     host_id: str,
     container_id: str,
+    request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """Delete HTTP health check configuration"""
@@ -3516,6 +3684,8 @@ async def delete_http_health_check(
     composite_key = make_composite_key(host_id, container_id)
 
     was_agent_based = False
+    check_url = None
+    check_container_name = None
     with monitor.db.get_session() as session:
         check = session.query(ContainerHttpHealthCheck).filter_by(
             container_id=composite_key
@@ -3523,8 +3693,16 @@ async def delete_http_health_check(
 
         if check:
             was_agent_based = check.check_from == 'agent'
+            check_url = check.url
+            check_container_name = check.container_name
             session.delete(check)
             session.commit()
+
+    if check_url is not None:
+        _safe_audit(current_user, log_audit, AuditAction.DELETE, AuditEntityType.HEALTH_CHECK,
+                    entity_id=composite_key, entity_name=check_container_name,
+                    details={'url': check_url},
+                    **get_client_info(request))
 
     # Remove from agent if it was agent-based
     if was_agent_based:
@@ -3533,7 +3711,7 @@ async def delete_http_health_check(
     return {"success": True}
 
 
-@app.post("/api/containers/{host_id}/{container_id}/http-health-check/test", tags=["container-health"])
+@app.post("/api/containers/{host_id}/{container_id}/http-health-check/test", tags=["container-health"], dependencies=[Depends(require_capability("healthchecks.test"))])
 async def test_http_health_check(
     host_id: str,
     container_id: str,
@@ -3678,7 +3856,7 @@ async def test_http_health_check(
 # IMPORTANT: These routes must be defined BEFORE the alerts_router is registered
 # Otherwise FastAPI will match /api/alerts/ before /api/alerts/rules
 
-@app.get("/api/alerts/rules", tags=["alerts"])
+@app.get("/api/alerts/rules", tags=["alerts"], dependencies=[Depends(require_capability("alerts.view"))])
 async def get_alert_rules_v2(current_user: dict = Depends(get_current_user)):
     """Get all alert rules (v2)"""
     from models.settings_models import AlertRuleV2Create
@@ -3719,9 +3897,10 @@ async def get_alert_rules_v2(current_user: dict = Depends(get_current_user)):
     }
 
 
-@app.post("/api/alerts/rules", tags=["alerts"], dependencies=[Depends(require_scope("admin"))])
+@app.post("/api/alerts/rules", tags=["alerts"], dependencies=[Depends(require_capability("alerts.manage"))])
 async def create_alert_rule_v2(
     rule: AlertRuleV2Create,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     rate_limit_check: bool = rate_limit_default
 ):
@@ -3729,6 +3908,8 @@ async def create_alert_rule_v2(
     from models.settings_models import AlertRuleV2Create
 
     try:
+        _, display_name = get_auditable_user_info(current_user)
+
         # Default suppress_during_updates to True for container-scoped rules if not explicitly set
         suppress_during_updates = rule.suppress_during_updates
         if suppress_during_updates is None:
@@ -3760,10 +3941,12 @@ async def create_alert_rule_v2(
             labels_json=rule.labels_json,
             notify_channels_json=rule.notify_channels_json,
             custom_template=rule.custom_template,
-            created_by=current_user.get("username", "unknown"),
+            created_by=display_name,
         )
 
         logger.info(f"Created alert rule v2: {new_rule.name} (ID: {new_rule.id})")
+
+        _safe_audit(current_user, log_audit, AuditAction.CREATE, AuditEntityType.ALERT_RULE, entity_id=str(new_rule.id), entity_name=new_rule.name, **get_client_info(request))
 
         # Log event
         channels = []
@@ -3778,7 +3961,7 @@ async def create_alert_rule_v2(
             rule_id=new_rule.id,
             container_count=0,  # v2 rules use selectors, not direct container count
             channels=channels if isinstance(channels, list) else [],
-            triggered_by=current_user.get("username", "user")
+            triggered_by=display_name
         )
 
         return {
@@ -3793,26 +3976,29 @@ async def create_alert_rule_v2(
         }
     except Exception as e:
         logger.error(f"Failed to create alert rule v2: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to create alert rule")
 
 
-@app.put("/api/alerts/rules/{rule_id}", tags=["alerts"], dependencies=[Depends(require_scope("admin"))])
+@app.put("/api/alerts/rules/{rule_id}", tags=["alerts"], dependencies=[Depends(require_capability("alerts.manage"))])
 async def update_alert_rule_v2(
     rule_id: str,
     updates: AlertRuleV2Update,
+    request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """Update an alert rule (v2)"""
     from models.settings_models import AlertRuleV2Update
 
     try:
+        _, display_name = get_auditable_user_info(current_user)
+
         # Build update dict with only provided fields
         # exclude_unset=True means only fields explicitly set are included
         # We don't filter out None/0/False because those are valid values (e.g., cooldown_seconds=0)
         update_data = updates.dict(exclude_unset=True)
 
         # Track who updated the rule
-        update_data['updated_by'] = current_user.get("username", "unknown")
+        update_data['updated_by'] = display_name
 
         updated_rule = monitor.db.update_alert_rule_v2(rule_id, **update_data)
 
@@ -3820,6 +4006,8 @@ async def update_alert_rule_v2(
             raise HTTPException(status_code=404, detail="Alert rule not found")
 
         logger.info(f"Updated alert rule v2: {rule_id}")
+
+        _safe_audit(current_user, log_audit, AuditAction.UPDATE, AuditEntityType.ALERT_RULE, entity_id=rule_id, entity_name=updated_rule.name, **get_client_info(request))
 
         return {
             "id": updated_rule.id,
@@ -3831,17 +4019,20 @@ async def update_alert_rule_v2(
         raise
     except Exception as e:
         logger.error(f"Failed to update alert rule v2: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to update alert rule")
 
 
-@app.delete("/api/alerts/rules/{rule_id}", tags=["alerts"], dependencies=[Depends(require_scope("admin"))])
+@app.delete("/api/alerts/rules/{rule_id}", tags=["alerts"], dependencies=[Depends(require_capability("alerts.manage"))])
 async def delete_alert_rule_v2(
     rule_id: str,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     rate_limit_check: bool = rate_limit_default
 ):
     """Delete an alert rule (v2)"""
     try:
+        _, display_name = get_auditable_user_info(current_user)
+
         # Get rule info before deleting for event logging
         rule = monitor.db.get_alert_rule_v2(rule_id)
 
@@ -3852,12 +4043,14 @@ async def delete_alert_rule_v2(
 
         logger.info(f"Deleted alert rule v2: {rule_id}")
 
+        _safe_audit(current_user, log_audit, AuditAction.DELETE, AuditEntityType.ALERT_RULE, entity_id=rule_id, entity_name=rule.name if rule else None, **get_client_info(request))
+
         # Log event
         if rule:
             monitor.event_logger.log_alert_rule_deleted(
                 rule_name=rule.name,
                 rule_id=rule.id,
-                triggered_by=current_user.get("username", "user")
+                triggered_by=display_name
             )
 
         return {"success": True, "message": "Alert rule deleted"}
@@ -3865,12 +4058,13 @@ async def delete_alert_rule_v2(
         raise
     except Exception as e:
         logger.error(f"Failed to delete alert rule v2: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to delete alert rule")
 
 
-@app.patch("/api/alerts/rules/{rule_id}/toggle", tags=["alerts"])
+@app.patch("/api/alerts/rules/{rule_id}/toggle", tags=["alerts"], dependencies=[Depends(require_capability("alerts.manage"))])
 async def toggle_alert_rule_v2(
     rule_id: str,
+    request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """Toggle an alert rule enabled/disabled state (v2)"""
@@ -3885,6 +4079,8 @@ async def toggle_alert_rule_v2(
 
         logger.info(f"Toggled alert rule v2: {rule_id} to {new_enabled}")
 
+        _safe_audit(current_user, log_audit, AuditAction.TOGGLE, AuditEntityType.ALERT_RULE, entity_id=rule_id, entity_name=rule.name, details={'enabled': new_enabled}, **get_client_info(request))
+
         return {
             "id": updated_rule.id,
             "enabled": updated_rule.enabled,
@@ -3893,7 +4089,7 @@ async def toggle_alert_rule_v2(
         raise
     except Exception as e:
         logger.error(f"Failed to toggle alert rule v2: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to toggle alert rule")
 
 
 # ==================== Register Alerts Router (AFTER v2 rules routes) ====================
@@ -3905,7 +4101,7 @@ app.include_router(alerts_router)  # Alert instances (not rules - rules are defi
 
 # ==================== Blackout Window Routes ====================
 
-@app.get("/api/blackout/status", tags=["alerts"])
+@app.get("/api/blackout/status", tags=["alerts"], dependencies=[Depends(require_capability("alerts.view"))])
 async def get_blackout_status(current_user: dict = Depends(get_current_user)):
     """Get current blackout window status"""
     try:
@@ -3921,7 +4117,7 @@ async def get_blackout_status(current_user: dict = Depends(get_current_user)):
 # ==================== Notification Channel Routes ====================
 
 
-@app.get("/api/notifications/template-variables", tags=["notifications"])
+@app.get("/api/notifications/template-variables", tags=["notifications"], dependencies=[Depends(require_capability("notifications.view"))])
 async def get_template_variables(current_user: dict = Depends(get_current_user)):
     """Get available template variables for notification messages and default templates"""
     # Get built-in default templates from notification service
@@ -4010,22 +4206,30 @@ Rule: {RULE_NAME}""",
         }
     }
 
-@app.get("/api/notifications/channels", tags=["notifications"])
+@app.get("/api/notifications/channels", tags=["notifications"], dependencies=[Depends(require_capability("notifications.view"))])
 async def get_notification_channels(current_user: dict = Depends(get_current_user)):
-    """Get all notification channels"""
+    """Get all notification channels.
+
+    Note: Config is filtered out for non-admin users (v2.3.0+) as it contains
+    webhook URLs, API keys, and other sensitive information.
+    """
     channels = monitor.db.get_notification_channels(enabled_only=False)
+
+    # Users need notifications.manage to see channel configs
+    show_config = check_auth_capability(current_user, Capabilities.NOTIFICATIONS_MANAGE)
+
     return [{
         "id": ch.id,
         "name": ch.name,
         "type": ch.type,
-        "config": ch.config,
+        "config": ch.config if show_config else None,
         "enabled": ch.enabled,
         "created_at": ch.created_at.isoformat() + 'Z',
         "updated_at": ch.updated_at.isoformat() + 'Z'
     } for ch in channels]
 
-@app.post("/api/notifications/channels", tags=["notifications"], dependencies=[Depends(require_scope("admin"))])
-async def create_notification_channel(channel: NotificationChannelCreate, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
+@app.post("/api/notifications/channels", tags=["notifications"], dependencies=[Depends(require_capability("notifications.manage"))])
+async def create_notification_channel(channel: NotificationChannelCreate, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Create a new notification channel"""
     try:
         db_channel = monitor.db.add_notification_channel({
@@ -4035,11 +4239,14 @@ async def create_notification_channel(channel: NotificationChannelCreate, curren
             "enabled": channel.enabled
         })
 
+        _, display_name = get_auditable_user_info(current_user)
+        _safe_audit(current_user, log_audit, AuditAction.CREATE, AuditEntityType.NOTIFICATION_CHANNEL, entity_id=str(db_channel.id), entity_name=db_channel.name, details={'type': db_channel.type}, **get_client_info(request))
+
         # Log notification channel creation
         monitor.event_logger.log_notification_channel_created(
             channel_name=db_channel.name,
             channel_type=db_channel.type,
-            triggered_by="user"
+            triggered_by=display_name
         )
 
         return {
@@ -4053,10 +4260,10 @@ async def create_notification_channel(channel: NotificationChannelCreate, curren
         }
     except Exception as e:
         logger.error(f"Failed to create notification channel: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to create notification channel")
 
-@app.put("/api/notifications/channels/{channel_id}", tags=["notifications"], dependencies=[Depends(require_scope("admin"))])
-async def update_notification_channel(channel_id: int, updates: NotificationChannelUpdate, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
+@app.put("/api/notifications/channels/{channel_id}", tags=["notifications"], dependencies=[Depends(require_capability("notifications.manage"))])
+async def update_notification_channel(channel_id: int, updates: NotificationChannelUpdate, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Update a notification channel"""
     try:
         update_data = {k: v for k, v in updates.dict().items() if v is not None}
@@ -4064,6 +4271,8 @@ async def update_notification_channel(channel_id: int, updates: NotificationChan
 
         if not db_channel:
             raise HTTPException(status_code=404, detail="Channel not found")
+
+        _safe_audit(current_user, log_audit, AuditAction.UPDATE, AuditEntityType.NOTIFICATION_CHANNEL, entity_id=str(channel_id), entity_name=db_channel.name, **get_client_info(request))
 
         return {
             "id": db_channel.id,
@@ -4078,10 +4287,10 @@ async def update_notification_channel(channel_id: int, updates: NotificationChan
         raise
     except Exception as e:
         logger.error(f"Failed to update notification channel: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to update notification channel")
 
-@app.delete("/api/notifications/channels/{channel_id}", tags=["notifications"], dependencies=[Depends(require_scope("admin"))])
-async def delete_notification_channel(channel_id: int, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
+@app.delete("/api/notifications/channels/{channel_id}", tags=["notifications"], dependencies=[Depends(require_capability("notifications.manage"))])
+async def delete_notification_channel(channel_id: int, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Delete a notification channel"""
     try:
         # Single transaction: clean up references AND delete channel atomically (#166)
@@ -4119,6 +4328,9 @@ async def delete_notification_channel(channel_id: int, current_user: dict = Depe
                 logger.info(f"Removed channel {channel_id} from {updated_count} alert rule(s)")
             logger.info(f"Deleted notification channel: {channel_name} (ID: {channel_id})")
 
+        # Audit log (separate session since the above committed and closed)
+        _safe_audit(current_user, log_audit, AuditAction.DELETE, AuditEntityType.NOTIFICATION_CHANNEL, entity_id=str(channel_id), entity_name=channel_name, **get_client_info(request))
+
         return {
             "status": "success",
             "message": f"Channel {channel_id} deleted"
@@ -4127,24 +4339,27 @@ async def delete_notification_channel(channel_id: int, current_user: dict = Depe
         raise
     except Exception as e:
         logger.error(f"Failed to delete notification channel: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to delete notification channel")
 
-@app.post("/api/notifications/channels/{channel_id}/test", tags=["notifications"])
-async def test_notification_channel(channel_id: int, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
+@app.post("/api/notifications/channels/{channel_id}/test", tags=["notifications"], dependencies=[Depends(require_capability("notifications.manage"))])
+async def test_notification_channel(channel_id: int, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Test a notification channel"""
     try:
         if not hasattr(monitor, 'notification_service'):
             raise HTTPException(status_code=503, detail="Notification service not available")
 
         result = await monitor.notification_service.test_channel(channel_id)
+
+        _safe_audit(current_user, log_audit, AuditAction.TEST, AuditEntityType.NOTIFICATION_CHANNEL, entity_id=str(channel_id), **get_client_info(request))
+
         return result
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to test notification channel: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to test notification channel")
 
-@app.get("/api/notifications/channels/{channel_id}/dependent-alerts", tags=["notifications"])
+@app.get("/api/notifications/channels/{channel_id}/dependent-alerts", tags=["notifications"], dependencies=[Depends(require_capability("notifications.view"))])
 async def get_dependent_alerts(channel_id: int, current_user: dict = Depends(get_current_user)):
     """
     Get alert rules that depend on this notification channel.
@@ -4189,11 +4404,11 @@ async def get_dependent_alerts(channel_id: int, current_user: dict = Depends(get
         raise
     except Exception as e:
         logger.error(f"Failed to get dependent alerts for channel {channel_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get dependent alerts: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to get dependent alerts")
 
 # ==================== Event Log Routes ====================
 
-@app.get("/api/events", tags=["events"])
+@app.get("/api/events", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
 async def get_events(
     category: Optional[List[str]] = Query(None),
     event_type: Optional[str] = None,
@@ -4309,9 +4524,9 @@ async def get_events(
         raise
     except Exception as e:
         logger.error(f"Failed to get events: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get events")
 
-@app.get("/api/events/{event_id}", tags=["events"])
+@app.get("/api/events/{event_id}", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
 async def get_event_by_id(
     event_id: int,
     current_user: dict = Depends(get_current_user),
@@ -4346,9 +4561,9 @@ async def get_event_by_id(
         raise
     except Exception as e:
         logger.error(f"Failed to get event: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get event")
 
-@app.get("/api/events/correlation/{correlation_id}", tags=["events"])
+@app.get("/api/events/correlation/{correlation_id}", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
 async def get_events_by_correlation(
     correlation_id: str,
     current_user: dict = Depends(get_current_user),
@@ -4383,18 +4598,19 @@ async def get_events_by_correlation(
         return {"events": events_json, "count": len(events_json)}
     except Exception as e:
         logger.error(f"Failed to get events by correlation: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get events by correlation")
 
 # ==================== User Dashboard Routes ====================
 
 @app.get("/api/user/event-sort-order", tags=["events"])
 async def get_event_sort_order(request: Request, current_user: dict = Depends(get_current_user)):
     """Get event sort order preference for current user"""
-    from auth.shared import get_session_from_cookie
-    from auth.session_manager import session_manager
-
-    session_id = get_session_from_cookie(request)
-    username = session_manager.get_session_username(session_id)
+    username = current_user.get('username')
+    if not username:
+        raise HTTPException(
+            status_code=400,
+            detail="User preferences are not available for API key authentication"
+        )
 
     sort_order = monitor.db.get_event_sort_order(username)
     return {"sort_order": sort_order}
@@ -4406,7 +4622,10 @@ async def save_event_sort_order(request: Request, current_user: dict = Depends(g
         # Get username from current_user (already authenticated)
         username = current_user.get('username')
         if not username:
-            raise HTTPException(status_code=401, detail="User not authenticated")
+            raise HTTPException(
+                status_code=400,
+                detail="User preferences are not available for API key authentication"
+            )
 
         body = await request.json()
         sort_order = body.get('sort_order')
@@ -4425,16 +4644,17 @@ async def save_event_sort_order(request: Request, current_user: dict = Depends(g
         raise
     except Exception as e:
         logger.error(f"Failed to save event sort order: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to save event sort order")
 
 @app.get("/api/user/container-sort-order", tags=["user-preferences"])
 async def get_container_sort_order(request: Request, current_user: dict = Depends(get_current_user)):
     """Get container sort order preference for current user"""
-    from auth.shared import get_session_from_cookie
-    from auth.session_manager import session_manager
-
-    session_id = get_session_from_cookie(request)
-    username = session_manager.get_session_username(session_id)
+    username = current_user.get('username')
+    if not username:
+        raise HTTPException(
+                status_code=400,
+                detail="User preferences are not available for API key authentication"
+            )
 
     sort_order = monitor.db.get_container_sort_order(username)
     return {"sort_order": sort_order}
@@ -4442,11 +4662,12 @@ async def get_container_sort_order(request: Request, current_user: dict = Depend
 @app.post("/api/user/container-sort-order", tags=["user-preferences"])
 async def save_container_sort_order(request: Request, current_user: dict = Depends(get_current_user)):
     """Save container sort order preference for current user"""
-    from auth.shared import get_session_from_cookie
-    from auth.session_manager import session_manager
-
-    session_id = get_session_from_cookie(request)
-    username = session_manager.get_session_username(session_id)
+    username = current_user.get('username')
+    if not username:
+        raise HTTPException(
+                status_code=400,
+                detail="User preferences are not available for API key authentication"
+            )
 
     try:
         body = await request.json()
@@ -4465,16 +4686,17 @@ async def save_container_sort_order(request: Request, current_user: dict = Depen
         raise
     except Exception as e:
         logger.error(f"Failed to save container sort order: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to save container sort order")
 
 @app.get("/api/user/modal-preferences", tags=["user-preferences"])
 async def get_modal_preferences(request: Request, current_user: dict = Depends(get_current_user)):
     """Get modal preferences for current user"""
-    from auth.shared import get_session_from_cookie
-    from auth.session_manager import session_manager
-
-    session_id = get_session_from_cookie(request)
-    username = session_manager.get_session_username(session_id)
+    username = current_user.get('username')
+    if not username:
+        raise HTTPException(
+                status_code=400,
+                detail="User preferences are not available for API key authentication"
+            )
 
     preferences = monitor.db.get_modal_preferences(username)
     return {"preferences": preferences}
@@ -4482,11 +4704,12 @@ async def get_modal_preferences(request: Request, current_user: dict = Depends(g
 @app.post("/api/user/modal-preferences", tags=["user-preferences"])
 async def save_modal_preferences(request: Request, current_user: dict = Depends(get_current_user)):
     """Save modal preferences for current user"""
-    from auth.shared import get_session_from_cookie
-    from auth.session_manager import session_manager
-
-    session_id = get_session_from_cookie(request)
-    username = session_manager.get_session_username(session_id)
+    username = current_user.get('username')
+    if not username:
+        raise HTTPException(
+                status_code=400,
+                detail="User preferences are not available for API key authentication"
+            )
 
     try:
         body = await request.json()
@@ -4504,7 +4727,7 @@ async def save_modal_preferences(request: Request, current_user: dict = Depends(
         raise
     except Exception as e:
         logger.error(f"Failed to save modal preferences: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to save modal preferences")
 
 # ==================== Phase 4: View Mode Preference ====================
 
@@ -4528,7 +4751,7 @@ async def get_view_mode(request: Request, current_user: dict = Depends(get_curre
             session.close()
     except Exception as e:
         logger.error(f"Failed to get view mode: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get view mode")
 
 @app.post("/api/user/view-mode", tags=["user-preferences"])
 async def save_view_mode(request: Request, current_user: dict = Depends(get_current_user)):
@@ -4565,7 +4788,7 @@ async def save_view_mode(request: Request, current_user: dict = Depends(get_curr
         raise
     except Exception as e:
         logger.error(f"Failed to save view mode: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to save view mode")
 
 @app.post("/api/user/dismiss-dockmon-update", tags=["user-preferences"])
 async def dismiss_dockmon_update(request: Request, current_user: dict = Depends(get_current_user)):
@@ -4617,7 +4840,7 @@ async def dismiss_dockmon_update(request: Request, current_user: dict = Depends(
         raise
     except Exception as e:
         logger.error(f"Failed to dismiss DockMon update: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to dismiss update")
 
 
 @app.post("/api/user/dismiss-agent-update", tags=["user-preferences"])
@@ -4670,12 +4893,12 @@ async def dismiss_agent_update(request: Request, current_user: dict = Depends(ge
         raise
     except Exception as e:
         logger.error(f"Failed to dismiss Agent update: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to dismiss update")
 
 
 # ==================== Phase 4c: Dashboard Hosts with Stats ====================
 
-@app.get("/api/dashboard/hosts", tags=["dashboard"])
+@app.get("/api/dashboard/hosts", tags=["dashboard"], dependencies=[Depends(require_capability("hosts.view"))])
 async def get_dashboard_hosts(
     group_by: Optional[str] = None,
     search: Optional[str] = None,
@@ -4841,7 +5064,7 @@ async def get_dashboard_hosts(
 
     except Exception as e:
         logger.error(f"Failed to get dashboard hosts: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get dashboard data")
 
 
 # ==================== Dashboard Summary (Homepage Integration) ====================
@@ -4852,7 +5075,7 @@ _dashboard_summary_cache = {
     "timestamp": None
 }
 
-@app.get("/api/dashboard/summary", tags=["dashboard"])
+@app.get("/api/dashboard/summary", tags=["dashboard"], dependencies=[Depends(require_capability("containers.view"))])
 async def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
     """
     Get aggregated dashboard summary for external integrations (Homepage, Grafana, etc.)
@@ -4947,13 +5170,13 @@ async def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
 
     except Exception as e:
         logger.error(f"Failed to get dashboard summary: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get dashboard summary")
 
 # ==================== Event Log Routes ====================
 # Note: Main /api/events endpoints are defined earlier (lines 1185-1367) with full feature set
 # including rate limiting. Additional event endpoints below:
 
-@app.get("/api/events/statistics", tags=["events"])
+@app.get("/api/events/statistics", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
 async def get_event_statistics(start_date: Optional[str] = None,
                              end_date: Optional[str] = None,
                              current_user: dict = Depends(get_current_user)):
@@ -4985,9 +5208,9 @@ async def get_event_statistics(start_date: Optional[str] = None,
         raise
     except Exception as e:
         logger.error(f"Failed to get event statistics: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get event statistics")
 
-@app.get("/api/hosts/{host_id}/events/container/{container_id}", tags=["events"])
+@app.get("/api/hosts/{host_id}/events/container/{container_id}", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
 async def get_container_events(host_id: str, container_id: str, limit: int = 50, current_user: dict = Depends(get_current_user)):
     """Get events for a specific container"""
     try:
@@ -5027,9 +5250,9 @@ async def get_container_events(host_id: str, container_id: str, limit: int = 50,
         }
     except Exception as e:
         logger.error(f"Failed to get events for container {container_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get container events")
 
-@app.get("/api/events/host/{host_id}", tags=["events"])
+@app.get("/api/events/host/{host_id}", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
 async def get_host_events(host_id: str, limit: int = 50, current_user: dict = Depends(get_current_user)):
     """Get events for a specific host"""
     try:
@@ -5064,16 +5287,21 @@ async def get_host_events(host_id: str, limit: int = 50, current_user: dict = De
         }
     except Exception as e:
         logger.error(f"Failed to get events for host {host_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get host events")
 
-@app.delete("/api/events/cleanup", tags=["events"], dependencies=[Depends(require_scope("admin"))])
-async def cleanup_old_events(days: int = 30, current_user: dict = Depends(get_current_user)):
-    """Clean up old events - DANGEROUS: Can delete audit logs"""
+@app.delete("/api/events/cleanup", tags=["events"], dependencies=[Depends(require_capability("settings.manage"))])
+async def cleanup_old_events(request: Request, days: int = 30, current_user: dict = Depends(get_current_user)):
+    """Clean up old events older than specified days"""
     try:
         if days < 1:
             raise HTTPException(status_code=400, detail="Days must be at least 1")
 
         deleted_count = monitor.db.cleanup_old_events(days)
+
+        _safe_audit(current_user, log_audit, AuditAction.DELETE, AuditEntityType.SETTINGS,
+                    entity_name="event_cleanup",
+                    details={'days': days, 'deleted_count': deleted_count},
+                    **get_client_info(request))
 
         monitor.event_logger.log_system_event(
             "Event Cleanup Completed",
@@ -5091,13 +5319,13 @@ async def cleanup_old_events(days: int = 30, current_user: dict = Depends(get_cu
         raise
     except Exception as e:
         logger.error(f"Failed to cleanup events: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to cleanup events")
 
 
 # ==================== Registry Credentials Endpoints ====================
 
 
-@app.get("/api/registry-credentials", tags=["registry"])
+@app.get("/api/registry-credentials", tags=["registry"], dependencies=[Depends(require_capability("registry.view"))])
 async def get_registry_credentials(current_user: dict = Depends(get_current_user)):
     """
     Get all registry credentials (passwords hidden for security).
@@ -5122,12 +5350,13 @@ async def get_registry_credentials(current_user: dict = Depends(get_current_user
 
     except Exception as e:
         logger.error(f"Failed to get registry credentials: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get credentials: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to get credentials")
 
 
-@app.post("/api/registry-credentials", tags=["registry"])
+@app.post("/api/registry-credentials", tags=["registry"], dependencies=[Depends(require_capability("registry.manage"))])
 async def create_registry_credential(
     data: dict,
+    request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -5189,7 +5418,6 @@ async def create_registry_credential(
 
             logger.info(f"Created registry credential for {registry_url} (username: {username})")
 
-            # Log event
             monitor.event_logger.log_system_event(
                 "Registry Credential Created",
                 f"Added credentials for registry: {registry_url}",
@@ -5197,8 +5425,8 @@ async def create_registry_credential(
                 LogEventType.CONFIG_CHANGED
             )
 
-            # Return credential without password
-            return {
+            credential_id = credential.id
+            result = {
                 "id": credential.id,
                 "registry_url": credential.registry_url,
                 "username": credential.username,
@@ -5206,17 +5434,25 @@ async def create_registry_credential(
                 "updated_at": credential.updated_at.isoformat() + 'Z' if credential.updated_at else None
             }
 
+        _safe_audit(current_user, log_audit, AuditAction.CREATE, AuditEntityType.REGISTRY_CREDENTIAL,
+                    entity_id=str(credential_id), entity_name=registry_url,
+                    details={'username': username},
+                    **get_client_info(request))
+
+        return result
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to create registry credential: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create credential: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to create credential")
 
 
-@app.put("/api/registry-credentials/{credential_id}", tags=["registry"])
+@app.put("/api/registry-credentials/{credential_id}", tags=["registry"], dependencies=[Depends(require_capability("registry.manage"))])
 async def update_registry_credential(
     credential_id: int,
     data: dict,
+    request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -5259,7 +5495,6 @@ async def update_registry_credential(
 
             logger.info(f"Updated registry credential for {credential.registry_url}")
 
-            # Log event
             monitor.event_logger.log_system_event(
                 "Registry Credential Updated",
                 f"Updated credentials for registry: {credential.registry_url}",
@@ -5267,8 +5502,9 @@ async def update_registry_credential(
                 LogEventType.CONFIG_CHANGED
             )
 
-            # Return credential without password
-            return {
+            cred_url = credential.registry_url
+            cred_username = credential.username
+            result = {
                 "id": credential.id,
                 "registry_url": credential.registry_url,
                 "username": credential.username,
@@ -5276,16 +5512,24 @@ async def update_registry_credential(
                 "updated_at": credential.updated_at.isoformat() + 'Z' if credential.updated_at else None
             }
 
+        _safe_audit(current_user, log_audit, AuditAction.UPDATE, AuditEntityType.REGISTRY_CREDENTIAL,
+                    entity_id=str(credential_id), entity_name=cred_url,
+                    details={'username': cred_username},
+                    **get_client_info(request))
+
+        return result
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to update registry credential: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to update credential: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to update credential")
 
 
-@app.delete("/api/registry-credentials/{credential_id}", tags=["registry"])
+@app.delete("/api/registry-credentials/{credential_id}", tags=["registry"], dependencies=[Depends(require_capability("registry.manage"))])
 async def delete_registry_credential(
     credential_id: int,
+    request: Request,
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -5311,7 +5555,6 @@ async def delete_registry_credential(
 
             logger.info(f"Deleted registry credential for {registry_url}")
 
-            # Log event
             monitor.event_logger.log_system_event(
                 "Registry Credential Deleted",
                 f"Deleted credentials for registry: {registry_url}",
@@ -5319,21 +5562,25 @@ async def delete_registry_credential(
                 LogEventType.CONFIG_CHANGED
             )
 
-            return {
-                "success": True,
-                "message": f"Deleted credentials for {registry_url}"
-            }
+        _safe_audit(current_user, log_audit, AuditAction.DELETE, AuditEntityType.REGISTRY_CREDENTIAL,
+                    entity_id=str(credential_id), entity_name=registry_url,
+                    **get_client_info(request))
+
+        return {
+            "success": True,
+            "message": f"Deleted credentials for {registry_url}"
+        }
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to delete registry credential: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete credential: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to delete credential")
 
 
 # ==================== Agent Management Routes (v2.2.0) ====================
 
-@app.post("/api/agent/generate-token")
+@app.post("/api/agent/generate-token", dependencies=[Depends(require_capability("agents.manage"))])
 async def generate_agent_registration_token(
     request: Request,
     body: GenerateTokenRequest = GenerateTokenRequest(),
@@ -5347,11 +5594,17 @@ async def generate_agent_registration_token(
     unlimited agents to register with the same token (within the 15 minute window).
     """
     try:
+        user_id, _ = get_auditable_user_info(current_user)
         agent_manager = AgentManager()  # Creates short-lived sessions internally
         token_record = agent_manager.generate_registration_token(
-            user_id=current_user["user_id"],
+            user_id=user_id,
             multi_use=body.multi_use
         )
+
+        _safe_audit(current_user, log_audit, AuditAction.CREATE, AuditEntityType.API_KEY,
+                    entity_name="agent_registration_token",
+                    details={'type': 'agent_registration_token', 'multi_use': body.multi_use, 'token_prefix': token_record.token[:8] + '...'},
+                    **get_client_info(request))
 
         return {
             "success": True,
@@ -5362,10 +5615,10 @@ async def generate_agent_registration_token(
 
     except Exception as e:
         logger.error(f"Failed to generate agent registration token: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to generate token: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to generate token")
 
 
-@app.get("/api/agent/list")
+@app.get("/api/agent/list", dependencies=[Depends(require_capability("agents.view"))])
 async def list_agents(
     request: Request,
     current_user: dict = Depends(get_current_user)
@@ -5404,10 +5657,10 @@ async def list_agents(
 
     except Exception as e:
         logger.error(f"Failed to list agents: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to list agents: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to list agents")
 
 
-@app.get("/api/agent/{agent_id}/status")
+@app.get("/api/agent/{agent_id}/status", dependencies=[Depends(require_capability("agents.view"))])
 async def get_agent_status(
     agent_id: str,
     request: Request,
@@ -5446,10 +5699,10 @@ async def get_agent_status(
         raise
     except Exception as e:
         logger.error(f"Failed to get agent status: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to get agent status: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to get agent status")
 
 
-@app.post("/api/agent/{agent_id}/migrate-from/{source_host_id}", dependencies=[Depends(require_scope("admin"))])
+@app.post("/api/agent/{agent_id}/migrate-from/{source_host_id}", dependencies=[Depends(require_capability("agents.manage"))])
 async def migrate_agent_from_host(
     agent_id: str,
     source_host_id: str,
@@ -5471,6 +5724,10 @@ async def migrate_agent_from_host(
         if not result["success"]:
             raise HTTPException(status_code=400, detail=result.get("error", "Migration failed"))
 
+        _safe_audit(current_user, log_host_change, AuditAction.UPDATE,
+                    result.get("host_id", agent_id), result.get("migrated_from", {}).get("host_name"),
+                    request, details={'agent_id': agent_id, 'migrated_from': source_host_id})
+
         # Broadcast migration notification to frontend
         try:
             await monitor.manager.broadcast({
@@ -5491,7 +5748,7 @@ async def migrate_agent_from_host(
         raise
     except Exception as e:
         logger.error(f"Migration failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Migration failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Migration failed")
 
 
 @app.websocket("/api/agent/ws")
@@ -5513,6 +5770,20 @@ async def agent_websocket_endpoint(websocket: WebSocket):
     await handle_agent_websocket(websocket, monitor)
 
 
+async def _validate_ws_user(db_manager, websocket: WebSocket, user_id: int, label: str = "WebSocket") -> bool:
+    """Check that a user still exists in the database. Close WebSocket if not.
+
+    Returns True if valid, False if the connection was closed.
+    """
+    with db_manager.get_session() as db_session:
+        user = db_session.query(User).filter(User.id == user_id).first()
+        if not user:
+            logger.warning(f"{label} rejected: user ID {user_id} not found")
+            await websocket.close(code=1008, reason="User account not found")
+            return False
+    return True
+
+
 @app.websocket("/ws")
 @app.websocket("/ws/")
 async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = Cookie(None)):
@@ -5528,7 +5799,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
 
     # Validate session using v2 auth
     from auth.cookie_sessions import cookie_session_manager
-    client_ip = websocket.client.host if websocket.client else "unknown"
+    client_ip = get_client_ip_ws(websocket)
     session_data = cookie_session_manager.validate_session(session_id, client_ip)
 
     if not session_data:
@@ -5536,11 +5807,22 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         await websocket.close(code=1008, reason="Invalid or expired session")
         return
 
+    ws_user_id = session_data.get("user_id")
+    if ws_user_id:
+        if not await _validate_ws_user(monitor.db, websocket, ws_user_id):
+            return
+
+    # Get user_id for capability-based filtering
+    user_id = ws_user_id
+    user_caps = set(get_capabilities_for_user(user_id)) if user_id else set()
+    can_view_env = user_id is not None and has_capability_for_user(user_id, Capabilities.CONTAINERS_VIEW_ENV)
+
     logger.debug(f"WebSocket authenticated for user: {session_data.get('username')}")
 
     try:
         # Accept connection and subscribe to events
-        await monitor.manager.connect(websocket)
+        # Pass user_id for per-connection capability filtering
+        await monitor.manager.connect(websocket, user_id=user_id, capabilities=user_caps)
         await monitor.realtime.subscribe_to_events(websocket)
 
         # Event-driven stats control: Start stats streams when first viewer connects
@@ -5595,11 +5877,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         # Get current blackout window status
         is_blackout, window_name = monitor.notification_service.blackout_manager.is_in_blackout_window()
 
+        containers_data = await monitor.get_containers()
         initial_state = {
             "type": "initial_state",
             "data": {
-                "hosts": [h.dict() for h in monitor.hosts.values()],
-                "containers": [c.dict() for c in await monitor.get_containers()],
+                "hosts": [h.dict() for h in monitor.hosts.values()] if "hosts.view" in user_caps else [],
+                "containers": filter_container_env(containers_data, can_view_env) if "containers.view" in user_caps else [],
                 "settings": settings_dict,
                 "blackout": {
                     "is_active": is_blackout,
@@ -5611,27 +5894,27 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
 
         # Send immediate containers_update with stats/sparklines so frontend doesn't wait for next poll
         # This eliminates the 5-10 second delay when opening container drawers on page load
-        containers = await monitor.get_containers()
-        broadcast_data = {
-            "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
-            "containers": [c.dict() for c in containers]
-        }
+        if "containers.view" in user_caps:
+            broadcast_data = {
+                "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
+                "containers": filter_container_env(containers_data, can_view_env)
+            }
 
-        # Include sparklines if available
-        if hasattr(monitor, 'container_stats_history'):
-            container_sparklines = {}
-            for container in containers:
-                # Use composite key with SHORT ID: host_id:container_id (12 chars)
-                container_key = make_composite_key(container.host_id, container.short_id)
-                sparklines = monitor.container_stats_history.get_sparklines(container_key, num_points=30)
-                container_sparklines[container_key] = sparklines
-            broadcast_data["container_sparklines"] = container_sparklines
+            # Include sparklines if available
+            if hasattr(monitor, 'container_stats_history'):
+                container_sparklines = {}
+                for container in containers_data:
+                    # Use composite key with SHORT ID: host_id:container_id (12 chars)
+                    container_key = make_composite_key(container.host_id, container.short_id)
+                    sparklines = monitor.container_stats_history.get_sparklines(container_key, num_points=30)
+                    container_sparklines[container_key] = sparklines
+                broadcast_data["container_sparklines"] = container_sparklines
 
-        containers_update = {
-            "type": "containers_update",
-            "data": broadcast_data
-        }
-        await websocket.send_text(json.dumps(containers_update, cls=DateTimeEncoder))
+            containers_update = {
+                "type": "containers_update",
+                "data": broadcast_data
+            }
+            await websocket.send_text(json.dumps(containers_update, cls=DateTimeEncoder))
 
         while True:
             # Keep connection alive and handle incoming messages
@@ -5652,7 +5935,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
             # Handle different message types
             if message.get("type") == "subscribe_stats":
                 container_id = message.get("container_id")
-                if container_id:
+                if container_id and "containers.view" in user_caps:
                     await monitor.realtime.subscribe_to_stats(websocket, container_id)
                     # Find the host and start monitoring
                     # CRITICAL: Use async wrapper to prevent blocking event loop
@@ -5686,7 +5969,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
                             for c in containers
                         )
                         if container_exists:
-                            monitor.stats_manager.add_modal_container(container_id, host_id)
+                            monitor.stats_manager.add_modal_container(container_id, host_id, connection_id)
                         else:
                             logger.warning(f"User attempted to access stats for non-existent container: {container_id[:12]} on host {host_id[:8]}")
                     except Exception as e:
@@ -5697,7 +5980,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
                 container_id = message.get("container_id")
                 host_id = message.get("host_id")
                 if container_id and host_id:
-                    monitor.stats_manager.remove_modal_container(container_id, host_id)
+                    monitor.stats_manager.remove_modal_container(container_id, host_id, connection_id)
 
             elif message.get("type") == "ping":
                 await websocket.send_text(json.dumps({"type": "pong"}, cls=DateTimeEncoder))
@@ -5713,8 +5996,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         # Unsubscribe from all stats
         for container_id in list(monitor.realtime.stats_subscribers):
             await monitor.realtime.unsubscribe_from_stats(websocket, container_id)
-        # Clear modal containers (user disconnected, modals are closed)
-        monitor.stats_manager.clear_modal_containers()
+        # Clear modal containers for this connection only (not all users)
+        monitor.stats_manager.clear_modal_containers_for_connection(connection_id)
 
         # Event-driven stats control: Stop stats streams when last viewer disconnects
         if len(monitor.manager.active_connections) == 0:
@@ -5765,12 +6048,40 @@ async def websocket_shell_endpoint(
 
     # Validate session using v2 auth
     from auth.cookie_sessions import cookie_session_manager
-    client_ip = websocket.client.host if websocket.client else "unknown"
+    client_ip = get_client_ip_ws(websocket)
     session_data = cookie_session_manager.validate_session(session_id, client_ip)
 
     if not session_data:
         logger.warning(f"Shell WebSocket connection with invalid session from {client_ip}")
         await websocket.close(code=1008, reason="Invalid or expired session")
+        return
+
+    shell_user_id = session_data.get("user_id")
+    if shell_user_id:
+        if not await _validate_ws_user(monitor.db, websocket, shell_user_id, "Shell WebSocket"):
+            return
+
+    # CRITICAL: Check shell permission - essentially root access to container
+    user_id = shell_user_id
+    username = session_data.get("username", "unknown")
+
+    if not has_capability_for_user(user_id, Capabilities.CONTAINERS_SHELL):
+        logger.warning(
+            f"Shell access denied for user {username} "
+            f"to container {container_id} on host {host_id}"
+        )
+        security_audit.log_event(
+            event_type="shell_access_denied",
+            severity="warning",
+            user_id=user_id,
+            details={
+                "username": username,
+                "host_id": host_id,
+                "container_id": container_id,
+                "client_ip": client_ip
+            }
+        )
+        await websocket.close(code=4003, reason="Shell access denied - requires containers.shell capability")
         return
 
     # Validate host exists
@@ -5779,13 +6090,48 @@ async def websocket_shell_endpoint(
         await websocket.close(code=1008, reason="Host not found")
         return
 
+    # Audit log - shell access granted
+    short_id = normalize_container_id(container_id)
+    container_name = _get_container_name(host_id, short_id)
+    user_agent = websocket.headers.get('User-Agent') if websocket else None
+    try:
+        with monitor.db.get_session() as session:
+            log_audit(
+                session, user_id, username, AuditAction.SHELL,
+                AuditEntityType.CONTAINER,
+                entity_id=short_id,
+                entity_name=container_name,
+                host_id=host_id,
+                ip_address=client_ip,
+                user_agent=user_agent,
+            )
+            session.commit()
+    except Exception:
+        logger.error("Shell audit logging failed", exc_info=True)
+
     # Route based on connection type
-    if host.connection_type == 'agent':
-        # Agent-based host: route through agent WebSocket
-        await _handle_agent_shell_session(websocket, host_id, container_id, session_data)
-    else:
-        # Local/Remote host: direct Docker connection
-        await _handle_direct_shell_session(websocket, host_id, container_id, session_data)
+    try:
+        if host.connection_type == 'agent':
+            # Agent-based host: route through agent WebSocket
+            await _handle_agent_shell_session(websocket, host_id, container_id, session_data)
+        else:
+            # Local/Remote host: direct Docker connection
+            await _handle_direct_shell_session(websocket, host_id, container_id, session_data)
+    finally:
+        # Audit log - shell session ended
+        try:
+            with monitor.db.get_session() as session:
+                log_audit(
+                    session, user_id, username, AuditAction.SHELL_END,
+                    AuditEntityType.CONTAINER,
+                    entity_id=short_id,
+                    entity_name=container_name,
+                    host_id=host_id,
+                    ip_address=client_ip,
+                )
+                session.commit()
+        except Exception:
+            logger.error("Shell end audit logging failed", exc_info=True)
 
 
 async def _handle_agent_shell_session(
@@ -5911,9 +6257,10 @@ async def _handle_direct_shell_session(
 
     try:
         # Create exec instance
+        # Use short_id (12 chars) per DockMon standards - Docker API accepts both formats
         exec_instance = await async_docker_call(
             client.api.exec_create,
-            container.id,
+            container.short_id,
             cmd=['/bin/sh', '-c', 'if command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi'],
             stdin=True,
             stdout=True,

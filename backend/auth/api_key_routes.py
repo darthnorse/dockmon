@@ -5,57 +5,72 @@ Provides endpoints for creating, listing, updating, and revoking API keys.
 
 SECURITY:
 - All routes require authentication
-- Create/update/delete require 'admin' scope
+- Create/update/delete require 'apikeys.manage_other' capability
 - Keys are hashed before storage (never plaintext)
 - Revocation is idempotent (returns 200 if already revoked)
+
+v2.4.0 Refactor:
+- API keys now belong to a group (not scopes)
+- Permissions come from the assigned group
+- created_by_user_id for audit trail
 """
 
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional
+from ipaddress import ip_address, ip_network
 
 from fastapi import APIRouter, HTTPException, Depends, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
-from database import ApiKey, User
-from auth.api_key_auth import generate_api_key, get_current_user_or_api_key, require_scope
+from database import ApiKey, User, CustomGroup
+from auth.api_key_auth import generate_api_key, get_current_user_or_api_key, require_capability
 from auth.shared import db
+from audit.audit_logger import AuditAction, AuditEntityType, log_audit, get_client_info
+from auth.utils import format_timestamp, format_timestamp_required, get_auditable_user_info
 from security.audit import security_audit
+from utils.client_ip import get_client_ip
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2/api-keys", tags=["api-keys"])
 
 
+def _validate_allowed_ips(allowed_ips: str) -> str:
+    """Validate each IP/CIDR entry. Raises HTTPException on invalid."""
+    for entry in allowed_ips.split(','):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            if '/' in entry:
+                ip_network(entry, strict=False)
+            else:
+                ip_address(entry)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid IP/CIDR: '{entry}'")
+    return allowed_ips
+
+
 # Request/Response Models
 
 class ApiKeyCreateRequest(BaseModel):
-    """Request to create new API key"""
+    """Request to create new API key (v2.4.0 group-based)"""
     name: str = Field(..., min_length=1, max_length=100, description="Human-readable name")
-    description: Optional[str] = Field(None, max_length=500, description="Optional description")
-    scopes: str = Field(default="read", description="Comma-separated scopes: read,write,admin")
-    allowed_ips: Optional[str] = Field(None, description="Comma-separated IPs/CIDRs (optional)")
-    expires_days: Optional[int] = Field(None, ge=1, le=365, description="Expiration in days (optional)")
-
-    @field_validator('scopes')
-    @classmethod
-    def validate_scopes(cls, v: str) -> str:
-        """Validate scopes are valid"""
-        valid_scopes = {'read', 'write', 'admin'}
-        scopes = set(s.strip() for s in v.split(','))
-        invalid = scopes - valid_scopes
-        if invalid:
-            raise ValueError(f"Invalid scopes: {invalid}. Valid: {valid_scopes}")
-        return ','.join(sorted(scopes))
+    description: str | None = Field(None, max_length=500, description="Optional description")
+    group_id: int = Field(..., description="Group ID for permissions")
+    allowed_ips: str | None = Field(None, description="Comma-separated IPs/CIDRs (optional)")
+    expires_days: int | None = Field(None, ge=1, le=365, description="Expiration in days (optional)")
 
 
 class ApiKeyCreateResponse(BaseModel):
     """Response after creating API key - includes plaintext key"""
     id: int
     name: str
+    description: str | None = None
     key: str  # IMPORTANT: Only shown once!
     key_prefix: str
-    scopes: str
-    expires_at: Optional[str]
+    group_id: int
+    group_name: str
+    expires_at: str | None
     message: str
 
 
@@ -63,54 +78,47 @@ class ApiKeyListItem(BaseModel):
     """API key list item (masked key)"""
     id: int
     name: str
-    description: Optional[str]
+    description: str | None
     key_prefix: str  # Only show prefix, never full key
-    scopes: str
-    allowed_ips: Optional[str]
-    last_used_at: Optional[str]
+    group_id: int
+    group_name: str
+    allowed_ips: str | None
+    last_used_at: str | None
     usage_count: int
-    expires_at: Optional[str]
-    revoked_at: Optional[str]
+    expires_at: str | None
+    revoked_at: str | None
     created_at: str
+    created_by_username: str | None
 
 
 class ApiKeyUpdateRequest(BaseModel):
-    """Request to update API key"""
-    name: Optional[str] = Field(None, min_length=1, max_length=100)
-    description: Optional[str] = Field(None, max_length=500)
-    scopes: Optional[str] = None
-    allowed_ips: Optional[str] = None
+    """Request to update API key.
 
-    @field_validator('scopes')
-    @classmethod
-    def validate_scopes(cls, v: Optional[str]) -> Optional[str]:
-        """Validate scopes if provided"""
-        if v is None:
-            return v
-        valid_scopes = {'read', 'write', 'admin'}
-        scopes = set(s.strip() for s in v.split(','))
-        invalid = scopes - valid_scopes
-        if invalid:
-            raise ValueError(f"Invalid scopes: {invalid}. Valid: {valid_scopes}")
-        return ','.join(sorted(scopes))
+    Note: group_id cannot be changed after creation. To use a different group,
+    create a new API key.
+    """
+    name: str | None = Field(None, min_length=1, max_length=100)
+    description: str | None = Field(None, max_length=500)
+    allowed_ips: str | None = None
 
 
 # Routes
 
-@router.post("/", response_model=ApiKeyCreateResponse, dependencies=[Depends(require_scope("admin"))])
+@router.post("/", response_model=ApiKeyCreateResponse, dependencies=[Depends(require_capability("apikeys.manage_other"))])
 async def create_api_key(
     data: ApiKeyCreateRequest,
     current_user: dict = Depends(get_current_user_or_api_key),
     request: Request = None
 ):
     """
-    Create a new API key for programmatic API access.
+    Create a new API key for programmatic API access (v2.4.0 group-based).
 
     ## 🔐 Security Notes
 
-    - **Admin scope required** - Only admins can create API keys
+    - **apikeys.manage_other capability required** - Only admins can create API keys
     - **Key shown only once** - Save immediately, cannot be retrieved later!
     - **SHA256 hashing** - Plaintext key never stored in database
+    - **Group-based permissions** - Key inherits permissions from assigned group
 
     ## 📝 Request Example
 
@@ -121,7 +129,7 @@ async def create_api_key(
       -d '{
         "name": "Homepage Dashboard",
         "description": "Read-only key for Homepage widget",
-        "scopes": "read",
+        "group_id": 3,
         "expires_days": 90
       }'
     ```
@@ -134,23 +142,22 @@ async def create_api_key(
       "name": "Homepage Dashboard",
       "key": "dockmon_A1b2C3d4E5f6...",
       "key_prefix": "dockmon_A1b2C3d4E5f6",
-      "scopes": "read",
+      "group_id": 3,
+      "group_name": "Read Only",
       "expires_at": "2025-02-14T10:30:00Z",
       "message": "Save this key immediately - it will not be shown again!"
     }
     ```
-
-    ## 🎯 Scope Options
-
-    - `read` - View-only (dashboards, monitoring)
-    - `write` - Container operations (Ansible, CI/CD)
-    - `admin` - Full access (create API keys, manage hosts)
 
     ## 🔗 See Also
 
     - [Security Guide](https://github.com/darthnorse/dockmon/blob/main/docs/API_KEY_SECURITY_CAVEATS.md)
     - [Wiki: API Access](https://github.com/darthnorse/dockmon/wiki/API-Access)
     """
+    # Validate allowed_ips format before storing
+    if data.allowed_ips:
+        _validate_allowed_ips(data.allowed_ips)
+
     # Generate cryptographically secure key
     plaintext_key, key_hash, key_prefix = generate_api_key()
 
@@ -159,15 +166,23 @@ async def create_api_key(
     if data.expires_days:
         expires_at = datetime.now(timezone.utc) + timedelta(days=data.expires_days)
 
+    # Get user info for audit (handles both session and API key auth)
+    user_id, display_name = get_auditable_user_info(current_user)
+
     # Create database record
     with db.get_session() as session:
+        # Validate group exists
+        group = session.query(CustomGroup).filter(CustomGroup.id == data.group_id).first()
+        if not group:
+            raise HTTPException(status_code=400, detail=f"Group with ID {data.group_id} not found")
+
         api_key = ApiKey(
-            user_id=current_user["user_id"],
+            group_id=data.group_id,
+            created_by_user_id=user_id,
             name=data.name,
             description=data.description,
             key_hash=key_hash,
             key_prefix=key_prefix,
-            scopes=data.scopes,
             allowed_ips=data.allowed_ips,
             expires_at=expires_at,
             created_at=datetime.now(timezone.utc),
@@ -175,44 +190,51 @@ async def create_api_key(
         )
 
         session.add(api_key)
+        session.flush()  # Assign ID without committing
+
+        # Audit log (before commit so both records are in same transaction)
+        if request:
+            log_audit(session, user_id, display_name, AuditAction.CREATE, AuditEntityType.API_KEY, entity_id=str(api_key.id), entity_name=api_key.name, details={'group': group.name}, **get_client_info(request))
+
         session.commit()
         session.refresh(api_key)
 
-        # Audit log
-        from utils.client_ip import get_client_ip
-        client_ip = get_client_ip(request)  # request is available from function params
+        client_ip = get_client_ip(request)
         security_audit.log_privileged_action(
             client_ip=client_ip,
             action="create_api_key",
-            target=f"{api_key.name} (scopes: {api_key.scopes})",
+            target=f"{api_key.name} (group: {group.name})",
             success=True
         )
 
-        logger.info(f"User {current_user['username']} created API key: {api_key.name}")
+        logger.info(f"{display_name} created API key: {api_key.name} (group: {group.name})")
 
         return ApiKeyCreateResponse(
             id=api_key.id,
             name=api_key.name,
+            description=api_key.description,
             key=plaintext_key,  # ONLY TIME THIS IS RETURNED!
             key_prefix=api_key.key_prefix,
-            scopes=api_key.scopes,
-            expires_at=expires_at.isoformat() + 'Z' if expires_at else None,
+            group_id=group.id,
+            group_name=group.name,
+            expires_at=format_timestamp(expires_at),
             message="IMPORTANT: Save this key now - it cannot be retrieved later!"
         )
 
 
-@router.get("/", response_model=List[ApiKeyListItem])
+@router.get("/", response_model=list[ApiKeyListItem], dependencies=[Depends(require_capability("apikeys.manage_other"))])
 async def list_api_keys(
     current_user: dict = Depends(get_current_user_or_api_key)
 ):
     """
-    List all API keys for the authenticated user.
+    List all API keys (v2.4.0 group-based).
 
     ## 🔐 Security
 
     - Returns **key prefix only** (e.g., `dockmon_A1b2C3d4...`)
     - Full keys are **never** retrievable after creation
     - Shows usage statistics and expiration status
+    - Shows assigned group for each key
 
     ## 📝 Example
 
@@ -224,14 +246,20 @@ async def list_api_keys(
     ## 📊 Response Fields
 
     - `key_prefix` - First 20 characters (safe to display)
+    - `group_id` - Assigned group ID
+    - `group_name` - Assigned group name
     - `last_used_at` - Last authentication timestamp
     - `usage_count` - Total API calls made with this key
     - `revoked_at` - Revocation timestamp (null = active)
     - `expires_at` - Expiration timestamp (null = never expires)
+    - `created_by_username` - User who created the key
     """
     with db.get_session() as session:
-        keys = session.query(ApiKey).filter(
-            ApiKey.user_id == current_user["user_id"]
+        # Join with CustomGroup to get group names
+        keys = session.query(ApiKey, CustomGroup, User).join(
+            CustomGroup, ApiKey.group_id == CustomGroup.id
+        ).outerjoin(
+            User, ApiKey.created_by_user_id == User.id
         ).order_by(ApiKey.created_at.desc()).all()
 
         return [
@@ -240,19 +268,21 @@ async def list_api_keys(
                 name=key.name,
                 description=key.description,
                 key_prefix=key.key_prefix,
-                scopes=key.scopes,
+                group_id=group.id,
+                group_name=group.name,
                 allowed_ips=key.allowed_ips,
-                last_used_at=key.last_used_at.isoformat() + 'Z' if key.last_used_at else None,
+                last_used_at=format_timestamp(key.last_used_at),
                 usage_count=key.usage_count,
-                expires_at=key.expires_at.isoformat() + 'Z' if key.expires_at else None,
-                revoked_at=key.revoked_at.isoformat() + 'Z' if key.revoked_at else None,
-                created_at=key.created_at.isoformat() + 'Z'
+                expires_at=format_timestamp(key.expires_at),
+                revoked_at=format_timestamp(key.revoked_at),
+                created_at=format_timestamp_required(key.created_at),
+                created_by_username=creator.username if creator else None
             )
-            for key in keys
+            for key, group, creator in keys
         ]
 
 
-@router.patch("/{key_id}", dependencies=[Depends(require_scope("admin"))])
+@router.patch("/{key_id}", dependencies=[Depends(require_capability("apikeys.manage_other"))])
 async def update_api_key(
     key_id: int,
     data: ApiKeyUpdateRequest,
@@ -260,15 +290,16 @@ async def update_api_key(
     request: Request = None
 ):
     """
-    Update API key metadata (name, scopes, IP restrictions).
+    Update API key metadata (name, description, IP restrictions).
 
-    ## ⚠️ Important
+    ## Important
 
-    - **Cannot change the key itself** - only metadata
-    - Requires `admin` scope
+    - **Cannot change the key itself or group** - only metadata
+    - Requires `apikeys.manage_other` capability
     - All fields are optional (only update what you provide)
+    - To use a different group, create a new API key
 
-    ## 📝 Example
+    ## Example
 
     ```bash
     curl -X PATCH https://your-dockmon-url/api/v2/api-keys/1 \\
@@ -276,29 +307,24 @@ async def update_api_key(
       -H "Content-Type: application/json" \\
       -d '{
         "name": "Updated Name",
-        "scopes": "read,write",
         "allowed_ips": "192.168.1.0/24"
       }'
     ```
 
-    ## 🔄 Updatable Fields
+    ## Updatable Fields
 
     - `name` - Display name
     - `description` - Optional description
-    - `scopes` - Comma-separated (read, write, admin)
     - `allowed_ips` - Comma-separated IPs/CIDRs (or null to remove)
     """
     with db.get_session() as session:
-        api_key = session.query(ApiKey).filter(
-            ApiKey.id == key_id,
-            ApiKey.user_id == current_user["user_id"]
-        ).first()
+        api_key = session.query(ApiKey).filter(ApiKey.id == key_id).first()
 
         if not api_key:
             raise HTTPException(status_code=404, detail="API key not found")
 
-        # Debug logging (use INFO to ensure it shows in logs)
-        logger.info(f"API Key update request - allowed_ips field: {repr(data.allowed_ips)}")
+        # Debug logging for troubleshooting
+        logger.debug(f"API Key update request - allowed_ips field: {repr(data.allowed_ips)}")
 
         # Collect changes for audit log
         changes = []
@@ -306,26 +332,27 @@ async def update_api_key(
             changes.append(f"name: {api_key.name} → {data.name}")
             api_key.name = data.name
         if data.description is not None:
-            changes.append(f"description updated")
+            changes.append("description updated")
             api_key.description = data.description
-        if data.scopes is not None:
-            changes.append(f"scopes: {api_key.scopes} → {data.scopes}")
-            api_key.scopes = data.scopes
-        # Handle allowed_ips field - need to check if it's explicitly in the request
-        # Pydantic sets it to None when field is sent as null/empty
-        if hasattr(data, 'allowed_ips'):
+        # Handle allowed_ips field - use model_fields_set to detect if explicitly provided
+        # This distinguishes "field not sent" from "field sent as null"
+        if 'allowed_ips' in data.model_fields_set:
             if data.allowed_ips is None or (isinstance(data.allowed_ips, str) and data.allowed_ips.strip() == ""):
-                changes.append(f"allowed_ips cleared (no restrictions)")
+                changes.append("allowed_ips cleared (no restrictions)")
                 api_key.allowed_ips = None
             else:
-                changes.append(f"allowed_ips updated")
+                _validate_allowed_ips(data.allowed_ips)
+                changes.append("allowed_ips updated")
                 api_key.allowed_ips = data.allowed_ips
 
         api_key.updated_at = datetime.now(timezone.utc)
+
+        user_id, display_name = get_auditable_user_info(current_user)
+        if request:
+            log_audit(session, user_id, display_name, AuditAction.UPDATE, AuditEntityType.API_KEY, entity_id=str(key_id), entity_name=api_key.name, details={'changes': changes}, **get_client_info(request))
+
         session.commit()
 
-        # Audit log
-        from utils.client_ip import get_client_ip
         client_ip = get_client_ip(request) if request else "unknown"
         security_audit.log_privileged_action(
             client_ip=client_ip,
@@ -334,12 +361,12 @@ async def update_api_key(
             success=True
         )
 
-        logger.info(f"User {current_user['username']} updated API key: {api_key.name}")
+        logger.info(f"{display_name} updated API key: {api_key.name}")
 
         return {"message": "API key updated successfully"}
 
 
-@router.delete("/{key_id}", dependencies=[Depends(require_scope("admin"))])
+@router.delete("/{key_id}", dependencies=[Depends(require_capability("apikeys.manage_other"))])
 async def revoke_api_key(
     key_id: int,
     current_user: dict = Depends(get_current_user_or_api_key),
@@ -363,7 +390,7 @@ async def revoke_api_key(
 
     ## ⚠️ Important
 
-    - Requires `admin` scope
+    - Requires `apikeys.manage_other` capability
     - Cannot be undone - create a new key if needed
     - All active sessions using this key will fail immediately
     - Record remains in database for audit purposes
@@ -376,13 +403,14 @@ async def revoke_api_key(
     - Removing unused integrations
     """
     with db.get_session() as session:
-        api_key = session.query(ApiKey).filter(
-            ApiKey.id == key_id,
-            ApiKey.user_id == current_user["user_id"]
-        ).first()
+        api_key = session.query(ApiKey).filter(ApiKey.id == key_id).first()
 
         if not api_key:
             raise HTTPException(status_code=404, detail="API key not found")
+
+        # Get group name for audit log
+        group = session.query(CustomGroup).filter(CustomGroup.id == api_key.group_id).first()
+        group_name = group.name if group else "unknown"
 
         # Idempotent revoke
         if api_key.revoked_at is not None:
@@ -392,18 +420,21 @@ async def revoke_api_key(
         # Soft delete
         api_key.revoked_at = datetime.now(timezone.utc)
         api_key.updated_at = datetime.now(timezone.utc)
+
+        user_id, display_name = get_auditable_user_info(current_user)
+        if request:
+            log_audit(session, user_id, display_name, AuditAction.DELETE, AuditEntityType.API_KEY, entity_id=str(key_id), entity_name=api_key.name, details={'group': group_name}, **get_client_info(request))
+
         session.commit()
 
-        # Audit log
-        from utils.client_ip import get_client_ip
         client_ip = get_client_ip(request) if request else "unknown"
         security_audit.log_privileged_action(
             client_ip=client_ip,
             action="revoke_api_key",
-            target=f"{api_key.name} (scopes: {api_key.scopes})",
+            target=f"{api_key.name} (group: {group_name})",
             success=True
         )
 
-        logger.info(f"User {current_user['username']} revoked API key: {api_key.name}")
+        logger.info(f"{display_name} revoked API key: {api_key.name}")
 
         return {"message": "API key revoked successfully"}

@@ -2,11 +2,11 @@
 
 A comprehensive Docker container monitoring and management platform with real-time monitoring, intelligent auto-restart, multi-channel alerting, and complete event logging.
 
-![DockMon](https://img.shields.io/badge/DockMon-v2.2.12-blue.svg)
+![DockMon](https://img.shields.io/badge/DockMon-v2.3.0-blue.svg)
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
 ![React](https://img.shields.io/badge/React-18.3-61DAFB?logo=react&logoColor=white)
-![Go](https://img.shields.io/badge/Go-1.23-00ADD8?logo=go&logoColor=white)
+![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go&logoColor=white)
 ![License](https://img.shields.io/badge/license-BSL%201.1-blue.svg)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Support-FFDD00?logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/darthnorse)
 
@@ -30,6 +30,9 @@ A comprehensive Docker container monitoring and management platform with real-ti
 - **Automatic Updates** - Detect and execute container image updates on schedule
 - **HTTP/HTTPS Health Checks** - Custom endpoint monitoring with auto-restart on failure
 - **Blackout Windows** - Schedule maintenance periods to suppress alerts
+- **Multi-User Support** - Group-based RBAC with custom groups, granular capabilities, and user management
+- **OIDC/SSO Integration** - Single sign-on with any OIDC provider (Authentik, Keycloak, Okta, Entra ID, Auth0), automatic group sync, and optional user approval workflow
+- **API Keys** - Programmatic access with group-based permissions, optional IP restrictions, and expiration
 - **Secure by Design** - Session-based auth, rate limiting, mTLS for remote hosts, Alpine Linux base
 
 ## Documentation
@@ -38,6 +41,7 @@ A comprehensive Docker container monitoring and management platform with real-ti
 - **[Quick Start](https://github.com/darthnorse/dockmon/wiki/Quick-Start)** - Get started in 5 minutes
 - **[Installation](https://github.com/darthnorse/dockmon/wiki/Installation)** - Docker, unRAID, Synology, QNAP
 - **[Configuration](https://github.com/darthnorse/dockmon/wiki/Notifications)** - Alerts, notifications, settings
+- **[Multi-User & OIDC](https://github.com/darthnorse/dockmon/wiki/Multi-User-and-OIDC)** - Users, groups, SSO setup
 - **[Security](https://github.com/darthnorse/dockmon/wiki/Security-Guide)** - Best practices and mTLS setup
 - **[Remote Monitoring](https://github.com/darthnorse/dockmon/wiki/Remote-Docker-Setup)** - Monitor remote Docker hosts
 - **[Event Viewer](https://github.com/darthnorse/dockmon/wiki/Event-Viewer)** - Comprehensive audit trail with filtering

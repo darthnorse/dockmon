@@ -37,13 +37,16 @@ export interface TabsProps {
 }
 
 export function Tabs({ tabs, activeTab, onTabChange, className }: TabsProps) {
+  // Fall back to first tab if activeTab doesn't match any tab
+  const effectiveTab = tabs.some((tab) => tab.id === activeTab) ? activeTab : tabs[0]?.id
+
   return (
     <div className={cn('w-full flex flex-col flex-1 overflow-hidden', className)}>
       {/* Tab Navigation */}
       <div className="border-b border-border shrink-0">
         <nav className="flex gap-6 px-6 pt-4" aria-label="Tabs">
           {tabs.map((tab) => {
-            const isActive = tab.id === activeTab
+            const isActive = tab.id === effectiveTab
 
             return (
               <button
@@ -72,7 +75,7 @@ export function Tabs({ tabs, activeTab, onTabChange, className }: TabsProps) {
 
       {/* Tab Content */}
       <div className="flex-1 overflow-y-auto">
-        {tabs.find((tab) => tab.id === activeTab)?.content}
+        {tabs.find((tab) => tab.id === effectiveTab)?.content}
       </div>
     </div>
   )

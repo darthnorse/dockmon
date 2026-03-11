@@ -982,6 +982,49 @@ class NotificationService:
             logger.error(f"Error testing channel {channel_id}: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
+    async def send_message_to_channel(self, channel_id: int, message: str,
+                                       title: str = "DockMon") -> bool:
+        """Send an arbitrary message to a specific notification channel.
+
+        Used for system notifications (e.g., pending user approval).
+        Fire-and-forget -- returns False on failure, never raises.
+        """
+        try:
+            channel_type = None
+            channel_config = None
+
+            with self.db.get_session() as session:
+                channel = session.query(NotificationChannel).filter_by(id=channel_id).first()
+                if not channel:
+                    logger.warning(f"Notification channel {channel_id} not found")
+                    return False
+                channel_type = channel.type
+                channel_config = channel.config
+
+            # Dispatch based on channel type (same pattern as test_channel)
+            senders = {
+                'telegram': lambda: self._send_telegram(channel_config, message),
+                'discord': lambda: self._send_discord(channel_config, message),
+                'slack': lambda: self._send_slack(channel_config, message),
+                'gotify': lambda: self._send_gotify(channel_config, message, title=title),
+                'ntfy': lambda: self._send_ntfy(channel_config, message, title=title),
+                'smtp': lambda: self._send_smtp(channel_config, message, title=title),
+                'pushover': lambda: self._send_pushover(channel_config, message, None),
+                'teams': lambda: self._send_teams(channel_config, message),
+                'webhook': lambda: self._send_webhook(channel_config, message, title=title),
+            }
+
+            sender = senders.get(channel_type)
+            if not sender:
+                logger.warning(f"Unsupported channel type: {channel_type}")
+                return False
+
+            return await sender()
+
+        except Exception as e:
+            logger.error(f"Failed to send message to channel {channel_id}: {e}")
+            return False
+
     async def send_alert_v2(self, alert, rule=None) -> bool:
         """
         Send notifications for Alert System v2

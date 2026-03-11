@@ -30,6 +30,7 @@ import { createContext, useContext, useCallback, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { debug } from '@/lib/debug'
+import { getBasePath } from '@/lib/utils/basePath'
 import { useWebSocket, type WebSocketMessage, type WebSocketStatus } from './useWebSocket'
 
 type MessageHandler = (message: WebSocketMessage) => void
@@ -58,24 +59,20 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
   const queryClient = useQueryClient()
   const messageHandlersRef = useRef<Set<MessageHandler>>(new Set())
 
-  // Register a custom message handler
   const addMessageHandler = useCallback((handler: MessageHandler) => {
     messageHandlersRef.current.add(handler)
     debug.log('WebSocket', 'Added message handler (total:', messageHandlersRef.current.size, ')')
 
-    // Return cleanup function
     return () => {
       messageHandlersRef.current.delete(handler)
       debug.log('WebSocket', 'Removed message handler (total:', messageHandlersRef.current.size, ')')
     }
   }, [])
 
-  // Handle WebSocket messages
   const handleMessage = useCallback(
     (message: WebSocketMessage) => {
       debug.log('WebSocket', 'Received message:', message.type)
 
-      // Notify all custom handlers first
       messageHandlersRef.current.forEach((handler) => {
         try {
           handler(message)
@@ -84,35 +81,27 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
         }
       })
 
-      // Then handle query invalidation
       switch (message.type) {
-        // Initial state sent on connection
         case 'initial_state':
           debug.log('WebSocket', 'Received initial state')
           queryClient.invalidateQueries({ queryKey: ['containers'] })
           queryClient.invalidateQueries({ queryKey: ['hosts'] })
           break
 
-        // Container status/metrics updates
         case 'containers_update':
-          queryClient.invalidateQueries({ queryKey: ['containers'] })
-          // Also invalidate dashboard hosts for sparkline updates (Phase 4c)
-          queryClient.invalidateQueries({ queryKey: ['dashboard', 'hosts'] })
+          // Container data written directly to cache by StatsProvider
           break
 
-        // Real-time container statistics
         case 'container_stats':
           // Stats are handled by individual widgets with refetchInterval
           // No need to invalidate queries here - prevents cascade of 60+ requests/min
           // Individual components manage their own stat updates via StatsProvider
           break
 
-        // New Docker event logged
         case 'new_event':
           queryClient.invalidateQueries({ queryKey: ['events'] })
           break
 
-        // Host management events
         case 'host_added':
         case 'host_removed':
           queryClient.invalidateQueries({ queryKey: ['hosts'] })
@@ -137,14 +126,12 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
           queryClient.invalidateQueries({ queryKey: ['hosts'] })
           break
 
-        // Auto-restart events
         case 'auto_restart_success':
         case 'auto_restart_failed':
           queryClient.invalidateQueries({ queryKey: ['containers'] })
           queryClient.invalidateQueries({ queryKey: ['events'] })
           break
 
-        // Notification blackout status changed
         case 'blackout_status_changed':
           queryClient.invalidateQueries({ queryKey: ['settings'] })
           break
@@ -187,7 +174,6 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
           }
           break
 
-        // Heartbeat response (no action needed)
         case 'pong':
           break
 
@@ -203,20 +189,18 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
     [queryClient]
   )
 
-  // Determine WebSocket URL dynamically based on current host, protocol, and base URL
-  // For sub-path deployments (e.g., /dockmon/), configure base: '/dockmon/' in vite.config.ts
-  // import.meta.env.BASE_URL will then provide the app root path (not including current route)
-  const basePath = import.meta.env.BASE_URL.replace(/\/$/, '')
+  // For sub-path deployments, configure base in vite.config.ts (e.g., base: '/dockmon/')
+  const basePath = getBasePath()
   const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}${basePath}/ws/`
 
   const { status, send } = useWebSocket({
     url: wsUrl,
     onMessage: handleMessage,
     onConnect: () => {
-      debug.log('WebSocket', '✅ Connected')
+      debug.log('WebSocket', 'Connected')
     },
     onDisconnect: () => {
-      debug.log('WebSocket', '❌ Disconnected')
+      debug.log('WebSocket', 'Disconnected')
     },
     onError: (error) => {
       debug.error('WebSocket', 'Connection error:', error)

@@ -11,11 +11,15 @@ import { useHosts } from '@/features/hosts/hooks/useHosts'
 import type { EventFilters, EventSeverity, EventCategory } from '@/types/events'
 import { formatSeverity } from '@/lib/utils/eventUtils'
 import { ChevronLeft, ChevronRight, Search, ArrowUpDown, X, Check, Download } from 'lucide-react'
+import { exportToCsv } from '@/lib/utils/csvExport'
 import { useDynamicPageSize } from '@/hooks/useDynamicPageSize'
 import { ContainerDetailsModal } from '@/features/containers/components/ContainerDetailsModal'
 import { HostDetailsModal } from '@/features/hosts/components/HostDetailsModal'
 import { EventRow } from './components/EventRow'
-import { makeCompositeKey } from '@/lib/utils/containerKeys'
+import { makeCompositeKey, parseCompositeKey } from '@/lib/utils/containerKeys'
+import type { Container } from '@/features/containers/types'
+import { apiClient } from '@/lib/api/client'
+import { debug } from '@/lib/debug'
 
 const SEVERITY_OPTIONS: EventSeverity[] = ['critical', 'error', 'warning', 'info', 'debug']
 const CATEGORY_OPTIONS: EventCategory[] = ['container', 'host', 'system', 'alert', 'notification', 'user']
@@ -33,7 +37,6 @@ const TIME_RANGE_OPTIONS = [
 export function EventsPage() {
   const queryClient = useQueryClient()
 
-  // Dynamic page size based on viewport height
   const { pageSize, containerRef } = useDynamicPageSize({
     rowHeight: 35, // Height of each event row in table (34 + 1px padding)
     minRows: 15,
@@ -61,26 +64,23 @@ export function EventsPage() {
   const [selectedContainerId, setSelectedContainerId] = useState<string | null>(null)
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null)
 
-  // Update filters.limit when pageSize changes
   useEffect(() => {
     setFilters((prev) => ({ ...prev, limit: pageSize }))
   }, [pageSize])
 
   const { data: hosts = [] } = useHosts()
-  const { data: containers = [] } = useQuery<any[]>({
+  const { data: containers = [] } = useQuery<Container[]>({
     queryKey: ['containers'],
-    queryFn: () => fetch('/api/containers').then((res) => res.json()),
+    queryFn: () => apiClient.get<Container[]>('/containers'),
   })
   const { data: eventsData, isLoading } = useEvents(filters, {
     refetchInterval: 30000,
   })
 
-  // Fetch user's sort order preference on mount
   useEffect(() => {
     const fetchSortOrder = async () => {
       try {
-        const res = await fetch('/api/user/event-sort-order')
-        const data = await res.json()
+        const data = await apiClient.get<{ sort_order: 'desc' | 'asc' }>('/user/event-sort-order')
         if (data.sort_order) {
           setSortOrder(data.sort_order)
         }
@@ -96,7 +96,6 @@ export function EventsPage() {
   const currentPage = Math.floor((filters.offset ?? 0) / (filters.limit ?? 20)) + 1
   const totalPages = Math.ceil(totalCount / (filters.limit ?? 20))
 
-  // Find selected container/host for modals
   const selectedContainer = useMemo(
     () => containers.find((c) => makeCompositeKey(c) === selectedContainerId),
     [containers, selectedContainerId]
@@ -106,28 +105,23 @@ export function EventsPage() {
     [hosts, selectedHostId]
   )
 
-  // Filter hosts based on search
   const filteredHosts = hosts.filter(
     (h) =>
       h.name.toLowerCase().includes(hostSearchInput.toLowerCase()) ||
       (h.url && h.url.toLowerCase().includes(hostSearchInput.toLowerCase()))
   )
 
-  // Filter containers based on search and selected hosts
   const filteredContainers = containers.filter((c) => {
-    // If hosts are selected, only show containers from those hosts
-    if (selectedHostIds.length > 0 && !selectedHostIds.includes(c.host_id)) {
+    if (selectedHostIds.length > 0 && c.host_id && !selectedHostIds.includes(c.host_id)) {
       return false
     }
 
-    // Apply search filter
     return (
       c.name.toLowerCase().includes(containerSearchInput.toLowerCase()) ||
       (c.host_name && c.host_name.toLowerCase().includes(containerSearchInput.toLowerCase()))
     )
   })
 
-  // Close dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (hostDropdownRef.current && !hostDropdownRef.current.contains(event.target as Node)) {
@@ -164,23 +158,16 @@ export function EventsPage() {
     const newOrder = sortOrder === 'desc' ? 'asc' : 'desc'
     setSortOrder(newOrder)
 
-    // Save sort order preference
     try {
-      await fetch('/api/user/event-sort-order', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sort_order: newOrder }),
-      })
-
-      // Invalidate and refetch events query to apply new sort order
+      await apiClient.post('/user/event-sort-order', { sort_order: newOrder })
       queryClient.invalidateQueries({ queryKey: ['events'] })
     } catch (err) {
-      console.error('Failed to save sort order:', err)
+      debug.error('EventsPage', 'Failed to save sort order:', err)
     }
   }
 
   const resetFilters = () => {
-    setFilters({ limit: 20, offset: 0, hours: 24 })
+    setFilters({ limit: pageSize, offset: 0, hours: 24 })
     setSearchInput('')
     setSelectedHostIds([])
     setHostSearchInput('')
@@ -204,8 +191,10 @@ export function EventsPage() {
       : [...selectedContainerIds, containerCompositeKey]
 
     setSelectedContainerIds(newSelection)
-    // Use composite keys for filtering to match database storage format
-    updateFilter('container_id', newSelection.length > 0 ? newSelection : undefined)
+    // UI state uses composite keys (prevents cross-host collisions in dropdown),
+    // but backend EventLog.container_id stores plain short IDs
+    const shortIds = newSelection.map((key) => parseCompositeKey(key).containerId)
+    updateFilter('container_id', shortIds.length > 0 ? shortIds : undefined)
   }
 
   const goToPage = (page: number) => {
@@ -213,11 +202,9 @@ export function EventsPage() {
     updateFilter('offset', offset)
   }
 
-  // Export events to CSV
   const exportToCSV = () => {
     if (events.length === 0) return
 
-    // CSV headers
     const headers = [
       'Timestamp',
       'Severity',
@@ -231,7 +218,6 @@ export function EventsPage() {
       'New State',
     ]
 
-    // Convert events to CSV rows
     const rows = events.map((event) => [
       event.timestamp,
       event.severity,
@@ -245,33 +231,7 @@ export function EventsPage() {
       event.new_state || '',
     ])
 
-    // Escape CSV values (handle quotes and commas)
-    const escapeCSV = (value: string): string => {
-      if (value.includes('"') || value.includes(',') || value.includes('\n')) {
-        return `"${value.replace(/"/g, '""')}"`
-      }
-      return value
-    }
-
-    // Build CSV content
-    const csvContent = [
-      headers.map(escapeCSV).join(','),
-      ...rows.map((row) => row.map((cell) => escapeCSV(String(cell))).join(',')),
-    ].join('\n')
-
-    // Create download link
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
-    const link = document.createElement('a')
-    const url = URL.createObjectURL(blob)
-    link.setAttribute('href', url)
-    link.setAttribute('download', `dockmon-events-${new Date().toISOString().split('T')[0]}.csv`)
-    link.style.visibility = 'hidden'
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-
-    // Clean up object URL to prevent memory leak
-    URL.revokeObjectURL(url)
+    exportToCsv(headers, rows, `dockmon-events-${new Date().toISOString().split('T')[0]}.csv`)
   }
 
   return (
@@ -522,7 +482,7 @@ export function EventsPage() {
       {/* Footer with Pagination */}
       <div className="border-t border-border bg-surface px-6 py-3 flex items-center justify-between">
         <div className="text-sm text-muted-foreground">
-          Showing {(filters.offset ?? 0) + 1}-{Math.min((filters.offset ?? 0) + events.length, totalCount)} of {totalCount} events
+          {events.length === 0 ? 'No events found' : `Showing ${(filters.offset ?? 0) + 1}-${Math.min((filters.offset ?? 0) + events.length, totalCount)} of ${totalCount} events`}
         </div>
 
         <div className="flex items-center gap-2">
@@ -541,7 +501,7 @@ export function EventsPage() {
 
           <button
             onClick={() => goToPage(currentPage + 1)}
-            disabled={currentPage === totalPages}
+            disabled={totalPages === 0 || currentPage >= totalPages}
             className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-border hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
           >
             Next
@@ -555,7 +515,7 @@ export function EventsPage() {
         open={!!selectedContainerId}
         onClose={() => setSelectedContainerId(null)}
         containerId={selectedContainerId}
-        container={selectedContainer}
+        container={selectedContainer ?? null}
       />
 
       <HostDetailsModal

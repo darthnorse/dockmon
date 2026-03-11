@@ -20,10 +20,11 @@ export const authApi = {
   },
 
   /**
-   * Logout and clear session cookie
+   * Logout and clear session cookie.
+   * Returns OIDC logout URL if the user is an OIDC user.
    */
-  logout: async (): Promise<void> => {
-    await apiClient.post<void>('/v2/auth/logout')
+  logout: async (): Promise<{ oidc_logout_url?: string | null }> => {
+    return apiClient.post<{ oidc_logout_url?: string | null }>('/v2/auth/logout')
   },
 
   /**

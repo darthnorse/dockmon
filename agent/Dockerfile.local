@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.21-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates
@@ -30,7 +30,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     ./cmd/agent
 
 # Runtime stage
-FROM alpine:3.19
+FROM alpine:3.21
 
 ARG VERSION=dev
 LABEL org.opencontainers.image.title="DockMon Agent"
@@ -40,15 +40,11 @@ LABEL org.opencontainers.image.source="https://github.com/darthnorse/dockmon"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.vendor="darthnorse"
 
-# Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata
-
-# Create non-root user
-RUN addgroup -g 1000 agent && \
-    adduser -D -u 1000 -G agent agent
-
-# Create data directory
-RUN mkdir -p /data && chown agent:agent /data
+# Install runtime dependencies and create non-root user
+RUN apk add --no-cache ca-certificates tzdata && \
+    addgroup -g 1000 agent && \
+    adduser -D -u 1000 -G agent agent && \
+    mkdir -p /data && chown agent:agent /data
 
 WORKDIR /app
 

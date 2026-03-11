@@ -820,8 +820,7 @@ class AgentContainerOperations:
             error: Error message if failed
             container_name: Container name (optional, looked up from monitor if not provided)
         """
-        # Look up friendly names
-        host_name = host_id  # Fallback
+        host_name = host_id
         if self.db:
             try:
                 host = self.db.get_host(host_id)
@@ -830,20 +829,11 @@ class AgentContainerOperations:
             except Exception as e:
                 logger.debug(f"Could not look up host name for {host_id}: {e}")
 
-        # Look up container name from monitor's in-memory cache
         if not container_name and self.monitor:
-            try:
-                for c in self.monitor.get_last_containers():
-                    if c.host_id == host_id and c.short_id == container_id[:12]:
-                        container_name = c.name
-                        break
-            except Exception as e:
-                logger.debug(f"Could not look up container name from monitor for {container_id}: {e}")
+            container_name = self.monitor.resolve_container_name(host_id, container_id)
 
-        # Use provided container_name or fall back to ID
         resolved_container_name = container_name or container_id
 
-        # Console logging (keep existing)
         if success:
             logger.info(
                 f"Container operation '{action}' successful: "
@@ -855,7 +845,6 @@ class AgentContainerOperations:
                 f"host={host_name}, container={resolved_container_name}, error={error}"
             )
 
-        # Database logging + UI broadcast (via EventLogger)
         if self.event_logger:
             try:
                 self.event_logger.log_container_action(

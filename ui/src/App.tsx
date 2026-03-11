@@ -44,6 +44,15 @@ const queryClient = new QueryClient({
   },
 })
 
+// Capability-gated route wrapper — redirects to / if user lacks the required capability
+function RequireCapability({ capability, children }: { capability: string; children: React.ReactNode }) {
+  const { hasCapability } = useAuth()
+  if (!hasCapability(capability)) {
+    return <Navigate to="/" replace />
+  }
+  return <>{children}</>
+}
+
 // Protected route wrapper
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth()
@@ -59,14 +68,27 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+/**
+ * Validate redirect URL to prevent open redirect attacks.
+ * Only allows relative paths starting with '/'.
+ */
+function getSafeRedirect(url: string | null): string {
+  if (!url) return '/'
+  // Only allow relative paths (must start with / and not //)
+  if (url.startsWith('/') && !url.startsWith('//')) {
+    return url
+  }
+  return '/'
+}
+
 // Login route wrapper - redirects authenticated users to redirect URL or home
 function LoginRoute() {
   const { isAuthenticated } = useAuth()
   const [searchParams] = useSearchParams()
-  const redirectUrl = searchParams.get('redirect')
+  const redirectUrl = getSafeRedirect(searchParams.get('redirect'))
 
   if (isAuthenticated) {
-    return <Navigate to={redirectUrl || '/'} replace />
+    return <Navigate to={redirectUrl} replace />
   }
 
   return <LoginPage />
@@ -74,23 +96,25 @@ function LoginRoute() {
 
 // App routes
 function AppRoutes() {
-  const { isFirstLogin } = useAuth()
+  const { mustChangePassword } = useAuth()
   const [showPasswordDialog, setShowPasswordDialog] = useState(false)
 
-  // Show password change dialog when first login is detected
-  // This fires whenever isFirstLogin changes from false to true
+  // Password change is required when admin forces it OR for the very first user (setup wizard)
+  const passwordChangeRequired = mustChangePassword
+
+  // Show password change dialog when first login or forced password change is detected
   useEffect(() => {
-    if (isFirstLogin) {
+    if (passwordChangeRequired) {
       setShowPasswordDialog(true)
     }
-  }, [isFirstLogin])
+  }, [passwordChangeRequired])
 
   return (
     <>
-      {/* First-run password change modal (cannot be dismissed) */}
+      {/* First-run or forced password change modal (cannot be dismissed) */}
       <ChangePasswordModal
         isOpen={showPasswordDialog}
-        isRequired={isFirstLogin}
+        isRequired={passwordChangeRequired}
         onClose={() => setShowPasswordDialog(false)}
       />
 
@@ -116,15 +140,15 @@ function AppRoutes() {
         }
       >
         <Route path="/" element={<DashboardPage />} />
-        <Route path="/containers" element={<ContainersPage />} />
-        <Route path="/stacks" element={<StacksPage />} />
+        <Route path="/containers" element={<RequireCapability capability="containers.view"><ContainersPage /></RequireCapability>} />
+        <Route path="/stacks" element={<RequireCapability capability="stacks.view"><StacksPage /></RequireCapability>} />
         {/* Redirect old /deployments route to /stacks */}
         <Route path="/deployments" element={<Navigate to="/stacks" replace />} />
-        <Route path="/hosts" element={<HostsPage />} />
-        <Route path="/logs" element={<ContainerLogsPage />} />
-        <Route path="/events" element={<EventsPage />} />
-        <Route path="/alerts" element={<AlertsPage />} />
-        <Route path="/alerts/rules" element={<AlertRulesPage />} />
+        <Route path="/hosts" element={<RequireCapability capability="hosts.view"><HostsPage /></RequireCapability>} />
+        <Route path="/logs" element={<RequireCapability capability="containers.logs"><ContainerLogsPage /></RequireCapability>} />
+        <Route path="/events" element={<RequireCapability capability="events.view"><EventsPage /></RequireCapability>} />
+        <Route path="/alerts" element={<RequireCapability capability="alerts.view"><AlertsPage /></RequireCapability>} />
+        <Route path="/alerts/rules" element={<RequireCapability capability="alerts.manage"><AlertRulesPage /></RequireCapability>} />
         <Route path="/settings" element={<SettingsPage />} />
       </Route>
 

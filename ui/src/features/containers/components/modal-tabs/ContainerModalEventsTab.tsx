@@ -9,6 +9,7 @@ import { useState } from 'react'
 import { Calendar, AlertCircle, X, ArrowUpDown, Download, Bell } from 'lucide-react'
 import { useContainerEvents } from '@/hooks/useEvents'
 import { EventRow } from '@/features/events/components/EventRow'
+import { exportToCsv } from '@/lib/utils/csvExport'
 
 interface ContainerModalEventsTabProps {
   hostId: string
@@ -54,14 +55,12 @@ export function ContainerModalEventsTab({ hostId, containerId }: ContainerModalE
   // Client-side filtering (TODO: move to backend)
   const filteredEvents = allEvents
     .filter((event) => {
-      // Time range filter (skip if hours = 0 for "All time")
       if (filters.hours > 0) {
         const eventTime = new Date(event.timestamp).getTime()
         const cutoff = Date.now() - filters.hours * 60 * 60 * 1000
         if (eventTime < cutoff) return false
       }
 
-      // Severity filter
       if (filters.severity && event.severity.toLowerCase() !== filters.severity.toLowerCase()) {
         return false
       }
@@ -71,7 +70,6 @@ export function ContainerModalEventsTab({ hostId, containerId }: ContainerModalE
         return false
       }
 
-      // Search filter
       if (filters.search) {
         const searchLower = filters.search.toLowerCase()
         const titleMatch = event.title?.toLowerCase().includes(searchLower)
@@ -87,7 +85,7 @@ export function ContainerModalEventsTab({ hostId, containerId }: ContainerModalE
       return sortOrder === 'desc' ? bTime - aTime : aTime - bTime
     })
 
-  const updateFilter = (key: keyof typeof filters, value: any) => {
+  const updateFilter = (key: keyof typeof filters, value: string | number) => {
     setFilters((prev) => ({ ...prev, [key]: value }))
   }
 
@@ -104,11 +102,9 @@ export function ContainerModalEventsTab({ hostId, containerId }: ContainerModalE
     setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'))
   }
 
-  // Export events to CSV
   const exportToCSV = () => {
     if (filteredEvents.length === 0) return
 
-    // CSV headers
     const headers = [
       'Timestamp',
       'Severity',
@@ -119,7 +115,6 @@ export function ContainerModalEventsTab({ hostId, containerId }: ContainerModalE
       'New State',
     ]
 
-    // Convert events to CSV rows
     const rows = filteredEvents.map((event) => [
       event.timestamp,
       event.severity,
@@ -130,33 +125,7 @@ export function ContainerModalEventsTab({ hostId, containerId }: ContainerModalE
       event.new_state || '',
     ])
 
-    // Escape CSV values (handle quotes and commas)
-    const escapeCSV = (value: string): string => {
-      if (value.includes('"') || value.includes(',') || value.includes('\n')) {
-        return `"${value.replace(/"/g, '""')}"`
-      }
-      return value
-    }
-
-    // Build CSV content
-    const csvContent = [
-      headers.map(escapeCSV).join(','),
-      ...rows.map((row) => row.map((cell) => escapeCSV(String(cell))).join(',')),
-    ].join('\n')
-
-    // Create download link
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
-    const link = document.createElement('a')
-    const url = URL.createObjectURL(blob)
-    link.setAttribute('href', url)
-    link.setAttribute('download', `dockmon-container-events-${new Date().toISOString().split('T')[0]}.csv`)
-    link.style.visibility = 'hidden'
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-
-    // Clean up object URL to prevent memory leak
-    URL.revokeObjectURL(url)
+    exportToCsv(headers, rows, `dockmon-container-events-${new Date().toISOString().split('T')[0]}.csv`)
   }
 
   if (isLoading) {

@@ -20,12 +20,28 @@ export function formatBytes(bytes: number | null | undefined): string {
   if (!bytes || bytes < 0 || !isFinite(bytes)) return '0 B'
   const k = 1024
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1)
 
   // Use appropriate decimal precision based on unit
   const decimals = i === 0 ? 0 : i >= 3 ? 2 : 1 // B: 0, KB/MB: 1, GB/TB: 2
 
   return `${(bytes / Math.pow(k, i)).toFixed(decimals)} ${sizes[i]}`
+}
+
+/**
+ * Format a network rate (bytes per second) to human-readable format
+ *
+ * @param bytesPerSec - Network rate in bytes per second (can be null/undefined)
+ * @returns Formatted string with rate units: "1.5 KB/s", "3.20 MB/s", etc.
+ *
+ * @example
+ * formatNetworkRate(1500) // "1.5 KB/s"
+ * formatNetworkRate(2.5 * 1024 * 1024) // "2.50 MB/s"
+ * formatNetworkRate(null) // "0 B/s"
+ */
+export function formatNetworkRate(bytesPerSec: number | null | undefined): string {
+  if (!bytesPerSec) return '0 B/s'
+  return formatBytes(bytesPerSec) + '/s'
 }
 
 /**

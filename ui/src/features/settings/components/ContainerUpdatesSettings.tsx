@@ -13,6 +13,7 @@ import { useCheckAllUpdates } from '@/features/containers/hooks/useContainerUpda
 import { ToggleSwitch } from './ToggleSwitch'
 import { UpdatePoliciesSettings } from './UpdatePoliciesSettings'
 import { RegistryCredentialsSettings } from './RegistryCredentialsSettings'
+import { useAuth } from '@/features/auth/AuthContext'
 import {
   Dialog,
   DialogContent,
@@ -38,6 +39,8 @@ interface ImageCacheResponse {
 }
 
 export function ContainerUpdatesSettings() {
+  const { hasCapability } = useAuth()
+  const canManage = hasCapability('policies.manage')
   const { data: settings } = useGlobalSettings()
   const updateSettings = useUpdateGlobalSettings()
   const checkAllUpdates = useCheckAllUpdates()
@@ -263,7 +266,7 @@ export function ContainerUpdatesSettings() {
   }
 
   return (
-    <div className="space-y-6">
+    <fieldset disabled={!canManage} className="space-y-6 disabled:opacity-60">
       {/* Update Check Schedule */}
       <div>
         <div className="mb-4">
@@ -331,6 +334,7 @@ export function ContainerUpdatesSettings() {
               description="Automatically skip containers managed by Docker Compose for auto-updates (manual updates still allowed with confirmation)"
               checked={skipComposeContainers}
               onChange={handleSkipComposeToggle}
+              disabled={!canManage}
             />
           </div>
 
@@ -369,6 +373,7 @@ export function ContainerUpdatesSettings() {
               description="Automatically remove unused Docker images daily (keeps last N versions per image)"
               checked={pruneImagesEnabled}
               onChange={handlePruneImagesToggle}
+              disabled={!canManage}
             />
           </div>
 
@@ -529,6 +534,6 @@ export function ContainerUpdatesSettings() {
           ) : null}
         </DialogContent>
       </Dialog>
-    </div>
+    </fieldset>
   )
 }

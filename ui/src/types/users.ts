@@ -19,6 +19,7 @@ export interface User {
   auth_provider: AuthProvider
   is_first_login: boolean
   must_change_password: boolean
+  approved: boolean
   last_login: string | null  // ISO timestamp
   created_at: string  // ISO timestamp
   updated_at: string  // ISO timestamp

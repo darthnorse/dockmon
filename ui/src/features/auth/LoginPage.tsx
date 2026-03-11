@@ -140,6 +140,7 @@ const OIDC_ERROR_MESSAGES: Record<string, string> = {
   provider_error: 'The identity provider returned an error.',
   no_email: 'No email address was provided by the identity provider.',
   account_disabled: 'Your account has been disabled.',
+  pending_approval: 'Your account has been created and is pending admin approval. Please try again once an administrator has approved your account.',
 }
 
 const DEFAULT_OIDC_ERROR = 'SSO authentication failed. Please try again or contact your administrator.'

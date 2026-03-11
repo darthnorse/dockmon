@@ -6,6 +6,7 @@
  */
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useAuth } from '@/features/auth/AuthContext'
 import { apiClient } from '@/lib/api/client'
 import type {
   User,
@@ -19,6 +20,7 @@ import type {
 import { toast } from 'sonner'
 
 const USERS_QUERY_KEY = ['users']
+const PENDING_COUNT_QUERY_KEY = ['users', 'pending-count']
 
 /**
  * Fetch all users (admin only)
@@ -148,6 +150,67 @@ export function useResetUserPassword() {
     onError: (error: Error) => {
       console.error('Failed to reset password:', error)
       toast.error('Failed to reset password. Please try again.')
+    },
+  })
+}
+
+/**
+ * Fetch count of users pending approval (admin only)
+ */
+export function usePendingUserCount() {
+  const { hasCapability } = useAuth()
+  return useQuery({
+    queryKey: PENDING_COUNT_QUERY_KEY,
+    queryFn: async () => {
+      const response = await apiClient.get<{ count: number }>('/v2/users/pending-count')
+      return response
+    },
+    enabled: hasCapability('users.manage'),
+    staleTime: 30 * 1000,
+    refetchInterval: 60 * 1000, // Poll every minute for new pending users
+  })
+}
+
+/**
+ * Approve a single user
+ */
+export function useApproveUser() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (userId: number) => {
+      const response = await apiClient.post<{ message: string }>(`/v2/users/${userId}/approve`)
+      return response
+    },
+    onSuccess: (response) => {
+      queryClient.invalidateQueries({ queryKey: USERS_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: PENDING_COUNT_QUERY_KEY })
+      toast.success(response.message)
+    },
+    onError: () => {
+      toast.error('Failed to approve user')
+    },
+  })
+}
+
+/**
+ * Approve all pending users
+ */
+export function useApproveAllUsers() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async () => {
+      const response = await apiClient.post<{ message: string; count: number }>('/v2/users/approve-all')
+      return response
+    },
+    onSuccess: (response) => {
+      queryClient.invalidateQueries({ queryKey: USERS_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: PENDING_COUNT_QUERY_KEY })
+      toast.success(response.message)
+    },
+    onError: () => {
+      toast.error('Failed to approve users')
     },
   })
 }

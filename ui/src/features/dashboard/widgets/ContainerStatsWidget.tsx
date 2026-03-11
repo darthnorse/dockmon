@@ -12,6 +12,7 @@ import { Container, Activity, Square, Circle } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { apiClient } from '@/lib/api/client'
 import { POLLING_CONFIG } from '@/lib/config/polling'
+import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 
 interface ContainerStatus {
   running: number
@@ -22,12 +23,13 @@ interface ContainerStatus {
 
 export function ContainerStatsWidget() {
   const navigate = useNavigate()
+  const { status: wsStatus } = useWebSocketContext()
 
   // Backend returns array directly, not wrapped in object
   const { data, isLoading, error } = useQuery<unknown[]>({
     queryKey: ['containers'],
     queryFn: () => apiClient.get('/containers'),
-    refetchInterval: POLLING_CONFIG.CONTAINER_DATA,
+    refetchInterval: wsStatus === 'connected' ? false : POLLING_CONFIG.CONTAINER_DATA,
   })
 
   // Calculate stats from container data

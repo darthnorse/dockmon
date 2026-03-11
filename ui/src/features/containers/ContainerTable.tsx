@@ -96,6 +96,7 @@ import { formatBytes } from '@/lib/utils/formatting'
 import { useContainerModal } from '@/providers'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import { HostDetailsModal } from '@/features/hosts/components/HostDetailsModal'
+import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 
 /**
  * Update badge component showing if updates are available
@@ -391,6 +392,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   } | null>(null)
   const { enabled: simplifiedWorkflow } = useSimplifiedWorkflow()
   const { openModal } = useContainerModal()
+  const { status: wsStatus } = useWebSocketContext()
 
   // Fetch batch configs for filtering and display (replaces N+1 individual queries)
   const { data: allAutoUpdateConfigs } = useAllAutoUpdateConfigs()
@@ -784,7 +786,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const { data, isLoading, error } = useQuery<Container[]>({
     queryKey: ['containers'],
     queryFn: () => apiClient.get('/containers'),
-    refetchInterval: POLLING_CONFIG.CONTAINER_DATA,
+    refetchInterval: wsStatus === 'connected' ? false : POLLING_CONFIG.CONTAINER_DATA,
   })
 
   // Container action hook (reusable across components)

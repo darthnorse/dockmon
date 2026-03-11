@@ -96,8 +96,8 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
 
         // Container status/metrics updates
         case 'containers_update':
-          queryClient.invalidateQueries({ queryKey: ['containers'] })
-          // Also invalidate dashboard hosts for sparkline updates (Phase 4c)
+          // Container data now written directly to cache by StatsProvider (Task 2)
+          // Only invalidate dashboard hosts for sparkline updates
           queryClient.invalidateQueries({ queryKey: ['dashboard', 'hosts'] })
           break
 

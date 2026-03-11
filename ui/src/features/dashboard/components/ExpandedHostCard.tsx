@@ -37,7 +37,7 @@ import { useContainerActions } from '@/features/containers/hooks/useContainerAct
 import { useContainerModal } from '@/providers'
 import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
 import { debug } from '@/lib/debug'
-import { formatBytes } from '@/lib/utils/formatting'
+import { formatBytes, formatNetworkRate } from '@/lib/utils/formatting'
 import { isSafeUrl } from '@/lib/utils/urlSanitize'
 
 export interface ExpandedHostData {
@@ -97,16 +97,6 @@ interface ExpandedHostCardProps {
   onHostClick?: (hostId: string) => void
   onViewDetails?: (hostId: string) => void
   onEditHost?: (hostId: string) => void
-}
-
-/**
- * Format bytes per second to human-readable format
- */
-function formatNetworkSpeed(bytesPerSec: number): string {
-  if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`
-  if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`
-  if (bytesPerSec < 1024 * 1024 * 1024) return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
-  return `${(bytesPerSec / (1024 * 1024 * 1024)).toFixed(2)} GB/s`
 }
 
 /**
@@ -373,7 +363,7 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
               )}
             </div>
             <span className="text-xs font-mono text-foreground w-20 text-right">
-              {hasValidNetworkData ? formatNetworkSpeed(host.stats!.net_bytes_per_sec) : '—'}
+              {hasValidNetworkData ? formatNetworkRate(host.stats!.net_bytes_per_sec) : '—'}
             </span>
           </div>
         </div>

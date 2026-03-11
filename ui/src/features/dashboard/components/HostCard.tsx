@@ -22,7 +22,7 @@ import { DropdownMenu, DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { useUserPreferences, useUpdatePreferences, useSimplifiedWorkflow } from '@/lib/hooks/useUserPreferences'
 import { useContainerModal } from '@/providers'
 import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
-import { formatBytes } from '@/lib/utils/formatting'
+import { formatBytes, formatNetworkRate } from '@/lib/utils/formatting'
 
 export interface HostCardData {
   id: string
@@ -75,15 +75,6 @@ interface HostCardProps {
   onHostClick?: (hostId: string) => void
   onViewDetails?: (hostId: string) => void
   onEditHost?: (hostId: string) => void
-}
-
-/**
- * Format bytes per second to human-readable format
- */
-function formatNetworkSpeed(bytesPerSec: number): string {
-  if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`
-  if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`
-  return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
 }
 
 /**
@@ -326,7 +317,7 @@ export function HostCard({ host, onHostClick, onViewDetails, onEditHost }: HostC
               )}
             </div>
             <span className="text-xs font-mono text-foreground w-20 text-right">
-              {hasValidNetworkData ? formatNetworkSpeed(host.stats!.net_bytes_per_sec) : '—'}
+              {hasValidNetworkData ? formatNetworkRate(host.stats!.net_bytes_per_sec) : '—'}
             </span>
           </div>
         </div>

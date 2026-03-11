@@ -81,7 +81,9 @@ export function StatsProvider({ children }: StatsProviderProps) {
       const data = message.data as ContainersUpdateMessage['data']
       const { containers, host_metrics, host_sparklines, container_sparklines, timestamp } = data
 
-      debug.log('StatsProvider', `Received update: ${containers?.length || 0} containers, ${Object.keys(host_metrics || {}).length} hosts`)
+      if (debug.isEnabled()) {
+        debug.log('StatsProvider', `Received update: ${containers?.length || 0} containers, ${Object.keys(host_metrics || {}).length} hosts`)
+      }
 
       // Normalize at boundary before storing — ensures 12-char IDs everywhere
       const normalized = containers ? normalizeContainers(containers) : []
@@ -165,14 +167,14 @@ export function StatsProvider({ children }: StatsProviderProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const value: StatsContextValue = {
+  const value = useMemo<StatsContextValue>(() => ({
     hostMetrics,
     hostSparklines,
     containerStats,
     containerSparklines,
     lastUpdate,
     isConnected: status === 'connected',
-  }
+  }), [hostMetrics, hostSparklines, containerStats, containerSparklines, status, lastUpdate])
 
   return <StatsContext.Provider value={value}>{children}</StatsContext.Provider>
 }

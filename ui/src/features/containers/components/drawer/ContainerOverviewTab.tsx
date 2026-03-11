@@ -18,7 +18,7 @@ import { TagEditor } from './TagEditor'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
 import { debug } from '@/lib/debug'
-import { formatBytes } from '@/lib/utils/formatting'
+import { formatBytes, formatNetworkRate } from '@/lib/utils/formatting'
 
 interface ContainerOverviewTabProps {
   containerId: string
@@ -144,14 +144,6 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
       // Revert on error
       setDesiredState(previousState)
     }
-  }
-
-  const formatNetworkRate = (bytesPerSec: number) => {
-    if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`
-    const kb = bytesPerSec / 1024
-    if (kb < 1024) return `${kb.toFixed(1)} KB/s`
-    const mb = kb / 1024
-    return `${mb.toFixed(1)} MB/s`
   }
 
   return (

@@ -29,6 +29,22 @@ export function formatBytes(bytes: number | null | undefined): string {
 }
 
 /**
+ * Format a network rate (bytes per second) to human-readable format
+ *
+ * @param bytesPerSec - Network rate in bytes per second (can be null/undefined)
+ * @returns Formatted string with rate units: "1.5 KB/s", "3.20 MB/s", etc.
+ *
+ * @example
+ * formatNetworkRate(1500) // "1.5 KB/s"
+ * formatNetworkRate(2.5 * 1024 * 1024) // "2.50 MB/s"
+ * formatNetworkRate(null) // "0 B/s"
+ */
+export function formatNetworkRate(bytesPerSec: number | null | undefined): string {
+  if (!bytesPerSec) return '0 B/s'
+  return formatBytes(bytesPerSec) + '/s'
+}
+
+/**
  * Format memory bytes to compact format (backwards compatibility)
  *
  * @deprecated Use formatBytes() instead for consistent formatting

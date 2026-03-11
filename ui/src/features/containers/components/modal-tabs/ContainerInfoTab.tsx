@@ -31,7 +31,7 @@ import { TagChip } from '@/components/TagChip'
 import { Button } from '@/components/ui/button'
 import { useContainerTagEditor } from '@/hooks/useContainerTagEditor'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
-import { formatBytes } from '@/lib/utils/formatting'
+import { formatBytes, formatNetworkRate } from '@/lib/utils/formatting'
 import { sanitizeHref } from '@/lib/utils/urlSanitize'
 
 const SYSTEM_ENV_VARS = ['PATH', 'HOME', 'HOSTNAME', 'TERM']
@@ -142,14 +142,6 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     } catch (error) {
       toast.error(`Failed to save WebUI URL: ${error instanceof Error ? error.message : 'Unknown error'}`)
     }
-  }
-
-  const formatNetworkRate = (bytesPerSec: number | null | undefined): string => {
-    if (!bytesPerSec) return '0 B/s'
-    const k = 1024
-    if (bytesPerSec < k) return `${bytesPerSec.toFixed(0)} B/s`
-    if (bytesPerSec < k * k) return `${(bytesPerSec / k).toFixed(2)} KB/s`
-    return `${(bytesPerSec / (k * k)).toFixed(2)} MB/s`
   }
 
   // Prefer inspect data (works for both agent and legacy hosts)

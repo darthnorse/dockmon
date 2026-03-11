@@ -271,6 +271,29 @@ def _get_groups_for_oidc_user(oidc_groups: list, session) -> list[int]:
     return []
 
 
+async def _notify_pending_approval(user, config):
+    """Send notification to configured channels about a pending user. Fire-and-forget."""
+    try:
+        if not config.approval_notify_channel_ids:
+            return
+        channel_ids = json.loads(config.approval_notify_channel_ids)
+        if not channel_ids:
+            return
+
+        from main import monitor
+        message = f"New user '{user.username}' ({user.email}) is pending approval in DockMon."
+
+        for channel_id in channel_ids:
+            try:
+                await monitor.notification_service.send_message_to_channel(
+                    channel_id, message, title="DockMon - User Pending Approval"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to notify channel {channel_id}: {e}")
+    except Exception as e:
+        logger.warning(f"Failed to send pending approval notifications: {e}")
+
+
 _jwks_cache: dict[str, dict] = {}
 _jwks_cache_lock = asyncio.Lock()
 _JWKS_CACHE_TTL_SECONDS = 3600  # 1 hour
@@ -980,7 +1003,7 @@ async def oidc_callback(
                 # User record IS committed (admin can see them), but NO session created
                 if not user.approved:
                     logger.info(f"OIDC user '{user.username}' created but pending approval")
-                    # TODO: Task 5 - Send notification to configured channels
+                    await _notify_pending_approval(user, config)
                     return RedirectResponse(
                         url=f"{base}/login?error=oidc_error&message=pending_approval"
                     )

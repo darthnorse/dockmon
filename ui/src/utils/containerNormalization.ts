@@ -16,7 +16,6 @@
 interface ContainerLike {
   id: string
   short_id?: string
-  [key: string]: unknown
 }
 
 /**

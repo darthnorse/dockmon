@@ -22,11 +22,13 @@
  */
 
 import { createContext, useContext, useState, useEffect, useCallback, useMemo, ReactNode } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 import type { WebSocketMessage } from '@/lib/websocket/useWebSocket'
 import type { HostMetrics, Sparklines, ContainerStats, ContainersUpdateMessage } from './types'
 import { debug } from '@/lib/debug'
 import { makeCompositeKey, makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
+import { normalizeContainers } from '@/utils/containerNormalization'
 
 interface StatsContextValue {
   // Host-level stats (aggregated from containers)
@@ -58,6 +60,7 @@ interface StatsProviderProps {
 
 export function StatsProvider({ children }: StatsProviderProps) {
   const { status, addMessageHandler } = useWebSocketContext()
+  const queryClient = useQueryClient()
 
   // Use Maps for O(1) lookup performance
   const [hostMetrics, setHostMetrics] = useState<Map<string, HostMetrics>>(new Map())
@@ -80,13 +83,23 @@ export function StatsProvider({ children }: StatsProviderProps) {
 
       debug.log('StatsProvider', `Received update: ${containers?.length || 0} containers, ${Object.keys(host_metrics || {}).length} hosts`)
 
+      // Normalize at boundary before storing — ensures 12-char IDs everywhere
+      const normalized = containers ? normalizeContainers(containers) : []
+
       // Update container stats Map (use composite key: hostId:containerId)
       const newContainerStats = new Map<string, ContainerStats>()
-      containers?.forEach((container) => {
+      normalized.forEach((container) => {
         const compositeKey = makeCompositeKey(container)
         newContainerStats.set(compositeKey, container)
       })
       setContainerStats(newContainerStats)
+
+      // Update React Query cache so ContainerTable/Dashboard get real-time data
+      // without HTTP polling. The containers array from WebSocket is the same
+      // shape as GET /api/containers (backend sends Container.dict() for both).
+      if (normalized.length) {
+        queryClient.setQueryData(['containers'], normalized)
+      }
 
       // Update host metrics Map
       if (host_metrics) {
@@ -132,7 +145,7 @@ export function StatsProvider({ children }: StatsProviderProps) {
     } catch (error) {
       debug.error('StatsProvider', 'Error processing WebSocket message:', error)
     }
-  }, [])
+  }, [queryClient])
 
   // Subscribe to WebSocket messages
   // PERFORMANCE: Run only once on mount since handleWebSocketMessage has stable reference

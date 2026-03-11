@@ -5,7 +5,7 @@
  * Group-Based Permissions Refactor (v2.4.0)
  */
 
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
   ExternalLink,
   Plus,
@@ -21,6 +21,8 @@ import {
   AlertTriangle,
   Copy,
   Check,
+  ShieldCheck,
+  Bell,
 } from 'lucide-react'
 import {
   useOIDCConfig,
@@ -32,6 +34,8 @@ import {
   useDeleteOIDCGroupMapping,
 } from '@/hooks/useOIDC'
 import { useGroups } from '@/hooks/useGroups'
+import { usePendingUserCount, useApproveAllUsers } from '@/hooks/useUsers'
+import { useNotificationChannels } from '@/features/alerts/hooks/useNotificationChannels'
 import type {
   OIDCGroupMapping,
   OIDCDiscoveryResponse,
@@ -41,6 +45,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   Dialog,
   DialogContent,
@@ -73,8 +78,13 @@ export function OIDCSettings() {
   const createMapping = useCreateOIDCGroupMapping()
   const updateMapping = useUpdateOIDCGroupMapping()
   const deleteMapping = useDeleteOIDCGroupMapping()
+  const { data: pendingCountData } = usePendingUserCount()
+  const approveAllUsers = useApproveAllUsers()
+  const { data: channelsData } = useNotificationChannels()
 
   const groups = groupsData?.groups || []
+  const channels = channelsData?.channels || []
+  const pendingCount = pendingCountData?.count ?? 0
 
   const [enabled, setEnabled] = useState(false)
   const [providerUrl, setProviderUrl] = useState('')
@@ -84,6 +94,9 @@ export function OIDCSettings() {
   const [claimForGroups, setClaimForGroups] = useState(DEFAULT_GROUPS_CLAIM)
   const [defaultGroupId, setDefaultGroupId] = useState<string>('')
   const [ssoDefault, setSsoDefault] = useState(false)
+  const [requireApproval, setRequireApproval] = useState(false)
+  const [approvalNotifyChannelIds, setApprovalNotifyChannelIds] = useState<number[]>([])
+  const [showApprovalConfirm, setShowApprovalConfirm] = useState(false)
 
   const callbackUrl = useMemo(() => {
     return `${window.location.origin}${getBasePath()}/api/v2/auth/oidc/callback`
@@ -107,6 +120,8 @@ export function OIDCSettings() {
       setClaimForGroups(config.claim_for_groups || DEFAULT_GROUPS_CLAIM)
       setDefaultGroupId(config.default_group_id ? config.default_group_id.toString() : NO_DEFAULT_GROUP)
       setSsoDefault(config.sso_default)
+      setRequireApproval(config.require_approval)
+      setApprovalNotifyChannelIds(config.approval_notify_channel_ids || [])
       // Don't sync client_secret - it's never returned
     }
   }, [config])
@@ -115,6 +130,13 @@ export function OIDCSettings() {
     return () => {
       if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
     }
+  }, [])
+
+  const arraysEqual = useCallback((a: number[], b: number[]): boolean => {
+    if (a.length !== b.length) return false
+    const sortedA = [...a].sort((x, y) => x - y)
+    const sortedB = [...b].sort((x, y) => x - y)
+    return sortedA.every((v, i) => v === sortedB[i])
   }, [])
 
   const hasChanges = useMemo(() => {
@@ -127,11 +149,13 @@ export function OIDCSettings() {
       scopes !== (config.scopes || DEFAULT_SCOPES) ||
       claimForGroups !== (config.claim_for_groups || DEFAULT_GROUPS_CLAIM) ||
       defaultGroupId !== (config.default_group_id ? config.default_group_id.toString() : NO_DEFAULT_GROUP) ||
-      ssoDefault !== config.sso_default
+      ssoDefault !== config.sso_default ||
+      requireApproval !== config.require_approval ||
+      !arraysEqual(approvalNotifyChannelIds, config.approval_notify_channel_ids || [])
     )
-  }, [config, enabled, providerUrl, clientId, clientSecret, scopes, claimForGroups, defaultGroupId, ssoDefault])
+  }, [config, enabled, providerUrl, clientId, clientSecret, scopes, claimForGroups, defaultGroupId, ssoDefault, requireApproval, approvalNotifyChannelIds, arraysEqual])
 
-  const handleSaveConfig = async () => {
+  const buildConfigData = useCallback((): OIDCConfigUpdateRequest => {
     const data: OIDCConfigUpdateRequest = {}
     if (enabled !== config?.enabled) data.enabled = enabled
     if (providerUrl !== (config?.provider_url || '')) data.provider_url = providerUrl || null
@@ -143,14 +167,55 @@ export function OIDCSettings() {
       data.default_group_id = defaultGroupId && defaultGroupId !== NO_DEFAULT_GROUP ? parseInt(defaultGroupId, 10) : 0
     }
     if (ssoDefault !== config?.sso_default) data.sso_default = ssoDefault
+    if (requireApproval !== config?.require_approval) data.require_approval = requireApproval
+    if (!arraysEqual(approvalNotifyChannelIds, config?.approval_notify_channel_ids || [])) {
+      data.approval_notify_channel_ids = approvalNotifyChannelIds.length > 0 ? approvalNotifyChannelIds : null
+    }
+    return data
+  }, [config, enabled, providerUrl, clientId, clientSecret, scopes, claimForGroups, defaultGroupId, ssoDefault, requireApproval, approvalNotifyChannelIds, arraysEqual])
 
+  const doSaveConfig = useCallback(async (data: OIDCConfigUpdateRequest) => {
     try {
       await updateConfig.mutateAsync(data)
       setClientSecret('')
     } catch {
       // Error handled by mutation
     }
+  }, [updateConfig])
+
+  const handleSaveConfig = async () => {
+    const data = buildConfigData()
+
+    // When toggling require_approval OFF and there are pending users, show confirmation
+    const turningOffApproval = config?.require_approval && !requireApproval
+    if (turningOffApproval && pendingCount > 0) {
+      setShowApprovalConfirm(true)
+      return
+    }
+
+    await doSaveConfig(data)
   }
+
+  const handleApprovalConfirmApproveAll = async () => {
+    try {
+      await approveAllUsers.mutateAsync()
+    } catch {
+      // Error handled by mutation
+    }
+    setShowApprovalConfirm(false)
+    await doSaveConfig(buildConfigData())
+  }
+
+  const handleApprovalConfirmKeepPending = async () => {
+    setShowApprovalConfirm(false)
+    await doSaveConfig(buildConfigData())
+  }
+
+  const handleToggleChannelId = useCallback((channelId: number, checked: boolean) => {
+    setApprovalNotifyChannelIds((prev) =>
+      checked ? [...prev, channelId] : prev.filter((id) => id !== channelId)
+    )
+  }, [])
 
   const handleTestConnection = async () => {
     setDiscoveryResult(null)
@@ -411,6 +476,78 @@ export function OIDCSettings() {
         )}
       </section>
 
+      {/* User Approval */}
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+            <ShieldCheck className="h-5 w-5" />
+            User Approval
+          </h2>
+          <p className="mt-1 text-sm text-gray-400">
+            Control whether new OIDC users require administrator approval before accessing DockMon
+          </p>
+        </div>
+
+        <div className="rounded-lg border border-gray-800 bg-gray-900/50 p-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="space-y-1">
+              <Label htmlFor="require-approval" className="text-sm text-gray-300">
+                Require admin approval for new users
+              </Label>
+              <p className="text-xs text-gray-500">
+                When enabled, new OIDC users must be approved by an administrator before they can access DockMon.
+              </p>
+            </div>
+            <Switch
+              id="require-approval"
+              checked={requireApproval}
+              onCheckedChange={setRequireApproval}
+            />
+          </div>
+
+          {requireApproval && (
+            <div className="space-y-3 pt-3 border-t border-gray-800">
+              <div className="space-y-1">
+                <Label className="text-sm text-gray-300 flex items-center gap-2">
+                  <Bell className="h-4 w-4" />
+                  Notification channels for approval requests
+                </Label>
+                <p className="text-xs text-gray-500">
+                  Select channels to notify when a new user is pending approval
+                </p>
+              </div>
+              {channels.length > 0 ? (
+                <div className="space-y-2">
+                  {channels.filter((ch) => ch.enabled).map((channel) => (
+                    <label
+                      key={channel.id}
+                      htmlFor={`approval-channel-${channel.id}`}
+                      className="flex items-center gap-3 rounded-md border border-gray-800 bg-gray-950/50 px-3 py-2 cursor-pointer hover:bg-gray-800/50"
+                    >
+                      <Checkbox
+                        id={`approval-channel-${channel.id}`}
+                        checked={approvalNotifyChannelIds.includes(channel.id)}
+                        onCheckedChange={(checked) =>
+                          handleToggleChannelId(channel.id, checked === true)
+                        }
+                      />
+                      <div className="flex-1 min-w-0">
+                        <span className="text-sm text-gray-200">{channel.name}</span>
+                        <span className="ml-2 text-xs text-gray-500">({channel.type})</span>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-gray-500">
+                  No notification channels configured. Add channels in the Notification settings.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      </section>
+
       {/* Group Mappings */}
       <section className="space-y-4">
         <div className="flex items-center justify-between">
@@ -553,6 +690,33 @@ export function OIDCSettings() {
               disabled={deleteMapping.isPending}
             >
               {deleteMapping.isPending ? 'Deleting...' : 'Delete'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Approval Confirmation Dialog */}
+      <Dialog open={showApprovalConfirm} onOpenChange={() => setShowApprovalConfirm(false)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Pending Users</DialogTitle>
+            <DialogDescription>
+              There {pendingCount === 1 ? 'is' : 'are'} {pendingCount} user{pendingCount !== 1 ? 's' : ''} pending approval. Would you like to approve them now?
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={handleApprovalConfirmKeepPending}
+              disabled={approveAllUsers.isPending || updateConfig.isPending}
+            >
+              No, keep pending
+            </Button>
+            <Button
+              onClick={handleApprovalConfirmApproveAll}
+              disabled={approveAllUsers.isPending || updateConfig.isPending}
+            >
+              {approveAllUsers.isPending ? 'Approving...' : 'Yes, approve all'}
             </Button>
           </DialogFooter>
         </DialogContent>

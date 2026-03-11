@@ -10,6 +10,7 @@ SECURITY:
 - Provider URL must use HTTPS
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -48,6 +49,8 @@ class OIDCConfigResponse(BaseModel):
     default_group_name: str | None = None  # For display
     sso_default: bool
     disable_pkce_with_secret: bool
+    require_approval: bool  # New in v2.6.0
+    approval_notify_channel_ids: list[int] | None = None  # New in v2.6.0
     created_at: str
     updated_at: str
 
@@ -63,6 +66,8 @@ class OIDCConfigUpdateRequest(BaseModel):
     default_group_id: int | None = None
     sso_default: bool | None = None
     disable_pkce_with_secret: bool | None = None
+    require_approval: bool | None = None  # New in v2.6.0
+    approval_notify_channel_ids: list[int] | None = None  # New in v2.6.0
 
     @field_validator('provider_url')
     @classmethod
@@ -131,6 +136,14 @@ def _config_to_response(config: OIDCConfig, session) -> OIDCConfigResponse:
         if default_group:
             default_group_name = default_group.name
 
+    # Deserialize approval_notify_channel_ids from JSON string
+    notify_channel_ids = None
+    if config.approval_notify_channel_ids:
+        try:
+            notify_channel_ids = json.loads(config.approval_notify_channel_ids)
+        except (json.JSONDecodeError, TypeError):
+            notify_channel_ids = None
+
     return OIDCConfigResponse(
         enabled=config.enabled,
         provider_url=config.provider_url,
@@ -142,6 +155,8 @@ def _config_to_response(config: OIDCConfig, session) -> OIDCConfigResponse:
         default_group_name=default_group_name,
         sso_default=config.sso_default,
         disable_pkce_with_secret=config.disable_pkce_with_secret,
+        require_approval=config.require_approval,
+        approval_notify_channel_ids=notify_channel_ids,
         created_at=format_timestamp_required(config.created_at),
         updated_at=format_timestamp_required(config.updated_at),
     )
@@ -305,6 +320,21 @@ async def update_oidc_config(
         if config_data.disable_pkce_with_secret is not None:
             changes['disable_pkce_with_secret'] = {'old': config.disable_pkce_with_secret, 'new': config_data.disable_pkce_with_secret}
             config.disable_pkce_with_secret = config_data.disable_pkce_with_secret
+
+        if config_data.require_approval is not None:
+            changes['require_approval'] = {'old': config.require_approval, 'new': config_data.require_approval}
+            config.require_approval = config_data.require_approval
+
+        if config_data.approval_notify_channel_ids is not None:
+            # Deserialize old value for audit log
+            old_ids = None
+            if config.approval_notify_channel_ids:
+                try:
+                    old_ids = json.loads(config.approval_notify_channel_ids)
+                except (json.JSONDecodeError, TypeError):
+                    old_ids = None
+            changes['approval_notify_channel_ids'] = {'old': old_ids, 'new': config_data.approval_notify_channel_ids}
+            config.approval_notify_channel_ids = json.dumps(config_data.approval_notify_channel_ids)
 
         config.updated_at = datetime.now(timezone.utc)
         # Audit log (before commit for atomicity)

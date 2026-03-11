@@ -70,6 +70,9 @@ class User(Base):
     auth_provider = Column(Text, nullable=False, default='local')  # 'local' or 'oidc'
     oidc_subject = Column(Text, nullable=True, unique=True)  # OIDC subject identifier for user matching
 
+    # Pending approval for OIDC users (v2.6.0)
+    approved = Column(Boolean, nullable=False, server_default='1', default=True)
+
     # Account lockout (v2.5.0 security hardening)
     failed_login_attempts = Column(Integer, default=0, nullable=False)
     locked_until = Column(DateTime, nullable=True)
@@ -190,6 +193,10 @@ class OIDCConfig(Base):
 
     # Provider compatibility: some providers (e.g. Authentik) reject client_secret + PKCE together
     disable_pkce_with_secret = Column(Boolean, nullable=False, default=False)
+
+    # Pending approval for new OIDC users (v2.6.0)
+    require_approval = Column(Boolean, nullable=False, server_default='0', default=False)
+    approval_notify_channel_ids = Column(Text, nullable=True)  # JSON array of channel IDs
 
     created_at = Column(DateTime, nullable=False, default=utcnow)
     updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)

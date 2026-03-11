@@ -51,6 +51,7 @@ class UserResponse(BaseModel):
     auth_provider: str
     is_first_login: bool
     must_change_password: bool
+    approved: bool  # New in v2.6.0 - pending approval for OIDC users
     last_login: str | None = None
     created_at: str
     updated_at: str
@@ -148,6 +149,7 @@ def _user_to_response(
         auth_provider=user.auth_provider,
         is_first_login=user.is_first_login,
         must_change_password=user.must_change_password,
+        approved=user.approved,
         last_login=format_timestamp(user.last_login),
         created_at=format_timestamp_required(user.created_at),
         updated_at=format_timestamp_required(user.updated_at),

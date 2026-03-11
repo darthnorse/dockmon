@@ -98,7 +98,6 @@ export function useWebSocket({
   const onDisconnectRef = useRef(onDisconnect)
   const onErrorRef = useRef(onError)
 
-  // Update refs when callbacks change
   useEffect(() => {
     onMessageRef.current = onMessage
     onConnectRef.current = onConnect
@@ -121,12 +120,10 @@ export function useWebSocket({
         onConnectRef.current?.()
 
         // Start keepalive ping/pong mechanism
-        // Send ping every 30 seconds to keep connection alive
         pingIntervalRef.current = setInterval(() => {
           if (wsRef.current?.readyState === WebSocket.OPEN) {
             wsRef.current.send(JSON.stringify({ type: 'ping' }))
 
-            // Set timeout for pong response (5 seconds)
             pongTimeoutRef.current = setTimeout(() => {
               debug.warn('WebSocket', 'No pong received - connection may be dead, reconnecting...')
               ws.close()
@@ -173,7 +170,6 @@ export function useWebSocket({
           pongTimeoutRef.current = null
         }
 
-        // Attempt reconnection
         if (reconnect && reconnectCountRef.current < reconnectAttempts) {
           reconnectCountRef.current++
           // Cap the exponent to prevent overflow after many attempts
@@ -199,7 +195,6 @@ export function useWebSocket({
   }, [url, reconnect, reconnectInterval, reconnectAttempts])
 
   const disconnect = useCallback(() => {
-    // Clear all timers
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current)
       reconnectTimeoutRef.current = null
@@ -231,7 +226,6 @@ export function useWebSocket({
     }
   }, [])
 
-  // Connect on mount, cleanup on unmount
   useEffect(() => {
     connect()
 

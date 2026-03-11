@@ -62,22 +62,18 @@ export function StatsProvider({ children }: StatsProviderProps) {
   const { status, addMessageHandler } = useWebSocketContext()
   const queryClient = useQueryClient()
 
-  // Use Maps for O(1) lookup performance
   const [hostMetrics, setHostMetrics] = useState<Map<string, HostMetrics>>(new Map())
   const [hostSparklines, setHostSparklines] = useState<Map<string, Sparklines>>(new Map())
   const [containerStats, setContainerStats] = useState<Map<string, ContainerStats>>(new Map())
   const [containerSparklines, setContainerSparklines] = useState<Map<string, Sparklines>>(new Map())
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
 
-  // Handle WebSocket messages
   const handleWebSocketMessage = useCallback((message: WebSocketMessage) => {
     try {
-      // Only process containers_update messages
       if (message.type !== 'containers_update') {
         return
       }
 
-      // Type guard: message is now known to be containers_update
       const data = message.data as ContainersUpdateMessage['data']
       const { containers, host_metrics, host_sparklines, container_sparklines, timestamp } = data
 
@@ -88,7 +84,6 @@ export function StatsProvider({ children }: StatsProviderProps) {
       // Normalize at boundary before storing — ensures 12-char IDs everywhere
       const normalized = containers ? normalizeContainers(containers) : []
 
-      // Update container stats Map (use composite key: hostId:containerId)
       const newContainerStats = new Map<string, ContainerStats>()
       normalized.forEach((container) => {
         const compositeKey = makeCompositeKey(container)
@@ -103,7 +98,6 @@ export function StatsProvider({ children }: StatsProviderProps) {
         queryClient.setQueryData(['containers'], normalized)
       }
 
-      // Update host metrics Map
       if (host_metrics) {
         const newHostMetrics = new Map<string, HostMetrics>()
         Object.entries(host_metrics).forEach(([hostId, metrics]) => {
@@ -112,7 +106,6 @@ export function StatsProvider({ children }: StatsProviderProps) {
         setHostMetrics(newHostMetrics)
       }
 
-      // Update host sparklines Map
       if (host_sparklines) {
         const newHostSparklines = new Map<string, Sparklines>()
         Object.entries(host_sparklines).forEach(([hostId, sparklines]) => {
@@ -121,7 +114,6 @@ export function StatsProvider({ children }: StatsProviderProps) {
         setHostSparklines(newHostSparklines)
       }
 
-      // Update container sparklines Map
       if (container_sparklines) {
         setContainerSparklines((prevSparklines) => {
           const newContainerSparklines = new Map<string, Sparklines>()
@@ -142,24 +134,20 @@ export function StatsProvider({ children }: StatsProviderProps) {
         })
       }
 
-      // Update timestamp
       setLastUpdate(new Date(timestamp))
     } catch (error) {
       debug.error('StatsProvider', 'Error processing WebSocket message:', error)
     }
   }, [queryClient])
 
-  // Subscribe to WebSocket messages
   // PERFORMANCE: Run only once on mount since handleWebSocketMessage has stable reference
   useEffect(() => {
     debug.log('StatsProvider', 'Subscribing to WebSocket messages')
 
-    // Register our message handler with WebSocketProvider
     const cleanup = addMessageHandler(handleWebSocketMessage)
 
     debug.log('StatsProvider', 'Initialized (WebSocket handler registered)')
 
-    // Cleanup on unmount
     return () => {
       debug.log('StatsProvider', 'Cleanup (unregistering WebSocket handler)')
       cleanup()
@@ -178,10 +166,6 @@ export function StatsProvider({ children }: StatsProviderProps) {
 
   return <StatsContext.Provider value={value}>{children}</StatsContext.Provider>
 }
-
-// ============================================================================
-// REUSABLE HOOKS
-// ============================================================================
 
 /**
  * Hook: useHostMetrics
@@ -227,7 +211,6 @@ export function useContainerStats(
 
   if (!hostId || !containerId) return null
 
-  // Use composite key: hostId:containerId
   const compositeKey = makeCompositeKeyFrom(hostId, containerId)
   return containerStats.get(compositeKey) || null
 }
@@ -271,11 +254,9 @@ export function useTopContainers(
   return useMemo(() => {
     if (!hostId) return []
 
-    // Get all containers for this host
     const hostContainers: Array<{ id: string; name: string; state: string; cpu_percent: number; memory_percent: number }> = []
 
     containerStats.forEach((container, compositeKey) => {
-      // Check if this container belongs to the specified host
       if (compositeKey.startsWith(`${hostId}:`)) {
         hostContainers.push({
           id: container.id,
@@ -287,7 +268,6 @@ export function useTopContainers(
       }
     })
 
-    // Sort by CPU descending and return top N
     return hostContainers
       .sort((a, b) => b.cpu_percent - a.cpu_percent)
       .slice(0, limit)
@@ -306,25 +286,26 @@ export function useContainerCounts(
 ): { total: number; running: number; stopped: number } {
   const { containerStats } = useStatsContext()
 
-  if (!hostId) return { total: 0, running: 0, stopped: 0 }
+  return useMemo(() => {
+    if (!hostId) return { total: 0, running: 0, stopped: 0 }
 
-  let total = 0
-  let running = 0
-  let stopped = 0
+    let total = 0
+    let running = 0
+    let stopped = 0
 
-  containerStats.forEach((container, compositeKey) => {
-    // Check if this container belongs to the specified host
-    if (compositeKey.startsWith(`${hostId}:`)) {
-      total++
-      if (container.state === 'running') {
-        running++
-      } else if (container.state === 'exited' || container.state === 'stopped') {
-        stopped++
+    containerStats.forEach((container, compositeKey) => {
+      if (compositeKey.startsWith(`${hostId}:`)) {
+        total++
+        if (container.state === 'running') {
+          running++
+        } else if (container.state === 'exited' || container.state === 'stopped') {
+          stopped++
+        }
       }
-    }
-  })
+    })
 
-  return { total, running, stopped }
+    return { total, running, stopped }
+  }, [containerStats, hostId])
 }
 
 /**
@@ -339,18 +320,19 @@ export function useAllContainers(
 ): ContainerStats[] {
   const { containerStats } = useStatsContext()
 
-  if (!hostId) return []
+  return useMemo(() => {
+    if (!hostId) return []
 
-  const hostContainers: ContainerStats[] = []
+    const hostContainers: ContainerStats[] = []
 
-  containerStats.forEach((container, compositeKey) => {
-    // Check if this container belongs to the specified host
-    if (compositeKey.startsWith(`${hostId}:`)) {
-      hostContainers.push(container)
-    }
-  })
+    containerStats.forEach((container, compositeKey) => {
+      if (compositeKey.startsWith(`${hostId}:`)) {
+        hostContainers.push(container)
+      }
+    })
 
-  return hostContainers
+    return hostContainers
+  }, [containerStats, hostId])
 }
 
 /**
@@ -365,7 +347,6 @@ export function useContainer(compositeKey: string | null | undefined): Container
 
   if (!compositeKey) return null
 
-  // Direct O(1) lookup using composite key
   return containerStats.get(compositeKey) || null
 }
 
@@ -381,6 +362,5 @@ export function useContainerSparklines(compositeKey: string | null | undefined):
 
   if (!compositeKey) return null
 
-  // Direct O(1) lookup using composite key
   return containerSparklines.get(compositeKey) || null
 }

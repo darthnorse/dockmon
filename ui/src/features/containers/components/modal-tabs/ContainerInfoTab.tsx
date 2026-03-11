@@ -45,7 +45,6 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
   const canOperate = hasCapability('containers.operate')
   const canManageTags = hasCapability('tags.manage')
   const canViewEnv = hasCapability('containers.view_env')
-  // CRITICAL: Always use 12-char short ID for API calls (backend expects short IDs)
   const containerShortId = container.id.slice(0, 12)
 
   const { data: inspectData, isError: inspectError } = useQuery({
@@ -65,7 +64,6 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
   const [webUiUrl, setWebUiUrl] = useState('')
   const [isEditingWebUi, setIsEditingWebUi] = useState(false)
 
-  // Tag editor
   const currentTags = container.tags || []
   const {
     isEditing: isEditingTags,
@@ -86,7 +84,6 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
   const memData = sparklines?.mem || []
   const netData = sparklines?.net || []
 
-  // Initialize auto-restart, desired state, and web UI URL
   useEffect(() => {
     setAutoRestart(container.auto_restart ?? false)
 
@@ -167,7 +164,6 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     return envEntries.filter(([key]) => !SYSTEM_ENV_VARS.includes(key))
   }, [canViewEnv, inspectData, container.env])
 
-  // Get state color based on desired state and current state
   const getStateColor = () => {
     const state = container.state.toLowerCase()
     const desired = desiredState

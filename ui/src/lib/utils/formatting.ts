@@ -20,7 +20,7 @@ export function formatBytes(bytes: number | null | undefined): string {
   if (!bytes || bytes < 0 || !isFinite(bytes)) return '0 B'
   const k = 1024
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1)
 
   // Use appropriate decimal precision based on unit
   const decimals = i === 0 ? 0 : i >= 3 ? 2 : 1 // B: 0, KB/MB: 1, GB/TB: 2

@@ -50,7 +50,6 @@ class ApiClient {
   ): Promise<T> {
     const { params, ...fetchOptions } = options
 
-    // Build URL with query params
     let url = `${this.baseURL}${endpoint}`
     if (params) {
       const searchParams = new URLSearchParams()
@@ -69,7 +68,6 @@ class ApiClient {
       },
     })
 
-    // Handle error responses
     if (!response.ok) {
       const contentType = response.headers.get('content-type')
       let errorData: unknown
@@ -95,7 +93,6 @@ class ApiClient {
       )
     }
 
-    // Handle empty responses (204 No Content, etc.)
     if (response.status === 204 || response.headers.get('content-length') === '0') {
       return {} as T
     }
@@ -110,7 +107,6 @@ class ApiClient {
     return data
   }
 
-  // HTTP methods
   async get<T>(endpoint: string, options?: RequestOptions): Promise<T> {
     return this.request<T>(endpoint, { ...options, method: 'GET' })
   }
@@ -144,5 +140,4 @@ class ApiClient {
   }
 }
 
-// Export singleton instance
 export const apiClient = new ApiClient()

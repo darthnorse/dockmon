@@ -55,14 +55,12 @@ export function ContainerModalEventsTab({ hostId, containerId }: ContainerModalE
   // Client-side filtering (TODO: move to backend)
   const filteredEvents = allEvents
     .filter((event) => {
-      // Time range filter (skip if hours = 0 for "All time")
       if (filters.hours > 0) {
         const eventTime = new Date(event.timestamp).getTime()
         const cutoff = Date.now() - filters.hours * 60 * 60 * 1000
         if (eventTime < cutoff) return false
       }
 
-      // Severity filter
       if (filters.severity && event.severity.toLowerCase() !== filters.severity.toLowerCase()) {
         return false
       }
@@ -72,7 +70,6 @@ export function ContainerModalEventsTab({ hostId, containerId }: ContainerModalE
         return false
       }
 
-      // Search filter
       if (filters.search) {
         const searchLower = filters.search.toLowerCase()
         const titleMatch = event.title?.toLowerCase().includes(searchLower)
@@ -88,7 +85,7 @@ export function ContainerModalEventsTab({ hostId, containerId }: ContainerModalE
       return sortOrder === 'desc' ? bTime - aTime : aTime - bTime
     })
 
-  const updateFilter = (key: keyof typeof filters, value: any) => {
+  const updateFilter = (key: keyof typeof filters, value: string | number) => {
     setFilters((prev) => ({ ...prev, [key]: value }))
   }
 
@@ -105,7 +102,6 @@ export function ContainerModalEventsTab({ hostId, containerId }: ContainerModalE
     setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'))
   }
 
-  // Export events to CSV
   const exportToCSV = () => {
     if (filteredEvents.length === 0) return
 

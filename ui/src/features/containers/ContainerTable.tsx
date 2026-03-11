@@ -152,7 +152,7 @@ function PolicyIcons({
   healthCheckConfig?: { enabled: boolean; current_status: string; consecutive_failures: number } | null | undefined
 }) {
   const isRunning = container.state === 'running'
-  const isExited = container.status === 'exited'
+  const isExited = container.state === 'exited'
   const desiredState = container.desired_state
   const autoRestart = container.auto_restart
 

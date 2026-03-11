@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'agent-v*'  # Agent releases use agent-v* pattern (e.g., agent-v1.0.0)
+  release:
+    types: [published]  # Needed for upload-release-assets job (filtered by agent-v* tag)
   workflow_dispatch:
 
 env:
@@ -14,6 +16,7 @@ jobs:
   # Build standalone binaries for systemd/bare-metal deployment
   # Go has native cross-compilation - no QEMU needed
   build-binaries:
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'agent-v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -86,6 +89,7 @@ jobs:
 
   # Build Docker images using native runners (QEMU only for arm/v7)
   build-docker:
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'agent-v')
     strategy:
       matrix:
         include:

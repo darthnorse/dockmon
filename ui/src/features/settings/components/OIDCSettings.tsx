@@ -64,10 +64,16 @@ import {
 import { toast } from 'sonner'
 import { getBasePath } from '@/lib/utils/basePath'
 
-// Default OIDC configuration values
 const DEFAULT_SCOPES = 'openid profile email groups'
 const DEFAULT_GROUPS_CLAIM = 'groups'
-const NO_DEFAULT_GROUP = '__none__' // Sentinel value for "no default group"
+const NO_DEFAULT_GROUP = '__none__'
+
+function arraysEqual(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false
+  const sortedA = [...a].sort((x, y) => x - y)
+  const sortedB = [...b].sort((x, y) => x - y)
+  return sortedA.every((v, i) => v === sortedB[i])
+}
 
 export function OIDCSettings() {
   const { data: config, isLoading: configLoading } = useOIDCConfig()
@@ -110,7 +116,6 @@ export function OIDCSettings() {
   const [editingMapping, setEditingMapping] = useState<OIDCGroupMapping | null>(null)
   const [deletingMapping, setDeletingMapping] = useState<OIDCGroupMapping | null>(null)
 
-  // Sync form state from API
   useEffect(() => {
     if (config) {
       setEnabled(config.enabled)
@@ -132,13 +137,6 @@ export function OIDCSettings() {
     }
   }, [])
 
-  const arraysEqual = useCallback((a: number[], b: number[]): boolean => {
-    if (a.length !== b.length) return false
-    const sortedA = [...a].sort((x, y) => x - y)
-    const sortedB = [...b].sort((x, y) => x - y)
-    return sortedA.every((v, i) => v === sortedB[i])
-  }, [])
-
   const hasChanges = useMemo(() => {
     if (!config) return false
     return (
@@ -153,7 +151,7 @@ export function OIDCSettings() {
       requireApproval !== config.require_approval ||
       !arraysEqual(approvalNotifyChannelIds, config.approval_notify_channel_ids || [])
     )
-  }, [config, enabled, providerUrl, clientId, clientSecret, scopes, claimForGroups, defaultGroupId, ssoDefault, requireApproval, approvalNotifyChannelIds, arraysEqual])
+  }, [config, enabled, providerUrl, clientId, clientSecret, scopes, claimForGroups, defaultGroupId, ssoDefault, requireApproval, approvalNotifyChannelIds])
 
   const buildConfigData = useCallback((): OIDCConfigUpdateRequest => {
     const data: OIDCConfigUpdateRequest = {}
@@ -169,10 +167,10 @@ export function OIDCSettings() {
     if (ssoDefault !== config?.sso_default) data.sso_default = ssoDefault
     if (requireApproval !== config?.require_approval) data.require_approval = requireApproval
     if (!arraysEqual(approvalNotifyChannelIds, config?.approval_notify_channel_ids || [])) {
-      data.approval_notify_channel_ids = approvalNotifyChannelIds.length > 0 ? approvalNotifyChannelIds : null
+      data.approval_notify_channel_ids = approvalNotifyChannelIds
     }
     return data
-  }, [config, enabled, providerUrl, clientId, clientSecret, scopes, claimForGroups, defaultGroupId, ssoDefault, requireApproval, approvalNotifyChannelIds, arraysEqual])
+  }, [config, enabled, providerUrl, clientId, clientSecret, scopes, claimForGroups, defaultGroupId, ssoDefault, requireApproval, approvalNotifyChannelIds])
 
   const doSaveConfig = useCallback(async (data: OIDCConfigUpdateRequest) => {
     try {
@@ -742,13 +740,7 @@ function GroupMappingModal({ isOpen, onClose, mapping, groups, onSubmit, isSubmi
   const [priority, setPriority] = useState(0)
 
   useEffect(() => {
-    if (!isOpen) {
-      setOidcValue('')
-      setGroupId('')
-      setPriority(0)
-      return
-    }
-    if (mapping) {
+    if (isOpen && mapping) {
       setOidcValue(mapping.oidc_value)
       setGroupId(mapping.group_id.toString())
       setPriority(mapping.priority)

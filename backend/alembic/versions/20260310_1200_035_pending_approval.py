@@ -1,4 +1,4 @@
-"""Pending Approval for OIDC Users
+"""Pending Approval for OIDC Users (v2.6.0)
 
 Revision ID: 035_pending_approval
 Revises: 034_v2_3_0
@@ -49,104 +49,72 @@ def column_exists(table_name: str, column_name: str) -> bool:
     return column_name in column_names
 
 
+def _ensure_not_null(table_name: str, column_name: str, col_type, default_value: str):
+    """Add column with NOT NULL constraint, handling SQLite limitations.
+
+    SQLite ADD COLUMN silently drops NOT NULL, so this:
+    1. Adds the column as nullable (if missing)
+    2. Backfills NULLs with the default value
+    3. Rebuilds the table to enforce NOT NULL
+    4. Verifies the constraint was applied, retries if not
+    """
+    bind = op.get_bind()
+
+    if not column_exists(table_name, column_name):
+        op.add_column(table_name, sa.Column(
+            column_name, col_type, nullable=True, server_default=default_value
+        ))
+
+    if not column_exists(table_name, column_name):
+        return
+
+    bind.execute(sa.text(
+        f"UPDATE {table_name} SET {column_name} = {default_value} WHERE {column_name} IS NULL"
+    ))
+    with op.batch_alter_table(table_name, schema=None, recreate='always') as batch_op:
+        batch_op.alter_column(
+            column_name,
+            existing_type=col_type,
+            nullable=False,
+            server_default=default_value,
+        )
+
+    inspector = get_inspector()
+    for col in inspector.get_columns(table_name):
+        if col['name'] == column_name:
+            if col.get('nullable', True):
+                bind.execute(sa.text(
+                    f"UPDATE {table_name} SET {column_name} = {default_value} WHERE {column_name} IS NULL"
+                ))
+                with op.batch_alter_table(table_name, schema=None, recreate='always') as batch_op:
+                    batch_op.alter_column(
+                        column_name,
+                        existing_type=col_type,
+                        nullable=False,
+                        server_default=default_value,
+                    )
+            break
+
+
 def upgrade():
     """Apply pending approval schema changes."""
-
-    bind = op.get_bind()
 
     # =========================================================================
     # 1. USERS TABLE - Add approved column
     # =========================================================================
     if table_exists('users'):
-        if not column_exists('users', 'approved'):
-            # Add column first (SQLite ADD COLUMN ignores NOT NULL)
-            op.add_column('users', sa.Column(
-                'approved', sa.Boolean(), nullable=True, server_default='1'
-            ))
-
-        # Set any NULL values to 1 (approved) before enforcing NOT NULL
-        if column_exists('users', 'approved'):
-            bind.execute(sa.text(
-                "UPDATE users SET approved = 1 WHERE approved IS NULL"
-            ))
-
-            # Rebuild table to enforce NOT NULL constraint
-            with op.batch_alter_table('users', schema=None, recreate='always') as batch_op:
-                batch_op.alter_column(
-                    'approved',
-                    existing_type=sa.Boolean(),
-                    nullable=False,
-                    server_default='1',
-                )
+        _ensure_not_null('users', 'approved', sa.Boolean(), '1')
 
     # =========================================================================
     # 2. OIDC_CONFIG TABLE - Add require_approval and approval_notify_channel_ids
     # =========================================================================
     if table_exists('oidc_config'):
-        if not column_exists('oidc_config', 'require_approval'):
-            # Add column first (SQLite ADD COLUMN ignores NOT NULL)
-            op.add_column('oidc_config', sa.Column(
-                'require_approval', sa.Boolean(), nullable=True, server_default='0'
-            ))
+        _ensure_not_null('oidc_config', 'require_approval', sa.Boolean(), '0')
 
         if not column_exists('oidc_config', 'approval_notify_channel_ids'):
             op.add_column('oidc_config', sa.Column(
                 'approval_notify_channel_ids', sa.Text(), nullable=True
             ))
-
-        # Set any NULL values to 0 (not required) before enforcing NOT NULL
-        if column_exists('oidc_config', 'require_approval'):
-            bind.execute(sa.text(
-                "UPDATE oidc_config SET require_approval = 0 WHERE require_approval IS NULL"
-            ))
-
-            # Rebuild table to enforce NOT NULL constraint on require_approval
-            with op.batch_alter_table('oidc_config', schema=None, recreate='always') as batch_op:
-                batch_op.alter_column(
-                    'require_approval',
-                    existing_type=sa.Boolean(),
-                    nullable=False,
-                    server_default='0',
-                )
-
-    # =========================================================================
-    # 3. VERIFICATION - Confirm NOT NULL constraints were applied
-    # =========================================================================
-    if table_exists('users') and column_exists('users', 'approved'):
-        inspector = get_inspector()
-        for col in inspector.get_columns('users'):
-            if col['name'] == 'approved':
-                if col.get('nullable', True):
-                    # NOT NULL was not applied (SQLite batch mode failure) - retry
-                    bind.execute(sa.text(
-                        "UPDATE users SET approved = 1 WHERE approved IS NULL"
-                    ))
-                    with op.batch_alter_table('users', schema=None, recreate='always') as batch_op:
-                        batch_op.alter_column(
-                            'approved',
-                            existing_type=sa.Boolean(),
-                            nullable=False,
-                            server_default='1',
-                        )
-                break
-
-    if table_exists('oidc_config') and column_exists('oidc_config', 'require_approval'):
-        inspector = get_inspector()
-        for col in inspector.get_columns('oidc_config'):
-            if col['name'] == 'require_approval':
-                if col.get('nullable', True):
-                    # NOT NULL was not applied - retry
-                    bind.execute(sa.text(
-                        "UPDATE oidc_config SET require_approval = 0 WHERE require_approval IS NULL"
-                    ))
-                    with op.batch_alter_table('oidc_config', schema=None, recreate='always') as batch_op:
-                        batch_op.alter_column(
-                            'require_approval',
-                            existing_type=sa.Boolean(),
-                            nullable=False,
-                            server_default='0',
-                        )
-                break
 
 
 def downgrade():

@@ -26,10 +26,10 @@ import logging
 import re
 import secrets
 import time
-from base64 import urlsafe_b64decode, urlsafe_b64encode
+from base64 import urlsafe_b64encode
 from datetime import datetime, timezone, timedelta
 from typing import Optional
-from urllib.parse import urlencode, urlparse, quote
+from urllib.parse import urlencode, urlparse
 
 import httpx
 import jwt
@@ -280,7 +280,7 @@ async def _notify_pending_approval(user, config):
         if not channel_ids:
             return
 
-        from main import monitor
+        from main import monitor  # Local import: circular dependency (main imports this module)
         message = f"New user '{user.username}' ({user.email}) is pending approval in DockMon."
 
         for channel_id in channel_ids:
@@ -291,7 +291,7 @@ async def _notify_pending_approval(user, config):
             except Exception as e:
                 logger.warning(f"Failed to notify channel {channel_id}: {e}")
     except Exception as e:
-        logger.warning(f"Failed to send pending approval notifications: {e}")
+        logger.error(f"Failed to send pending approval notifications: {e}")
 
 
 _jwks_cache: dict[str, dict] = {}
@@ -924,11 +924,8 @@ async def oidc_callback(
                         url=f"{base}/login?error=oidc_error&message=no_matching_groups"
                     )
 
-                # Check if approval is required for new users
-                # First user is always auto-approved (they become admin)
                 needs_approval = config.require_approval and not is_first_user
 
-                # Auto-provision new user (no role field - groups provide permissions)
                 user = User(
                     username=username,
                     password_hash='!OIDC_NO_PASSWORD',  # Sentinel: never matches any hash algorithm
@@ -962,8 +959,15 @@ async def oidc_callback(
                     _sync_oidc_user_groups(session, user, oidc_groups, request, now)
                     session.commit()
                     invalidate_user_groups_cache(user.id)
+
+                    # Block unapproved users (race loser must respect pending approval)
+                    if not user.approved:
+                        logger.info(f"OIDC user '{user.username}' is pending approval (race path)")
+                        await _notify_pending_approval(user, config)
+                        return RedirectResponse(
+                            url=f"{base}/login?error=oidc_error&message=pending_approval"
+                        )
                 else:
-                    # Add user to all matching groups
                     for gid in group_ids:
                         session.add(UserGroupMembership(
                             user_id=user.id,
@@ -996,11 +1000,8 @@ async def oidc_callback(
 
                 logger.info(f"OIDC user '{username}' auto-provisioned with groups {group_ids}")
 
-                # Invalidate cache for new user (defensive - ensures fresh state)
                 invalidate_user_groups_cache(user.id)
 
-                # Block unapproved new users from getting a session
-                # User record IS committed (admin can see them), but NO session created
                 if not user.approved:
                     logger.info(f"OIDC user '{user.username}' created but pending approval")
                     await _notify_pending_approval(user, config)

@@ -127,6 +127,16 @@ class OIDCStatusResponse(BaseModel):
 # ==================== Helper Functions ====================
 
 
+def _deserialize_channel_ids(raw: str | None) -> list[int] | None:
+    """Deserialize approval_notify_channel_ids from JSON string."""
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
 def _config_to_response(config: OIDCConfig, session) -> OIDCConfigResponse:
     """Convert OIDCConfig model to response"""
     # Get default group name for display
@@ -135,14 +145,6 @@ def _config_to_response(config: OIDCConfig, session) -> OIDCConfigResponse:
         default_group = session.query(CustomGroup).filter(CustomGroup.id == config.default_group_id).first()
         if default_group:
             default_group_name = default_group.name
-
-    # Deserialize approval_notify_channel_ids from JSON string
-    notify_channel_ids = None
-    if config.approval_notify_channel_ids:
-        try:
-            notify_channel_ids = json.loads(config.approval_notify_channel_ids)
-        except (json.JSONDecodeError, TypeError):
-            notify_channel_ids = None
 
     return OIDCConfigResponse(
         enabled=config.enabled,
@@ -156,7 +158,7 @@ def _config_to_response(config: OIDCConfig, session) -> OIDCConfigResponse:
         sso_default=config.sso_default,
         disable_pkce_with_secret=config.disable_pkce_with_secret,
         require_approval=config.require_approval,
-        approval_notify_channel_ids=notify_channel_ids,
+        approval_notify_channel_ids=_deserialize_channel_ids(config.approval_notify_channel_ids),
         created_at=format_timestamp_required(config.created_at),
         updated_at=format_timestamp_required(config.updated_at),
     )
@@ -203,6 +205,8 @@ def _get_or_create_config(session) -> OIDCConfig:
             scopes='openid profile email groups',
             claim_for_groups='groups',
             sso_default=False,
+            require_approval=False,
+            approval_notify_channel_ids=None,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
         )
@@ -309,7 +313,6 @@ async def update_oidc_config(
                 changes['default_group_id'] = {'old': config.default_group_id, 'new': config_data.default_group_id}
                 config.default_group_id = config_data.default_group_id
             else:
-                # Setting to 0 clears the default group (deny access)
                 changes['default_group_id'] = {'old': config.default_group_id, 'new': None}
                 config.default_group_id = None
 
@@ -326,14 +329,10 @@ async def update_oidc_config(
             config.require_approval = config_data.require_approval
 
         if config_data.approval_notify_channel_ids is not None:
-            # Deserialize old value for audit log
-            old_ids = None
-            if config.approval_notify_channel_ids:
-                try:
-                    old_ids = json.loads(config.approval_notify_channel_ids)
-                except (json.JSONDecodeError, TypeError):
-                    old_ids = None
-            changes['approval_notify_channel_ids'] = {'old': old_ids, 'new': config_data.approval_notify_channel_ids}
+            changes['approval_notify_channel_ids'] = {
+                'old': _deserialize_channel_ids(config.approval_notify_channel_ids),
+                'new': config_data.approval_notify_channel_ids,
+            }
             config.approval_notify_channel_ids = json.dumps(config_data.approval_notify_channel_ids)
 
         config.updated_at = datetime.now(timezone.utc)

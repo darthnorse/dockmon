@@ -189,15 +189,20 @@ export function Sidebar({ isMobileMenuOpen = false, onMobileClose }: SidebarProp
                   {item.badge > 99 ? '99+' : item.badge}
                 </span>
               )}
-              {item.label === 'Settings' && pendingCount > 0 && (
-                <span className="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 text-xs font-medium text-black md:hidden">
-                  {pendingCount}
-                </span>
-              )}
-              {item.label === 'Settings' && pendingCount > 0 && !isCollapsed && (
-                <span className="ml-auto hidden h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 text-xs font-medium text-black md:flex">
-                  {pendingCount}
-                </span>
+              {item.path === '/settings' && pendingCount > 0 && (
+                <>
+                  {/* Collapsed: dot indicator only */}
+                  {isCollapsed && (
+                    <span className="absolute right-2 top-2 hidden h-2.5 w-2.5 rounded-full bg-amber-500 md:block" />
+                  )}
+                  {/* Expanded: count badge */}
+                  <span className={cn(
+                    'ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 text-xs font-medium text-black',
+                    isCollapsed && 'md:hidden'
+                  )}>
+                    {pendingCount}
+                  </span>
+                </>
               )}
             </NavLink>
           )

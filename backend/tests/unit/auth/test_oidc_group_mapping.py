@@ -172,18 +172,17 @@ class TestGetGroupsForOidcUser:
         assert result == []
 
     def test_deduplicates_group_ids(self, db_session: Session):
-        """Same group mapped multiple times only appears once."""
+        """Two different OIDC values mapped to the same group only produces one group ID."""
         from auth.oidc_auth_routes import _get_groups_for_oidc_user
 
         group = create_group(db_session, "Shared Group")
 
-        # Two OIDC values map to same group
+        # Two different OIDC values both map to the same DockMon group
         create_oidc_mapping(db_session, "developers", group)
-        # Note: unique constraint on oidc_value, so we test with multiple claims matching same group
-        # The dedup happens when user has multiple OIDC claims that map to same group
-        # We need a different approach - let's test with the same group appearing in multiple claims
+        create_oidc_mapping(db_session, "engineering", group)
 
-        result = _get_groups_for_oidc_user(["developers"], db_session)
+        # User has both OIDC claims — group should appear only once
+        result = _get_groups_for_oidc_user(["developers", "engineering"], db_session)
         assert result == [group.id]
 
     def test_handles_empty_oidc_groups(self, db_session: Session):

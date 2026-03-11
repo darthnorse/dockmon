@@ -94,7 +94,6 @@ class ResetPasswordRequest(BaseModel):
 
 
 # ==================== Helper Functions ====================
-# format_timestamp, format_timestamp_required, ensure_not_last_admin imported from auth.utils
 
 
 def _get_user_groups(session, user_id: int) -> list[UserGroupResponse]:
@@ -230,10 +229,11 @@ async def create_user(
             password_hash=password_hash,
             email=user_data.email,
             display_name=user_data.display_name,
-            role='user',  # Default role for backwards compatibility
+            role='user',
             auth_provider='local',
             is_first_login=True,
             must_change_password=user_data.must_change_password,
+            approved=True,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc)
         )

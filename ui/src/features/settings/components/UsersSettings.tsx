@@ -37,7 +37,7 @@ export function UsersSettings() {
   const { user: currentUser } = useAuth()
   const { data, isLoading, refetch } = useUsers()
   const deleteUser = useDeleteUser()
-  const { mutate: approveUser, isPending: isApproving } = useApproveUser()
+  const { mutate: approveUser, isPending: isApproving, variables: approvingUserId } = useApproveUser()
 
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [editingUserId, setEditingUserId] = useState<number | null>(null)
@@ -155,13 +155,14 @@ export function UsersSettings() {
 
                   <div className="ml-4 flex gap-2">
                     {!user.approved && (
-                      <button
+                      <Button
                         onClick={() => approveUser(user.id)}
-                        disabled={isApproving}
-                        className="rounded bg-green-600 px-3 py-1 text-xs font-medium text-white hover:bg-green-500 disabled:opacity-50"
+                        disabled={isApproving && approvingUserId === user.id}
+                        size="sm"
+                        className="bg-green-600 text-xs hover:bg-green-500"
                       >
                         Approve
-                      </button>
+                      </Button>
                     )}
                     <button
                       onClick={() => setEditingUserId(user.id)}
@@ -195,27 +196,23 @@ export function UsersSettings() {
         </div>
       )}
 
-      {/* Create User Modal */}
       <CreateUserModal
         isOpen={showCreateModal}
         onClose={() => setShowCreateModal(false)}
       />
 
-      {/* Edit User Modal */}
       <EditUserModal
         isOpen={editingUserId !== null}
         onClose={() => setEditingUserId(null)}
         userId={editingUserId ?? 0}
       />
 
-      {/* Reset Password Modal */}
       <ResetPasswordModal
         isOpen={resetPasswordUserId !== null}
         onClose={() => setResetPasswordUserId(null)}
         userId={resetPasswordUserId ?? 0}
       />
 
-      {/* Delete Confirmation Dialog */}
       <Dialog open={!!deletingUser} onOpenChange={(open) => !open && setDeletingUser(null)}>
         <DialogContent>
           <DialogHeader>

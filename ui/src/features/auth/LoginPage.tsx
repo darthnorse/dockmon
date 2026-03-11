@@ -221,9 +221,7 @@ export function LoginPage() {
       <Card className="w-full max-w-md">
         <CardHeader className="space-y-1 text-center">
           <div className="mb-2 flex justify-center">
-            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
-              <LogIn className="h-6 w-6 text-primary" />
-            </div>
+            <img src={`${getBasePath()}/logo-192.png`} alt="DockMon" className="h-16 w-16 rounded-xl" />
           </div>
           <CardTitle className="text-2xl">DockMon</CardTitle>
           <CardDescription>Docker Container Monitor</CardDescription>

@@ -112,25 +112,19 @@ export function Sidebar({ isMobileMenuOpen = false, onMobileClose }: SidebarProp
       <div className="flex h-16 items-center justify-between border-b border-border px-4">
         {/* Mobile: always show full logo, Desktop: conditional */}
         <div className="flex items-center gap-2 md:hidden">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-            <Container className="h-5 w-5 text-primary" />
-          </div>
+          <img src={`${import.meta.env.BASE_URL}logo-192.png`} alt="DockMon" className="h-8 w-8 rounded-lg" />
           <span className="text-lg font-semibold">DockMon</span>
         </div>
 
         {/* Desktop logo (conditional on collapsed state) */}
         {!isCollapsed && (
           <div className="hidden md:flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-              <Container className="h-5 w-5 text-primary" />
-            </div>
+            <img src={`${import.meta.env.BASE_URL}logo-192.png`} alt="DockMon" className="h-8 w-8 rounded-lg" />
             <span className="text-lg font-semibold">DockMon</span>
           </div>
         )}
         {isCollapsed && (
-          <div className="hidden md:flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-            <Container className="h-5 w-5 text-primary" />
-          </div>
+          <img src={`${import.meta.env.BASE_URL}logo-192.png`} alt="DockMon" className="hidden md:block h-8 w-8 rounded-lg" />
         )}
 
         {/* Toggle Button - X on mobile, chevron on desktop */}

@@ -281,7 +281,8 @@ async def _notify_pending_approval(user, config):
             return
 
         from main import monitor  # Local import: circular dependency (main imports this module)
-        message = f"New user '{user.username}' ({user.email}) is pending approval in DockMon."
+        identifier = user.email or user.display_name or user.username
+        message = f"New user '{user.username}' ({identifier}) is pending approval in DockMon."
 
         for channel_id in channel_ids:
             try:
@@ -769,8 +770,8 @@ async def oidc_callback(
             # Extract user info - prefer ID token claims where available
             logger.info(f"OIDC userinfo/claims keys: {list(userinfo.keys())}")
             oidc_subject = userinfo.get('sub')
-            email = userinfo.get('email')
-            preferred_username = userinfo.get('preferred_username', email)
+            email = userinfo.get('email') or None
+            preferred_username = userinfo.get('preferred_username') or email
             name = userinfo.get('name', preferred_username)
 
             if not oidc_subject:

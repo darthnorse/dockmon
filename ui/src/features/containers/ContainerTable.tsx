@@ -157,8 +157,15 @@ function PolicyIcons({
   const autoRestart = container.auto_restart
 
   // Use batch data if available, otherwise fall back to individual hooks
-  const fallbackUpdateStatus = useContainerUpdateStatus(container.host_id, container.id)
-  const fallbackHealthCheck = useContainerHealthCheck(container.host_id, container.id)
+  // Pass undefined to disable the fallback query when batch data is present
+  const fallbackUpdateStatus = useContainerUpdateStatus(
+    autoUpdateConfig !== undefined ? undefined : container.host_id,
+    autoUpdateConfig !== undefined ? undefined : container.id
+  )
+  const fallbackHealthCheck = useContainerHealthCheck(
+    healthCheckConfig !== undefined ? undefined : container.host_id,
+    healthCheckConfig !== undefined ? undefined : container.id
+  )
 
   const autoUpdateEnabled = autoUpdateConfig?.auto_update_enabled ?? fallbackUpdateStatus.data?.auto_update_enabled ?? false
   const healthCheckEnabled = healthCheckConfig?.enabled ?? fallbackHealthCheck.data?.enabled ?? false

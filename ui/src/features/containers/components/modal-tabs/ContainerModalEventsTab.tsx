@@ -9,6 +9,7 @@ import { useState } from 'react'
 import { Calendar, AlertCircle, X, ArrowUpDown, Download, Bell } from 'lucide-react'
 import { useContainerEvents } from '@/hooks/useEvents'
 import { EventRow } from '@/features/events/components/EventRow'
+import { exportToCsv } from '@/lib/utils/csvExport'
 
 interface ContainerModalEventsTabProps {
   hostId: string
@@ -108,7 +109,6 @@ export function ContainerModalEventsTab({ hostId, containerId }: ContainerModalE
   const exportToCSV = () => {
     if (filteredEvents.length === 0) return
 
-    // CSV headers
     const headers = [
       'Timestamp',
       'Severity',
@@ -119,7 +119,6 @@ export function ContainerModalEventsTab({ hostId, containerId }: ContainerModalE
       'New State',
     ]
 
-    // Convert events to CSV rows
     const rows = filteredEvents.map((event) => [
       event.timestamp,
       event.severity,
@@ -130,33 +129,7 @@ export function ContainerModalEventsTab({ hostId, containerId }: ContainerModalE
       event.new_state || '',
     ])
 
-    // Escape CSV values (handle quotes and commas)
-    const escapeCSV = (value: string): string => {
-      if (value.includes('"') || value.includes(',') || value.includes('\n')) {
-        return `"${value.replace(/"/g, '""')}"`
-      }
-      return value
-    }
-
-    // Build CSV content
-    const csvContent = [
-      headers.map(escapeCSV).join(','),
-      ...rows.map((row) => row.map((cell) => escapeCSV(String(cell))).join(',')),
-    ].join('\n')
-
-    // Create download link
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
-    const link = document.createElement('a')
-    const url = URL.createObjectURL(blob)
-    link.setAttribute('href', url)
-    link.setAttribute('download', `dockmon-container-events-${new Date().toISOString().split('T')[0]}.csv`)
-    link.style.visibility = 'hidden'
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-
-    // Clean up object URL to prevent memory leak
-    URL.revokeObjectURL(url)
+    exportToCsv(headers, rows, `dockmon-container-events-${new Date().toISOString().split('T')[0]}.csv`)
   }
 
   if (isLoading) {

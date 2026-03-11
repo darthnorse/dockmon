@@ -11,6 +11,7 @@ import { useHosts } from '@/features/hosts/hooks/useHosts'
 import type { EventFilters, EventSeverity, EventCategory } from '@/types/events'
 import { formatSeverity } from '@/lib/utils/eventUtils'
 import { ChevronLeft, ChevronRight, Search, ArrowUpDown, X, Check, Download } from 'lucide-react'
+import { exportToCsv } from '@/lib/utils/csvExport'
 import { useDynamicPageSize } from '@/hooks/useDynamicPageSize'
 import { ContainerDetailsModal } from '@/features/containers/components/ContainerDetailsModal'
 import { HostDetailsModal } from '@/features/hosts/components/HostDetailsModal'
@@ -217,7 +218,6 @@ export function EventsPage() {
   const exportToCSV = () => {
     if (events.length === 0) return
 
-    // CSV headers
     const headers = [
       'Timestamp',
       'Severity',
@@ -231,7 +231,6 @@ export function EventsPage() {
       'New State',
     ]
 
-    // Convert events to CSV rows
     const rows = events.map((event) => [
       event.timestamp,
       event.severity,
@@ -245,33 +244,7 @@ export function EventsPage() {
       event.new_state || '',
     ])
 
-    // Escape CSV values (handle quotes and commas)
-    const escapeCSV = (value: string): string => {
-      if (value.includes('"') || value.includes(',') || value.includes('\n')) {
-        return `"${value.replace(/"/g, '""')}"`
-      }
-      return value
-    }
-
-    // Build CSV content
-    const csvContent = [
-      headers.map(escapeCSV).join(','),
-      ...rows.map((row) => row.map((cell) => escapeCSV(String(cell))).join(',')),
-    ].join('\n')
-
-    // Create download link
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
-    const link = document.createElement('a')
-    const url = URL.createObjectURL(blob)
-    link.setAttribute('href', url)
-    link.setAttribute('download', `dockmon-events-${new Date().toISOString().split('T')[0]}.csv`)
-    link.style.visibility = 'hidden'
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-
-    // Clean up object URL to prevent memory leak
-    URL.revokeObjectURL(url)
+    exportToCsv(headers, rows, `dockmon-events-${new Date().toISOString().split('T')[0]}.csv`)
   }
 
   return (

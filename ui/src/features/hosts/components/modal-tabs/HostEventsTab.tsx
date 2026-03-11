@@ -10,6 +10,8 @@ import { useQuery } from '@tanstack/react-query'
 import { Calendar, AlertCircle, X, ArrowUpDown, Search, Check, Download, Bell } from 'lucide-react'
 import { useHostEvents } from '@/hooks/useEvents'
 import { EventRow } from '@/features/events/components/EventRow'
+import { apiClient } from '@/lib/api/client'
+import type { Container } from '@/features/containers/types'
 
 interface HostEventsTabProps {
   hostId: string
@@ -47,9 +49,9 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
   const allEvents = eventsData?.events ?? []
 
   // Fetch containers for this host
-  const { data: allContainers = [] } = useQuery<any[]>({
+  const { data: allContainers = [] } = useQuery<Container[]>({
     queryKey: ['containers'],
-    queryFn: () => fetch('/api/containers').then((res) => res.json()),
+    queryFn: () => apiClient.get<Container[]>('/containers'),
   })
 
   // Filter to only show containers from this host
@@ -117,7 +119,7 @@ export function HostEventsTab({ hostId }: HostEventsTabProps) {
   // Count alert events in all (unfiltered) events
   const alertEventCount = allEvents.filter(e => e.category === 'alert').length
 
-  const updateFilter = (key: keyof typeof filters, value: any) => {
+  const updateFilter = (key: keyof typeof filters, value: string | number) => {
     setFilters((prev) => ({ ...prev, [key]: value }))
   }
 

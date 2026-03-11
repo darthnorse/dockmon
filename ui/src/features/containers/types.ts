@@ -7,6 +7,7 @@
 
 export interface Container {
   id: string
+  short_id?: string
   name: string
   image: string
   state: 'running' | 'stopped' | 'exited' | 'created' | 'paused' | 'restarting' | 'removing' | 'dead'
@@ -15,7 +16,7 @@ export interface Container {
   started_at?: string
   ports?: string[] // e.g., ["8080:80/tcp", "443:443/tcp"]
   labels?: Record<string, string>
-  tags?: string[] // Phase 3d - Derived from labels (compose:*, swarm:*, custom)
+  tags?: string[] // Derived from labels (compose:*, swarm:*, custom)
   host_id?: string
   host_name?: string
   // Docker configuration
@@ -24,37 +25,28 @@ export interface Container {
   restart_policy?: string // e.g., "always", "unless-stopped", "no"
   // Policy fields
   auto_restart?: boolean // DockMon's auto-restart feature (not Docker's restart policy)
+  restart_attempts?: number
   desired_state?: 'should_run' | 'on_demand' | 'unspecified' // Expected operational state
   web_ui_url?: string | null // URL to container's web interface
-  // Stats fields (Phase 3d - from Go stats service)
-  cpu_percent?: number
-  memory_usage?: number
-  memory_limit?: number
-  memory_percent?: number
-  network_rx?: number
-  network_tx?: number
-  net_bytes_per_sec?: number // Calculated network rate (bytes/sec)
+  // Stats fields (from Go stats service, null when not yet collected)
+  cpu_percent?: number | null
+  memory_usage?: number | null
+  memory_limit?: number | null
+  memory_percent?: number | null
+  network_rx?: number | null
+  network_tx?: number | null
+  net_bytes_per_sec?: number | null
+  disk_read?: number | null
+  disk_write?: number | null
   // IP addresses (GitHub Issue #37)
-  docker_ip?: string | null  // Primary Docker network IP
-  docker_ips?: Record<string, string> | null  // All network IPs {network_name: ip}
+  docker_ip?: string | null
+  docker_ips?: Record<string, string> | null
 }
 
 export interface ContainerAction {
   type: 'start' | 'stop' | 'restart' | 'pause' | 'unpause' | 'remove'
   container_id: string
   host_id: string
-}
-
-export interface ContainerStats {
-  cpu_percent: number
-  memory_usage: number
-  memory_limit: number
-  memory_percent: number
-  network_rx: number
-  network_tx: number
-  net_bytes_per_sec: number // Calculated network rate (bytes/sec)
-  block_read: number
-  block_write: number
 }
 
 export interface ContainerUpdateStatus {

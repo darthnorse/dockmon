@@ -3,6 +3,8 @@
  * Centralized types for real-time statistics system
  */
 
+import type { Container } from '@/features/containers/types'
+
 export interface HostMetrics {
   cpu_percent: number
   mem_percent: number
@@ -16,29 +18,16 @@ export interface Sparklines {
   net: number[]
 }
 
-export interface ContainerStats {
-  id: string
+/**
+ * ContainerStats narrows Container for WebSocket data where these fields
+ * are always present (backend sends full Container.dict() every 2s).
+ */
+export interface ContainerStats extends Container {
   short_id: string
-  name: string
-  state: string
-  status: string
   host_id: string
   host_name: string
-  image: string
-  created: string
-  started_at?: string
   auto_restart: boolean
   restart_attempts: number
-  desired_state?: string
-  web_ui_url?: string | null  // URL to container's web interface
-  ports?: string[]
-  restart_policy?: string
-  tags?: string[]  // Container tags (from labels + custom)
-  volumes?: string[]
-  labels?: Record<string, string>
-  env?: Record<string, string>
-  docker_ip?: string | null
-  docker_ips?: Record<string, string> | null
   cpu_percent: number | null
   memory_usage: number | null
   memory_limit: number | null

@@ -824,6 +824,13 @@ async def oidc_callback(
                 # Invalidate user's group cache after sync
                 invalidate_user_groups_cache(user.id)
 
+                # Check if user is still pending approval
+                if not user.approved:
+                    logger.info(f"OIDC login blocked: user '{user.username}' pending approval")
+                    return RedirectResponse(
+                        url=f"{base}/login?error=oidc_error&message=pending_approval"
+                    )
+
             else:
                 # New OIDC user - check for email conflict
                 if email:
@@ -894,6 +901,10 @@ async def oidc_callback(
                         url=f"{base}/login?error=oidc_error&message=no_matching_groups"
                     )
 
+                # Check if approval is required for new users
+                # First user is always auto-approved (they become admin)
+                needs_approval = config.require_approval and not is_first_user
+
                 # Auto-provision new user (no role field - groups provide permissions)
                 user = User(
                     username=username,
@@ -905,6 +916,7 @@ async def oidc_callback(
                     oidc_subject=oidc_subject,
                     is_first_login=False,
                     must_change_password=False,
+                    approved=not needs_approval,
                     created_at=now,
                     updated_at=now,
                     last_login=now,
@@ -963,6 +975,15 @@ async def oidc_callback(
 
                 # Invalidate cache for new user (defensive - ensures fresh state)
                 invalidate_user_groups_cache(user.id)
+
+                # Block unapproved new users from getting a session
+                # User record IS committed (admin can see them), but NO session created
+                if not user.approved:
+                    logger.info(f"OIDC user '{user.username}' created but pending approval")
+                    # TODO: Task 5 - Send notification to configured channels
+                    return RedirectResponse(
+                        url=f"{base}/login?error=oidc_error&message=pending_approval"
+                    )
 
             # Create session
             client_ip = get_client_ip(request)

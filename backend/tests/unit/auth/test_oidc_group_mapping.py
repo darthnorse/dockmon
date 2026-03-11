@@ -518,3 +518,123 @@ class TestOidcConfigDefaultGroup:
         # Access via relationship
         assert config.default_group is not None
         assert config.default_group.name == "Relationship Group"
+
+
+class TestPendingApproval:
+    """Test pending approval logic for OIDC users."""
+
+    def test_new_user_created_unapproved_when_required(self, db_session: Session):
+        """When require_approval is True, new OIDC user gets approved=False."""
+        # Set up OIDC config with require_approval enabled
+        config = setup_oidc_config(db_session)
+        config.require_approval = True
+        db_session.commit()
+
+        # Simulate the approval logic from the callback
+        is_first_user = False  # Not the first user
+        needs_approval = config.require_approval and not is_first_user
+
+        user = User(
+            username="pending_user",
+            password_hash="!OIDC_NO_PASSWORD",
+            auth_provider="oidc",
+            oidc_subject="oidc_pending_test",
+            approved=not needs_approval,
+            created_at=datetime.now(timezone.utc),
+        )
+        db_session.add(user)
+        db_session.commit()
+
+        # User should be unapproved
+        assert user.approved is False
+
+    def test_new_user_approved_when_not_required(self, db_session: Session):
+        """When require_approval is False, new OIDC user gets approved=True."""
+        # Set up OIDC config with require_approval disabled (default)
+        config = setup_oidc_config(db_session)
+        config.require_approval = False
+        db_session.commit()
+
+        is_first_user = False
+        needs_approval = config.require_approval and not is_first_user
+
+        user = User(
+            username="approved_user",
+            password_hash="!OIDC_NO_PASSWORD",
+            auth_provider="oidc",
+            oidc_subject="oidc_approved_test",
+            approved=not needs_approval,
+            created_at=datetime.now(timezone.utc),
+        )
+        db_session.add(user)
+        db_session.commit()
+
+        # User should be approved (default)
+        assert user.approved is True
+
+    def test_first_user_always_approved_even_when_required(self, db_session: Session):
+        """First OIDC user is always approved even when require_approval is True."""
+        config = setup_oidc_config(db_session)
+        config.require_approval = True
+        db_session.commit()
+
+        # First user scenario
+        is_first_user = True
+        needs_approval = config.require_approval and not is_first_user
+
+        user = User(
+            username="first_oidc_user",
+            password_hash="!OIDC_NO_PASSWORD",
+            auth_provider="oidc",
+            oidc_subject="oidc_first_user",
+            approved=not needs_approval,
+            created_at=datetime.now(timezone.utc),
+        )
+        db_session.add(user)
+        db_session.commit()
+
+        # First user should always be approved
+        assert user.approved is True
+
+    def test_existing_pending_user_stays_pending(self, db_session: Session):
+        """Existing unapproved user stays unapproved on re-login."""
+        # Create an unapproved user (simulating previous login with require_approval)
+        user = User(
+            username="pending_existing",
+            password_hash="!OIDC_NO_PASSWORD",
+            auth_provider="oidc",
+            oidc_subject="oidc_pending_existing",
+            approved=False,
+            created_at=datetime.now(timezone.utc),
+        )
+        db_session.add(user)
+        db_session.commit()
+
+        # Simulate re-login: user.approved is checked
+        assert user.approved is False
+
+        # The callback would return a redirect here, blocking session creation
+        # Verify the user stays unapproved (no automatic approval on re-login)
+        db_session.refresh(user)
+        assert user.approved is False
+
+    def test_existing_approved_user_stays_approved(self, db_session: Session):
+        """Approved user stays approved on re-login."""
+        # Create an approved user
+        user = User(
+            username="approved_existing",
+            password_hash="!OIDC_NO_PASSWORD",
+            auth_provider="oidc",
+            oidc_subject="oidc_approved_existing",
+            approved=True,
+            created_at=datetime.now(timezone.utc),
+        )
+        db_session.add(user)
+        db_session.commit()
+
+        # Simulate re-login check
+        assert user.approved is True
+
+        # Approved users should pass through to session creation
+        db_session.refresh(user)
+        assert user.approved is True

@@ -420,58 +420,7 @@ export function OIDCSettings() {
             </div>
           </div>
 
-          <div className="flex items-center gap-3 pt-4 border-t border-gray-800">
-            <Button
-              onClick={handleSaveConfig}
-              disabled={!hasChanges || updateConfig.isPending}
-            >
-              <Save className="mr-2 h-4 w-4" />
-              {updateConfig.isPending ? 'Saving...' : 'Save Configuration'}
-            </Button>
-            <Button
-              variant="outline"
-              onClick={handleTestConnection}
-              disabled={!providerUrl || discoverOIDC.isPending}
-            >
-              <ExternalLink className="mr-2 h-4 w-4" />
-              {discoverOIDC.isPending ? 'Testing...' : 'Test Connection'}
-            </Button>
-          </div>
         </div>
-
-        {/* Discovery Result */}
-        {discoveryResult && (
-          <div
-            className={`rounded-lg border p-4 ${
-              discoveryResult.success
-                ? 'border-green-800 bg-green-900/20'
-                : 'border-red-800 bg-red-900/20'
-            }`}
-          >
-            <div className="flex items-start gap-3">
-              {discoveryResult.success ? (
-                <CheckCircle2 className="h-5 w-5 text-green-400 mt-0.5" />
-              ) : (
-                <XCircle className="h-5 w-5 text-red-400 mt-0.5" />
-              )}
-              <div className="flex-1 space-y-2">
-                <p className={`font-medium ${discoveryResult.success ? 'text-green-300' : 'text-red-300'}`}>
-                  {discoveryResult.message}
-                </p>
-                {discoveryResult.success && (
-                  <div className="text-sm text-gray-400 space-y-1">
-                    <p><span className="text-gray-500">Issuer:</span> {discoveryResult.issuer}</p>
-                    <p><span className="text-gray-500">Authorization:</span> {discoveryResult.authorization_endpoint}</p>
-                    <p><span className="text-gray-500">Token:</span> {discoveryResult.token_endpoint}</p>
-                    {discoveryResult.scopes_supported && (
-                      <p><span className="text-gray-500">Scopes:</span> {discoveryResult.scopes_supported.slice(0, 10).join(', ')}</p>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
       </section>
 
       {/* User Approval */}
@@ -545,6 +494,59 @@ export function OIDCSettings() {
           )}
         </div>
       </section>
+
+      {/* Save & Test */}
+      <div className="flex items-center gap-3">
+        <Button
+          onClick={handleSaveConfig}
+          disabled={!hasChanges || updateConfig.isPending}
+        >
+          <Save className="mr-2 h-4 w-4" />
+          {updateConfig.isPending ? 'Saving...' : 'Save Configuration'}
+        </Button>
+        <Button
+          variant="outline"
+          onClick={handleTestConnection}
+          disabled={!providerUrl || discoverOIDC.isPending}
+        >
+          <ExternalLink className="mr-2 h-4 w-4" />
+          {discoverOIDC.isPending ? 'Testing...' : 'Test Connection'}
+        </Button>
+      </div>
+
+      {/* Discovery Result */}
+      {discoveryResult && (
+        <div
+          className={`rounded-lg border p-4 ${
+            discoveryResult.success
+              ? 'border-green-800 bg-green-900/20'
+              : 'border-red-800 bg-red-900/20'
+          }`}
+        >
+          <div className="flex items-start gap-3">
+            {discoveryResult.success ? (
+              <CheckCircle2 className="h-5 w-5 text-green-400 mt-0.5" />
+            ) : (
+              <XCircle className="h-5 w-5 text-red-400 mt-0.5" />
+            )}
+            <div className="flex-1 space-y-2">
+              <p className={`font-medium ${discoveryResult.success ? 'text-green-300' : 'text-red-300'}`}>
+                {discoveryResult.message}
+              </p>
+              {discoveryResult.success && (
+                <div className="text-sm text-gray-400 space-y-1">
+                  <p><span className="text-gray-500">Issuer:</span> {discoveryResult.issuer}</p>
+                  <p><span className="text-gray-500">Authorization:</span> {discoveryResult.authorization_endpoint}</p>
+                  <p><span className="text-gray-500">Token:</span> {discoveryResult.token_endpoint}</p>
+                  {discoveryResult.scopes_supported && (
+                    <p><span className="text-gray-500">Scopes:</span> {discoveryResult.scopes_supported.slice(0, 10).join(', ')}</p>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Group Mappings */}
       <section className="space-y-4">

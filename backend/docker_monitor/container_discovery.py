@@ -545,18 +545,17 @@ class ContainerDiscovery:
                         # We need: ["8080:80/tcp"]
                         # Use `or []` pattern to handle both missing keys AND null values
                         ports_data = dc_data.get("Ports") or []
-                        ports = []
+                        ports_set: set[str] = set()
                         for port in ports_data:
                             private_port = port.get("PrivatePort")
                             public_port = port.get("PublicPort")
                             port_type = port.get("Type", "tcp")
 
                             if public_port:
-                                # Published port: "host:container/type"
-                                ports.append(f"{public_port}:{private_port}/{port_type}")
+                                ports_set.add(f"{public_port}:{private_port}/{port_type}")
                             elif private_port:
-                                # Exposed but not published: "container/type"
-                                ports.append(f"{private_port}/{port_type}")
+                                ports_set.add(f"{private_port}/{port_type}")
+                        ports = sorted(ports_set)
 
                         # Extract mounts/volumes - use existing helper function
                         # Use `or []` pattern to handle both missing keys AND null values

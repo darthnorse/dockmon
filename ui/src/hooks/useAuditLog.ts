@@ -7,6 +7,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api/client'
+import { getBasePath } from '@/lib/utils/basePath'
 import type {
   AuditLogListResponse,
   AuditLogQueryParams,
@@ -200,7 +201,7 @@ export function useExportAuditLog() {
       const queryString = searchParams.toString()
       const url = `/v2/audit-log/export${queryString ? `?${queryString}` : ''}`
 
-      const response = await fetch(`/api${url}`, { credentials: 'include' })
+      const response = await fetch(`${getBasePath()}/api${url}`, { credentials: 'include' })
 
       if (!response.ok) {
         throw new Error('Failed to export audit log')

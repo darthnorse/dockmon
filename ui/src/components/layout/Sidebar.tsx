@@ -40,6 +40,7 @@ import { useAuth } from '@/features/auth/AuthContext'
 import { UserMenu } from './UserMenu'
 import { DockMonUpdateBanner } from './DockMonUpdateBanner'
 import { AgentUpdateBanner } from './AgentUpdateBanner'
+import { usePendingUserCount } from '@/hooks/useUsers'
 
 interface NavItem {
   label: string
@@ -69,6 +70,8 @@ export function Sidebar({ isMobileMenuOpen = false, onMobileClose }: SidebarProp
   const { status: wsStatus } = useWebSocketContext()
   const { isCollapsed, setCollapsed } = useSidebarCollapsed()
   const { hasCapability } = useAuth()
+  const { data: pendingData } = usePendingUserCount()
+  const pendingCount = pendingData?.count ?? 0
 
   const visibleNavItems = navigationItems.filter(
     (item) => !item.capability || hasCapability(item.capability)
@@ -184,6 +187,16 @@ export function Sidebar({ isMobileMenuOpen = false, onMobileClose }: SidebarProp
               {!isCollapsed && item.badge && item.badge > 0 && (
                 <span className="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-danger px-1.5 text-xs font-semibold text-white">
                   {item.badge > 99 ? '99+' : item.badge}
+                </span>
+              )}
+              {item.label === 'Settings' && pendingCount > 0 && (
+                <span className="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 text-xs font-medium text-black md:hidden">
+                  {pendingCount}
+                </span>
+              )}
+              {item.label === 'Settings' && pendingCount > 0 && !isCollapsed && (
+                <span className="ml-auto hidden h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 text-xs font-medium text-black md:flex">
+                  {pendingCount}
                 </span>
               )}
             </NavLink>

@@ -203,7 +203,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
   const { data: hostsData } = useHosts()
   const { data: containersData } = useQuery<Container[]>({
     queryKey: ['containers'],
-    queryFn: () => apiClient.get('/containers'),
+    queryFn: () => apiClient.get<Container[]>('/containers'),
   })
 
   // Fetch configured notification channels
@@ -347,12 +347,9 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
   useEffect(() => {
     const fetchTags = async () => {
       try {
-        // Use different endpoints based on scope to get only relevant tags
-        // For containers, include derived tags from Docker labels
         const data = formData.scope === 'host'
           ? await apiClient.get<{ tags: (string | TagWithSource)[] }>('/hosts/tags/suggest', { params: { q: tagSearchInput, limit: 50 } })
           : await apiClient.get<{ tags: (string | TagWithSource)[] }>('/tags/suggest', { params: { q: tagSearchInput, limit: 50, include_derived: true } })
-        // Tags API returns objects with {name, source, color} when include_derived=true
         const tags: TagWithSource[] = Array.isArray(data.tags)
           ? data.tags.map((t: string | TagWithSource) =>
               typeof t === 'string'
@@ -366,7 +363,8 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       }
     }
 
-    fetchTags()
+    const timer = setTimeout(fetchTags, 300)
+    return () => clearTimeout(timer)
   }, [tagSearchInput, formData.scope])
 
   const selectedKind = RULE_KINDS.find((k) => k.value === formData.kind)

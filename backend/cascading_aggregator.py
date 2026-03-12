@@ -105,7 +105,7 @@ class CascadingAggregator:
             self._feed_tier(tier_idx + 1, container_id, host_id, bucket_ts, agg)
 
             state["pending"] = []
-            state["window_start"] = timestamp
+            state["window_start"] = bucket_ts
 
     @staticmethod
     def _aggregate_blend(values: list[dict], alpha: float) -> dict:

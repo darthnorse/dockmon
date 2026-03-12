@@ -182,3 +182,7 @@ This project has been developed with **vibe coding** and **AI assistance** using
   <a href="https://github.com/darthnorse/dockmon/issues">Issues</a> •
   <a href="https://github.com/darthnorse/dockmon/discussions">Discussions</a>
 </p>
+
+## 🔧 Recent Fixes
+
+- Fixed issue #200: [Bug] Unable to Create API Key - Database Constraint Error

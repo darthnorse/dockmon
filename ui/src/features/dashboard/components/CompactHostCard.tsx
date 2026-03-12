@@ -19,15 +19,10 @@
 import { Circle } from 'lucide-react'
 import { useHostMetrics, useContainerCounts } from '@/lib/stats/StatsProvider'
 import { TagChip } from '@/components/TagChip'
+import type { CompactHost } from '@/features/dashboard/types'
 
 interface CompactHostCardProps {
-  host: {
-    id: string
-    name: string
-    url: string
-    status: 'online' | 'offline' | 'error'
-    tags?: string[]
-  }
+  host: CompactHost
   onClick?: () => void
 }
 

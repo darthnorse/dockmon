@@ -11,44 +11,34 @@
  * - Special "Untagged" group for hosts without tags
  */
 
-import { useMemo, useCallback, useEffect, useRef } from 'react'
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { ChevronDown, ChevronRight, GripVertical } from 'lucide-react'
 import {
   DndContext,
   closestCenter,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
+  DragStartEvent,
   DragEndEvent,
 } from '@dnd-kit/core'
 import {
   arrayMove,
   SortableContext,
-  sortableKeyboardCoordinates,
   useSortable,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { CompactHostCard } from './components/CompactHostCard'
 import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
-
-interface Host {
-  id: string
-  name: string
-  url: string
-  status: 'online' | 'offline' | 'error'
-  tags?: string[]
-}
+import { useDndSensors } from '@/features/dashboard/hooks/useDndSensors'
+import type { CompactHost } from '@/features/dashboard/types'
 
 interface CompactGroupedHostsViewProps {
-  hosts: Host[]
+  hosts: CompactHost[]
   onHostClick?: (hostId: string) => void
 }
 
 interface HostGroup {
   tag: string
-  hosts: Host[]
+  hosts: CompactHost[]
 }
 
 export function CompactGroupedHostsView({ hosts, onHostClick }: CompactGroupedHostsViewProps) {
@@ -58,7 +48,7 @@ export function CompactGroupedHostsView({ hosts, onHostClick }: CompactGroupedHo
 
   // Group hosts by primary (first) tag
   const baseGroups = useMemo<HostGroup[]>(() => {
-    const groupMap = new Map<string, Host[]>()
+    const groupMap = new Map<string, CompactHost[]>()
 
     hosts.forEach((host) => {
       const primaryTag = host.tags?.[0] || 'Untagged'
@@ -140,15 +130,8 @@ export function CompactGroupedHostsView({ hosts, onHostClick }: CompactGroupedHo
     }
   }, [isLoading, prefs])
 
-  // Drag-and-drop sensors
-  const sensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
-  )
+  const sensors = useDndSensors()
 
-  // Handle drag end - reorder groups
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       const { active, over } = event
@@ -235,7 +218,10 @@ function CompactGroupSection({
   const statusCounts = useMemo(() => {
     const counts = { online: 0, offline: 0, error: 0 }
     group.hosts.forEach((host) => {
-      counts[host.status]++
+      const status = host.status === 'degraded' ? 'error' : host.status
+      if (status === 'online' || status === 'offline' || status === 'error') {
+        counts[status]++
+      }
     })
     return counts
   }, [group.hosts])
@@ -346,60 +332,69 @@ function SortableHostList({ group, onHostClick }: SortableHostListProps) {
   const { data: prefs } = useUserPreferences()
   const updatePreferences = useUpdatePreferences()
   const hasLoadedPrefs = useRef(false)
+  const [isDragging, setIsDragging] = useState(false)
+  const frozenHostsRef = useRef<CompactHost[]>([])
 
-  // Key for storing this group's host order
   const orderKey = `compactGroupHostOrder_${group.tag}`
 
-  // Apply saved order or use default
-  const orderedHosts = useMemo(() => {
+  const computedHosts = useMemo(() => {
     const groupLayouts = prefs?.dashboard?.groupLayouts || {}
     const savedOrder = groupLayouts[orderKey] as string[] | undefined
 
-    if (!savedOrder || savedOrder.length !== group.hosts.length) {
+    if (!savedOrder || savedOrder.length === 0) {
       return group.hosts
     }
 
-    // Validate all IDs exist
     const hostMap = new Map(group.hosts.map((h) => [h.id, h]))
-    const allIdsValid = savedOrder.every((id) => hostMap.has(id))
 
-    if (!allIdsValid) {
-      return group.hosts
+    const ordered: CompactHost[] = []
+    for (const id of savedOrder) {
+      const host = hostMap.get(id)
+      if (host) {
+        ordered.push(host)
+        hostMap.delete(id)
+      }
+    }
+    for (const host of hostMap.values()) {
+      ordered.push(host)
     }
 
-    // Apply saved order
-    return savedOrder.map((id) => hostMap.get(id)!)
+    return ordered
   }, [group.hosts, prefs?.dashboard?.groupLayouts, orderKey])
 
-  // Mark that preferences have loaded
+  const orderedHosts = isDragging ? frozenHostsRef.current : computedHosts
+
   useEffect(() => {
     if (prefs) {
       hasLoadedPrefs.current = true
     }
   }, [prefs])
 
-  // Drag-and-drop sensors
-  const sensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
-  )
+  const sensors = useDndSensors()
 
-  // Handle drag end - reorder hosts
+  const handleDragStart = useCallback((_event: DragStartEvent) => {
+    frozenHostsRef.current = computedHosts
+    setIsDragging(true)
+  }, [computedHosts])
+
+  const handleDragCancel = useCallback(() => {
+    setIsDragging(false)
+  }, [])
+
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
+      setIsDragging(false)
+
       const { active, over } = event
 
       if (over && active.id !== over.id) {
-        const oldIndex = orderedHosts.findIndex((h) => h.id === active.id)
-        const newIndex = orderedHosts.findIndex((h) => h.id === over.id)
+        const oldIndex = frozenHostsRef.current.findIndex((h) => h.id === active.id)
+        const newIndex = frozenHostsRef.current.findIndex((h) => h.id === over.id)
 
         if (oldIndex !== -1 && newIndex !== -1) {
-          const newHosts = arrayMove(orderedHosts, oldIndex, newIndex)
+          const newHosts = arrayMove(frozenHostsRef.current, oldIndex, newIndex)
           const newOrder = newHosts.map((h) => h.id)
 
-          // Save to groupLayouts (cast to any to allow string[] for host order keys)
           if (hasLoadedPrefs.current) {
             const currentGroupLayouts = prefs?.dashboard?.groupLayouts || {}
             updatePreferences.mutate({
@@ -415,11 +410,11 @@ function SortableHostList({ group, onHostClick }: SortableHostListProps) {
         }
       }
     },
-    [orderedHosts, updatePreferences.mutate, orderKey, prefs?.dashboard?.groupLayouts, prefs?.dashboard]
+    [updatePreferences.mutate, orderKey, prefs?.dashboard]
   )
 
   return (
-    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDragCancel={handleDragCancel}>
       <SortableContext items={orderedHosts.map((h) => h.id)} strategy={verticalListSortingStrategy}>
         <div className="flex flex-col gap-2">
           {orderedHosts.map((host) => (
@@ -436,7 +431,7 @@ function SortableHostList({ group, onHostClick }: SortableHostListProps) {
  * Left side (hostname) is clickable, right side is draggable area
  */
 interface SortableHostCardProps {
-  host: Host
+  host: CompactHost
   onHostClick: ((hostId: string) => void) | undefined
 }
 
@@ -462,13 +457,7 @@ function SortableHostCard({ host, onHostClick }: SortableHostCardProps) {
         title="Drag to reorder"
       />
       <CompactHostCard
-        host={{
-          id: host.id,
-          name: host.name,
-          url: host.url,
-          status: host.status,
-          ...(host.tags && { tags: host.tags }),
-        }}
+        host={host}
         {...(onHostClick && { onClick: () => onHostClick(host.id) })}
       />
     </div>

@@ -16,16 +16,11 @@ import { ChevronDown, ChevronRight, GripVertical } from 'lucide-react'
 import {
   DndContext,
   closestCenter,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
   DragEndEvent,
 } from '@dnd-kit/core'
 import {
   arrayMove,
   SortableContext,
-  sortableKeyboardCoordinates,
   useSortable,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
@@ -33,6 +28,7 @@ import { CSS } from '@dnd-kit/utilities'
 import { ExpandedHostCardContainer } from './components/ExpandedHostCardContainer'
 import { HostCardContainer } from './components/HostCardContainer'
 import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
+import { useDndSensors } from '@/features/dashboard/hooks/useDndSensors'
 import type { Host } from '@/types/api'
 import 'react-grid-layout/css/styles.css'
 
@@ -254,13 +250,7 @@ export function GroupedHostsView({ hosts, onHostClick, onViewDetails, onEditHost
     }
   }, [isLoading, prefs])
 
-  // Drag-and-drop sensors
-  const sensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
-  )
+  const sensors = useDndSensors()
 
   // Handle drag end - reorder groups
   const handleDragEnd = useCallback(

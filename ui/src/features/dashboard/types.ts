@@ -30,3 +30,17 @@ export interface WidgetConfig {
 export interface DashboardLayout {
   widgets: WidgetConfig[]
 }
+
+/**
+ * Compact host shape used by compact dashboard cards.
+ *
+ * Status is `string` (not a narrow union) because the API can return
+ * values like 'degraded' that compact cards handle via a default case.
+ */
+export interface CompactHost {
+  id: string
+  name: string
+  url: string
+  status: string
+  tags?: string[]
+}

@@ -87,7 +87,7 @@ export function DashboardPage() {
       id: h.id,
       name: h.name,
       url: h.url,
-      status: h.status as 'online' | 'offline' | 'error',
+      status: h.status,
       ...(h.tags && { tags: h.tags }),
     }))
   }, [hosts])

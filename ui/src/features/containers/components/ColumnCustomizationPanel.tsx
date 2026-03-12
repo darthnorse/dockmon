@@ -12,20 +12,16 @@ import type { Table } from '@tanstack/react-table'
 import {
   DndContext,
   closestCenter,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
   type DragEndEvent,
 } from '@dnd-kit/core'
 import {
   arrayMove,
   SortableContext,
-  sortableKeyboardCoordinates,
   verticalListSortingStrategy,
   useSortable,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
+import { useDndSensors } from '@/features/dashboard/hooks/useDndSensors'
 import { Settings, GripVertical, Eye, EyeOff, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu } from '@/components/ui/dropdown-menu'
@@ -148,13 +144,7 @@ export function ColumnCustomizationPanel<TData>({ table }: ColumnCustomizationPa
       ]
     : allColumns
 
-  // Drag and drop sensors
-  const sensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
-  )
+  const sensors = useDndSensors()
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event

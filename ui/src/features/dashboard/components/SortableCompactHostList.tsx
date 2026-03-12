@@ -12,35 +12,24 @@ import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import {
   DndContext,
   closestCenter,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
   DragStartEvent,
   DragEndEvent,
 } from '@dnd-kit/core'
 import {
   arrayMove,
   SortableContext,
-  sortableKeyboardCoordinates,
   useSortable,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { CompactHostCard } from './CompactHostCard'
 import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
+import { useDndSensors } from '@/features/dashboard/hooks/useDndSensors'
 import { debug } from '@/lib/debug'
-
-interface Host {
-  id: string
-  name: string
-  url: string
-  status: 'online' | 'offline' | 'error'
-  tags?: string[]
-}
+import type { CompactHost } from '@/features/dashboard/types'
 
 interface SortableCompactHostListProps {
-  hosts: Host[]
+  hosts: CompactHost[]
   onHostClick: (hostId: string) => void
 }
 
@@ -49,7 +38,7 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
   const updatePreferences = useUpdatePreferences()
   const hasLoadedPrefs = useRef(false)
   const [isDragging, setIsDragging] = useState(false)
-  const frozenHostsRef = useRef<Host[]>([])
+  const frozenHostsRef = useRef<CompactHost[]>([])
 
   const computedHosts = useMemo(() => {
     const savedOrder = prefs?.dashboard?.compactHostOrder || []
@@ -62,7 +51,7 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
     const hostMap = new Map(hosts.map((h) => [h.id, h]))
 
     // Preserve known IDs from saved order, append any new hosts at the end
-    const ordered: Host[] = []
+    const ordered: CompactHost[] = []
     for (const id of savedOrder) {
       const host = hostMap.get(id)
       if (host) {
@@ -76,7 +65,7 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
       ordered.push(host)
     }
 
-    if (hasNewHosts || ordered.length !== hosts.length) {
+    if ((hasNewHosts || ordered.length !== hosts.length) && debug.isEnabled()) {
       debug.log('DnD', 'Order reconciled', {
         savedCount: savedOrder.length,
         hostCount: hosts.length,
@@ -98,13 +87,7 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
     }
   }, [isLoading, prefs])
 
-  // Drag-and-drop sensors
-  const sensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
-  )
+  const sensors = useDndSensors()
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
     debug.log('DnD', 'Drag started', { activeId: event.active.id, hostCount: computedHosts.length })
@@ -166,7 +149,7 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
 }
 
 interface SortableCompactHostCardProps {
-  host: Host
+  host: CompactHost
   onHostClick: (hostId: string) => void
 }
 
@@ -192,13 +175,7 @@ function SortableCompactHostCard({ host, onHostClick }: SortableCompactHostCardP
         title="Drag to reorder"
       />
       <CompactHostCard
-        host={{
-          id: host.id,
-          name: host.name,
-          url: host.url,
-          status: host.status,
-          ...(host.tags && { tags: host.tags }),
-        }}
+        host={host}
         onClick={() => onHostClick(host.id)}
       />
     </div>

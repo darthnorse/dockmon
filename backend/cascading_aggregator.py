@@ -27,12 +27,12 @@ class CascadingAggregator:
         self.points_per_view = points_per_view
         self.polling_interval = polling_interval
         self.tiers = compute_tiers(points_per_view, polling_interval)
-        # (container_id, tier_name) -> {"window_start": datetime, "pending": [dict]}
+        # (container_id, tier_name) -> {"last_bucket": datetime, "pending": [dict]}
         self._state: dict[tuple[str, str], dict] = {}
         self._recover_state()
 
     def _recover_state(self):
-        """Initialize window_start per container/tier from last DB timestamps."""
+        """Initialize last_bucket per container/tier from last DB timestamps."""
         try:
             with self.db.get_session() as session:
                 for tier in self.tiers:
@@ -49,7 +49,7 @@ class CascadingAggregator:
                         if last_ts:
                             ts = last_ts if last_ts.tzinfo else last_ts.replace(tzinfo=timezone.utc)
                             self._state[(container_id, tier["name"])] = {
-                                "window_start": ts,
+                                "last_bucket": self._quantize_ts(ts, tier["interval"]),
                                 "pending": [],
                             }
 
@@ -88,24 +88,23 @@ class CascadingAggregator:
 
         tier = self.tiers[tier_idx]
         key = (container_id, tier["name"])
+        bucket_ts = self._quantize_ts(timestamp, tier["interval"])
 
         if key not in self._state:
-            self._state[key] = {"window_start": timestamp, "pending": []}
+            self._state[key] = {"last_bucket": bucket_ts, "pending": []}
 
         state = self._state[key]
         state["pending"].append(value)
 
-        elapsed = (timestamp - state["window_start"]).total_seconds()
-        if elapsed >= tier["interval"]:
+        if bucket_ts > state["last_bucket"]:
             alpha = max(0.0, 0.75 - tier_idx * 0.25)
             agg = self._aggregate_blend(state["pending"], alpha)
-            bucket_ts = self._quantize_ts(timestamp, tier["interval"])
             self._write_point(tier["name"], container_id, host_id, bucket_ts, agg)
 
             self._feed_tier(tier_idx + 1, container_id, host_id, bucket_ts, agg)
 
             state["pending"] = []
-            state["window_start"] = bucket_ts
+            state["last_bucket"] = bucket_ts
 
     @staticmethod
     def _aggregate_blend(values: list[dict], alpha: float) -> dict:

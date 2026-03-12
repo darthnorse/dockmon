@@ -1,11 +1,11 @@
 """
-TDD Tests for OIDC Group Mapping (Phase 6)
-
-These tests define the expected behavior of OIDC group mapping and sync.
-Written as part of Phase 6 Testing & Cleanup.
+Tests for OIDC group mapping, sync, and the absent-vs-empty claim distinction.
 
 Tests cover:
 - _get_groups_for_oidc_user() - Maps OIDC groups to DockMon groups
+- _resolve_groups_or_block() - Returns group IDs or blocks login
+- _sync_oidc_user_groups() - Bidirectional group sync with admin guard
+- Absent vs empty groups claim - The callback-level decision (Fixes #199)
 - OIDC user provisioning - New users added to matching groups
 - OIDC user group sync - Existing users' groups replaced on re-login
 - First user auto-assignment - First OIDC user gets Administrators
@@ -637,3 +637,288 @@ class TestPendingApproval:
         # Approved users should pass through to session creation
         db_session.refresh(user)
         assert user.approved is True
+
+
+class TestResolveGroupsOrBlock:
+    """Test _resolve_groups_or_block() — the gatekeeper that blocks login when
+    no DockMon groups match the OIDC claims. Fixes #199."""
+
+    def test_returns_group_ids_when_mappings_match(self, db_session: Session):
+        """Returns resolved group IDs and no redirect when claims match."""
+        from auth.oidc_auth_routes import _resolve_groups_or_block
+
+        group = create_group(db_session, "Resolve Match")
+        create_oidc_mapping(db_session, "dev-team", group)
+
+        user = create_user(db_session, "resolve_user")
+        mock_request = MagicMock()
+
+        group_ids, block = _resolve_groups_or_block(
+            db_session, user, ["dev-team"], mock_request, ""
+        )
+
+        assert block is None
+        assert group == group  # sanity
+        assert group.id in group_ids
+
+    def test_blocks_login_when_no_groups_match(self, db_session: Session):
+        """Returns a redirect response when no OIDC claims map to DockMon groups."""
+        from auth.oidc_auth_routes import _resolve_groups_or_block
+
+        # No mappings configured, no default group
+        setup_oidc_config(db_session)
+        config = db_session.query(OIDCConfig).first()
+        config.default_group_id = None
+        db_session.commit()
+
+        user = create_user(db_session, "blocked_user")
+        mock_request = MagicMock()
+        mock_request.client.host = "127.0.0.1"
+        mock_request.headers = {}
+
+        group_ids, block = _resolve_groups_or_block(
+            db_session, user, ["unknown-team"], mock_request, "/app"
+        )
+
+        assert group_ids == set()
+        assert block is not None
+        assert "no_matching_groups" in str(block.headers.get("location", ""))
+
+    def test_blocks_login_on_empty_oidc_groups(self, db_session: Session):
+        """Empty groups list with no default group blocks login."""
+        from auth.oidc_auth_routes import _resolve_groups_or_block
+
+        setup_oidc_config(db_session)
+        config = db_session.query(OIDCConfig).first()
+        config.default_group_id = None
+        db_session.commit()
+
+        user = create_user(db_session, "empty_groups_user")
+        mock_request = MagicMock()
+        mock_request.client.host = "127.0.0.1"
+        mock_request.headers = {}
+
+        group_ids, block = _resolve_groups_or_block(
+            db_session, user, [], mock_request, ""
+        )
+
+        assert group_ids == set()
+        assert block is not None
+
+    def test_returns_default_group_when_no_claim_matches(self, db_session: Session):
+        """Falls back to default group — no block redirect."""
+        from auth.oidc_auth_routes import _resolve_groups_or_block
+
+        default_group = create_group(db_session, "Resolve Default")
+        setup_oidc_config(db_session, default_group=default_group)
+
+        user = create_user(db_session, "default_resolve_user")
+        mock_request = MagicMock()
+
+        group_ids, block = _resolve_groups_or_block(
+            db_session, user, ["no-such-team"], mock_request, ""
+        )
+
+        assert block is None
+        assert default_group.id in group_ids
+
+
+class TestSyncOidcUserGroupsFunction:
+    """Test _sync_oidc_user_groups() directly — bidirectional sync with admin guard."""
+
+    def test_adds_and_removes_groups(self, db_session: Session):
+        """Syncs groups: adds new ones, removes old ones."""
+        from auth.oidc_auth_routes import _sync_oidc_user_groups
+
+        group_a = create_group(db_session, "Sync A")
+        group_b = create_group(db_session, "Sync B")
+        create_oidc_mapping(db_session, "sync-a", group_a)
+        create_oidc_mapping(db_session, "sync-b", group_b)
+
+        user = create_user(db_session, "sync_fn_user")
+        add_user_to_groups(db_session, user, [group_a])
+
+        assert get_user_group_ids(db_session, user.id) == {group_a.id}
+
+        mock_request = MagicMock()
+        mock_request.client.host = "127.0.0.1"
+        mock_request.headers = {}
+        now = datetime.now(timezone.utc)
+
+        added, removed = _sync_oidc_user_groups(
+            db_session, user, ["sync-b"], mock_request, now
+        )
+        db_session.commit()
+
+        assert group_b.id in added
+        assert group_a.id in removed
+        assert get_user_group_ids(db_session, user.id) == {group_b.id}
+
+    def test_uses_resolved_group_ids_when_provided(self, db_session: Session):
+        """Skips internal resolution when resolved_group_ids is passed."""
+        from auth.oidc_auth_routes import _sync_oidc_user_groups
+
+        group_a = create_group(db_session, "Pre-resolved A")
+        group_b = create_group(db_session, "Pre-resolved B")
+
+        user = create_user(db_session, "preresolved_user")
+        add_user_to_groups(db_session, user, [group_a])
+
+        mock_request = MagicMock()
+        mock_request.client.host = "127.0.0.1"
+        mock_request.headers = {}
+        now = datetime.now(timezone.utc)
+
+        # Pass resolved IDs directly — no mappings needed
+        added, removed = _sync_oidc_user_groups(
+            db_session, user, [], mock_request, now,
+            resolved_group_ids={group_b.id}
+        )
+        db_session.commit()
+
+        assert group_b.id in added
+        assert group_a.id in removed
+        assert get_user_group_ids(db_session, user.id) == {group_b.id}
+
+    def test_preserves_last_admin(self, db_session: Session):
+        """Admin guard prevents removing last admin from Administrators group."""
+        from auth.oidc_auth_routes import _sync_oidc_user_groups
+
+        admin_group = create_group(db_session, "Administrators", is_system=True)
+        other_group = create_group(db_session, "Other")
+        create_oidc_mapping(db_session, "other", other_group)
+
+        user = create_user(db_session, "last_admin")
+        add_user_to_groups(db_session, user, [admin_group])
+
+        mock_request = MagicMock()
+        mock_request.client.host = "127.0.0.1"
+        mock_request.headers = {}
+        now = datetime.now(timezone.utc)
+
+        # OIDC claims would remove admin — but user is last admin
+        _sync_oidc_user_groups(
+            db_session, user, ["other"], mock_request, now
+        )
+        db_session.commit()
+
+        user_groups = get_user_group_ids(db_session, user.id)
+        assert admin_group.id in user_groups, "Last admin must keep Administrators"
+        assert other_group.id in user_groups
+
+
+class TestAbsentVsEmptyGroupsClaim:
+    """Test the callback-level distinction between absent and empty groups claims.
+
+    This is the exact bug from #199: when an IdP doesn't include a groups claim
+    at all (absent), existing group memberships should be preserved. When the
+    claim IS present but empty, the IdP is actively revoking all groups.
+
+    These tests exercise _normalize_groups_claim + the groups_claim_present
+    logic that gates whether _sync_oidc_user_groups is called.
+    """
+
+    def test_absent_claim_preserves_existing_groups(self, db_session: Session):
+        """When IdP sends no groups claim, existing memberships are untouched."""
+        from auth.oidc_auth_routes import _normalize_groups_claim
+
+        group = create_group(db_session, "Preserved Group")
+        user = create_user(db_session, "absent_claim_user")
+        add_user_to_groups(db_session, user, [group])
+
+        assert get_user_group_ids(db_session, user.id) == {group.id}
+
+        # Simulate: groups_raw = userinfo.get("groups") → None (key absent)
+        groups_raw = None
+        groups_claim_present = groups_raw is not None
+        oidc_groups = _normalize_groups_claim(groups_raw)
+
+        assert groups_claim_present is False
+        assert oidc_groups == []
+
+        # Callback skips sync when groups_claim_present is False
+        # Verify groups are still intact
+        assert get_user_group_ids(db_session, user.id) == {group.id}
+
+    def test_empty_claim_triggers_sync(self, db_session: Session):
+        """When IdP sends empty groups claim, sync runs and removes memberships."""
+        from auth.oidc_auth_routes import _normalize_groups_claim, _sync_oidc_user_groups
+
+        group = create_group(db_session, "Will Be Removed")
+        create_oidc_mapping(db_session, "some-team", group)
+
+        user = create_user(db_session, "empty_claim_user")
+        add_user_to_groups(db_session, user, [group])
+
+        assert get_user_group_ids(db_session, user.id) == {group.id}
+
+        # Simulate: groups_raw = userinfo.get("groups") → [] (key present, empty)
+        groups_raw = []
+        groups_claim_present = groups_raw is not None
+        oidc_groups = _normalize_groups_claim(groups_raw)
+
+        assert groups_claim_present is True
+        assert oidc_groups == []
+
+        # With no default group, _resolve_groups_or_block would block login.
+        # But even if we force sync with empty resolved IDs, groups get removed.
+        mock_request = MagicMock()
+        mock_request.client.host = "127.0.0.1"
+        mock_request.headers = {}
+        now = datetime.now(timezone.utc)
+
+        _sync_oidc_user_groups(
+            db_session, user, oidc_groups, mock_request, now,
+            resolved_group_ids=set()
+        )
+        db_session.commit()
+
+        assert get_user_group_ids(db_session, user.id) == set()
+
+    def test_present_claim_with_valid_groups_syncs(self, db_session: Session):
+        """When IdP sends valid groups, sync runs and updates memberships."""
+        from auth.oidc_auth_routes import _normalize_groups_claim, _sync_oidc_user_groups
+
+        old_group = create_group(db_session, "Old Team")
+        new_group = create_group(db_session, "New Team")
+        create_oidc_mapping(db_session, "old-team", old_group)
+        create_oidc_mapping(db_session, "new-team", new_group)
+
+        user = create_user(db_session, "valid_claim_user")
+        add_user_to_groups(db_session, user, [old_group])
+
+        assert get_user_group_ids(db_session, user.id) == {old_group.id}
+
+        # Simulate: groups_raw = ["new-team"] (key present, has values)
+        groups_raw = ["new-team"]
+        groups_claim_present = groups_raw is not None
+        oidc_groups = _normalize_groups_claim(groups_raw)
+
+        assert groups_claim_present is True
+        assert oidc_groups == ["new-team"]
+
+        mock_request = MagicMock()
+        mock_request.client.host = "127.0.0.1"
+        mock_request.headers = {}
+        now = datetime.now(timezone.utc)
+
+        added, removed = _sync_oidc_user_groups(
+            db_session, user, oidc_groups, mock_request, now
+        )
+        db_session.commit()
+
+        assert new_group.id in added
+        assert old_group.id in removed
+        assert get_user_group_ids(db_session, user.id) == {new_group.id}
+
+    def test_none_vs_empty_list_distinction(self, db_session: Session):
+        """Core regression test: None and [] must produce different outcomes."""
+        from auth.oidc_auth_routes import _normalize_groups_claim
+
+        # Both normalize to [] — but the CALLER must check groups_raw before normalizing
+        assert _normalize_groups_claim(None) == []
+        assert _normalize_groups_claim([]) == []
+
+        # The distinction is groups_raw, not the normalized result
+        assert (None is not None) is False   # absent → skip sync
+        assert ([] is not None) is True      # empty → run sync

@@ -1,6 +1,5 @@
 /**
  * useDashboardHosts - Fetch hosts with stats for dashboard view
- * Phase 4c
  *
  * FEATURES:
  * - Fetches hosts with current stats and sparkline data

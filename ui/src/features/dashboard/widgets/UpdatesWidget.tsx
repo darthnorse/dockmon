@@ -1,5 +1,5 @@
 /**
- * Updates Widget - Phase 4
+ * Updates Widget
  *
  * Shows containers with updates available
  * Click → Navigate to /containers (container list)

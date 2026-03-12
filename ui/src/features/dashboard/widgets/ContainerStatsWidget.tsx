@@ -1,5 +1,5 @@
 /**
- * Container Stats Widget - Phase 4 Enhanced
+ * Container Stats Widget
  *
  * Shows total containers and their status breakdown
  * Clickable: Total → /containers, Status rows → /containers?state=X

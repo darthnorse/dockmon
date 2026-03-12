@@ -1,5 +1,5 @@
 /**
- * ViewModeSelector - Phase 4b
+ * ViewModeSelector
  *
  * Segmented control for switching dashboard view modes
  * Compact | Standard | Expanded

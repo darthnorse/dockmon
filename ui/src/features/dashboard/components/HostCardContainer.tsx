@@ -1,6 +1,5 @@
 /**
  * HostCardContainer - Wrapper that connects HostCard to StatsProvider
- * Phase 4c - Stats Integration
  *
  * PURPOSE:
  * - Fetches host metrics and sparklines from StatsProvider (WebSocket data)

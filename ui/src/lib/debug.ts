@@ -12,18 +12,11 @@
 
 const DEBUG_KEY = 'dockmon:debug'
 
-/**
- * Check if debugging is enabled
- * - Always enabled in development
- * - In production, enabled via localStorage flag
- */
 function isDebugEnabled(): boolean {
-  // Always enable in development
   if (process.env.NODE_ENV === 'development') {
     return true
   }
 
-  // In production, check localStorage flag
   if (typeof window !== 'undefined') {
     try {
       return localStorage.getItem(DEBUG_KEY) === 'true'
@@ -60,38 +53,24 @@ if (typeof window !== 'undefined') {
   }
 }
 
-/**
- * Debug logger with namespace support
- */
 export const debug = {
-  /**
-   * Log informational message
-   */
   log(namespace: string, ...args: unknown[]): void {
     if (isDebugEnabled()) {
       console.log(`[${namespace}]`, ...args)
     }
   },
 
-  /**
-   * Log warning message
-   */
   warn(namespace: string, ...args: unknown[]): void {
     if (isDebugEnabled()) {
       console.warn(`[${namespace}]`, ...args)
     }
   },
 
-  /**
-   * Log error message (always shown, even in production)
-   */
+  /** Always shown, even in production */
   error(namespace: string, ...args: unknown[]): void {
     console.error(`[${namespace}]`, ...args)
   },
 
-  /**
-   * Check if debug is enabled
-   */
   isEnabled(): boolean {
     return isDebugEnabled()
   },

@@ -460,13 +460,39 @@ def _validate_at_hash(access_token: str, at_hash: str, id_token_str: str) -> Non
         raise jwt.InvalidTokenError(f"at_hash mismatch: expected={expected}, got={at_hash}")
 
 
-def _sync_oidc_user_groups(session, user, oidc_groups: list, request, now) -> tuple[set, set]:
+def _resolve_groups_or_block(session, user, oidc_groups: list, request, base: str) -> tuple[set, RedirectResponse | None]:
+    """Resolve OIDC groups to DockMon group IDs, blocking login if none match.
+
+    Returns (group_ids, block_redirect). Caller should return the redirect if not None.
+    Commits the audit log before returning a block redirect.
+    """
+    new_group_ids = set(_get_groups_for_oidc_user(oidc_groups, session))
+    if not new_group_ids:
+        logger.warning(f"OIDC login blocked: user '{user.username}' has no group memberships")
+        safe_audit_log(
+            session,
+            user.id,
+            user.effective_display_name,
+            AuditAction.LOGIN_FAILED,
+            AuditEntityType.SESSION,
+            details={'reason': 'no_matching_groups', 'oidc_groups': oidc_groups},
+            **get_client_info(request)
+        )
+        session.commit()
+        return set(), RedirectResponse(url=f"{base}/login?error=oidc_error&message=no_matching_groups")
+    return new_group_ids, None
+
+
+def _sync_oidc_user_groups(session, user, oidc_groups: list, request, now, *,
+                           resolved_group_ids: set | None = None) -> tuple[set, set]:
     """Sync OIDC user's group memberships. Returns (added_groups, removed_groups).
 
     Full bidirectional sync with admin guard and audit logging.
     Does NOT commit — caller must commit.
+
+    If resolved_group_ids is provided, uses those instead of resolving internally.
     """
-    new_group_ids = set(_get_groups_for_oidc_user(oidc_groups, session))
+    new_group_ids = resolved_group_ids if resolved_group_ids is not None else set(_get_groups_for_oidc_user(oidc_groups, session))
 
     existing = session.query(UserGroupMembership).filter_by(user_id=user.id).all()
     existing_group_ids = {m.group_id for m in existing}
@@ -793,38 +819,27 @@ async def oidc_callback(
             groups_raw = userinfo.get(groups_claim)
             if groups_raw is None and id_token_claims:
                 groups_raw = id_token_claims.get(groups_claim)
+            groups_claim_present = groups_raw is not None
             oidc_groups = _normalize_groups_claim(groups_raw)
 
-            logger.info(f"OIDC callback: sub={oidc_subject}, email={email}, groups_count={len(oidc_groups) if oidc_groups else 0}")
+            logger.info(f"OIDC callback: sub={oidc_subject}, email={email}, groups_claim_present={groups_claim_present}, groups_count={len(oidc_groups)}")
             logger.debug(f"OIDC groups detail: {oidc_groups}")
 
-            # Find or create user
             user = session.query(User).filter(User.oidc_subject == oidc_subject).first()
 
             now = datetime.now(timezone.utc)
 
             if user:
-                # Existing OIDC user - check groups before sync
-                new_group_ids = set(_get_groups_for_oidc_user(oidc_groups, session))
-
-                if not new_group_ids:
-                    logger.warning(f"OIDC login blocked: user '{user.username}' has no group memberships")
-                    safe_audit_log(
-                        session,
-                        user.id,
-                        user.effective_display_name,
-                        AuditAction.LOGIN_FAILED,
-                        AuditEntityType.SESSION,
-                        details={'reason': 'no_matching_groups', 'oidc_groups': oidc_groups},
-                        **get_client_info(request)
-                    )
-                    session.commit()
-                    return RedirectResponse(
-                        url=f"{base}/login?error=oidc_error&message=no_matching_groups"
-                    )
-
-                # Full bidirectional group sync with admin guard
-                _sync_oidc_user_groups(session, user, oidc_groups, request, now)
+                if groups_claim_present:
+                    # Empty claim = IdP revoked all groups
+                    new_group_ids, block = _resolve_groups_or_block(session, user, oidc_groups, request, base)
+                    if block:
+                        return block
+                    _sync_oidc_user_groups(session, user, oidc_groups, request, now,
+                                           resolved_group_ids=new_group_ids)
+                else:
+                    # IdP sent no groups claim — preserve existing assignments
+                    logger.debug(f"No OIDC group claims for '{user.username}', preserving existing groups")
 
                 user.last_login = now
                 user.updated_at = now
@@ -945,7 +960,7 @@ async def oidc_callback(
 
                 session.add(user)
                 try:
-                    session.flush()  # Get user.id for group memberships
+                    session.flush()
                 except IntegrityError:
                     # Race condition: concurrent callback created this user first
                     session.rollback()
@@ -956,8 +971,15 @@ async def oidc_callback(
                         return RedirectResponse(url=f"{base}/login?error=oidc_error&message=auth_failed")
 
                     logger.info(f"OIDC user creation race resolved: found existing user '{user.username}'")
-                    # Full bidirectional group sync (same as existing-user path)
-                    _sync_oidc_user_groups(session, user, oidc_groups, request, now)
+                    # Same group sync logic as existing-user path
+                    if groups_claim_present:
+                        new_group_ids, block = _resolve_groups_or_block(session, user, oidc_groups, request, base)
+                        if block:
+                            return block
+                        _sync_oidc_user_groups(session, user, oidc_groups, request, now,
+                                               resolved_group_ids=new_group_ids)
+                    else:
+                        logger.debug(f"No OIDC group claims for '{user.username}', preserving existing groups (race path)")
                     session.commit()
                     invalidate_user_groups_cache(user.id)
 

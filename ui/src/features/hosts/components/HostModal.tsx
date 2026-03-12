@@ -1,5 +1,5 @@
 /**
- * Host Modal Component - Phase 3d Sub-Phase 6
+ * Host Modal Component
  *
  * FEATURES:
  * - Add/Edit host modal with two connection methods

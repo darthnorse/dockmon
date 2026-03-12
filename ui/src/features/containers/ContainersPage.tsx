@@ -1,5 +1,5 @@
 /**
- * Containers Page - Phase 3b
+ * Containers Page
  *
  * FEATURES:
  * - Real-time container list with TanStack Table

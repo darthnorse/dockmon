@@ -1,5 +1,5 @@
 /**
- * Host Stats Widget - Phase 4 Enhanced
+ * Host Stats Widget
  *
  * Shows total hosts and their connection status
  * Clickable widget navigates to /hosts page

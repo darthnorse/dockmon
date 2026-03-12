@@ -1,8 +1,6 @@
 /**
  * useUsers Hook
  * Manages User CRUD operations with React Query
- *
- * Phase 3 of Multi-User Support (v2.3.0)
  */
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'

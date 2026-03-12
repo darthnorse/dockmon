@@ -1,6 +1,5 @@
 /**
  * useTags - Hook for managing tags
- * Phase 3d Sub-Phase 5
  *
  * FEATURES:
  * - Fetch all unique tags from hosts

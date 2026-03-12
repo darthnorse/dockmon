@@ -1,8 +1,6 @@
 /**
  * Roles Settings Component
  * Admin-only role permissions management interface
- *
- * Phase 5 of Multi-User Support (v2.3.0)
  */
 
 import { useState, useEffect, useMemo, useCallback } from 'react'

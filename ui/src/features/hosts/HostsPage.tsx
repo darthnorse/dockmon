@@ -1,5 +1,5 @@
 /**
- * Hosts Page - Phase 3d Sub-Phase 6
+ * Hosts Page
  *
  * FEATURES:
  * - Complete hosts management page

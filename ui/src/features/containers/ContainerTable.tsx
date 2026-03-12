@@ -229,7 +229,7 @@ function PolicyIcons({
 }
 
 /**
- * Status icon with color coding (Phase 3d UX spec)
+ * Status icon with color coding
  * Uses Circle icon with fill for visual consistency
  */
 function StatusIcon({ state }: { state: Container['state'] }) {
@@ -873,7 +873,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     })
   }, [data, filters, updatesSummary, allAutoUpdateConfigs, allHealthCheckConfigs])
 
-  // Table columns (Phase 3d UX spec order)
+  // Table columns
   const columns = useMemo<ColumnDef<Container>[]>(
     () => [
       // 0. Selection checkbox

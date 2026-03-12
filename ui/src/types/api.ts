@@ -1,7 +1,7 @@
 /**
  * API Type Definitions
  *
- * NOTE: These are hand-written for v2.0 Phase 2
+ * NOTE: These are hand-written for v2.0
  * FUTURE: Generate from OpenAPI spec with Orval (when backend adds OpenAPI)
  */
 

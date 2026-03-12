@@ -1,13 +1,12 @@
 /**
  * ExpandedHostCard - Expanded Mode Host Card Component
- * Phase 4d
  *
  * FEATURES:
  * - Same header and sparklines as Standard mode
  * - Expanded container list (up to 24, virtualized) instead of just top 3
  * - Per-container controls (start/stop toggle)
  * - Footer with container count badge
- * - Click container row → opens Container Drawer (Phase 5+)
+ * - Click container row → opens Container Drawer
  *
  * USAGE:
  * <ExpandedHostCard host={hostData} />

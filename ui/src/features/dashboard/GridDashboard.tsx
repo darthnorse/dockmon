@@ -1,5 +1,5 @@
 /**
- * Grid Dashboard Component - Phase 3b
+ * Grid Dashboard Component
  *
  * FEATURES:
  * - Drag-and-drop widget layout (react-grid-layout)
@@ -25,7 +25,6 @@ import 'react-grid-layout/css/styles.css'
 const ResponsiveGridLayout = WidthProvider(GridLayout)
 
 // Default dashboard layout (Hosts → Containers → Updates → Events → Alerts)
-// Phase 4: Added Updates widget
 // Grid is 12 columns: 3 small widgets (2 cols) + 2 large widgets (3 cols) = 12
 const defaultLayout: WidgetConfig[] = [
   {

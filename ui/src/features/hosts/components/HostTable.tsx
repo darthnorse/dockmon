@@ -1,5 +1,5 @@
 /**
- * Host Table Component - Phase 3d Sub-Phase 6
+ * Host Table Component
  *
  * FEATURES:
  * - 10 columns per UX spec

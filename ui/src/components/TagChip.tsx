@@ -1,5 +1,5 @@
 /**
- * TagChip Component - Phase 3d
+ * TagChip Component
  *
  * FEATURES:
  * - Displays tag with color generated from hash

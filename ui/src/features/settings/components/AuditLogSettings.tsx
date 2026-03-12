@@ -1,8 +1,6 @@
 /**
  * Audit Log Settings Component
  * Admin-only audit log viewer with filtering, export, and retention settings
- *
- * Phase 6 of Multi-User Support (v2.3.0)
  */
 
 import { useState, useMemo, useCallback } from 'react'

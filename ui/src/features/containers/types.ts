@@ -1,5 +1,5 @@
 /**
- * Container Types - Phase 3b/3d
+ * Container Types
  *
  * Type definitions for Docker containers
  * Matches backend API response structure

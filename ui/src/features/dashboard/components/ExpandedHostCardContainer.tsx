@@ -1,6 +1,5 @@
 /**
  * ExpandedHostCardContainer - Wrapper that connects ExpandedHostCard to StatsProvider
- * Phase 4d - Stats Integration
  *
  * PURPOSE:
  * - Fetches host metrics and all containers from StatsProvider (WebSocket data)
@@ -121,7 +120,7 @@ export function ExpandedHostCardContainer({ host, onHostClick, onViewDetails, on
         },
       }),
 
-      // TODO: Alerts & updates (Phase 4e+)
+      // TODO: Alerts & updates
     }
   }, [host, metrics, sparklines, isVisible, containerCounts, containers])
 

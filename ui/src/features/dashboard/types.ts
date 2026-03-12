@@ -1,5 +1,5 @@
 /**
- * Dashboard Widget Types - Phase 3b
+ * Dashboard Widget Types
  *
  * Widget system for drag-and-drop dashboard layout
  * Uses react-grid-layout for positioning

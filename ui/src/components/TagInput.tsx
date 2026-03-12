@@ -1,6 +1,5 @@
 /**
  * TagInput - Multi-select tag input with autocomplete and drag-to-reorder
- * Phase 3d Sub-Phase 5
  *
  * FEATURES:
  * - Multi-select chip input for tags

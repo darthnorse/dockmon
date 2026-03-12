@@ -1,6 +1,5 @@
 /**
  * useHosts - TanStack Query hooks for host CRUD operations
- * Phase 3d Sub-Phase 6
  *
  * FEATURES:
  * - useHosts(): Fetch all hosts

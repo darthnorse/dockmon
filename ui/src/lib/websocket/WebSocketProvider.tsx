@@ -1,5 +1,5 @@
 /**
- * WebSocket Provider - Phase 3b
+ * WebSocket Provider
  *
  * FEATURES:
  * - Single WebSocket connection for entire app

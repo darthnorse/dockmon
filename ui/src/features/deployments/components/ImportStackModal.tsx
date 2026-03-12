@@ -6,7 +6,7 @@
  *
  * Two import methods:
  * 1. Paste/Upload - User provides compose YAML content directly
- * 2. Browse Host - Scan agent host directories for compose files (Phase 3)
+ * 2. Browse Host - Scan agent host directories for compose files
  *
  * Flow:
  * 1. User selects import method (tabs)

@@ -1,6 +1,5 @@
 /**
  * StatsProvider - Centralized Real-Time Stats System
- * Phase 4c - Efficient Stats Architecture
  *
  * FEATURES:
  * - Single source of truth for all stats (WebSocket only, NO HTTP polling)

@@ -1,6 +1,5 @@
 /**
  * HostCard - Standard Mode Host Card Component
- * Phase 4c
  *
  * FEATURES:
  * - Host name and status indicator

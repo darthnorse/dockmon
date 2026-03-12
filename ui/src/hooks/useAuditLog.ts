@@ -1,8 +1,6 @@
 /**
  * useAuditLog Hook
  * Manages Audit Log operations with React Query
- *
- * Phase 6 of Multi-User Support (v2.3.0)
  */
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'

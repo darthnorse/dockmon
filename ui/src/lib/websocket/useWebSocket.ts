@@ -1,5 +1,5 @@
 /**
- * WebSocket Hook - Phase 3b
+ * WebSocket Hook
  *
  * FEATURES:
  * - Auto-reconnect on disconnect

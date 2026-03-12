@@ -1,7 +1,5 @@
 /**
  * Audit Log Type Definitions
- *
- * Phase 6 of Multi-User Support (v2.3.0)
  */
 
 // ==================== Action and Entity Type Enums ====================

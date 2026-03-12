@@ -1,5 +1,5 @@
 /**
- * useViewMode Hook - Phase 4b
+ * useViewMode Hook
  *
  * Manages dashboard view mode preference (compact | standard | expanded)
  * with auto-default logic and backend persistence

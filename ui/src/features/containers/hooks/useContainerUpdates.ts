@@ -241,7 +241,7 @@ export function useAllHealthCheckConfigs() {
  *
  * Performance optimization: Single API call instead of N individual calls.
  * Used for displaying deployment information in container table.
- * Part of deployment v2.1 remediation (Phase 1.4).
+ * Part of deployment v2.1 remediation.
  */
 export function useAllDeploymentMetadata() {
   return useQuery({

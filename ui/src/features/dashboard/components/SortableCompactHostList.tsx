@@ -99,6 +99,10 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
     setIsDragging(true)
   }, [computedHosts])
 
+  const handleDragCancel = useCallback(() => {
+    setIsDragging(false)
+  }, [])
+
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       setIsDragging(false)
@@ -106,13 +110,11 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
       const { active, over } = event
 
       if (over && active.id !== over.id) {
-        // Use frozen snapshot for index lookup (matches what user saw while dragging)
-        const source = frozenHostsRef.current.length > 0 ? frozenHostsRef.current : computedHosts
-        const oldIndex = source.findIndex((h) => h.id === active.id)
-        const newIndex = source.findIndex((h) => h.id === over.id)
+        const oldIndex = frozenHostsRef.current.findIndex((h) => h.id === active.id)
+        const newIndex = frozenHostsRef.current.findIndex((h) => h.id === over.id)
 
         if (oldIndex !== -1 && newIndex !== -1) {
-          const newHosts = arrayMove(source, oldIndex, newIndex)
+          const newHosts = arrayMove(frozenHostsRef.current, oldIndex, newIndex)
           const newOrder = newHosts.map((h) => h.id)
 
           if (hasLoadedPrefs.current) {
@@ -126,7 +128,7 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
         }
       }
     },
-    [computedHosts, updatePreferences.mutate, prefs?.dashboard]
+    [updatePreferences.mutate, prefs?.dashboard]
   )
 
   if (isLoading) {
@@ -134,7 +136,7 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
   }
 
   return (
-    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDragCancel={handleDragCancel}>
       <SortableContext items={orderedHosts.map((h) => h.id)} strategy={verticalListSortingStrategy}>
         <div className="flex flex-col gap-2">
           {orderedHosts.map((host) => (

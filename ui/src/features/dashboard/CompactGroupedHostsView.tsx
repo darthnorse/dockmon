@@ -44,9 +44,7 @@ interface HostGroup {
 export function CompactGroupedHostsView({ hosts, onHostClick }: CompactGroupedHostsViewProps) {
   const { data: prefs, isLoading } = useUserPreferences()
   const updatePreferences = useUpdatePreferences()
-  const hasLoadedPrefs = useRef(false)
 
-  // Group hosts by primary (first) tag
   const baseGroups = useMemo<HostGroup[]>(() => {
     const groupMap = new Map<string, CompactHost[]>()
 
@@ -58,14 +56,12 @@ export function CompactGroupedHostsView({ hosts, onHostClick }: CompactGroupedHo
       groupMap.get(primaryTag)!.push(host)
     })
 
-    // Convert to array
     return Array.from(groupMap.entries()).map(([tag, hosts]) => ({
       tag,
       hosts,
     }))
   }, [hosts])
 
-  // Apply user-defined tag order, or use default alphabetical sort
   const groups = useMemo<HostGroup[]>(() => {
     const tagGroupOrder = prefs?.dashboard?.tagGroupOrder || []
 
@@ -78,11 +74,9 @@ export function CompactGroupedHostsView({ hosts, onHostClick }: CompactGroupedHo
       })
     }
 
-    // Apply custom order
     const ordered: HostGroup[] = []
     const remaining = new Map(baseGroups.map(g => [g.tag, g]))
 
-    // Add groups in user-defined order
     tagGroupOrder.forEach(tag => {
       if (remaining.has(tag)) {
         ordered.push(remaining.get(tag)!)
@@ -100,12 +94,10 @@ export function CompactGroupedHostsView({ hosts, onHostClick }: CompactGroupedHo
     return [...ordered, ...newGroups]
   }, [baseGroups, prefs?.dashboard?.tagGroupOrder])
 
-  // Get collapsed groups from user preferences
   const collapsedGroups = useMemo(() => {
     return new Set<string>(prefs?.collapsed_groups || [])
   }, [prefs?.collapsed_groups])
 
-  // Toggle group collapse state
   const toggleGroup = useCallback(
     (tag: string) => {
       const newCollapsedGroups = new Set(collapsedGroups)
@@ -115,20 +107,12 @@ export function CompactGroupedHostsView({ hosts, onHostClick }: CompactGroupedHo
         newCollapsedGroups.add(tag)
       }
 
-      // Save to user preferences
       updatePreferences.mutate({
         collapsed_groups: Array.from(newCollapsedGroups),
       })
     },
     [collapsedGroups, updatePreferences.mutate]
   )
-
-  // Mark that preferences have loaded
-  useEffect(() => {
-    if (!isLoading && prefs) {
-      hasLoadedPrefs.current = true
-    }
-  }, [isLoading, prefs])
 
   const sensors = useDndSensors()
 
@@ -144,7 +128,6 @@ export function CompactGroupedHostsView({ hosts, onHostClick }: CompactGroupedHo
           const newGroups = arrayMove(groups, oldIndex, newIndex)
           const newOrder = newGroups.map((g) => g.tag)
 
-          // Save new order to preferences
           updatePreferences.mutate({
             dashboard: {
               ...prefs?.dashboard,
@@ -157,7 +140,6 @@ export function CompactGroupedHostsView({ hosts, onHostClick }: CompactGroupedHo
     [groups, updatePreferences, prefs?.dashboard]
   )
 
-  // Don't render until prefs have loaded
   if (isLoading) {
     return (
       <div className="mt-4">
@@ -228,9 +210,7 @@ function CompactGroupSection({
 
   return (
     <div className="border border-border rounded-lg overflow-hidden">
-      {/* Group Header */}
       <div className="w-full flex items-center bg-muted/50 hover:bg-muted transition-colors border-b border-border">
-        {/* Drag handle */}
         {dragHandleProps && (
           <div
             {...dragHandleProps.attributes}
@@ -242,7 +222,6 @@ function CompactGroupSection({
           </div>
         )}
 
-        {/* Collapse/Expand button */}
         <button
           onClick={onToggle}
           className="flex-1 flex items-center justify-between px-4 py-2.5"
@@ -265,7 +244,6 @@ function CompactGroupSection({
             </span>
           </div>
 
-          {/* Status counts */}
           <div className="flex items-center gap-3 text-sm">
             {statusCounts.online > 0 && (
               <div className="flex items-center gap-1.5">
@@ -289,7 +267,6 @@ function CompactGroupSection({
         </button>
       </div>
 
-      {/* Group Content - Sortable vertical list */}
       {!isCollapsed && (
         <div className="p-3">
           <SortableHostList group={group} onHostClick={onHostClick} />
@@ -299,9 +276,6 @@ function CompactGroupSection({
   )
 }
 
-/**
- * SortableCompactGroupSection - Wrapper that makes CompactGroupSection draggable
- */
 function SortableCompactGroupSection(props: Omit<CompactGroupSectionProps, 'dragHandleProps'>) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: props.group.tag,
@@ -320,9 +294,6 @@ function SortableCompactGroupSection(props: Omit<CompactGroupSectionProps, 'drag
   )
 }
 
-/**
- * SortableHostList - Sortable list of hosts within a group
- */
 interface SortableHostListProps {
   group: HostGroup
   onHostClick: ((hostId: string) => void) | undefined
@@ -426,10 +397,6 @@ function SortableHostList({ group, onHostClick }: SortableHostListProps) {
   )
 }
 
-/**
- * SortableHostCard - Individual draggable host card
- * Left side (hostname) is clickable, right side is draggable area
- */
 interface SortableHostCardProps {
   host: CompactHost
   onHostClick: ((hostId: string) => void) | undefined
@@ -448,7 +415,6 @@ function SortableHostCard({ host, onHostClick }: SortableHostCardProps) {
 
   return (
     <div ref={setNodeRef} style={style} className="relative">
-      {/* Drag handle overlay - covers right side only */}
       <div
         {...attributes}
         {...listeners}

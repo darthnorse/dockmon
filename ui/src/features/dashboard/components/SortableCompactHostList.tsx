@@ -50,7 +50,6 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
 
     const hostMap = new Map(hosts.map((h) => [h.id, h]))
 
-    // Preserve known IDs from saved order, append any new hosts at the end
     const ordered: CompactHost[] = []
     for (const id of savedOrder) {
       const host = hostMap.get(id)
@@ -59,7 +58,6 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
         hostMap.delete(id)
       }
     }
-    // Append hosts not in saved order (newly added)
     const hasNewHosts = hostMap.size > 0
     for (const host of hostMap.values()) {
       ordered.push(host)
@@ -80,7 +78,6 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
   // Freeze the list during drag to prevent dnd-kit state resets
   const orderedHosts = isDragging ? frozenHostsRef.current : computedHosts
 
-  // Mark that preferences have loaded
   useEffect(() => {
     if (!isLoading && prefs) {
       hasLoadedPrefs.current = true
@@ -166,7 +163,6 @@ function SortableCompactHostCard({ host, onHostClick }: SortableCompactHostCardP
 
   return (
     <div ref={setNodeRef} style={style} className="relative">
-      {/* Drag handle overlay - covers right side only */}
       <div
         {...attributes}
         {...listeners}

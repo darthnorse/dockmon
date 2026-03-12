@@ -1,16 +1,3 @@
-/**
- * Dashboard Page - Phase 4c
- *
- * FEATURES:
- * - View mode selector (Compact | Standard | Expanded)
- * - Drag-and-drop widget dashboard (react-grid-layout)
- * - Real-time monitoring widgets
- * - Persistent layout (localStorage) and view mode (backend)
- * - Responsive grid system
- * - Host cards below widget grid (Standard/Expanded modes)
- * - WebSocket live sparkline updates (2s interval via query invalidation)
- */
-
 import { useState, useMemo } from 'react'
 import { GridDashboard } from './GridDashboard'
 import { ViewModeSelector } from './components/ViewModeSelector'
@@ -30,31 +17,23 @@ import { HostModal } from '@/features/hosts/components/HostModal'
 export function DashboardPage() {
   const { viewMode, setViewMode, isLoading: isViewModeLoading } = useViewMode()
   const { data: hosts, isLoading: isHostsLoading } = useHosts()
-  // Dashboard layout is handled internally by GridDashboard component
   const { data: prefs } = useUserPreferences()
   const updatePreferences = useUpdatePreferences()
   const { enabled: simplifiedWorkflow } = useSimplifiedWorkflow()
 
-  // Group by mode
   const groupBy = (prefs?.group_by as GroupByMode) || 'none'
   const setGroupBy = (mode: GroupByMode) => {
     updatePreferences.mutate({ group_by: mode })
   }
 
-  // Drawer state
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null)
-
-  // Details Modal state
   const [modalOpen, setModalOpen] = useState(false)
-
-  // Edit Modal state
   const [editModalOpen, setEditModalOpen] = useState(false)
   const [editingHost, setEditingHost] = useState<typeof selectedHost | null>(null)
 
   const selectedHost = hosts?.find(h => h.id === selectedHostId)
 
-  // Unified handler that respects simplified workflow setting
   const handleHostClick = (hostId: string) => {
     setSelectedHostId(hostId)
     if (simplifiedWorkflow) {
@@ -94,7 +73,6 @@ export function DashboardPage() {
 
   return (
     <div className="flex flex-col h-full gap-4 p-3 sm:p-4 md:p-6 pt-16 md:pt-4">
-      {/* View Mode Selector - Phase 4b */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <h1 className="text-xl sm:text-2xl font-bold">Dashboard</h1>
         <div className="flex items-center gap-2 sm:gap-4 flex-wrap">
@@ -103,13 +81,10 @@ export function DashboardPage() {
         </div>
       </div>
 
-      {/* KPI Bar - Phase 4c */}
       {showKpiBar && <KpiBar />}
 
-      {/* Widget Grid - Phase 3b */}
       {showStatsWidgets && <GridDashboard />}
 
-      {/* View Mode Content - Phase 4c/4d */}
       {viewMode === 'compact' && hosts && (
         groupBy === 'tags' ? (
           <CompactGroupedHostsView
@@ -178,7 +153,6 @@ export function DashboardPage() {
         )
       )}
 
-      {/* Host Drawer */}
       <HostDrawer
         hostId={selectedHostId}
         host={selectedHost}
@@ -201,7 +175,6 @@ export function DashboardPage() {
         }}
       />
 
-      {/* Host Details Modal */}
       <HostDetailsModal
         hostId={selectedHostId}
         host={selectedHost}
@@ -211,7 +184,6 @@ export function DashboardPage() {
         }}
       />
 
-      {/* Edit Host Modal */}
       <HostModal
         isOpen={editModalOpen}
         onClose={() => {

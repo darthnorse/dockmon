@@ -1,21 +1,3 @@
-/**
- * CompactHostCard Component - Phase 4d
- *
- * FEATURES:
- * - Minimal single-line host summary
- * - Status dot + name + container count + CPU/Memory badges
- * - Click to open Host Drawer
- * - Designed for high-density host lists
- *
- * USAGE:
- * ```tsx
- * <CompactHostCard
- *   host={host}
- *   onClick={() => handleHostClick(host.id)}
- * />
- * ```
- */
-
 import { Circle } from 'lucide-react'
 import { useHostMetrics, useContainerCounts } from '@/lib/stats/StatsProvider'
 import { TagChip } from '@/components/TagChip'
@@ -26,9 +8,6 @@ interface CompactHostCardProps {
   onClick?: () => void
 }
 
-/**
- * Get status dot color based on host status
- */
 function getStatusColor(status: string): string {
   switch (status) {
     case 'online':
@@ -55,10 +34,8 @@ export function CompactHostCard({ host, onClick }: CompactHostCardProps) {
       onClick={onClick}
       className="flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-2 rounded-lg border border-border bg-card hover:bg-muted transition-colors cursor-pointer group"
     >
-      {/* Status Dot */}
       <Circle className={`h-2 w-2 flex-shrink-0 ${getStatusColor(host.status)}`} />
 
-      {/* Host Name with Tags */}
       <div className="flex-1 min-w-0 flex items-center gap-2">
         <span className="text-sm font-medium truncate">{host.name}</span>
         {host.tags && host.tags.length > 0 && (
@@ -73,18 +50,15 @@ export function CompactHostCard({ host, onClick }: CompactHostCardProps) {
         )}
       </div>
 
-      {/* Container Count - abbreviated on mobile */}
       <div className="flex items-center gap-1 text-xs text-muted-foreground whitespace-nowrap">
         <span className="font-mono">{containerCount}</span>
         <span className="hidden sm:inline">containers</span>
       </div>
 
-      {/* CPU Badge */}
       <div className="flex items-center gap-1 px-1.5 sm:px-2 py-1 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400">
         <span className="text-xs font-mono font-semibold">{cpuPercent}%</span>
       </div>
 
-      {/* Memory Badge */}
       <div className="flex items-center gap-1 px-1.5 sm:px-2 py-1 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400">
         <span className="text-xs font-mono font-semibold">{memPercent}%</span>
       </div>

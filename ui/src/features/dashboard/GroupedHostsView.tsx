@@ -47,7 +47,6 @@ interface HostGroup {
   hosts: Host[]
 }
 
-// Generate default layouts for hosts within a group with responsive breakpoints
 function generateGroupLayouts(hosts: Host[], mode: 'standard' | 'expanded'): Layouts {
   const layouts: Layouts = {}
 
@@ -166,7 +165,6 @@ export function GroupedHostsView({ hosts, onHostClick, onViewDetails, onEditHost
   const updatePreferences = useUpdatePreferences()
   const hasLoadedPrefs = useRef(false)
 
-  // Group hosts by primary (first) tag
   const baseGroups = useMemo<HostGroup[]>(() => {
     const groupMap = new Map<string, Host[]>()
 
@@ -178,14 +176,12 @@ export function GroupedHostsView({ hosts, onHostClick, onViewDetails, onEditHost
       groupMap.get(primaryTag)!.push(host)
     })
 
-    // Convert to array
     return Array.from(groupMap.entries()).map(([tag, hosts]) => ({
       tag,
       hosts,
     }))
   }, [hosts])
 
-  // Apply user-defined tag order, or use default alphabetical sort
   const groups = useMemo<HostGroup[]>(() => {
     const tagGroupOrder = prefs?.dashboard?.tagGroupOrder || []
 
@@ -198,11 +194,9 @@ export function GroupedHostsView({ hosts, onHostClick, onViewDetails, onEditHost
       })
     }
 
-    // Apply custom order
     const ordered: HostGroup[] = []
     const remaining = new Map(baseGroups.map(g => [g.tag, g]))
 
-    // Add groups in user-defined order
     tagGroupOrder.forEach(tag => {
       if (remaining.has(tag)) {
         ordered.push(remaining.get(tag)!)
@@ -220,12 +214,10 @@ export function GroupedHostsView({ hosts, onHostClick, onViewDetails, onEditHost
     return [...ordered, ...newGroups]
   }, [baseGroups, prefs?.dashboard?.tagGroupOrder])
 
-  // Get collapsed groups from user preferences
   const collapsedGroups = useMemo(() => {
     return new Set<string>(prefs?.collapsed_groups || [])
   }, [prefs?.collapsed_groups])
 
-  // Toggle group collapse state
   const toggleGroup = useCallback(
     (tag: string) => {
       const newCollapsedGroups = new Set(collapsedGroups)
@@ -235,7 +227,6 @@ export function GroupedHostsView({ hosts, onHostClick, onViewDetails, onEditHost
         newCollapsedGroups.add(tag)
       }
 
-      // Save to user preferences
       updatePreferences.mutate({
         collapsed_groups: Array.from(newCollapsedGroups),
       })
@@ -243,7 +234,6 @@ export function GroupedHostsView({ hosts, onHostClick, onViewDetails, onEditHost
     [collapsedGroups, updatePreferences]
   )
 
-  // Mark that preferences have loaded
   useEffect(() => {
     if (!isLoading && prefs) {
       hasLoadedPrefs.current = true
@@ -252,7 +242,6 @@ export function GroupedHostsView({ hosts, onHostClick, onViewDetails, onEditHost
 
   const sensors = useDndSensors()
 
-  // Handle drag end - reorder groups
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       const { active, over } = event
@@ -265,7 +254,6 @@ export function GroupedHostsView({ hosts, onHostClick, onViewDetails, onEditHost
           const newGroups = arrayMove(groups, oldIndex, newIndex)
           const newOrder = newGroups.map((g) => g.tag)
 
-          // Save new order to preferences
           updatePreferences.mutate({
             dashboard: {
               ...prefs?.dashboard,
@@ -278,7 +266,6 @@ export function GroupedHostsView({ hosts, onHostClick, onViewDetails, onEditHost
     [groups, updatePreferences, prefs?.dashboard]
   )
 
-  // Don't render until prefs have loaded
   if (isLoading) {
     return (
       <div className="mt-4">
@@ -360,7 +347,6 @@ function GroupSection({
 }: GroupSectionProps) {
   const layoutKey = `groupLayout_${group.tag}_${mode}`
 
-  // Get layouts for this group from the groupLayouts nested object
   const layouts = useMemo(() => {
     const groupLayouts = dashboardPrefs?.dashboard?.groupLayouts || {}
     const storedLayouts = groupLayouts[layoutKey] as Layouts | undefined
@@ -381,12 +367,10 @@ function GroupSection({
 
   const [currentLayouts, setCurrentLayouts] = useState<Layouts>(layouts)
 
-  // Update currentLayouts when layouts memo changes
   useEffect(() => {
     setCurrentLayouts(layouts)
   }, [layouts])
 
-  // Handle layout change
   const handleLayoutChange = useCallback(
     (_currentLayout: Layout[], allLayouts: Layouts) => {
       setCurrentLayouts(allLayouts)
@@ -395,7 +379,6 @@ function GroupSection({
         return
       }
 
-      // Update the groupLayouts nested object
       const currentGroupLayouts = dashboardPrefs?.dashboard?.groupLayouts || {}
       updateDashboardPrefs({
         groupLayouts: {
@@ -421,9 +404,7 @@ function GroupSection({
 
   return (
     <div className="border border-border rounded-lg overflow-hidden">
-      {/* Group Header */}
       <div className="w-full flex items-center bg-muted/50 hover:bg-muted transition-colors border-b border-border">
-        {/* Drag handle */}
         {dragHandleProps && (
           <div
             {...dragHandleProps.attributes}
@@ -435,7 +416,6 @@ function GroupSection({
           </div>
         )}
 
-        {/* Collapse/Expand button */}
         <button
           onClick={onToggle}
           className="flex-1 flex items-center justify-between px-4 py-3"
@@ -458,7 +438,6 @@ function GroupSection({
             </span>
           </div>
 
-          {/* Status counts */}
           <div className="flex items-center gap-4 text-sm">
             {statusCounts.online > 0 && (
               <div className="flex items-center gap-1.5">
@@ -482,7 +461,6 @@ function GroupSection({
         </button>
       </div>
 
-      {/* Group Content */}
       {!isCollapsed && (
         <div className="p-4">
           <ResponsiveGrid
@@ -518,7 +496,6 @@ function GroupSection({
                   )}
                 </div>
 
-                {/* Drag handle */}
                 <div
                   className="host-card-drag-handle absolute left-0 top-0 cursor-move pointer-events-auto"
                   style={{
@@ -537,9 +514,6 @@ function GroupSection({
   )
 }
 
-/**
- * SortableGroupSection - Wrapper that makes GroupSection draggable
- */
 function SortableGroupSection(props: GroupSectionProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: props.group.tag,

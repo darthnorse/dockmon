@@ -163,7 +163,7 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
                     <span className="text-muted-foreground">IP Addresses</span>
                     <div className="flex flex-col gap-0.5">
                       {host.host_ips.map((ip) => (
-                        <span key={ip} className="text-sm text-muted-foreground">{ip}</span>
+                        <span key={ip} className="text-sm text-foreground">{ip}</span>
                       ))}
                     </div>
                   </div>

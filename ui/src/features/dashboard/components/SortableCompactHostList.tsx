@@ -71,17 +71,17 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
       }
     }
     // Append hosts not in saved order (newly added)
-    const newHostIds = [...hostMap.keys()]
+    const hasNewHosts = hostMap.size > 0
     for (const host of hostMap.values()) {
       ordered.push(host)
     }
 
-    if (newHostIds.length > 0 || ordered.length !== hosts.length) {
+    if (hasNewHosts || ordered.length !== hosts.length) {
       debug.log('DnD', 'Order reconciled', {
         savedCount: savedOrder.length,
         hostCount: hosts.length,
         resultCount: ordered.length,
-        newHosts: newHostIds,
+        newHosts: [...hostMap.keys()],
       })
     }
 

@@ -8,7 +8,7 @@
  * - Uses @dnd-kit for smooth drag experience
  */
 
-import { useMemo, useCallback, useEffect, useRef } from 'react'
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import {
   DndContext,
   closestCenter,
@@ -16,6 +16,7 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
+  DragStartEvent,
   DragEndEvent,
 } from '@dnd-kit/core'
 import {
@@ -46,27 +47,37 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
   const { data: prefs, isLoading } = useUserPreferences()
   const updatePreferences = useUpdatePreferences()
   const hasLoadedPrefs = useRef(false)
+  const [isDragging, setIsDragging] = useState(false)
+  const frozenHostsRef = useRef<Host[]>([])
 
-  // Apply saved order or use default
-  const orderedHosts = useMemo(() => {
+  const computedHosts = useMemo(() => {
     const savedOrder = prefs?.dashboard?.compactHostOrder || []
 
-    if (savedOrder.length === 0 || savedOrder.length !== hosts.length) {
-      // No saved order or count mismatch - use default
+    if (savedOrder.length === 0) {
       return hosts
     }
 
-    // Validate that all IDs exist
     const hostMap = new Map(hosts.map((h) => [h.id, h]))
-    const allIdsValid = savedOrder.every((id) => hostMap.has(id))
 
-    if (!allIdsValid) {
-      return hosts
+    // Preserve known IDs from saved order, append any new hosts at the end
+    const ordered: Host[] = []
+    for (const id of savedOrder) {
+      const host = hostMap.get(id)
+      if (host) {
+        ordered.push(host)
+        hostMap.delete(id)
+      }
+    }
+    // Append hosts not in saved order (newly added)
+    for (const host of hostMap.values()) {
+      ordered.push(host)
     }
 
-    // Apply saved order
-    return savedOrder.map((id) => hostMap.get(id)!)
+    return ordered
   }, [hosts, prefs?.dashboard?.compactHostOrder])
+
+  // Freeze the list during drag to prevent dnd-kit state resets
+  const orderedHosts = isDragging ? frozenHostsRef.current : computedHosts
 
   // Mark that preferences have loaded
   useEffect(() => {
@@ -83,20 +94,27 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
     })
   )
 
-  // Handle drag end - reorder hosts
+  const handleDragStart = useCallback((_event: DragStartEvent) => {
+    frozenHostsRef.current = computedHosts
+    setIsDragging(true)
+  }, [computedHosts])
+
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
+      setIsDragging(false)
+
       const { active, over } = event
 
       if (over && active.id !== over.id) {
-        const oldIndex = orderedHosts.findIndex((h) => h.id === active.id)
-        const newIndex = orderedHosts.findIndex((h) => h.id === over.id)
+        // Use frozen snapshot for index lookup (matches what user saw while dragging)
+        const source = frozenHostsRef.current.length > 0 ? frozenHostsRef.current : computedHosts
+        const oldIndex = source.findIndex((h) => h.id === active.id)
+        const newIndex = source.findIndex((h) => h.id === over.id)
 
         if (oldIndex !== -1 && newIndex !== -1) {
-          const newHosts = arrayMove(orderedHosts, oldIndex, newIndex)
+          const newHosts = arrayMove(source, oldIndex, newIndex)
           const newOrder = newHosts.map((h) => h.id)
 
-          // Save new order to preferences
           if (hasLoadedPrefs.current) {
             updatePreferences.mutate({
               dashboard: {
@@ -108,7 +126,7 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
         }
       }
     },
-    [orderedHosts, updatePreferences.mutate, prefs?.dashboard]
+    [computedHosts, updatePreferences.mutate, prefs?.dashboard]
   )
 
   if (isLoading) {
@@ -116,7 +134,7 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
   }
 
   return (
-    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
       <SortableContext items={orderedHosts.map((h) => h.id)} strategy={verticalListSortingStrategy}>
         <div className="flex flex-col gap-2">
           {orderedHosts.map((host) => (

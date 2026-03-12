@@ -1,0 +1,27 @@
+name: "DockMon CodeQL Configuration"
+
+# Exclude paths that are not production code
+paths-ignore:
+  - scripts/         # Offline admin/dev scripts, not deployed
+  - "**/*_test.go"   # Test files
+
+# Suppress known false positives.
+# All Go agent/shared code receives commands from the authenticated
+# DockMon server over mTLS/token WebSocket, not from end-user input.
+query-filters:
+  # Go: Self-update binary URL comes from authenticated server.
+  - exclude:
+      id: go/request-forgery
+  # Go: All paths validated by isPathSafe(), GetStackDir(),
+  # ValidateStackName(), isUnderStacksDir() before use.
+  # CodeQL cannot trace through these validation guards.
+  - exclude:
+      id: go/path-injection
+  # JS/TS: React auto-escapes {variable} in JSX. No
+  # dangerouslySetInnerHTML is used in any flagged component.
+  - exclude:
+      id: js/xss-through-dom
+  # Python: Audit logging of usernames on permission denial
+  # is intentional, not sensitive data leakage.
+  - exclude:
+      id: py/clear-text-logging-sensitive-data

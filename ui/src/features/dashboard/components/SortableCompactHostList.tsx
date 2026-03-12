@@ -29,6 +29,7 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { CompactHostCard } from './CompactHostCard'
 import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
+import { debug } from '@/lib/debug'
 
 interface Host {
   id: string
@@ -54,6 +55,7 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
     const savedOrder = prefs?.dashboard?.compactHostOrder || []
 
     if (savedOrder.length === 0) {
+      debug.log('DnD', 'No saved order, using default host order', { hostCount: hosts.length })
       return hosts
     }
 
@@ -69,8 +71,18 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
       }
     }
     // Append hosts not in saved order (newly added)
+    const newHostIds = [...hostMap.keys()]
     for (const host of hostMap.values()) {
       ordered.push(host)
+    }
+
+    if (newHostIds.length > 0 || ordered.length !== hosts.length) {
+      debug.log('DnD', 'Order reconciled', {
+        savedCount: savedOrder.length,
+        hostCount: hosts.length,
+        resultCount: ordered.length,
+        newHosts: newHostIds,
+      })
     }
 
     return ordered
@@ -94,12 +106,14 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
     })
   )
 
-  const handleDragStart = useCallback((_event: DragStartEvent) => {
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    debug.log('DnD', 'Drag started', { activeId: event.active.id, hostCount: computedHosts.length })
     frozenHostsRef.current = computedHosts
     setIsDragging(true)
   }, [computedHosts])
 
   const handleDragCancel = useCallback(() => {
+    debug.log('DnD', 'Drag cancelled')
     setIsDragging(false)
   }, [])
 
@@ -108,6 +122,7 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
       setIsDragging(false)
 
       const { active, over } = event
+      debug.log('DnD', 'Drag ended', { activeId: active.id, overId: over?.id ?? null })
 
       if (over && active.id !== over.id) {
         const oldIndex = frozenHostsRef.current.findIndex((h) => h.id === active.id)
@@ -116,6 +131,8 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
         if (oldIndex !== -1 && newIndex !== -1) {
           const newHosts = arrayMove(frozenHostsRef.current, oldIndex, newIndex)
           const newOrder = newHosts.map((h) => h.id)
+
+          debug.log('DnD', 'Saving new order', { oldIndex, newIndex, order: newOrder })
 
           if (hasLoadedPrefs.current) {
             updatePreferences.mutate({

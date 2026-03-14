@@ -115,6 +115,14 @@ def _generate_nonce() -> str:
     return secrets.token_urlsafe(32)
 
 
+def _build_scopes(config) -> str:
+    """Build scope string, auto-appending the groups claim if not already present."""
+    scopes = {s.strip() for s in config.scopes.replace(',', ' ').split() if s.strip()}
+    if config.claim_for_groups and config.claim_for_groups not in scopes:
+        scopes.add(config.claim_for_groups)
+    return ' '.join(sorted(scopes))
+
+
 async def _fetch_oidc_discovery(provider_url: str) -> dict:
     """Fetch OIDC provider discovery document."""
     provider_url = provider_url.rstrip('/')
@@ -151,6 +159,8 @@ async def _fetch_oidc_discovery(provider_url: str) -> dict:
                     f"differs from provider ({provider_origin})"
                 )
 
+    logger.debug(f"OIDC discovery: issuer={discovery.get('issuer')}, "
+                 f"scopes_supported={discovery.get('scopes_supported')}")
     return discovery
 
 
@@ -175,10 +185,13 @@ async def _exchange_code_for_tokens(
     if code_verifier:
         data['code_verifier'] = code_verifier
 
+    logger.debug(f"OIDC token exchange: endpoint={token_endpoint}, "
+                 f"redirect_uri={redirect_uri}, pkce={bool(code_verifier)}")
+
     async with httpx.AsyncClient(timeout=OIDC_HTTP_TIMEOUT) as client:
         response = await client.post(token_endpoint, data=data)
         if response.status_code >= 400:
-            logger.error(f"OIDC token endpoint returned {response.status_code}")
+            logger.error(f"OIDC token endpoint returned {response.status_code}: {response.text[:500]}")
         response.raise_for_status()
         return response.json()
 
@@ -190,7 +203,9 @@ async def _fetch_userinfo(userinfo_endpoint: str, access_token: str) -> dict:
     async with httpx.AsyncClient(timeout=OIDC_HTTP_TIMEOUT) as client:
         response = await client.get(userinfo_endpoint, headers=headers)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        logger.debug(f"OIDC userinfo response keys: {list(data.keys()) if isinstance(data, dict) else type(data).__name__}")
+        return data
 
 
 def _normalize_groups_claim(groups_value) -> list:
@@ -424,8 +439,9 @@ def _verify_id_token(
             )
             logger.warning(f"OIDC issuer matched with trailing slash variant: {alt_issuer}")
         except jwt.InvalidIssuerError:
+            actual_issuer = jwt.decode(id_token, options={"verify_signature": False}).get("iss", "unknown")
             raise jwt.InvalidTokenError(
-                f"Issuer mismatch: expected={expected_issuer}"
+                f"Issuer mismatch: expected={expected_issuer} actual={actual_issuer}"
             )
 
     token_nonce = claims.get("nonce")
@@ -630,7 +646,7 @@ async def oidc_authorize(
             'response_type': 'code',
             'client_id': config.client_id,
             'redirect_uri': redirect_uri,
-            'scope': ' '.join(s.strip() for s in config.scopes.replace(',', ' ').split() if s.strip()),
+            'scope': _build_scopes(config),
             'state': state,
             'nonce': nonce,
         }
@@ -641,6 +657,7 @@ async def oidc_authorize(
         auth_url = f"{authorization_endpoint}?{urlencode(params)}"
 
         logger.info(f"OIDC authorize redirect: state={state[:8]}..., redirect_uri={redirect_uri}")
+        logger.debug(f"OIDC authorize params: scope={params['scope']}, pkce={bool(code_challenge)}, provider={config.provider_url}")
         return RedirectResponse(url=auth_url, status_code=302)
 
 
@@ -711,6 +728,8 @@ async def oidc_callback(
             return RedirectResponse(url=f"{base}/login?error=oidc_error&message=oidc_not_configured")
 
         try:
+            logger.debug(f"OIDC callback: provider_url={config.provider_url!r}, client_id={config.client_id}")
+
             # Fetch discovery document
             discovery = await _fetch_oidc_discovery(config.provider_url)
             token_endpoint = discovery.get('token_endpoint')

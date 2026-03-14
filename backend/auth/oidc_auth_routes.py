@@ -361,7 +361,7 @@ _JWK_KTY_TO_ALGORITHM_CLASS = {
 def _verify_id_token(
     id_token: str,
     jwks_data: dict,
-    provider_url: str,
+    expected_issuer: str,
     client_id: str,
     expected_nonce: str,
 ) -> dict:
@@ -406,8 +406,6 @@ def _verify_id_token(
             f"No matching key found in JWKS for kid={kid}"
         )
 
-    expected_issuer = provider_url.rstrip("/")
-
     try:
         claims = jwt.decode(
             id_token,
@@ -422,27 +420,10 @@ def _verify_id_token(
             },
         )
     except jwt.InvalidIssuerError:
-        # Fallback: some providers include/omit trailing slash
-        alt_issuer = expected_issuer + "/" if not expected_issuer.endswith("/") else expected_issuer.rstrip("/")
-        try:
-            claims = jwt.decode(
-                id_token,
-                signing_key,
-                algorithms=[alg],
-                audience=client_id,
-                issuer=alt_issuer,
-                options={
-                    "verify_exp": True,
-                    "verify_iss": True,
-                    "verify_aud": True,
-                },
-            )
-            logger.warning(f"OIDC issuer matched with trailing slash variant: {alt_issuer}")
-        except jwt.InvalidIssuerError:
-            actual_issuer = jwt.decode(id_token, options={"verify_signature": False}).get("iss", "unknown")
-            raise jwt.InvalidTokenError(
-                f"Issuer mismatch: expected={expected_issuer} actual={actual_issuer}"
-            )
+        actual_issuer = jwt.decode(id_token, options={"verify_signature": False}).get("iss", "unknown")
+        raise jwt.InvalidTokenError(
+            f"Issuer mismatch: expected={expected_issuer} actual={actual_issuer}"
+        )
 
     token_nonce = claims.get("nonce")
     if token_nonce != expected_nonce:
@@ -778,7 +759,7 @@ async def oidc_callback(
                     id_token_claims = _verify_id_token(
                         id_token=id_token,
                         jwks_data=jwks_data,
-                        provider_url=config.provider_url,
+                        expected_issuer=discovery.get('issuer', config.provider_url),
                         client_id=config.client_id,
                         expected_nonce=expected_nonce,
                     )

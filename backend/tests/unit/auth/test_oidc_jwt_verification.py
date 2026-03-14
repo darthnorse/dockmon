@@ -5,7 +5,7 @@ Covers:
 - _verify_id_token() - JWT signature verification and claim validation
 - _fetch_jwks() - JWKS fetching with caching
 - Nonce validation within JWT verification
-- Issuer mismatch rejection (strict with trailing-slash normalization)
+- Issuer mismatch rejection (strict, no trailing-slash normalization)
 - Audience validation (string and list formats)
 - Key matching by kid header
 - Error handling for invalid/malformed tokens
@@ -107,7 +107,7 @@ class TestVerifyIdToken:
         result = _verify_id_token(
             id_token=id_token,
             jwks_data=jwks_data,
-            provider_url="https://provider.example.com",
+            expected_issuer="https://provider.example.com",
             client_id="my-client-id",
             expected_nonce="expected-nonce-value",
         )
@@ -128,7 +128,7 @@ class TestVerifyIdToken:
             _verify_id_token(
                 id_token=id_token,
                 jwks_data=jwks_data,
-                provider_url="https://provider.example.com",
+                expected_issuer="https://provider.example.com",
                 client_id="my-client-id",
                 expected_nonce="expected-nonce-value",
             )
@@ -143,7 +143,7 @@ class TestVerifyIdToken:
             _verify_id_token(
                 id_token=id_token,
                 jwks_data=jwks_data,
-                provider_url="https://provider.example.com",
+                expected_issuer="https://provider.example.com",
                 client_id="wrong-client-id",
                 expected_nonce="expected-nonce-value",
             )
@@ -158,29 +158,32 @@ class TestVerifyIdToken:
             _verify_id_token(
                 id_token=id_token,
                 jwks_data=jwks_data,
-                provider_url="https://provider.example.com",
+                expected_issuer="https://provider.example.com",
                 client_id="my-client-id",
                 expected_nonce="wrong-nonce-value",
             )
 
-    def test_issuer_trailing_slash_tolerance(self, rsa_keypair, jwks_data, valid_claims):
-        """Issuer comparison is lenient about trailing slashes."""
+    def test_issuer_trailing_slash_mismatch_rejected(self, rsa_keypair, jwks_data, valid_claims):
+        """Issuer with trailing slash mismatch is rejected (no normalization).
+
+        The caller should pass the exact issuer from the OIDC discovery document,
+        which always matches the token's iss claim per the OIDC spec.
+        """
         from auth.oidc_auth_routes import _verify_id_token
 
         # Token has issuer without trailing slash
         valid_claims["iss"] = "https://provider.example.com"
         id_token = _create_signed_id_token(rsa_keypair, valid_claims)
 
-        # Provider URL has trailing slash - should still work
-        result = _verify_id_token(
-            id_token=id_token,
-            jwks_data=jwks_data,
-            provider_url="https://provider.example.com/",
-            client_id="my-client-id",
-            expected_nonce="expected-nonce-value",
-        )
-
-        assert result["sub"] == "user-12345"
+        # expected_issuer has trailing slash - strict comparison rejects it
+        with pytest.raises(pyjwt.InvalidTokenError, match="Issuer mismatch"):
+            _verify_id_token(
+                id_token=id_token,
+                jwks_data=jwks_data,
+                expected_issuer="https://provider.example.com/",
+                client_id="my-client-id",
+                expected_nonce="expected-nonce-value",
+            )
 
     def test_issuer_mismatch_rejected(self, rsa_keypair, jwks_data, valid_claims):
         """Non-conformant issuer is rejected (strict validation)."""
@@ -195,7 +198,7 @@ class TestVerifyIdToken:
             _verify_id_token(
                 id_token=id_token,
                 jwks_data=jwks_data,
-                provider_url="https://provider.example.com",
+                expected_issuer="https://provider.example.com",
                 client_id="my-client-id",
                 expected_nonce="expected-nonce-value",
             )
@@ -211,7 +214,7 @@ class TestVerifyIdToken:
         result = _verify_id_token(
             id_token=id_token,
             jwks_data=jwks_data,
-            provider_url="https://provider.example.com",
+            expected_issuer="https://provider.example.com",
             client_id="my-client-id",
             expected_nonce="expected-nonce-value",
         )
@@ -230,7 +233,7 @@ class TestVerifyIdToken:
             _verify_id_token(
                 id_token=id_token,
                 jwks_data=jwks_data,
-                provider_url="https://provider.example.com",
+                expected_issuer="https://provider.example.com",
                 client_id="my-client-id",
                 expected_nonce="expected-nonce-value",
             )
@@ -246,7 +249,7 @@ class TestVerifyIdToken:
             _verify_id_token(
                 id_token=id_token,
                 jwks_data=jwks_data,
-                provider_url="https://provider.example.com",
+                expected_issuer="https://provider.example.com",
                 client_id="my-client-id",
                 expected_nonce="expected-nonce-value",
             )
@@ -259,7 +262,7 @@ class TestVerifyIdToken:
             _verify_id_token(
                 id_token="not-a-jwt",
                 jwks_data=jwks_data,
-                provider_url="https://provider.example.com",
+                expected_issuer="https://provider.example.com",
                 client_id="my-client-id",
                 expected_nonce="some-nonce",
             )
@@ -274,7 +277,7 @@ class TestVerifyIdToken:
             _verify_id_token(
                 id_token=id_token,
                 jwks_data={"keys": []},
-                provider_url="https://provider.example.com",
+                expected_issuer="https://provider.example.com",
                 client_id="my-client-id",
                 expected_nonce="expected-nonce-value",
             )
@@ -294,7 +297,7 @@ class TestVerifyIdToken:
         result = _verify_id_token(
             id_token=id_token,
             jwks_data=jwks_data,
-            provider_url="https://provider.example.com",
+            expected_issuer="https://provider.example.com",
             client_id="my-client-id",
             expected_nonce="expected-nonce-value",
         )
@@ -311,7 +314,7 @@ class TestVerifyIdToken:
         result = _verify_id_token(
             id_token=id_token,
             jwks_data=jwks_data,
-            provider_url="https://provider.example.com",
+            expected_issuer="https://provider.example.com",
             client_id="my-client-id",
             expected_nonce="expected-nonce-value",
         )

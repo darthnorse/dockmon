@@ -140,12 +140,12 @@ async def _fetch_oidc_discovery(provider_url: str) -> dict:
         response.raise_for_status()
         discovery = response.json()
 
-    # Validate critical endpoints use HTTPS
-    for key in ('token_endpoint', 'userinfo_endpoint', 'jwks_uri'):
-        endpoint = discovery.get(key)
-        if endpoint and not endpoint.startswith('https://'):
-            logger.warning(f"OIDC discovery '{key}' is not HTTPS: {endpoint}")
-            raise ValueError(f"OIDC discovery '{key}' must use HTTPS: {endpoint}")
+    # Validate critical fields use HTTPS
+    for key in ('issuer', 'token_endpoint', 'userinfo_endpoint', 'jwks_uri'):
+        value = discovery.get(key)
+        if value and not value.startswith('https://'):
+            logger.warning(f"OIDC discovery '{key}' is not HTTPS: {value}")
+            raise ValueError(f"OIDC discovery '{key}' must use HTTPS: {value}")
 
     # Validate endpoint origins match provider (warn only — some providers use CDN subdomains)
     provider_origin = urlparse(provider_url).netloc
@@ -159,7 +159,22 @@ async def _fetch_oidc_discovery(provider_url: str) -> dict:
                     f"differs from provider ({provider_origin})"
                 )
 
-    logger.debug(f"OIDC discovery: issuer={discovery.get('issuer')}, "
+    discovered_issuer = discovery.get('issuer')
+    if not discovered_issuer:
+        logger.warning("OIDC discovery document missing required 'issuer' field")
+        raise ValueError("OIDC discovery document missing required 'issuer' field")
+
+    if discovered_issuer.rstrip('/') != provider_url:
+        logger.warning(
+            f"OIDC discovery issuer ({discovered_issuer}) does not match "
+            f"provider URL ({provider_url})"
+        )
+        raise ValueError(
+            f"OIDC discovery issuer ({discovered_issuer}) does not match "
+            f"provider URL ({provider_url})"
+        )
+
+    logger.debug(f"OIDC discovery: issuer={discovered_issuer}, "
                  f"scopes_supported={discovery.get('scopes_supported')}")
     return discovery
 
@@ -759,7 +774,7 @@ async def oidc_callback(
                     id_token_claims = _verify_id_token(
                         id_token=id_token,
                         jwks_data=jwks_data,
-                        expected_issuer=discovery.get('issuer', config.provider_url),
+                        expected_issuer=discovery['issuer'],
                         client_id=config.client_id,
                         expected_nonce=expected_nonce,
                     )

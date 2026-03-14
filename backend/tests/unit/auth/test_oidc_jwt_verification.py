@@ -11,15 +11,13 @@ Covers:
 - Error handling for invalid/malformed tokens
 """
 
-import json
-import time
+import base64
 from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import jwt as pyjwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.hazmat.primitives import serialization
 
 
 # ==================== Test Fixtures ====================
@@ -37,9 +35,6 @@ def _private_key_to_jwk(private_key, kid="test-key-1"):
     """Convert an RSA private key to a JWK dict (public key only)."""
     public_key = private_key.public_key()
     public_numbers = public_key.public_numbers()
-
-    # Convert to base64url-encoded values
-    import base64
 
     def _int_to_base64url(n, length=None):
         n_bytes = n.to_bytes((n.bit_length() + 7) // 8, byteorder='big')
@@ -91,6 +86,19 @@ def valid_claims():
         "nonce": "expected-nonce-value",
         "email": "user@example.com",
     }
+
+
+def _mock_httpx_client(response_json):
+    """Create a mock httpx.AsyncClient that returns the given JSON response."""
+    mock_response = MagicMock()
+    mock_response.json.return_value = response_json
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    return mock_client
 
 
 # ==================== _verify_id_token Tests ====================
@@ -171,11 +179,9 @@ class TestVerifyIdToken:
         """
         from auth.oidc_auth_routes import _verify_id_token
 
-        # Token has issuer without trailing slash
         valid_claims["iss"] = "https://provider.example.com"
         id_token = _create_signed_id_token(rsa_keypair, valid_claims)
 
-        # expected_issuer has trailing slash - strict comparison rejects it
         with pytest.raises(pyjwt.InvalidTokenError, match="Issuer mismatch"):
             _verify_id_token(
                 id_token=id_token,
@@ -189,11 +195,9 @@ class TestVerifyIdToken:
         """Non-conformant issuer is rejected (strict validation)."""
         from auth.oidc_auth_routes import _verify_id_token
 
-        # Token has different issuer format
         valid_claims["iss"] = "https://provider.example.com/realms/main"
         id_token = _create_signed_id_token(rsa_keypair, valid_claims)
 
-        # Provider URL is different from issuer - should be rejected
         with pytest.raises(pyjwt.InvalidTokenError, match="Issuer mismatch"):
             _verify_id_token(
                 id_token=id_token,
@@ -338,15 +342,7 @@ class TestFetchJwks:
         _jwks_cache.clear()
 
         mock_jwks = {"keys": [{"kty": "RSA", "kid": "key1"}]}
-
-        mock_response = MagicMock()
-        mock_response.json.return_value = mock_jwks
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = AsyncMock()
-        mock_client.get.return_value = mock_response
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client = _mock_httpx_client(mock_jwks)
 
         with patch("auth.oidc_auth_routes.httpx.AsyncClient", return_value=mock_client):
             result = await _fetch_jwks("https://provider.example.com/.well-known/jwks.json")
@@ -363,15 +359,7 @@ class TestFetchJwks:
         _jwks_cache.clear()
 
         mock_jwks = {"keys": [{"kty": "RSA", "kid": "cached-key"}]}
-
-        mock_response = MagicMock()
-        mock_response.json.return_value = mock_jwks
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = AsyncMock()
-        mock_client.get.return_value = mock_response
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client = _mock_httpx_client(mock_jwks)
 
         jwks_uri = "https://provider.example.com/.well-known/jwks-cache-test.json"
 
@@ -392,15 +380,7 @@ class TestFetchJwks:
         _jwks_cache.clear()
 
         mock_jwks = {"keys": [{"kty": "RSA", "kid": "expired-key"}]}
-
-        mock_response = MagicMock()
-        mock_response.json.return_value = mock_jwks
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = AsyncMock()
-        mock_client.get.return_value = mock_response
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client = _mock_httpx_client(mock_jwks)
 
         jwks_uri = "https://provider.example.com/.well-known/jwks-ttl-test.json"
 
@@ -414,3 +394,77 @@ class TestFetchJwks:
 
         # Should have been called twice (cache expired)
         assert mock_client.get.call_count == 2
+
+
+# ==================== _fetch_oidc_discovery Validation Tests ====================
+
+class TestFetchOidcDiscoveryIssuerValidation:
+    """Test _fetch_oidc_discovery() issuer field validation."""
+
+    @pytest.mark.asyncio
+    async def test_missing_issuer_raises(self):
+        """Discovery document without 'issuer' field raises ValueError."""
+        from auth.oidc_auth_routes import _fetch_oidc_discovery
+
+        mock_discovery = {
+            "token_endpoint": "https://provider.example.com/oauth/token",
+            "userinfo_endpoint": "https://provider.example.com/oauth/userinfo",
+            "jwks_uri": "https://provider.example.com/.well-known/jwks.json",
+        }
+        mock_client = _mock_httpx_client(mock_discovery)
+
+        with patch("auth.oidc_auth_routes.httpx.AsyncClient", return_value=mock_client):
+            with pytest.raises(ValueError, match="missing required 'issuer' field"):
+                await _fetch_oidc_discovery("https://provider.example.com")
+
+    @pytest.mark.asyncio
+    async def test_issuer_mismatch_raises(self):
+        """Discovery issuer not matching provider URL raises ValueError."""
+        from auth.oidc_auth_routes import _fetch_oidc_discovery
+
+        mock_discovery = {
+            "issuer": "https://evil.example.com",
+            "token_endpoint": "https://provider.example.com/oauth/token",
+            "userinfo_endpoint": "https://provider.example.com/oauth/userinfo",
+            "jwks_uri": "https://provider.example.com/.well-known/jwks.json",
+        }
+        mock_client = _mock_httpx_client(mock_discovery)
+
+        with patch("auth.oidc_auth_routes.httpx.AsyncClient", return_value=mock_client):
+            with pytest.raises(ValueError, match="does not match provider URL"):
+                await _fetch_oidc_discovery("https://provider.example.com")
+
+    @pytest.mark.asyncio
+    async def test_issuer_trailing_slash_tolerance(self):
+        """Issuer with trailing slash still matches provider URL without one."""
+        from auth.oidc_auth_routes import _fetch_oidc_discovery
+
+        mock_discovery = {
+            "issuer": "https://provider.example.com/",
+            "token_endpoint": "https://provider.example.com/oauth/token",
+            "userinfo_endpoint": "https://provider.example.com/oauth/userinfo",
+            "jwks_uri": "https://provider.example.com/.well-known/jwks.json",
+        }
+        mock_client = _mock_httpx_client(mock_discovery)
+
+        with patch("auth.oidc_auth_routes.httpx.AsyncClient", return_value=mock_client):
+            result = await _fetch_oidc_discovery("https://provider.example.com")
+
+        assert result["issuer"] == "https://provider.example.com/"
+
+    @pytest.mark.asyncio
+    async def test_issuer_http_rejected(self):
+        """Discovery issuer using HTTP (not HTTPS) is rejected."""
+        from auth.oidc_auth_routes import _fetch_oidc_discovery
+
+        mock_discovery = {
+            "issuer": "http://provider.example.com",
+            "token_endpoint": "https://provider.example.com/oauth/token",
+            "userinfo_endpoint": "https://provider.example.com/oauth/userinfo",
+            "jwks_uri": "https://provider.example.com/.well-known/jwks.json",
+        }
+        mock_client = _mock_httpx_client(mock_discovery)
+
+        with patch("auth.oidc_auth_routes.httpx.AsyncClient", return_value=mock_client):
+            with pytest.raises(ValueError, match="must use HTTPS"):
+                await _fetch_oidc_discovery("https://provider.example.com")

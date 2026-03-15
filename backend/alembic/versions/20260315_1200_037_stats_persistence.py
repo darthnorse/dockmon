@@ -1,8 +1,8 @@
-"""v2.3.0 upgrade - Persistent container statistics
+"""Stats persistence - Persistent container statistics
 
-Revision ID: 034_v2_3_0
-Revises: 033_v2_2_9
-Create Date: 2026-03-05
+Revision ID: 037_stats_persistence
+Revises: 036_v2_3_1_drop_legacy_api_key_cols
+Create Date: 2026-03-15
 
 CHANGES IN v2.3.0:
 - feat: Add persistent container statistics with 30-day tiered retention
@@ -25,8 +25,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = '034_v2_3_0'
-down_revision = '033_v2_2_9'
+revision = '037_stats_persistence'
+down_revision = '036_v2_3_1_drop_legacy_api_key_cols'
 branch_labels = None
 depends_on = None
 

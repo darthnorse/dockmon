@@ -1,8 +1,8 @@
-"""v2.3.0 upgrade - Cascading RRD stats tiers
+"""Stats persistence - Cascading RRD stats tiers
 
-Revision ID: 035_v2_3_0_rrd
-Revises: 034_v2_3_0
-Create Date: 2026-03-07
+Revision ID: 038_stats_rrd_tiers
+Revises: 037_stats_persistence
+Create Date: 2026-03-15
 
 CHANGES:
 - Add stats_points_per_view column to global_settings (default 500)
@@ -13,8 +13,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = '035_v2_3_0_rrd'
-down_revision = '034_v2_3_0'
+revision = '038_stats_rrd_tiers'
+down_revision = '037_stats_persistence'
 branch_labels = None
 depends_on = None
 

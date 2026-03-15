@@ -150,6 +150,81 @@ def _migrate_old_revision_ids(engine):
             logger.info("Revision ID updated")
 
 
+def _is_known_revision(alembic_cfg, revision: str) -> bool:
+    """Return True if revision exists in the Alembic script directory."""
+    from alembic.script import ScriptDirectory
+    try:
+        script = ScriptDirectory.from_config(alembic_cfg)
+        return script.get_revision(revision) is not None
+    except Exception:
+        return False
+
+
+def _detect_schema_version(engine) -> str | None:
+    """
+    Infer the database schema version by inspecting actual tables and columns.
+
+    Used as a fallback when alembic_version holds an unrecognized revision ID
+    (e.g. after a branch rename or rebase that changed revision IDs).
+
+    Checks fingerprints newest-first and returns the highest revision whose
+    distinguishing schema features are present. Returns None if no fingerprint
+    matches (pre-v2.0 schema).
+
+    Note: fingerprints for multi-user revisions (034+) require *both* the
+    upstream multi-user tables and the stats tables so that installations from
+    the old feature/stats-persistence branch (which has stats tables but no
+    multi-user tables) fall through to 033 and receive the full upgrade path.
+    """
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+
+    def has_cols(table, *cols):
+        if table not in existing_tables:
+            return False
+        existing = {c['name'] for c in inspector.get_columns(table)}
+        return all(c in existing for c in cols)
+
+    # Ordered newest-first. Each lambda is the distinguishing fingerprint for
+    # that revision. Stop at the first match.
+    fingerprints = [
+        # Full v2.3.x + stats (multi-user tables AND stats_points_per_view)
+        ('038_stats_rrd_tiers',
+         lambda: 'custom_groups' in existing_tables and
+                 has_cols('global_settings', 'stats_points_per_view')),
+        # v2.3.x + stats persistence table but without points_per_view yet
+        ('037_stats_persistence',
+         lambda: 'custom_groups' in existing_tables and
+                 'container_stats_history' in existing_tables),
+        # v2.3.x multi-user base (no stats yet)
+        ('034_v2_3_0',
+         lambda: 'custom_groups' in existing_tables),
+        # v2.2.x / old feature branch: has agents but no multi-user tables.
+        # Map to 033 so that migrations 034-038 run (037/038 are idempotent).
+        ('033_v2_2_9',
+         lambda: 'agents' in existing_tables),
+        # v2.2.0+
+        ('021_v2_2_0',
+         lambda: 'registration_tokens' in existing_tables),
+        # v2.1.8+
+        ('013_v2_1_8',
+         lambda: 'api_keys' in existing_tables),
+        # v2.0.0+
+        ('001_v2_0_0',
+         lambda: 'containers' in existing_tables),
+    ]
+
+    for revision, check in fingerprints:
+        try:
+            if check():
+                logger.info(f"Schema fingerprint matched: {revision}")
+                return revision
+        except Exception as e:
+            logger.debug(f"Fingerprint check for {revision} failed: {e}")
+
+    return None
+
+
 def _log_migration_plan(alembic_cfg, current: str, target: str):
     """
     Show user what migrations will be applied.
@@ -231,10 +306,14 @@ def _validate_schema(engine, version: str):
             'docker_hosts_columns': ['connection_type', 'engine_id', 'replaced_by_host_id', 'host_ip'],
         },
         '034_v2_3_0': {
+            'tables': ['custom_groups', 'group_permissions', 'user_group_memberships'],
+            'users_columns': ['email', 'auth_provider'],
+        },
+        '037_stats_persistence': {
             'tables': ['container_stats_history'],
             'global_settings_columns': ['stats_retention_enabled', 'stats_collection_interval', 'stats_retention_days'],
         },
-        '035_v2_3_0_rrd': {
+        '038_stats_rrd_tiers': {
             'global_settings_columns': ['stats_points_per_view'],
         },
         # Add validations for future versions here:
@@ -436,6 +515,35 @@ def _handle_upgrade(engine, alembic_cfg, db_path: str) -> bool:
 
         logger.info(f"Database version: {current_version}")
         logger.info(f"Target version: {head_version}")
+
+        # FALLBACK: If the stored revision is not in the migration chain
+        # (e.g. after a rebase that renamed revision IDs), infer the actual
+        # schema state from existing tables/columns and re-stamp accordingly.
+        if not _is_known_revision(alembic_cfg, current_version):
+            logger.warning(
+                f"Revision '{current_version}' not found in migration chain — "
+                "falling back to schema-based detection."
+            )
+            detected = _detect_schema_version(engine)
+            if detected:
+                logger.info(
+                    f"Schema detection inferred '{detected}'. "
+                    f"Updating alembic_version: '{current_version}' → '{detected}'"
+                )
+                with engine.connect() as conn:
+                    conn.execute(
+                        text("UPDATE alembic_version SET version_num = :v")
+                        .bindparams(v=detected)
+                    )
+                    conn.commit()
+                current_version = detected
+                logger.info(f"Database version corrected to: {current_version}")
+            else:
+                logger.error(
+                    f"Unknown revision '{current_version}' and schema detection "
+                    "found no matching fingerprint. Cannot determine migration path."
+                )
+                return False
 
         # Already at latest? (Idempotent check)
         if current_version == head_version:

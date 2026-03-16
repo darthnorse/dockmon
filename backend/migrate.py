@@ -30,6 +30,7 @@ import logging
 import shutil
 from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import NullPool
 
 from database import GlobalSettings
 from utils.version import get_app_version
@@ -563,7 +564,8 @@ def run_migrations() -> bool:
         # Create SQLAlchemy engine
         engine = create_engine(
             f"sqlite:///{db_path}",
-            connect_args={"check_same_thread": False, "timeout": 30}
+            connect_args={"check_same_thread": False, "timeout": 30},
+            poolclass=NullPool
         )
         logger.info(f"Connected to database: {db_path}")
 

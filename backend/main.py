@@ -31,6 +31,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html
 from fastapi.responses import FileResponse, JSONResponse
+from sqlalchemy import func
 from database import (
     DatabaseManager,
     GlobalSettings as GlobalSettingsDB,
@@ -51,7 +52,9 @@ from database import (
     BatchJobItem,
     DeploymentContainer,
     Agent,
+    ContainerStatsHistory,
 )
+from stats_config import VIEWS
 from realtime import RealtimeMonitor
 from notifications import NotificationService
 from event_logger import EventLogger, EventContext, EventCategory, EventSeverity, PerformanceTimer
@@ -1947,7 +1950,7 @@ async def inspect_container(
 
 # ── Historical Stats (v2.3.0+) ──────────────────────────────────────────
 
-@app.get("/api/hosts/{host_id}/containers/{container_id}/stats/history", tags=["containers"])
+@app.get("/api/hosts/{host_id}/containers/{container_id}/stats/history", tags=["containers"], dependencies=[Depends(require_capability("containers.view"))])
 async def get_container_stats_history(
     host_id: str,
     container_id: str,
@@ -1956,9 +1959,7 @@ async def get_container_stats_history(
     current_user: dict = Depends(get_current_user),
 ):
     """Get historical stats for a container — reads directly from RRD tier."""
-    from database import ContainerStatsHistory
-    from stats_config import VIEWS
-    composite_id = make_composite_key(host_id, container_id[:12])
+    composite_id = make_composite_key(host_id, normalize_container_id(container_id))
 
     view = next((v for v in VIEWS if v["name"] == range), None)
     if not view:
@@ -1993,25 +1994,21 @@ async def get_container_stats_history(
             {
                 "t": int(s.timestamp.replace(tzinfo=timezone.utc).timestamp() * 1000),
                 "cpu": s.cpu_percent,
-                "mem": round(s.memory_usage / s.memory_limit * 100, 1) if s.memory_usage and s.memory_limit else None,
-                "net_rx": s.network_rx_bytes,
+                "mem": round((s.memory_usage or 0) / s.memory_limit * 100, 1) if s.memory_limit else None,
+                "net": s.network_bytes_per_sec,
             }
             for s in stats
         ],
     }
 
 
-@app.get("/api/hosts/{host_id}/stats/history", tags=["hosts"])
+@app.get("/api/hosts/{host_id}/stats/history", tags=["hosts"], dependencies=[Depends(require_capability("hosts.view"))])
 async def get_host_stats_history(
     host_id: str,
     range: str = Query("24h", pattern="^(1h|8h|24h|7d|30d)$"),
     current_user: dict = Depends(get_current_user),
 ):
     """Get aggregated historical stats for a host — reads from RRD tier."""
-    from database import ContainerStatsHistory, DockerHostDB
-    from sqlalchemy import func
-    from stats_config import VIEWS
-
     view = next((v for v in VIEWS if v["name"] == range), None)
     if not view:
         raise HTTPException(status_code=400, detail=f"Invalid range: {range}")
@@ -2030,7 +2027,7 @@ async def get_host_stats_history(
             ContainerStatsHistory.timestamp,
             func.sum(ContainerStatsHistory.cpu_percent).label('sum_cpu'),
             func.sum(ContainerStatsHistory.memory_usage).label('sum_mem'),
-            func.sum(ContainerStatsHistory.network_rx_bytes).label('sum_net'),
+            func.sum(ContainerStatsHistory.network_bytes_per_sec).label('sum_net'),
         ).filter(
             ContainerStatsHistory.host_id == host_id,
             ContainerStatsHistory.resolution == range,
@@ -2057,7 +2054,7 @@ async def get_host_stats_history(
                 "t": int(r.timestamp.replace(tzinfo=timezone.utc).timestamp() * 1000),
                 "cpu": round((r.sum_cpu or 0) / num_cpus, 1),
                 "mem": round((r.sum_mem or 0) / total_memory * 100, 1),
-                "net_rx": r.sum_net,
+                "net": r.sum_net,
             }
             for r in rows
         ],
@@ -6141,20 +6138,25 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         # Clear modal containers for this connection only (not all users)
         monitor.stats_manager.clear_modal_containers_for_connection(connection_id)
 
-        # Event-driven stats control: Stop stats streams when last viewer disconnects
+        # Event-driven stats control: Stop stats streams when last viewer disconnects,
+        # but only when RRD persistence is inactive. When the aggregator is running,
+        # streams must stay alive so background ingest continues to receive fresh data.
         if len(monitor.manager.active_connections) == 0:
-            # No more viewers - stop all stats streams immediately
-            from stats_client import get_stats_client
-            stats_client = get_stats_client()
+            rrd_active = hasattr(monitor, '_rrd_aggregator') and monitor._rrd_aggregator
+            if rrd_active:
+                logger.debug("Last viewer disconnected — keeping stats streams active for background RRD persistence")
+            else:
+                from stats_client import get_stats_client
+                stats_client = get_stats_client()
 
-            def _handle_task_exception(task):
-                try:
-                    task.result()
-                except Exception as e:
-                    logger.error(f"Task exception: {e}", exc_info=True)
+                def _handle_task_exception(task):
+                    try:
+                        task.result()
+                    except Exception as e:
+                        logger.error(f"Task exception: {e}", exc_info=True)
 
-            await monitor.stats_manager.stop_all_streams(stats_client, _handle_task_exception)
-            logger.info("Stopped all stats streams (last viewer disconnected)")
+                await monitor.stats_manager.stop_all_streams(stats_client, _handle_task_exception)
+                logger.info("Stopped all stats streams (last viewer disconnected)")
 
         # Clean up rate limiter tracking
         ws_rate_limiter.cleanup_connection(connection_id)

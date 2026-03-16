@@ -69,9 +69,9 @@ class CascadingAggregator:
 
     def ingest(self, container_id: str, host_id: str, timestamp: datetime,
                cpu: Optional[float], mem_usage: Optional[int],
-               mem_limit: Optional[int], net_rx: Optional[float]):
+               mem_limit: Optional[int], net: Optional[float]):
         """Feed a raw data point into the cascade."""
-        value = {"cpu": cpu, "mem_usage": mem_usage, "mem_limit": mem_limit, "net_rx": net_rx}
+        value = {"cpu": cpu, "mem_usage": mem_usage, "mem_limit": mem_limit, "net": net}
         self._feed_tier(0, container_id, host_id, timestamp, value)
 
     @staticmethod
@@ -110,7 +110,7 @@ class CascadingAggregator:
     def _aggregate_blend(values: list[dict], alpha: float) -> dict:
         """Blend MAX and AVG: alpha=1.0 → pure MAX, alpha=0.0 → pure AVG."""
         if not values:
-            return {"cpu": None, "mem_usage": None, "mem_limit": None, "net_rx": None}
+            return {"cpu": None, "mem_usage": None, "mem_limit": None, "net": None}
 
         def blended(key):
             nums = [v[key] for v in values if v.get(key) is not None]
@@ -122,7 +122,7 @@ class CascadingAggregator:
             "cpu": blended("cpu"),
             "mem_usage": blended("mem_usage"),
             "mem_limit": values[-1].get("mem_limit"),
-            "net_rx": blended("net_rx"),
+            "net": blended("net"),
         }
 
     def _write_point(self, tier_name: str, container_id: str, host_id: str,
@@ -136,7 +136,7 @@ class CascadingAggregator:
                     cpu_percent=agg["cpu"],
                     memory_usage=agg["mem_usage"],
                     memory_limit=agg["mem_limit"],
-                    network_rx_bytes=agg["net_rx"],
+                    network_bytes_per_sec=agg["net"],
                     resolution=tier_name,
                 ))
                 session.commit()

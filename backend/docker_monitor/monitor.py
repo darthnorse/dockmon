@@ -35,6 +35,7 @@ from docker_monitor.operations import ContainerOperations
 from docker_monitor.periodic_jobs import PeriodicJobsManager
 from auth.session_manager import session_manager
 from utils.keys import make_composite_key
+from utils.container_id import normalize_container_id
 from utils.host_ips import get_host_ips_from_fib_trie, filter_docker_network_ips, serialize_host_ips
 
 
@@ -1668,8 +1669,11 @@ class DockerMonitor:
 
                 # Periodic stats stream reconciliation (safety net for cleanup)
                 # This ensures stale streams (e.g., from recreated containers with new IDs) are stopped
-                # and new containers get streams started even if no WebSocket reconnect happens
-                if has_viewers and containers:
+                # and new containers get streams started even if no WebSocket reconnect happens.
+                # Also runs when no viewers are present but RRD persistence is active, so background
+                # ingest always has fresh data from the Go stats-service.
+                rrd_active = hasattr(self, '_rrd_aggregator') and self._rrd_aggregator
+                if containers and (has_viewers or rrd_active):
                     try:
                         containers_needing_stats = self.stats_manager.determine_containers_needing_stats(
                             containers,
@@ -1778,6 +1782,27 @@ class DockerMonitor:
 
                 # V1 alert processor removed - v2 uses event-driven alerts via handle_container_event()
                 # Container state changes are detected via Docker events in _handle_go_event()
+
+                # Always persist stats to RRD when retention is active, regardless of viewers.
+                # This is the background collection path: streams are kept running above so
+                # container.cpu_percent / memory_usage / net_bytes_per_sec are always fresh.
+                if rrd_active and containers:
+                    rrd_cycle_ts = datetime.now(timezone.utc)
+                    for container in containers:
+                        if container.state == 'running':
+                            container_key = make_composite_key(
+                                container.host_id, normalize_container_id(container.id)
+                            )
+                            await asyncio.to_thread(
+                                self._rrd_aggregator.ingest,
+                                container_id=container_key,
+                                host_id=container.host_id,
+                                timestamp=rrd_cycle_ts,
+                                cpu=container.cpu_percent,
+                                mem_usage=container.memory_usage,
+                                mem_limit=container.memory_limit,
+                                net=container.net_bytes_per_sec,
+                            )
 
                 # Only fetch and broadcast stats if there are active viewers
                 if has_viewers:
@@ -1891,8 +1916,7 @@ class DockerMonitor:
                     container_sparklines = {}
                     rrd_cycle_ts = datetime.now(timezone.utc)
                     for container in containers:
-                        # Use composite key with SHORT ID: host_id:container_id (12 chars)
-                        container_key = make_composite_key(container.host_id, container.short_id)
+                        container_key = make_composite_key(container.host_id, normalize_container_id(container.id))
 
                         # Collect sparklines for ALL containers (running or not)
                         # This ensures we always send sparkline data in every broadcast
@@ -1908,18 +1932,6 @@ class DockerMonitor:
                                 mem=mem_val,
                                 net=net_val
                             )
-
-                            # Feed raw data into RRD cascading aggregator
-                            if hasattr(self, '_rrd_aggregator') and self._rrd_aggregator:
-                                self._rrd_aggregator.ingest(
-                                    container_id=container_key,
-                                    host_id=container.host_id,
-                                    timestamp=rrd_cycle_ts,
-                                    cpu=container.cpu_percent,
-                                    mem_usage=container.memory_usage,
-                                    mem_limit=container.memory_limit,
-                                    net_rx=container.net_bytes_per_sec,
-                                )
 
                         # Always get sparklines (even for stopped containers) to maintain consistency
                         sparklines = self.container_stats_history.get_sparklines(container_key)

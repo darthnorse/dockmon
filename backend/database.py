@@ -1392,8 +1392,7 @@ class ContainerStatsHistory(Base):
     cpu_percent = Column(Float, nullable=True)
     memory_usage = Column(BigInteger, nullable=True)
     memory_limit = Column(BigInteger, nullable=True)
-    network_rx_bytes = Column(BigInteger, nullable=True)
-    network_tx_bytes = Column(BigInteger, nullable=True)
+    network_bytes_per_sec = Column(Float, nullable=True)
     resolution = Column(String, nullable=False, default='1h')  # Tier name: '1h','8h','24h','7d','30d'
 
     __table_args__ = (
@@ -1728,8 +1727,7 @@ class DatabaseManager:
                             cpu_percent REAL,
                             memory_usage INTEGER,
                             memory_limit INTEGER,
-                            network_rx_bytes INTEGER,
-                            network_tx_bytes INTEGER,
+                            network_bytes_per_sec REAL,
                             resolution TEXT NOT NULL DEFAULT '1m',
                             FOREIGN KEY (host_id) REFERENCES docker_hosts(id) ON DELETE CASCADE
                         )

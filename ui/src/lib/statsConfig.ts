@@ -28,7 +28,7 @@ interface GapPoint {
   t: number
   cpu: null
   mem: null
-  net_rx: null
+  net: null
 }
 
 export function detectGaps<T extends { t: number }>(
@@ -50,7 +50,7 @@ export function detectGaps<T extends { t: number }>(
         t: prev.t + threshold / 2,
         cpu: null,
         mem: null,
-        net_rx: null,
+        net: null,
       })
     }
     result.push(curr)

@@ -8,7 +8,7 @@ interface StatsHistoryPoint {
   t: number
   cpu: number | null
   mem: number | null
-  net_rx: number | null
+  net: number | null
 }
 
 interface StatsHistoryResponse {

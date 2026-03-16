@@ -14,8 +14,7 @@ CHANGES IN v2.3.0:
 
 SCHEMA CHANGES:
 - NEW TABLE: container_stats_history (id, container_id, host_id, timestamp,
-  cpu_percent, memory_usage, memory_limit, network_rx_bytes, network_tx_bytes,
-  resolution)
+  cpu_percent, memory_usage, memory_limit, network_bytes_per_sec, resolution)
 - NEW INDEXES: idx_stats_lookup (container_id, resolution, timestamp),
   idx_stats_host (host_id)
 - global_settings: Add stats_retention_enabled, stats_collection_interval,
@@ -55,8 +54,7 @@ def upgrade():
             sa.Column('cpu_percent', sa.Float(), nullable=True),
             sa.Column('memory_usage', sa.BigInteger(), nullable=True),
             sa.Column('memory_limit', sa.BigInteger(), nullable=True),
-            sa.Column('network_rx_bytes', sa.BigInteger(), nullable=True),
-            sa.Column('network_tx_bytes', sa.BigInteger(), nullable=True),
+            sa.Column('network_bytes_per_sec', sa.Float(), nullable=True),
             sa.Column('resolution', sa.String(), nullable=False, server_default='1m'),
         )
         op.create_index('idx_stats_lookup', 'container_stats_history',

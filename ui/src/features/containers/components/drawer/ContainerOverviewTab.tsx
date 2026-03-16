@@ -46,7 +46,7 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
     return {
       cpu: d.map((p) => p.cpu),
       mem: d.map((p) => p.mem),
-      net: d.map((p) => p.net_rx),
+      net: d.map((p) => p.net),
       timestamps: d.map((p) => p.t / 1000),
     }
   }, [historyData])

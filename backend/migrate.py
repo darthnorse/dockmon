@@ -188,6 +188,11 @@ def _detect_schema_version(engine) -> str | None:
     # Ordered newest-first. Each lambda is the distinguishing fingerprint for
     # that revision. Stop at the first match.
     fingerprints = [
+        # Full v2.3.x + stats + network column rename
+        ('039_rename_network_columns',
+         lambda: 'custom_groups' in existing_tables and
+                 has_cols('global_settings', 'stats_points_per_view') and
+                 has_cols('container_stats_history', 'network_bytes_per_sec')),
         # Full v2.3.x + stats (multi-user tables AND stats_points_per_view)
         ('038_stats_rrd_tiers',
          lambda: 'custom_groups' in existing_tables and
@@ -315,6 +320,9 @@ def _validate_schema(engine, version: str):
         },
         '038_stats_rrd_tiers': {
             'global_settings_columns': ['stats_points_per_view'],
+        },
+        '039_rename_network_columns': {
+            'container_stats_history_columns': ['network_bytes_per_sec'],
         },
         # Add validations for future versions here:
     }

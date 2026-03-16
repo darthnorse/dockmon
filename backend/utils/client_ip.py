@@ -65,6 +65,19 @@ def get_client_ip(request: Request) -> str:
     return client_ip
 
 
+def get_request_scheme(request: Request) -> str:
+    """Get the effective request scheme, respecting reverse proxy headers."""
+    if AppConfig.REVERSE_PROXY_MODE:
+        proto = request.headers.get('X-Forwarded-Proto')
+        if proto:
+            return proto.lower()
+        logger.warning(
+            "REVERSE_PROXY_MODE enabled but no X-Forwarded-Proto header found. "
+            "Falling back to request.url.scheme."
+        )
+    return request.url.scheme
+
+
 def get_client_ip_ws(websocket) -> str:
     """
     Get client IP from WebSocket, respecting reverse proxy headers.

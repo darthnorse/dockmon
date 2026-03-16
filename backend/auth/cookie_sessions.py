@@ -23,6 +23,8 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
+from fastapi import Request
+from utils.client_ip import get_request_scheme
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +126,10 @@ COOKIE_SIGNER = URLSafeTimedSerializer(SECRET_KEY, salt="dockmon-session")
 
 
 MAX_SESSIONS_PER_USER = 10
+
+
+def should_set_secure_cookie(request: Request) -> bool:
+    return get_request_scheme(request) == 'https'
 
 _session_timeout_cache: dict = {"value": 24, "expires_at": 0.0}
 _session_timeout_cache_lock = threading.Lock()

@@ -21,8 +21,8 @@ from argon2.exceptions import VerifyMismatchError, InvalidHashError
 
 from auth.password import ph
 
-from auth.cookie_sessions import cookie_session_manager, get_session_cookie_max_age
-from utils.client_ip import get_client_ip
+from auth.cookie_sessions import cookie_session_manager, get_session_cookie_max_age, should_set_secure_cookie
+from utils.client_ip import get_client_ip, get_request_scheme
 from security.rate_limiting import rate_limit_auth, get_rate_limit_dependency
 from audit import log_login, log_logout, log_login_failure, AuditAction
 from audit.audit_logger import get_client_info, log_audit, AuditEntityType
@@ -314,18 +314,15 @@ async def login_v2(
             display_name=user.effective_display_name
         )
 
-        # Set HttpOnly cookie (XSS protection)
-        # SECURITY: JavaScript cannot access this cookie
-        # NOTE: Domain is not set, letting browser use the request host
         response.set_cookie(
             key="session_id",
             value=signed_token,
-            httponly=True,          # Prevents XSS
-            secure=True,            # Always set Secure flag (browser enforces HTTPS)
-            samesite="lax",         # CSRF protection (allows same-origin GET requests)
+            httponly=True,
+            secure=should_set_secure_cookie(request),
+            samesite="lax",
             max_age=get_session_cookie_max_age(),
-            path="/",               # Available to all routes
-            domain=None             # Let browser use request host (handles ports correctly)
+            path="/",
+            domain=None
         )
 
         logger.info(f"User '{user.username}' logged in successfully from {client_ip}")
@@ -379,7 +376,7 @@ async def logout_v2(
     response.delete_cookie(
         key="session_id",
         path="/",
-        secure=True,
+        secure=should_set_secure_cookie(request),
         samesite="lax",
         httponly=True,
     )
@@ -412,11 +409,10 @@ async def logout_v2(
                                     logger.warning(f"Ignoring non-HTTPS end_session_endpoint: {end_session}")
                                     end_session = None
                                 if end_session:
+                                    scheme = get_request_scheme(request)
                                     if AppConfig.REVERSE_PROXY_MODE:
-                                        scheme = request.headers.get('X-Forwarded-Proto', request.url.scheme)
                                         host = request.headers.get('X-Forwarded-Host', request.headers.get('Host', request.url.netloc))
                                     else:
-                                        scheme = request.url.scheme
                                         host = request.headers.get('Host', request.url.netloc)
                                     base_path = get_base_path().rstrip('/')
                                     post_logout_uri = f"{scheme}://{host}{base_path}/login"

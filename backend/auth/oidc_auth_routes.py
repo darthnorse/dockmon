@@ -39,7 +39,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.exc import IntegrityError
 
 from auth.shared import db, safe_audit_log
-from auth.cookie_sessions import cookie_session_manager, get_session_cookie_max_age
+from auth.cookie_sessions import cookie_session_manager, get_session_cookie_max_age, should_set_secure_cookie
 from auth.api_key_auth import invalidate_user_groups_cache
 from auth.utils import count_other_admins
 from config.settings import AppConfig
@@ -48,7 +48,7 @@ from database import User, OIDCConfig, OIDCGroupMapping, PendingOIDCAuth, Custom
 from security.rate_limiting import rate_limit_auth
 from audit import log_login, log_login_failure, get_client_info, AuditAction
 from audit.audit_logger import AuditEntityType
-from utils.client_ip import get_client_ip
+from utils.client_ip import get_client_ip, get_request_scheme
 from utils.encryption import decrypt_password
 
 logger = logging.getLogger(__name__)
@@ -604,12 +604,10 @@ async def oidc_authorize(
         code_challenge = '' if skip_pkce else _generate_code_challenge(code_verifier)
 
         # Build callback URL
-        # Only trust proxy headers when REVERSE_PROXY_MODE is enabled
+        scheme = get_request_scheme(request)
         if AppConfig.REVERSE_PROXY_MODE:
-            scheme = request.headers.get('X-Forwarded-Proto', request.url.scheme)
             host = request.headers.get('X-Forwarded-Host', request.headers.get('Host', request.url.netloc))
         else:
-            scheme = request.url.scheme
             host = request.headers.get('Host', request.url.netloc)
 
         base_path = get_base_path().rstrip('/')
@@ -1069,7 +1067,7 @@ async def oidc_callback(
                 key="session_id",
                 value=signed_token,
                 httponly=True,
-                secure=True,
+                secure=should_set_secure_cookie(request),
                 samesite="lax",
                 max_age=get_session_cookie_max_age(),
                 path="/",

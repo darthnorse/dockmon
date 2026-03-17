@@ -25,6 +25,7 @@ CACHE_TTL_DEFAULT = int(os.getenv('DOCKMON_CACHE_TTL_DEFAULT', 6 * 3600))  # 6 h
 from updates.registry_adapter import get_registry_adapter
 from updates.changelog_resolver import resolve_changelog_url
 from event_bus import Event, EventType, get_event_bus
+from updates.types import MANIFEST_LIST_TYPES, match_platform_manifest
 from utils.keys import make_composite_key
 from utils.encryption import decrypt_password
 from utils.container_id import normalize_container_id
@@ -284,12 +285,13 @@ class UpdateChecker:
             latest_digest = cached_result["digest"]
             registry_url = cached_result["registry_url"]
 
-            # Parse cached manifest for labels
+            # Parse cached manifest for labels and platform digest fallback
+            latest_manifest = {}
             latest_manifest_labels = {}
             if cached_result.get("manifest_json"):
                 try:
-                    manifest_data = json.loads(cached_result["manifest_json"])
-                    latest_manifest_labels = manifest_data.get("config", {}).get("config", {}).get("Labels", {}) or {}
+                    latest_manifest = json.loads(cached_result["manifest_json"])
+                    latest_manifest_labels = latest_manifest.get("config", {}).get("config", {}).get("Labels", {}) or {}
                 except json.JSONDecodeError:
                     pass
         else:
@@ -301,14 +303,15 @@ class UpdateChecker:
 
             latest_digest = latest_result["digest"]
             registry_url = latest_result["registry"]
+            latest_manifest = latest_result.get("manifest", {})
 
             # Extract manifest labels
-            latest_manifest_labels = latest_result.get("manifest", {}).get("config", {}).get("config", {}).get("Labels", {}) or {}
+            latest_manifest_labels = latest_manifest.get("config", {}).get("config", {}).get("Labels", {}) or {}
 
             # Store in cache for future lookups
             try:
                 ttl_seconds = self._compute_cache_ttl_seconds(floating_tag)
-                manifest_json = json.dumps(latest_result.get("manifest", {}))
+                manifest_json = json.dumps(latest_manifest)
                 self.db.cache_image_digest(
                     cache_key=cache_key,
                     digest=latest_digest,
@@ -328,8 +331,19 @@ class UpdateChecker:
             update_available = False
             logger.debug(f"[{container['name']}] Latest digest found in local RepoDigests - no update needed")
         else:
-            # Fall back to simple comparison (handles case where repo_digests not available)
-            update_available = current_digest != latest_digest
+            # Issue #105 (part 2): For multi-platform images, the registry returns the
+            # manifest list (index) digest, but Docker may store the platform-specific
+            # manifest digest in RepoDigests. Extract the platform digest from the
+            # manifest list and check if THAT matches a local RepoDigest.
+            platform_digest = self._extract_platform_digest(latest_manifest, platform)
+            if platform_digest and self._has_digest(container, platform_digest):
+                update_available = False
+                logger.debug(f"[{container['name']}] Platform digest {platform_digest[:16]}... found in local RepoDigests - no update needed")
+            else:
+                if platform_digest:
+                    logger.debug(f"[{container['name']}] Platform digest {platform_digest[:16]}... not in local RepoDigests")
+                # Fall back to simple comparison (handles case where repo_digests not available)
+                update_available = current_digest != latest_digest
 
         logger.info(f"[{container['name']}] Digest comparison: current={current_digest[:16]}... latest={latest_digest[:16]}... update_available={update_available}")
 
@@ -447,6 +461,21 @@ class UpdateChecker:
                 return True
 
         return False
+
+    def _extract_platform_digest(self, manifest: Dict, platform: str) -> Optional[str]:
+        """
+        Extract platform-specific manifest digest from a manifest list.
+
+        For multi-platform images, the registry returns the manifest list (index)
+        digest, but Docker may store the platform-specific manifest digest in
+        RepoDigests instead. This extracts the platform digest directly from the
+        manifest list body (no extra HTTP request needed).
+        """
+        if not manifest or manifest.get("mediaType", "") not in MANIFEST_LIST_TYPES:
+            return None
+
+        desc = match_platform_manifest(manifest, platform)
+        return desc.get("digest") if desc else None
 
     def _extract_version_from_tag(self, image_ref: str) -> Optional[str]:
         """

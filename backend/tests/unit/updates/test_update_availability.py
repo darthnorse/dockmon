@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 
 from database import ContainerUpdate
 from updates.registry_adapter import RegistryAdapter
+from updates.update_checker import UpdateChecker
 
 
 # =============================================================================
@@ -100,8 +101,6 @@ class TestFloatingTagResolution:
 
     def test_exact_mode_returns_same_tag(self):
         """'exact' mode should return the same tag"""
-        from updates.registry_adapter import RegistryAdapter
-
         adapter = RegistryAdapter()
         image = "nginx:1.25.0"
         mode = "exact"
@@ -114,8 +113,6 @@ class TestFloatingTagResolution:
 
     def test_latest_mode_resolves_to_latest_tag(self):
         """'latest' mode should resolve to :latest tag"""
-        from updates.registry_adapter import RegistryAdapter
-
         adapter = RegistryAdapter()
         image = "nginx:1.25.0"
         mode = "latest"
@@ -128,8 +125,6 @@ class TestFloatingTagResolution:
 
     def test_patch_mode_finds_latest_patch(self):
         """'patch' mode should find latest patch version (1.25.x)"""
-        from updates.registry_adapter import RegistryAdapter
-
         adapter = RegistryAdapter()
         image = "nginx:1.25.0"
         mode = "patch"
@@ -143,8 +138,6 @@ class TestFloatingTagResolution:
 
     def test_minor_mode_finds_latest_minor(self):
         """'minor' mode should find latest minor version (1.x)"""
-        from updates.registry_adapter import RegistryAdapter
-
         adapter = RegistryAdapter()
         image = "nginx:1.25.0"
         mode = "minor"
@@ -167,8 +160,6 @@ class TestFloatingTagResolution:
     ])
     def test_floating_tag_patterns(self, image, mode, expected):
         """Test various floating tag computation patterns"""
-        from updates.registry_adapter import RegistryAdapter
-
         adapter = RegistryAdapter()
 
         with patch.object(adapter, 'compute_floating_tag', return_value=expected):
@@ -482,8 +473,6 @@ class TestMultiDigestDetection:
 
     def test_has_digest_single_match(self):
         """Should detect when latest digest is in RepoDigests (single entry)"""
-        from updates.update_checker import UpdateChecker
-
         checker = UpdateChecker(db=None, monitor=None)
 
         container = {
@@ -497,8 +486,6 @@ class TestMultiDigestDetection:
 
     def test_has_digest_multi_match_first(self):
         """Should detect when latest digest matches first RepoDigest"""
-        from updates.update_checker import UpdateChecker
-
         checker = UpdateChecker(db=None, monitor=None)
 
         container = {
@@ -515,8 +502,6 @@ class TestMultiDigestDetection:
 
     def test_has_digest_multi_match_second(self):
         """Should detect when latest digest matches second RepoDigest (Issue #105 case)"""
-        from updates.update_checker import UpdateChecker
-
         checker = UpdateChecker(db=None, monitor=None)
 
         # This is the Immich case: same image ID, two digests
@@ -535,8 +520,6 @@ class TestMultiDigestDetection:
 
     def test_has_digest_no_match(self):
         """Should return False when latest digest is not in RepoDigests"""
-        from updates.update_checker import UpdateChecker
-
         checker = UpdateChecker(db=None, monitor=None)
 
         container = {
@@ -550,8 +533,6 @@ class TestMultiDigestDetection:
 
     def test_has_digest_empty_repo_digests(self):
         """Should return False when RepoDigests is empty"""
-        from updates.update_checker import UpdateChecker
-
         checker = UpdateChecker(db=None, monitor=None)
 
         container = {"repo_digests": []}
@@ -563,8 +544,6 @@ class TestMultiDigestDetection:
 
     def test_has_digest_missing_repo_digests(self):
         """Should return False when RepoDigests key is missing"""
-        from updates.update_checker import UpdateChecker
-
         checker = UpdateChecker(db=None, monitor=None)
 
         container = {}  # No repo_digests key
@@ -576,8 +555,6 @@ class TestMultiDigestDetection:
 
     def test_has_digest_none_repo_digests(self):
         """Should return False when RepoDigests is None"""
-        from updates.update_checker import UpdateChecker
-
         checker = UpdateChecker(db=None, monitor=None)
 
         container = {"repo_digests": None}
@@ -607,8 +584,6 @@ class TestMultiDigestDetection:
     ])
     def test_has_digest_parametrized(self, repo_digests, latest_digest, expected, reason):
         """Parametrized tests for _has_digest edge cases"""
-        from updates.update_checker import UpdateChecker
-
         checker = UpdateChecker(db=None, monitor=None)
         container = {"repo_digests": repo_digests}
 
@@ -631,8 +606,6 @@ class TestUpdateAvailabilityWithMultiDigest:
 
         This is the core fix for Issue #105.
         """
-        from updates.update_checker import UpdateChecker
-
         checker = UpdateChecker(db=None, monitor=None)
 
         container = {
@@ -660,8 +633,6 @@ class TestUpdateAvailabilityWithMultiDigest:
         The _get_container_image_digest method should store the full RepoDigests
         list so that _has_digest can use it later.
         """
-        from updates.update_checker import UpdateChecker
-
         checker = UpdateChecker(db=None, monitor=None)
 
         # Simulate container dict WITHOUT repo_digests (local/mTLS host scenario)
@@ -687,8 +658,6 @@ class TestUpdateAvailabilityWithMultiDigest:
 
     def test_update_available_when_digest_not_present(self):
         """Should report update available when latest_digest is NOT in RepoDigests"""
-        from updates.update_checker import UpdateChecker
-
         checker = UpdateChecker(db=None, monitor=None)
 
         container = {
@@ -706,8 +675,6 @@ class TestUpdateAvailabilityWithMultiDigest:
 
         This ensures the fix doesn't break normal update detection.
         """
-        from updates.update_checker import UpdateChecker
-
         checker = UpdateChecker(db=None, monitor=None)
 
         # Normal case: single digest, same as registry
@@ -721,6 +688,178 @@ class TestUpdateAvailabilityWithMultiDigest:
             "repo_digests": ["nginx@sha256:abc123"]
         }
         assert checker._has_digest(container_update, "sha256:xyz789") is False
+
+
+# =============================================================================
+# Platform Digest Extraction Tests (Issue #105 part 2)
+# =============================================================================
+
+class TestPlatformDigestExtraction:
+    """
+    Test extraction of platform-specific digest from manifest lists.
+
+    Issue #105 part 2: Docker may store the platform-specific manifest digest
+    in RepoDigests instead of the index (manifest list) digest. When the index
+    digest doesn't match any local RepoDigest, we fall back to checking the
+    platform-specific digest from the manifest list body.
+    """
+
+    def test_extract_from_docker_manifest_list(self):
+        """Should extract platform digest from Docker manifest list v2"""
+        checker = UpdateChecker(db=None, monitor=None)
+
+        manifest = {
+            "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+            "manifests": [
+                {
+                    "digest": "sha256:amd64digest",
+                    "platform": {"os": "linux", "architecture": "amd64"}
+                },
+                {
+                    "digest": "sha256:arm64digest",
+                    "platform": {"os": "linux", "architecture": "arm64"}
+                }
+            ]
+        }
+
+        assert checker._extract_platform_digest(manifest, "linux/amd64") == "sha256:amd64digest"
+        assert checker._extract_platform_digest(manifest, "linux/arm64") == "sha256:arm64digest"
+
+    def test_extract_from_oci_index(self):
+        """Should extract platform digest from OCI image index"""
+        checker = UpdateChecker(db=None, monitor=None)
+
+        manifest = {
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [
+                {
+                    "digest": "sha256:amd64digest",
+                    "platform": {"os": "linux", "architecture": "amd64"}
+                }
+            ]
+        }
+
+        assert checker._extract_platform_digest(manifest, "linux/amd64") == "sha256:amd64digest"
+
+    def test_returns_none_for_single_manifest(self):
+        """Should return None for non-manifest-list (single platform manifest)"""
+        checker = UpdateChecker(db=None, monitor=None)
+
+        manifest = {
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "config": {"digest": "sha256:configdigest"}
+        }
+
+        assert checker._extract_platform_digest(manifest, "linux/amd64") is None
+
+    def test_returns_none_for_missing_platform(self):
+        """Should return None when platform not found in manifest list"""
+        checker = UpdateChecker(db=None, monitor=None)
+
+        manifest = {
+            "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+            "manifests": [
+                {
+                    "digest": "sha256:arm64only",
+                    "platform": {"os": "linux", "architecture": "arm64"}
+                }
+            ]
+        }
+
+        assert checker._extract_platform_digest(manifest, "linux/amd64") is None
+
+    def test_returns_none_for_empty_manifest(self):
+        """Should return None for empty dict"""
+        checker = UpdateChecker(db=None, monitor=None)
+        assert checker._extract_platform_digest({}, "linux/amd64") is None
+
+    def test_returns_none_for_empty_manifests_array(self):
+        """Should return None when manifests array is empty"""
+        checker = UpdateChecker(db=None, monitor=None)
+
+        manifest = {
+            "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+            "manifests": []
+        }
+
+        assert checker._extract_platform_digest(manifest, "linux/amd64") is None
+
+    def test_immich_scenario(self):
+        """
+        Reproduce the exact immich_server scenario from Issue #105.
+
+        Registry returns index digest sha256:e6a6298e6... but Docker stores
+        platform digest sha256:2c496e3b9... in RepoDigests. The index digest
+        never appears in RepoDigests, but the platform-specific digest does.
+        """
+        checker = UpdateChecker(db=None, monitor=None)
+
+        # What the registry returns (manifest list with index digest)
+        index_digest = "sha256:e6a6298e67ae077808fdb7d8d5565955f60b0708"
+        platform_digest = "sha256:2c496e3b9d476ea723e6f0df05d1f690fed2d79b"
+
+        manifest = {
+            "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+            "manifests": [
+                {
+                    "digest": platform_digest,
+                    "platform": {"os": "linux", "architecture": "amd64"}
+                },
+                {
+                    "digest": "sha256:arm64variant",
+                    "platform": {"os": "linux", "architecture": "arm64"}
+                }
+            ]
+        }
+
+        # What Docker stores locally (platform-specific digest, NOT index)
+        container = {
+            "repo_digests": [
+                f"ghcr.io/immich-app/immich-server@{platform_digest}"
+            ]
+        }
+
+        # Step 1: Index digest NOT in RepoDigests (old logic fails here)
+        assert checker._has_digest(container, index_digest) is False
+
+        # Step 2: Extract platform digest from manifest list
+        extracted = checker._extract_platform_digest(manifest, "linux/amd64")
+        assert extracted == platform_digest
+
+        # Step 3: Platform digest IS in RepoDigests (new fallback succeeds)
+        assert checker._has_digest(container, extracted) is True
+
+    def test_extract_with_arm_variant(self):
+        """Should match platform with variant (e.g., linux/arm/v7)"""
+        checker = UpdateChecker(db=None, monitor=None)
+
+        manifest = {
+            "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+            "manifests": [
+                {
+                    "digest": "sha256:amd64digest",
+                    "platform": {"os": "linux", "architecture": "amd64"}
+                },
+                {
+                    "digest": "sha256:armv7digest",
+                    "platform": {"os": "linux", "architecture": "arm", "variant": "v7"}
+                },
+                {
+                    "digest": "sha256:armv6digest",
+                    "platform": {"os": "linux", "architecture": "arm", "variant": "v6"}
+                }
+            ]
+        }
+
+        assert checker._extract_platform_digest(manifest, "linux/arm/v7") == "sha256:armv7digest"
+        assert checker._extract_platform_digest(manifest, "linux/arm/v6") == "sha256:armv6digest"
+        # Without variant, should match the first arm entry (v7)
+        assert checker._extract_platform_digest(manifest, "linux/arm") == "sha256:armv7digest"
+
+    def test_extract_with_none_manifest(self):
+        """Should return None for None manifest"""
+        checker = UpdateChecker(db=None, monitor=None)
+        assert checker._extract_platform_digest(None, "linux/amd64") is None
 
 
 # =============================================================================

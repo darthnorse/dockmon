@@ -18,6 +18,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Tuple
 from urllib.parse import urlparse
+from updates.types import MANIFEST_LIST_TYPES, match_platform_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -701,10 +702,7 @@ class RegistryAdapter:
                         logger.debug(f"Fetched manifest for {manifest_url}: mediaType={manifest.get('mediaType')}, digest={digest}")
 
                         # Handle manifest lists (multi-platform images)
-                        if manifest.get("mediaType") in [
-                            "application/vnd.docker.distribution.manifest.list.v2+json",
-                            "application/vnd.oci.image.index.v1+json"
-                        ]:
+                        if manifest.get("mediaType") in MANIFEST_LIST_TYPES:
                             # Keep the index digest (manifest list digest) for comparison
                             # This matches Docker CLI behavior and what docker inspect shows in RepoDigests
                             # Docker uses the index digest as the canonical identifier for multi-platform images
@@ -748,8 +746,7 @@ class RegistryAdapter:
         if not config_digest:
             # Check if this is a manifest list (multi-platform image)
             manifest_type = manifest.get("mediaType", "unknown")
-            if manifest_type in ["application/vnd.docker.distribution.manifest.list.v2+json",
-                                  "application/vnd.oci.image.index.v1+json"]:
+            if manifest_type in MANIFEST_LIST_TYPES:
                 logger.info(f"Manifest list detected for {repository}, fetching platform-specific manifest for {platform}")
                 # Need to fetch platform-specific manifest
                 return await self._fetch_config_from_manifest_list(
@@ -803,17 +800,8 @@ class RegistryAdapter:
         Manifest lists (multi-platform images) don't have config descriptors at the top level.
         We need to find the platform-specific manifest and fetch its config blob.
         """
-        # Parse platform (e.g., "linux/amd64" → os=linux, arch=amd64)
-        os_name, arch = platform.split("/") if "/" in platform else ("linux", platform)
-
         # Find matching platform manifest descriptor
-        platform_manifest_descriptor = None
-        for manifest_desc in manifest_list.get("manifests", []):
-            manifest_platform = manifest_desc.get("platform", {})
-            if (manifest_platform.get("os") == os_name and
-                manifest_platform.get("architecture") == arch):
-                platform_manifest_descriptor = manifest_desc
-                break
+        platform_manifest_descriptor = match_platform_manifest(manifest_list, platform)
 
         if not platform_manifest_descriptor:
             logger.warning(f"No manifest found for platform {platform} in {repository}")
@@ -879,84 +867,6 @@ class RegistryAdapter:
         except Exception as e:
             logger.warning(f"Error fetching platform-specific config: {e}")
             return None
-
-    async def _resolve_platform_manifest(
-        self,
-        manifest_list: Dict,
-        platform: str,
-        base_url: str,
-        token: Optional[str]
-    ) -> Optional[str]:
-        """
-        Resolve platform-specific manifest digest from manifest list.
-
-        NOTE: This method is currently NOT used for update detection.
-        Docker CLI uses the manifest list (index) digest as the canonical identifier,
-        not the platform-specific manifest digest. This method is preserved for
-        potential future use cases like layer-level inspection or detailed platform
-        manifest analysis.
-
-        Multi-platform images have a manifest list that points to platform-specific
-        manifests. This method fetches the platform-specific manifest and returns
-        its digest (different from the index digest).
-
-        For update detection, use the index digest from the manifest list instead
-        to match Docker CLI behavior and docker inspect RepoDigests.
-        """
-        # Parse platform (e.g., "linux/amd64" → os=linux, arch=amd64)
-        os_name, arch = platform.split("/") if "/" in platform else ("linux", platform)
-
-        # Find matching manifest
-        platform_manifest_digest = None
-        for manifest in manifest_list.get("manifests", []):
-            manifest_platform = manifest.get("platform", {})
-            if (manifest_platform.get("os") == os_name and
-                manifest_platform.get("architecture") == arch):
-                platform_manifest_digest = manifest.get("digest")
-                break
-
-        if not platform_manifest_digest:
-            logger.warning(f"No manifest found for platform {platform}")
-            return None
-
-        # Now fetch the actual platform-specific manifest to get its digest
-        # The digest from the manifest list is the sha256 of the manifest itself,
-        # but we need to fetch it to get the Docker-Content-Digest header
-        # which is what Docker uses
-        logger.debug(f"Fetching platform-specific manifest: {platform_manifest_digest}")
-
-        # Replace the tag in the URL with the digest
-        manifest_url = base_url.rsplit("/", 1)[0] + "/" + platform_manifest_digest
-
-        headers = {
-            "Accept": (
-                "application/vnd.docker.distribution.manifest.v2+json,"
-                "application/vnd.oci.image.manifest.v1+json"
-            )
-        }
-
-        if token:
-            headers["Authorization"] = token
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(manifest_url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as response:
-                    if response.status == 200:
-                        # The digest in the Docker-Content-Digest header is what we want
-                        digest = response.headers.get("Docker-Content-Digest")
-                        if digest:
-                            logger.debug(f"Got platform-specific manifest digest: {digest}")
-                            return digest
-                        else:
-                            # Fallback to the digest from the manifest list
-                            logger.warning(f"No Docker-Content-Digest header, using manifest list digest")
-                            return platform_manifest_digest
-                    else:
-                        logger.error(f"Failed to fetch platform manifest: {response.status}")
-                        return platform_manifest_digest
-        except Exception as e:
-            logger.error(f"Error fetching platform manifest: {e}")
-            return platform_manifest_digest
 
     def compute_floating_tag(self, image_tag: str, mode: str) -> str:
         """

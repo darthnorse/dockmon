@@ -6,7 +6,7 @@ and AgentUpdateExecutor to ensure consistent interfaces.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Callable, Awaitable, Any, Dict, List
+from typing import Optional, Callable, Awaitable, Any, Dict, List, Tuple
 from enum import Enum
 
 
@@ -121,6 +121,56 @@ class PullProgress:
         if self.total == 0:
             return 0
         return int((self.current / self.total) * 100)
+
+
+# Manifest list media types (multi-platform images)
+MEDIATYPE_DOCKER_MANIFEST_LIST = "application/vnd.docker.distribution.manifest.list.v2+json"
+MEDIATYPE_OCI_IMAGE_INDEX = "application/vnd.oci.image.index.v1+json"
+MANIFEST_LIST_TYPES = (MEDIATYPE_DOCKER_MANIFEST_LIST, MEDIATYPE_OCI_IMAGE_INDEX)
+
+
+def parse_platform(platform: str) -> Tuple[str, str, Optional[str]]:
+    """
+    Parse a platform string into (os, architecture, variant).
+
+    Examples:
+        "linux/amd64"    → ("linux", "amd64", None)
+        "linux/arm/v7"   → ("linux", "arm", "v7")
+        "linux/arm64/v8" → ("linux", "arm64", "v8")
+        "amd64"          → ("linux", "amd64", None)
+    """
+    parts = platform.split("/") if "/" in platform else ["linux", platform]
+    os_name = parts[0]
+    arch = parts[1] if len(parts) > 1 else platform
+    variant = parts[2] if len(parts) > 2 else None
+    return os_name, arch, variant
+
+
+def match_platform_manifest(manifest_list: Dict, platform: str) -> Optional[Dict]:
+    """
+    Find the manifest descriptor matching a platform in a manifest list.
+
+    Args:
+        manifest_list: Manifest list dict with 'manifests' array
+        platform: Target platform (e.g., "linux/amd64", "linux/arm/v7")
+
+    Returns:
+        Matching manifest descriptor dict, or None if not found
+    """
+    if not manifest_list:
+        return None
+
+    os_name, arch, variant = parse_platform(platform)
+
+    for desc in manifest_list.get("manifests", []):
+        p = desc.get("platform", {})
+        if p.get("os") != os_name or p.get("architecture") != arch:
+            continue
+        if variant and p.get("variant") != variant:
+            continue
+        return desc
+
+    return None
 
 
 def make_composite_key(host_id: str, container_id: str) -> str:

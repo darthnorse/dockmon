@@ -116,10 +116,8 @@ def _generate_nonce() -> str:
 
 
 def _build_scopes(config) -> str:
-    """Build scope string, auto-appending the groups claim if not already present."""
+    """Build scope string from configured scopes."""
     scopes = {s.strip() for s in config.scopes.replace(',', ' ').split() if s.strip()}
-    if config.claim_for_groups and config.claim_for_groups not in scopes:
-        scopes.add(config.claim_for_groups)
     return ' '.join(sorted(scopes))
 
 
@@ -140,7 +138,6 @@ async def _fetch_oidc_discovery(provider_url: str) -> dict:
         response.raise_for_status()
         discovery = response.json()
 
-    # Validate critical fields use HTTPS
     for key in ('issuer', 'token_endpoint', 'userinfo_endpoint', 'jwks_uri'):
         value = discovery.get(key)
         if value and not value.startswith('https://'):

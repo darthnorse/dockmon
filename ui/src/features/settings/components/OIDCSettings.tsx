@@ -218,7 +218,11 @@ export function OIDCSettings() {
   const handleTestConnection = async () => {
     setDiscoveryResult(null)
     try {
-      const result = await discoverOIDC.mutateAsync()
+      const result = await discoverOIDC.mutateAsync({
+        provider_url: providerUrl || null,
+        client_id: clientId || null,
+        client_secret: clientSecret || null,
+      })
       setDiscoveryResult(result)
     } catch {
       // Error handled by mutation
@@ -515,22 +519,32 @@ export function OIDCSettings() {
       </div>
 
       {/* Discovery Result */}
-      {discoveryResult && (
-        <div
-          className={`rounded-lg border p-4 ${
-            discoveryResult.success
-              ? 'border-green-800 bg-green-900/20'
-              : 'border-red-800 bg-red-900/20'
-          }`}
-        >
+      {discoveryResult && (() => {
+        const overallStatus = !discoveryResult.success
+          ? 'error'
+          : discoveryResult.client_validated === false
+            ? 'error'
+            : discoveryResult.client_validated === true
+              ? 'success'
+              : 'warning'
+        const statusStyles = {
+          success: { border: 'border-green-800 bg-green-900/20', text: 'text-green-300', icon: 'text-green-400' },
+          warning: { border: 'border-yellow-800 bg-yellow-900/20', text: 'text-yellow-300', icon: 'text-yellow-400' },
+          error: { border: 'border-red-800 bg-red-900/20', text: 'text-red-300', icon: 'text-red-400' },
+        }
+        const style = statusStyles[overallStatus]
+        return (
+        <div className={`rounded-lg border p-4 ${style.border}`}>
           <div className="flex items-start gap-3">
-            {discoveryResult.success ? (
-              <CheckCircle2 className="h-5 w-5 text-green-400 mt-0.5" />
+            {overallStatus === 'error' ? (
+              <XCircle className={`h-5 w-5 ${style.icon} mt-0.5`} />
+            ) : overallStatus === 'success' ? (
+              <CheckCircle2 className={`h-5 w-5 ${style.icon} mt-0.5`} />
             ) : (
-              <XCircle className="h-5 w-5 text-red-400 mt-0.5" />
+              <AlertTriangle className={`h-5 w-5 ${style.icon} mt-0.5`} />
             )}
             <div className="flex-1 space-y-2">
-              <p className={`font-medium ${discoveryResult.success ? 'text-green-300' : 'text-red-300'}`}>
+              <p className={`font-medium ${style.text}`}>
                 {discoveryResult.message}
               </p>
               {discoveryResult.success && (
@@ -541,12 +555,24 @@ export function OIDCSettings() {
                   {discoveryResult.scopes_supported && (
                     <p><span className="text-gray-500">Scopes:</span> {discoveryResult.scopes_supported.slice(0, 10).join(', ')}</p>
                   )}
+                  {discoveryResult.client_validation_message && (
+                    <p className={`mt-2 font-medium ${
+                      discoveryResult.client_validated === true
+                        ? 'text-green-400'
+                        : discoveryResult.client_validated === false
+                          ? 'text-red-400'
+                          : 'text-yellow-400'
+                    }`}>
+                      <span className="text-gray-500">Credentials:</span> {discoveryResult.client_validation_message}
+                    </p>
+                  )}
                 </div>
               )}
             </div>
           </div>
         </div>
-      )}
+        )
+      })()}
 
       {/* Group Mappings */}
       <section className="space-y-4">

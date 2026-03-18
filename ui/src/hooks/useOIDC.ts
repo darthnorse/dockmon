@@ -11,6 +11,7 @@ import { toast } from 'sonner'
 import type {
   OIDCConfig,
   OIDCConfigUpdateRequest,
+  OIDCDiscoveryRequest,
   OIDCDiscoveryResponse,
   OIDCGroupMapping,
   OIDCGroupMappingCreateRequest,
@@ -71,8 +72,8 @@ export function useUpdateOIDCConfig() {
 
 export function useDiscoverOIDC() {
   return useMutation({
-    mutationFn: async () => {
-      return apiClient.post<OIDCDiscoveryResponse>('/v2/oidc/discover', {})
+    mutationFn: async (data: OIDCDiscoveryRequest) => {
+      return apiClient.post<OIDCDiscoveryResponse>('/v2/oidc/discover', data)
     },
     onError: (error: Error) => {
       toast.error('Discovery failed', {

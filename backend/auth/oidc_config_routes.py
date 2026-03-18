@@ -21,15 +21,13 @@ from pydantic import BaseModel, Field, field_validator
 from auth.shared import db, safe_audit_log
 from auth.api_key_auth import require_capability, get_current_user_or_api_key
 from auth.utils import format_timestamp_required, get_group_or_400, get_auditable_user_info
+from auth.oidc_auth_routes import _fetch_oidc_discovery, OIDC_HTTP_TIMEOUT
 from database import OIDCConfig, OIDCGroupMapping, CustomGroup
 from audit import get_client_info, AuditAction
 from audit.audit_logger import AuditEntityType
 from utils.encryption import encrypt_password, decrypt_password
 
 logger = logging.getLogger(__name__)
-
-# HTTP client timeout for OIDC provider requests (shared with oidc_auth_routes)
-OIDC_HTTP_TIMEOUT = 10.0
 
 router = APIRouter(prefix="/api/v2/oidc", tags=["oidc-config"])
 
@@ -60,7 +58,7 @@ class OIDCConfigUpdateRequest(BaseModel):
     enabled: bool | None = None
     provider_url: str | None = Field(None, max_length=500)
     client_id: str | None = Field(None, max_length=200)
-    client_secret: str | None = Field(None, max_length=500)
+    client_secret: str | None = Field(None, max_length=1000)
     scopes: str | None = Field(None, max_length=500)
     claim_for_groups: str | None = Field(None, max_length=100)
     default_group_id: int | None = None
@@ -75,7 +73,6 @@ class OIDCConfigUpdateRequest(BaseModel):
         if v is not None and v:
             if not v.startswith('https://'):
                 raise ValueError("Provider URL must use HTTPS")
-            # Remove trailing slash for consistency
             v = v.rstrip('/')
         return v
 
@@ -104,6 +101,13 @@ class OIDCGroupMappingUpdateRequest(BaseModel):
     priority: int | None = Field(None, ge=0, le=1000)
 
 
+class OIDCDiscoveryRequest(BaseModel):
+    """Request body for OIDC discovery - uses form values if provided, otherwise saved config"""
+    provider_url: str | None = Field(None, max_length=500)
+    client_id: str | None = Field(None, max_length=200)
+    client_secret: str | None = Field(None, max_length=1000)
+
+
 class OIDCDiscoveryResponse(BaseModel):
     """OIDC provider discovery response"""
     success: bool
@@ -115,6 +119,8 @@ class OIDCDiscoveryResponse(BaseModel):
     end_session_endpoint: str | None = None
     scopes_supported: list[str] | None = None
     claims_supported: list[str] | None = None
+    client_validated: bool | None = None
+    client_validation_message: str | None = None
 
 
 class OIDCStatusResponse(BaseModel):
@@ -358,72 +364,130 @@ async def update_oidc_config(
         return _config_to_response(config, session)
 
 
+async def _validate_client_credentials(
+    token_endpoint: str,
+    client_id: str,
+    client_secret: str,
+) -> tuple[bool | None, str]:
+    """Validate client credentials via client_credentials grant. Returns (validated, message)."""
+    if not token_endpoint.startswith('https://'):
+        return None, "Token endpoint is not HTTPS — skipped credential validation"
+
+    try:
+        async with httpx.AsyncClient(timeout=OIDC_HTTP_TIMEOUT) as http:
+            response = await http.post(
+                token_endpoint,
+                data={
+                    'grant_type': 'client_credentials',
+                    'client_id': client_id,
+                    'client_secret': client_secret,
+                },
+                headers={'Content-Type': 'application/x-www-form-urlencoded'},
+            )
+    except Exception as e:
+        logger.warning(f"Client credential validation failed: {e}")
+        return None, "Could not validate credentials: connection error during validation"
+
+    if response.status_code == 200:
+        return True, "Client credentials are valid"
+
+    try:
+        error_data = response.json()
+    except Exception:
+        error_data = {}
+
+    error_code = error_data.get('error', '')
+    if error_code in ('unauthorized_client', 'unsupported_grant_type'):
+        return None, (
+            f"Could not validate credentials: provider returned '{error_code}'. "
+            "This client may not support the client_credentials grant type, "
+            "but credentials may still be correct for the authorization code flow."
+        )
+
+    error_desc = error_data.get('error_description', f'HTTP {response.status_code}')
+    return False, f"Invalid client credentials: {error_desc}"
+
+
 @router.post("/discover", response_model=OIDCDiscoveryResponse, dependencies=[Depends(require_capability("oidc.manage"))])
 async def discover_oidc_provider(
-    current_user: dict = Depends(get_current_user_or_api_key)
+    body: OIDCDiscoveryRequest,
+    current_user: dict = Depends(get_current_user_or_api_key),
 ) -> OIDCDiscoveryResponse:
     """
-    Discover OIDC provider endpoints (admin only).
+    Discover OIDC provider endpoints and validate client credentials (admin only).
 
-    Fetches the provider's .well-known/openid-configuration and validates connectivity.
-    Uses the configured provider_url.
+    Uses form values from the request body if provided, otherwise falls back to saved config.
+    After successful discovery, validates client_id/client_secret via client_credentials grant.
     """
-    with db.get_session() as session:
-        config = session.query(OIDCConfig).filter(OIDCConfig.id == 1).first()
+    provider_url = body.provider_url
+    client_id = body.client_id
+    client_secret = body.client_secret
 
-        if not config or not config.provider_url:
-            return OIDCDiscoveryResponse(
-                success=False,
-                message="Provider URL not configured",
+    if not provider_url or not client_id or not client_secret:
+        with db.get_session() as session:
+            config = session.query(OIDCConfig).filter(OIDCConfig.id == 1).first()
+            if config:
+                provider_url = provider_url or config.provider_url
+                client_id = client_id or config.client_id
+                if not client_secret and config.client_secret_encrypted:
+                    try:
+                        client_secret = decrypt_password(config.client_secret_encrypted)
+                    except Exception:
+                        pass
+
+    if not provider_url:
+        return OIDCDiscoveryResponse(
+            success=False,
+            message="Provider URL not configured",
+        )
+
+    # Use shared discovery function (handles HTTPS validation, URL normalization, endpoint checks)
+    try:
+        discovery = await _fetch_oidc_discovery(provider_url)
+    except ValueError as e:
+        return OIDCDiscoveryResponse(success=False, message=str(e))
+    except httpx.TimeoutException:
+        return OIDCDiscoveryResponse(success=False, message="Provider connection timeout")
+    except httpx.HTTPStatusError as e:
+        hint = ""
+        if e.response.status_code == 404:
+            provider_url = provider_url.rstrip('/')
+            if provider_url.endswith('/.well-known/openid-configuration'):
+                provider_url = provider_url[:-len('/.well-known/openid-configuration')]
+            discovery_url = f"{provider_url}/.well-known/openid-configuration"
+            hint = (
+                f". Tried: {discovery_url} — check that the Provider URL includes the full path "
+                "(e.g. for Authentik: https://auth.example.com/application/o/your-app-slug)"
             )
+        return OIDCDiscoveryResponse(success=False, message=f"Provider returned HTTP {e.response.status_code}{hint}")
+    except Exception as e:
+        logger.error(f"OIDC provider discovery error: {e}", exc_info=True)
+        return OIDCDiscoveryResponse(success=False, message="Discovery failed due to an unexpected error. Check server logs for details.")
 
-        provider_url = config.provider_url.rstrip('/')
-        if provider_url.endswith('/.well-known/openid-configuration'):
-            provider_url = provider_url[:-len('/.well-known/openid-configuration')]
-        discovery_url = f"{provider_url}/.well-known/openid-configuration"
+    token_endpoint = discovery.get('token_endpoint')
 
-        try:
-            async with httpx.AsyncClient(timeout=OIDC_HTTP_TIMEOUT) as client:
-                response = await client.get(discovery_url)
-                response.raise_for_status()
-                discovery = response.json()
+    client_validated = None
+    client_validation_message = None
+    if client_id and client_secret and token_endpoint:
+        client_validated, client_validation_message = await _validate_client_credentials(
+            token_endpoint, client_id, client_secret,
+        )
+    elif not client_id or not client_secret:
+        client_validation_message = "Client ID or secret not provided — skipped credential validation"
 
-                return OIDCDiscoveryResponse(
-                    success=True,
-                    message="Provider discovery successful",
-                    issuer=discovery.get('issuer'),
-                    authorization_endpoint=discovery.get('authorization_endpoint'),
-                    token_endpoint=discovery.get('token_endpoint'),
-                    userinfo_endpoint=discovery.get('userinfo_endpoint'),
-                    end_session_endpoint=discovery.get('end_session_endpoint'),
-                    scopes_supported=discovery.get('scopes_supported'),
-                    claims_supported=discovery.get('claims_supported'),
-                )
-
-        except httpx.TimeoutException:
-            logger.warning(f"OIDC provider discovery timeout: {discovery_url}")
-            return OIDCDiscoveryResponse(
-                success=False,
-                message="Provider connection timeout",
-            )
-        except httpx.HTTPStatusError as e:
-            logger.warning(f"OIDC provider discovery HTTP error: {e}")
-            hint = ""
-            if e.response.status_code == 404:
-                hint = (
-                    f". Tried: {discovery_url} — check that the Provider URL includes the full path "
-                    "(e.g. for Authentik: https://auth.example.com/application/o/your-app-slug)"
-                )
-            return OIDCDiscoveryResponse(
-                success=False,
-                message=f"Provider returned HTTP {e.response.status_code}{hint}",
-            )
-        except Exception as e:
-            logger.error(f"OIDC provider discovery error: {e}", exc_info=True)
-            return OIDCDiscoveryResponse(
-                success=False,
-                message="Discovery failed due to an unexpected error. Check server logs for details.",
-            )
+    return OIDCDiscoveryResponse(
+        success=True,
+        message="Provider discovery successful",
+        issuer=discovery.get('issuer'),
+        authorization_endpoint=discovery.get('authorization_endpoint'),
+        token_endpoint=token_endpoint,
+        userinfo_endpoint=discovery.get('userinfo_endpoint'),
+        end_session_endpoint=discovery.get('end_session_endpoint'),
+        scopes_supported=discovery.get('scopes_supported'),
+        claims_supported=discovery.get('claims_supported'),
+        client_validated=client_validated,
+        client_validation_message=client_validation_message,
+    )
 
 
 # ==================== Group Mapping Endpoints ====================

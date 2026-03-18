@@ -38,6 +38,12 @@ export interface OIDCConfigUpdateRequest {
 
 // ==================== OIDC Discovery ====================
 
+export interface OIDCDiscoveryRequest {
+  provider_url?: string | null
+  client_id?: string | null
+  client_secret?: string | null
+}
+
 export interface OIDCDiscoveryResponse {
   success: boolean
   message: string
@@ -48,6 +54,8 @@ export interface OIDCDiscoveryResponse {
   end_session_endpoint?: string
   scopes_supported?: string[]
   claims_supported?: string[]
+  client_validated?: boolean | null
+  client_validation_message?: string | null
 }
 
 // ==================== OIDC Group Mappings ====================

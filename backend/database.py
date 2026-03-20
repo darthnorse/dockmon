@@ -733,6 +733,12 @@ class GlobalSettings(Base):
     # Session timeout (0 = never expires, 1-8760 hours)
     session_timeout_hours = Column(Integer, default=24)
 
+    # Stats persistence settings (v2.3.0+)
+    stats_retention_enabled = Column(Boolean, default=True)
+    stats_collection_interval = Column(Integer, default=60)  # Legacy, kept for migration compat
+    stats_retention_days = Column(Integer, default=30)  # Max days to keep historical stats
+    stats_points_per_view = Column(Integer, default=500)  # Target data points per time range view
+
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 class ContainerUpdate(Base):
@@ -1375,6 +1381,27 @@ class DeploymentMetadata(Base):
     )
 
 
+class ContainerStatsHistory(Base):
+    """Historical container statistics with cascading RRD tiers"""
+    __tablename__ = "container_stats_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    container_id = Column(String, nullable=False)  # Composite: {host_id}:{container_short_id}
+    host_id = Column(String, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False)
+    timestamp = Column(DateTime, nullable=False)
+    cpu_percent = Column(Float, nullable=True)
+    memory_usage = Column(BigInteger, nullable=True)
+    memory_limit = Column(BigInteger, nullable=True)
+    network_bytes_per_sec = Column(Float, nullable=True)
+    resolution = Column(String, nullable=False, default='1h')  # Tier name: '1h','8h','24h','7d','30d'
+
+    __table_args__ = (
+        Index('idx_stats_lookup', 'container_id', 'resolution', 'timestamp'),
+        Index('idx_stats_host', 'host_id'),
+        {"sqlite_autoincrement": True},
+    )
+
+
 class DatabaseManager:
     """
     Database management and operations (Singleton)
@@ -1689,6 +1716,40 @@ class DatabaseManager:
                         session.commit()
                         logger.info("Added sso_default column to oidc_config table")
 
+                # Migration: Create container_stats_history table (v2.3.0+)
+                if 'container_stats_history' not in table_names:
+                    session.execute(text("""
+                        CREATE TABLE container_stats_history (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            container_id TEXT NOT NULL,
+                            host_id TEXT NOT NULL,
+                            timestamp DATETIME NOT NULL,
+                            cpu_percent REAL,
+                            memory_usage INTEGER,
+                            memory_limit INTEGER,
+                            network_bytes_per_sec REAL,
+                            resolution TEXT NOT NULL DEFAULT '1m',
+                            FOREIGN KEY (host_id) REFERENCES docker_hosts(id) ON DELETE CASCADE
+                        )
+                    """))
+                    session.execute(text(
+                        "CREATE INDEX idx_stats_lookup "
+                        "ON container_stats_history(container_id, resolution, timestamp)"
+                    ))
+                    session.execute(text(
+                        "CREATE INDEX idx_stats_host "
+                        "ON container_stats_history(host_id)"
+                    ))
+                    session.commit()
+                    logger.info("Created container_stats_history table with indexes")
+
+                # Migration: Add stats persistence columns to global_settings (v2.3.0+)
+                if 'stats_retention_enabled' not in settings_column_names:
+                    session.execute(text("ALTER TABLE global_settings ADD COLUMN stats_retention_enabled BOOLEAN DEFAULT 1"))
+                    session.execute(text("ALTER TABLE global_settings ADD COLUMN stats_collection_interval INTEGER DEFAULT 60"))
+                    session.execute(text("ALTER TABLE global_settings ADD COLUMN stats_retention_days INTEGER DEFAULT 30"))
+                    session.commit()
+                    logger.info("Added stats persistence columns to global_settings table")
 
         except Exception as e:
             logger.info(f"Migration warning: {e}")
@@ -2112,10 +2173,16 @@ class DatabaseManager:
         if event_count > 0:
             logger.info(f"  ✓ Keeping {event_count} event log entries for audit trail")
 
-        # TODO: Add cleanup for any new tables with host_id foreign keys here
-        # Example:
-        # new_table_count = session.query(NewTable).filter(NewTable.host_id == host_id).delete()
-        # cleanup_stats['new_table_records'] = new_table_count
+        # 6. Delete ContainerStatsHistory records for this host (v2.3.0+)
+        try:
+            stats_history_count = session.query(ContainerStatsHistory).filter(
+                ContainerStatsHistory.host_id == host_id
+            ).delete(synchronize_session=False)
+            cleanup_stats['stats_history'] = stats_history_count
+            if stats_history_count > 0:
+                logger.info(f"  ✓ Deleted {stats_history_count} historical stats record(s)")
+        except Exception:
+            pass  # Table may not exist yet on older databases
 
         return cleanup_stats
 
@@ -3442,7 +3509,9 @@ class DatabaseManager:
                     # Editor theme preference (v2.2.8+)
                     'editor_theme',
                     # Session timeout
-                    'session_timeout_hours'
+                    'session_timeout_hours',
+                    # Stats RRD settings (v2.3.0+)
+                    'stats_points_per_view',
                 }
 
                 for key, value in updates.items():

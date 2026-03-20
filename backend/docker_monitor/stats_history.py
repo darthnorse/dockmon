@@ -17,9 +17,7 @@ logger = logging.getLogger(__name__)
 # EMA smoothing factor (α = 0.3) as per specs
 EMA_ALPHA = 0.3
 
-# Keep 90 seconds of history at 2-second intervals = 45 data points
-# But we'll store 50 to be safe
-MAX_HISTORY_POINTS = 50
+from stats_config import DEFAULT_POINTS_PER_VIEW
 
 
 @dataclass
@@ -45,13 +43,14 @@ class StatsHistoryBuffer:
     Manages historical stats data for sparkline generation
 
     Features:
-    - Circular buffer (max 50 points = ~90s at 2s interval)
+    - Circular buffer sized by points_per_view setting
     - EMA smoothing (α = 0.3)
     - Per-host tracking
     - Agent-fed host tracking (to distinguish systemd vs containerized agents)
     """
 
-    def __init__(self):
+    def __init__(self, max_points: int = DEFAULT_POINTS_PER_VIEW):
+        self._max_points = max_points
         # host_id -> deque of HostStatsPoint
         self._history: Dict[str, deque] = {}
 
@@ -74,7 +73,7 @@ class StatsHistoryBuffer:
         """
         # Initialize history buffer if needed
         if host_id not in self._history:
-            self._history[host_id] = deque(maxlen=MAX_HISTORY_POINTS)
+            self._history[host_id] = deque(maxlen=self._max_points)
             logger.debug(f"Initialized stats history buffer for host {host_id[:8]}")
 
         # Apply EMA smoothing if we have previous raw data
@@ -109,48 +108,28 @@ class StatsHistoryBuffer:
 
         self._history[host_id].append(point)
 
-    def get_sparklines(self, host_id: str, num_points: int = 30) -> Dict[str, List[float]]:
+    def get_sparklines(self, host_id: str, num_points: int = 0) -> Dict[str, List[float]]:
         """
         Get sparkline data for a host
 
         Args:
             host_id: Host identifier
-            num_points: Number of data points to return (default 30 for UI)
+            num_points: Number of data points to return (0 = all available)
 
         Returns:
             Dict with 'cpu', 'mem', 'net' arrays
         """
         if host_id not in self._history or len(self._history[host_id]) == 0:
-            # No history yet - return empty arrays
-            return {
-                "cpu": [],
-                "mem": [],
-                "net": []
-            }
+            return {"cpu": [], "mem": [], "net": [], "timestamps": []}
 
         history = list(self._history[host_id])
-
-        # Guard against invalid num_points
-        if num_points <= 0:
-            num_points = 30  # Use default
-
-        # If we have fewer points than requested, return what we have
-        if len(history) <= num_points:
-            return {
-                "cpu": [p.cpu_percent for p in history],
-                "mem": [p.mem_percent for p in history],
-                "net": [p.net_bytes_per_sec for p in history]
-            }
-
-        # Sample evenly from history to get requested number of points
-        # This ensures sparklines look smooth even with varying history lengths
-        step = len(history) / num_points
-        indices = [int(i * step) for i in range(num_points)]
+        points = history[-num_points:] if num_points > 0 else history
 
         return {
-            "cpu": [history[i].cpu_percent for i in indices],
-            "mem": [history[i].mem_percent for i in indices],
-            "net": [history[i].net_bytes_per_sec for i in indices]
+            "cpu": [p.cpu_percent for p in points],
+            "mem": [p.mem_percent for p in points],
+            "net": [p.net_bytes_per_sec for p in points],
+            "timestamps": [int(p.timestamp.timestamp()) for p in points],
         }
 
     def cleanup_old_data(self, max_age_seconds: int = 300):
@@ -227,12 +206,13 @@ class ContainerStatsHistoryBuffer:
     Manages historical stats data for container sparkline generation
 
     Features:
-    - Circular buffer (max 50 points = ~90s at 2s interval)
+    - Circular buffer sized by points_per_view setting
     - EMA smoothing (α = 0.3)
     - Per-container tracking using composite key (host_id:container_id)
     """
 
-    def __init__(self):
+    def __init__(self, max_points: int = DEFAULT_POINTS_PER_VIEW):
+        self._max_points = max_points
         # composite_key (host_id:container_id) -> deque of ContainerStatsPoint
         self._history: Dict[str, deque] = {}
 
@@ -251,7 +231,7 @@ class ContainerStatsHistoryBuffer:
         """
         # Initialize history buffer if needed
         if container_key not in self._history:
-            self._history[container_key] = deque(maxlen=MAX_HISTORY_POINTS)
+            self._history[container_key] = deque(maxlen=self._max_points)
             logger.debug(f"Initialized stats history buffer for container {container_key[:16]}")
 
         # Apply EMA smoothing if we have previous raw data
@@ -286,47 +266,28 @@ class ContainerStatsHistoryBuffer:
 
         self._history[container_key].append(point)
 
-    def get_sparklines(self, container_key: str, num_points: int = 30) -> Dict[str, List[float]]:
+    def get_sparklines(self, container_key: str, num_points: int = 0) -> Dict[str, List[float]]:
         """
         Get sparkline data for a container
 
         Args:
             container_key: Container identifier (composite key: host_id:container_id)
-            num_points: Number of data points to return (default 30 for UI)
+            num_points: Number of data points to return (0 = all available)
 
         Returns:
             Dict with 'cpu', 'mem', 'net' arrays
         """
         if container_key not in self._history or len(self._history[container_key]) == 0:
-            # No history yet - return empty arrays
-            return {
-                "cpu": [],
-                "mem": [],
-                "net": []
-            }
+            return {"cpu": [], "mem": [], "net": [], "timestamps": []}
 
         history = list(self._history[container_key])
-
-        # Guard against invalid num_points
-        if num_points <= 0:
-            num_points = 30  # Use default
-
-        # If we have fewer points than requested, return what we have
-        if len(history) <= num_points:
-            return {
-                "cpu": [p.cpu_percent for p in history],
-                "mem": [p.mem_percent for p in history],
-                "net": [p.net_bytes_per_sec for p in history]
-            }
-
-        # Sample evenly from history to get requested number of points
-        step = len(history) / num_points
-        indices = [int(i * step) for i in range(num_points)]
+        points = history[-num_points:] if num_points > 0 else history
 
         return {
-            "cpu": [history[i].cpu_percent for i in indices],
-            "mem": [history[i].mem_percent for i in indices],
-            "net": [history[i].net_bytes_per_sec for i in indices]
+            "cpu": [p.cpu_percent for p in points],
+            "mem": [p.mem_percent for p in points],
+            "net": [p.net_bytes_per_sec for p in points],
+            "timestamps": [int(p.timestamp.timestamp()) for p in points],
         }
 
     def cleanup_old_data(self, max_age_seconds: int = 300):

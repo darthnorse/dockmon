@@ -22,7 +22,7 @@ from argon2.exceptions import VerifyMismatchError, InvalidHashError
 from auth.password import ph
 
 from auth.cookie_sessions import cookie_session_manager, get_session_cookie_max_age, should_set_secure_cookie
-from utils.client_ip import get_client_ip, get_request_scheme
+from utils.client_ip import get_client_ip, get_request_scheme, get_request_host
 from security.rate_limiting import rate_limit_auth, get_rate_limit_dependency
 from audit import log_login, log_logout, log_login_failure, AuditAction
 from audit.audit_logger import get_client_info, log_audit, AuditEntityType
@@ -58,7 +58,6 @@ from auth.api_key_auth import (
     get_capabilities_for_user,
     get_capabilities_for_group,
 )
-from config.settings import AppConfig
 from utils.base_path import get_base_path
 
 # Account lockout constants (higher threshold + shorter lockout to mitigate DoS)
@@ -410,10 +409,7 @@ async def logout_v2(
                                     end_session = None
                                 if end_session:
                                     scheme = get_request_scheme(request)
-                                    if AppConfig.REVERSE_PROXY_MODE:
-                                        host = request.headers.get('X-Forwarded-Host', request.headers.get('Host', request.url.netloc))
-                                    else:
-                                        host = request.headers.get('Host', request.url.netloc)
+                                    host = get_request_host(request)
                                     base_path = get_base_path().rstrip('/')
                                     post_logout_uri = f"{scheme}://{host}{base_path}/login"
                                     oidc_logout_url = f"{end_session}?post_logout_redirect_uri={quote(post_logout_uri, safe='')}"

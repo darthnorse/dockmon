@@ -8,6 +8,7 @@ SECURITY WARNING:
 """
 
 import logging
+from urllib.parse import urlparse
 from fastapi import Request
 from config.settings import AppConfig
 
@@ -53,7 +54,6 @@ def get_client_ip(request: Request) -> str:
             logger.debug(f"Using X-Real-IP: {client_ip}")
             return client_ip
 
-        # No proxy headers found - unexpected in reverse proxy mode
         logger.warning(
             "REVERSE_PROXY_MODE enabled but no X-Forwarded-For or X-Real-IP header found. "
             "Falling back to request.client.host."
@@ -65,17 +65,48 @@ def get_client_ip(request: Request) -> str:
     return client_ip
 
 
+def _get_cors_origin_parts() -> tuple[str, str] | None:
+    """Parse scheme and host from the first CORS origin, if configured."""
+    if AppConfig.CORS_ORIGINS:
+        first_origin = AppConfig.CORS_ORIGINS.split(',')[0].strip()
+        parsed = urlparse(first_origin)
+        if parsed.scheme and parsed.netloc:
+            return parsed.scheme, parsed.netloc
+    return None
+
+
 def get_request_scheme(request: Request) -> str:
     """Get the effective request scheme, respecting reverse proxy headers."""
     if AppConfig.REVERSE_PROXY_MODE:
-        proto = request.headers.get('X-Forwarded-Proto')
+        proto = request.headers.get("x-forwarded-proto")
         if proto:
-            return proto.lower()
+            return proto.split(",")[0].strip().lower()
+        parts = _get_cors_origin_parts()
+        if parts:
+            logger.debug("No X-Forwarded-Proto header; using scheme from DOCKMON_CORS_ORIGINS")
+            return parts[0]
         logger.warning(
-            "REVERSE_PROXY_MODE enabled but no X-Forwarded-Proto header found. "
-            "Falling back to request.url.scheme."
+            "REVERSE_PROXY_MODE enabled but no X-Forwarded-Proto header found "
+            "and DOCKMON_CORS_ORIGINS not set. Falling back to request.url.scheme."
         )
     return request.url.scheme
+
+
+def get_request_host(request: Request) -> str:
+    """Get the effective request host, respecting reverse proxy headers."""
+    if AppConfig.REVERSE_PROXY_MODE:
+        forwarded_host = request.headers.get("x-forwarded-host")
+        if forwarded_host:
+            return forwarded_host.split(",")[0].strip()
+        parts = _get_cors_origin_parts()
+        if parts:
+            logger.debug("No X-Forwarded-Host header; using host from DOCKMON_CORS_ORIGINS")
+            return parts[1]
+        logger.warning(
+            "REVERSE_PROXY_MODE enabled but no X-Forwarded-Host header found "
+            "and DOCKMON_CORS_ORIGINS not set. Falling back to Host header."
+        )
+    return request.headers.get("host", request.url.netloc)
 
 
 def get_client_ip_ws(websocket) -> str:

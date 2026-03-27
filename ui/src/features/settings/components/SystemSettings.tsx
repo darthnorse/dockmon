@@ -27,6 +27,7 @@ export function SystemSettings() {
   const updateSettings = useUpdateGlobalSettings()
 
   const [pollingInterval, setPollingInterval] = useState(settings?.polling_interval ?? 2)
+  const [pointsPerView, setPointsPerView] = useState(settings?.stats_points_per_view ?? 500)
   const [connectionTimeout, setConnectionTimeout] = useState(settings?.connection_timeout ?? 10)
   const [maxRetries, setMaxRetries] = useState(settings?.max_retries ?? 3)
   const [retryDelay, setRetryDelay] = useState(settings?.retry_delay ?? 30)
@@ -40,6 +41,7 @@ export function SystemSettings() {
   useEffect(() => {
     if (settings) {
       setPollingInterval(settings.polling_interval ?? 2)
+      setPointsPerView(settings.stats_points_per_view ?? 500)
       setConnectionTimeout(settings.connection_timeout ?? 10)
       setMaxRetries(settings.max_retries ?? 3)
       setRetryDelay(settings.retry_delay ?? 30)
@@ -59,6 +61,17 @@ export function SystemSettings() {
         toast.success('Polling interval updated')
       } catch (error) {
         toast.error('Failed to update polling interval')
+      }
+    }
+  }
+
+  const handlePointsPerViewBlur = async () => {
+    if (pointsPerView !== settings?.stats_points_per_view) {
+      try {
+        await updateSettings.mutateAsync({ stats_points_per_view: pointsPerView })
+        toast.success('Points per view updated')
+      } catch (error) {
+        toast.error('Failed to update points per view')
       }
     }
   }
@@ -253,6 +266,22 @@ export function SystemSettings() {
               className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             <p className="mt-1 text-xs text-gray-400">How often to check Docker hosts (1-600 seconds)</p>
+          </div>
+          <div>
+            <label htmlFor="points-per-view" className="block text-sm font-medium text-gray-300 mb-2">
+              Points per View
+            </label>
+            <input
+              id="points-per-view"
+              type="number"
+              min="100"
+              max="2000"
+              value={pointsPerView}
+              onChange={(e) => setPointsPerView(Number(e.target.value))}
+              onBlur={handlePointsPerViewBlur}
+              className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <p className="mt-1 text-xs text-gray-400">Data points per historical time range (100-2000). Higher = finer resolution, more storage.</p>
           </div>
         </div>
       </div>

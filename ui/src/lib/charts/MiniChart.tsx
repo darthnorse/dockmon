@@ -80,6 +80,13 @@ function getNiceNetworkScaleMax(maxValue: number): number {
   return Math.ceil(maxValue / (k * k * k)) * (k * k * k)
 }
 
+/** Step size for CPU tick/scale rounding above 100% */
+function getCpuScaleStep(max: number): number {
+  if (max <= 200) return 50
+  if (max <= 500) return 100
+  return 200
+}
+
 export function MiniChart({
   data,
   color,
@@ -270,7 +277,7 @@ export function MiniChart({
             if (scaleMax <= 60) return [0, 15, 30, 45, 60]
             if (scaleMax <= 100) return [0, 25, 50, 75, 100]
             // Multi-core CPU: generate evenly spaced ticks above 100%
-            const step = scaleMax <= 200 ? 50 : scaleMax <= 500 ? 100 : 200
+            const step = getCpuScaleStep(scaleMax)
             const ticks: number[] = []
             for (let t = 0; t <= scaleMax; t += step) ticks.push(t)
             return ticks
@@ -327,9 +334,10 @@ export function MiniChart({
                 else if (dataMax < 30) return [0, 40]
                 else if (dataMax < 50) return [0, 60]
                 else if (dataMax < 80) return [0, 100]
-                else if (dataMax < 150) return [0, Math.ceil(dataMax / 50) * 50]
-                else if (dataMax < 500) return [0, Math.ceil(dataMax / 100) * 100]
-                else return [0, Math.ceil(dataMax / 200) * 200]
+                else {
+                  const step = getCpuScaleStep(dataMax)
+                  return [0, Math.ceil(dataMax / step) * step]
+                }
               }
               // Memory: always 0-100%
               if (dataMax < 0.8) return [0, 1]
@@ -337,7 +345,6 @@ export function MiniChart({
               else if (dataMax < 10) return [0, 15]
               else if (dataMax < 30) return [0, 40]
               else if (dataMax < 50) return [0, 60]
-              else if (dataMax < 80) return [0, 100]
               else return [0, 100]
             }
             // For Network: use nice rounded scale values for stable gridlines
@@ -437,7 +444,7 @@ export function MiniChart({
         },
       ],
     },
-  }), [width, height, color, label, isPercentage, showAxes, setTooltip])
+  }), [width, height, color, label, isPercentage, isCpu, showAxes, setTooltip])
 
   // Initialize chart
   useEffect(() => {

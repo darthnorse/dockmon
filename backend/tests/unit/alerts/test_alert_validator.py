@@ -36,6 +36,32 @@ class TestCpuThresholdValidation:
             _make_rule(metric="docker_cpu_workload_pct", threshold=800.0)
         )
 
+    def test_cpu_threshold_at_ceiling_is_valid(self):
+        """64-core ceiling of 6400% must be accepted."""
+        self.validator.validate_rule(
+            _make_rule(metric="docker_cpu_workload_pct", threshold=6400.0)
+        )
+
+    def test_cpu_threshold_above_ceiling_is_invalid(self):
+        """Threshold above 6400% must be rejected."""
+        with pytest.raises(AlertRuleValidationError):
+            self.validator.validate_rule(
+                _make_rule(metric="docker_cpu_workload_pct", threshold=6401.0)
+            )
+
+    def test_cpu_clear_threshold_above_100_is_valid(self):
+        """CPU clear_threshold can exceed 100% for multi-core containers."""
+        rule = _make_rule(metric="docker_cpu_workload_pct", threshold=400.0)
+        rule["clear_threshold"] = 200.0
+        self.validator.validate_rule(rule)
+
+    def test_cpu_clear_threshold_above_ceiling_is_invalid(self):
+        """CPU clear_threshold above 6400% must be rejected."""
+        rule = _make_rule(metric="docker_cpu_workload_pct", threshold=400.0)
+        rule["clear_threshold"] = 6401.0
+        with pytest.raises(AlertRuleValidationError):
+            self.validator.validate_rule(rule)
+
     def test_cpu_threshold_negative_is_invalid(self):
         """CPU threshold cannot be negative."""
         with pytest.raises(AlertRuleValidationError):

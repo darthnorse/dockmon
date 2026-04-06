@@ -117,6 +117,7 @@ export function MiniChart({
 
   // Determine if this is a percentage metric (CPU/Memory) or bytes (Network)
   const isPercentage = color === 'cpu' || color === 'memory'
+  const isCpu = color === 'cpu'
 
   // uPlot configuration
   const opts = useMemo<uPlot.Options>(() => ({
@@ -313,23 +314,26 @@ export function MiniChart({
           if (showAxes) {
             // Enhanced mode: Smart ranges with zero baseline
             if (isPercentage) {
-              // For CPU/Memory: dynamic range based on actual values
-              // Always anchor to 0, but adjust max to show detail
-              if (dataMax < 0.8) {
-                return [0, 1] // Extremely low usage: 0-1%
-              } else if (dataMax < 3) {
-                return [0, 5] // Very low usage: 0-5%
-              } else if (dataMax < 10) {
-                return [0, 15] // Low usage: 0-15%
-              } else if (dataMax < 30) {
-                return [0, 40] // Medium-low usage: 0-40%
-              } else if (dataMax < 50) {
-                return [0, 60] // Medium usage: 0-60%
-              } else if (dataMax < 80) {
-                return [0, 100] // High usage: 0-100%
-              } else {
-                return [0, 100] // Very high usage: 0-100%
+              if (isCpu) {
+                // CPU: can exceed 100% on multi-core containers
+                if (dataMax < 0.8) return [0, 1]
+                else if (dataMax < 3) return [0, 5]
+                else if (dataMax < 10) return [0, 15]
+                else if (dataMax < 30) return [0, 40]
+                else if (dataMax < 50) return [0, 60]
+                else if (dataMax < 80) return [0, 100]
+                else if (dataMax < 150) return [0, Math.ceil(dataMax / 50) * 50]
+                else if (dataMax < 500) return [0, Math.ceil(dataMax / 100) * 100]
+                else return [0, Math.ceil(dataMax / 200) * 200]
               }
+              // Memory: always 0-100%
+              if (dataMax < 0.8) return [0, 1]
+              else if (dataMax < 3) return [0, 5]
+              else if (dataMax < 10) return [0, 15]
+              else if (dataMax < 30) return [0, 40]
+              else if (dataMax < 50) return [0, 60]
+              else if (dataMax < 80) return [0, 100]
+              else return [0, 100]
             }
             // For Network: use nice rounded scale values for stable gridlines
             if (dataMax - dataMin < 0.01) {

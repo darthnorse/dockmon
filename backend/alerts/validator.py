@@ -19,6 +19,7 @@ class AlertRuleValidator:
 
     # Validation limits
     MAX_THRESHOLD_PERCENTAGE = 100
+    MAX_CPU_THRESHOLD_PERCENTAGE = 6400  # Multi-core: up to 64 cores * 100%
     MIN_THRESHOLD_PERCENTAGE = 0
     MIN_DURATION_SECONDS = 1
     MAX_DURATION_SECONDS = 86400  # 24 hours
@@ -35,9 +36,13 @@ class AlertRuleValidator:
     VALID_OPERATORS = {'>=', '<=', '==', '>', '<', '!='}
     VALID_NOTIFICATION_CHANNELS = {'slack', 'discord', 'telegram', 'pushover', 'gotify', 'ntfy', 'smtp', 'webhook', 'teams'}
 
-    # Percentage-based metrics
-    PERCENTAGE_METRICS = {
+    # CPU metrics — can exceed 100% on multi-core containers
+    CPU_METRICS = {
         'docker_cpu_workload_pct',
+    }
+
+    # Percentage-based metrics (always 0-100%)
+    PERCENTAGE_METRICS = {
         'docker_mem_workload_pct',
         'disk_free_pct',
         'disk_used_pct'
@@ -156,7 +161,20 @@ class AlertRuleValidator:
             )
 
         # Range validation based on metric type
-        if metric in self.PERCENTAGE_METRICS:
+        if metric in self.CPU_METRICS:
+            if not self.MIN_THRESHOLD_PERCENTAGE <= threshold <= self.MAX_CPU_THRESHOLD_PERCENTAGE:
+                raise AlertRuleValidationError(
+                    f"CPU metric threshold must be between "
+                    f"{self.MIN_THRESHOLD_PERCENTAGE} and {self.MAX_CPU_THRESHOLD_PERCENTAGE}"
+                )
+            if clear_threshold is not None:
+                if not self.MIN_THRESHOLD_PERCENTAGE <= clear_threshold <= self.MAX_CPU_THRESHOLD_PERCENTAGE:
+                    raise AlertRuleValidationError(
+                        f"CPU metric clear threshold must be between "
+                        f"{self.MIN_THRESHOLD_PERCENTAGE} and {self.MAX_CPU_THRESHOLD_PERCENTAGE}"
+                    )
+
+        elif metric in self.PERCENTAGE_METRICS:
             if not self.MIN_THRESHOLD_PERCENTAGE <= threshold <= self.MAX_THRESHOLD_PERCENTAGE:
                 raise AlertRuleValidationError(
                     f"Percentage metric threshold must be between "

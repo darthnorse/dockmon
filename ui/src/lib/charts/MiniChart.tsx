@@ -80,7 +80,6 @@ function getNiceNetworkScaleMax(maxValue: number): number {
   return Math.ceil(maxValue / (k * k * k)) * (k * k * k)
 }
 
-/** Step size for CPU tick/scale rounding above 100% */
 function getCpuScaleStep(max: number): number {
   if (max <= 200) return 50
   if (max <= 500) return 100

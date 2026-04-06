@@ -39,6 +39,7 @@ class AlertRuleValidator:
     # CPU metrics — can exceed 100% on multi-core containers
     CPU_METRICS = {
         'docker_cpu_workload_pct',
+        'cpu_percent',
     }
 
     # Percentage-based metrics (always 0-100%)

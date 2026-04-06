@@ -268,7 +268,12 @@ export function MiniChart({
             if (scaleMax <= 15) return [0, 5, 10, 15]
             if (scaleMax <= 40) return [0, 10, 20, 30, 40]
             if (scaleMax <= 60) return [0, 15, 30, 45, 60]
-            return [0, 25, 50, 75, 100]
+            if (scaleMax <= 100) return [0, 25, 50, 75, 100]
+            // Multi-core CPU: generate evenly spaced ticks above 100%
+            const step = scaleMax <= 200 ? 50 : scaleMax <= 500 ? 100 : 200
+            const ticks: number[] = []
+            for (let t = 0; t <= scaleMax; t += step) ticks.push(t)
+            return ticks
           }
 
           // For Network: generate 4-5 evenly spaced nice ticks

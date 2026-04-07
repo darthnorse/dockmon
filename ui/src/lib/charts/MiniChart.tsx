@@ -1,27 +1,17 @@
 /**
- * MiniChart Component - High-performance sparkline using uPlot
+ * MiniChart — uPlot-backed sparkline with two operating modes:
  *
- * FEATURES:
- * - Hardware-accelerated canvas rendering
- * - EMA smoothing (α=0.3) to reduce jitter
- * - Supports CPU (amber), Memory (blue), Network (green)
- * - 80-100px wide × 40-50px tall
- * - Renders up to 40 data points (2 minutes at 3s avg interval)
+ * - **Index mode** (default): live sparkline driven by an array of values.
+ *   X-axis is index-based with relative "seconds ago" labels. Used by every
+ *   dashboard / drawer card today.
+ * - **Timestamp mode**: pass `timestamps` (unix seconds) alongside the data
+ *   array. X-axis becomes absolute time, nulls in `data` render as gaps,
+ *   `timeWindow` locks the X-axis to a rolling [now - timeWindow, now] view.
+ *   Used for historical views over arbitrary ranges.
  *
- * PERFORMANCE:
- * - ~40KB bundle size (uPlot)
- * - < 16ms render time (60 FPS)
- * - Minimal re-renders via React.memo
- *
- * USAGE:
- * ```tsx
- * <MiniChart
- *   data={[12.3, 15.6, 18.2, ...]}
- *   color="cpu"     // 'cpu' | 'memory' | 'network'
- *   height={50}
- *   width={100}
- * />
- * ```
+ * Tens of MiniChart instances can be visible at once on the dashboard, so the
+ * named export is wrapped in `React.memo` and uPlot data updates flow through
+ * `setData()` rather than rebuilding the plot on every WebSocket tick.
  */
 
 import React, { useEffect, useRef, useMemo } from 'react'
@@ -30,18 +20,22 @@ import 'uplot/dist/uPlot.min.css'
 import { debug } from '@/lib/debug'
 import { formatRelativeTime, formatYAxisValue } from './formatters'
 
-// Color palette matching design system
-const CHART_COLORS = {
+// Color palette matching design system. Single source of truth: any UI element
+// that visually represents a metric (chart line, icon, swatch) MUST source its
+// color from here so the icon and the line can never disagree.
+export const CHART_COLORS = {
   cpu: '#F59E0B',     // Amber
   memory: '#3B82F6',  // Blue
   network: '#22C55E', // Green
 } as const
 
-type ChartColor = keyof typeof CHART_COLORS
+export type ChartColor = keyof typeof CHART_COLORS
 
 export interface MiniChartProps {
-  /** Array of data points (max 40) */
-  data: number[]
+  /** Array of data points. Nulls render as gaps (uPlot spanGaps: false). */
+  data: (number | null)[]
+  /** Optional absolute timestamps (unix seconds) for each data point. When provided, X-axis uses absolute time instead of index-based "seconds ago". */
+  timestamps?: number[] | undefined
   /** Chart color theme */
   color: ChartColor
   /** Chart height in pixels */
@@ -49,9 +43,19 @@ export interface MiniChartProps {
   /** Chart width in pixels */
   width?: number
   /** Optional label for accessibility */
-  label?: string
+  label?: string | undefined
   /** Show axes and enhanced features (default: false for compact sparklines) */
-  showAxes?: boolean
+  showAxes?: boolean | undefined
+  /** Fixed rolling time window in seconds. When provided with timestamps, X-axis is locked to [now - timeWindow, now]. */
+  timeWindow?: number | undefined
+  /**
+   * Tooltip time formatter for timestamp mode. Receives unix seconds, returns
+   * the display string. Wire this up via `useTimeFormat()` + `formatTime()` so
+   * the chart respects the user's 12h/24h preference. **Must be a stable
+   * reference** (use `useCallback`) — a new identity per render forces uPlot
+   * to rebuild on every WS tick.
+   */
+  formatTooltipTime?: ((unixSec: number) => string) | undefined
 }
 
 /**
@@ -86,13 +90,34 @@ function getCpuScaleStep(max: number): number {
   return 200
 }
 
-export function MiniChart({
+/**
+ * Smart Y-axis range for percentage metrics. CPU on multi-core hosts can exceed
+ * 100% (one core = 100%, four cores fully loaded = 400%); memory and disk are
+ * always bounded at 100%. The waterfall thresholds keep the visual baseline
+ * consistent across the live → loaded transition.
+ */
+function pctRange(dataMax: number, allowMultiCore: boolean): [number, number] {
+  if (dataMax < 0.8) return [0, 1]
+  if (dataMax < 3) return [0, 5]
+  if (dataMax < 10) return [0, 15]
+  if (dataMax < 30) return [0, 40]
+  if (dataMax < 50) return [0, 60]
+  if (dataMax < 80) return [0, 100]
+  if (!allowMultiCore) return [0, 100]
+  const step = getCpuScaleStep(dataMax)
+  return [0, Math.ceil(dataMax / step) * step]
+}
+
+function MiniChartInner({
   data,
+  timestamps,
   color,
   height = 50,
   width = 100,
   label,
   showAxes = false,
+  timeWindow,
+  formatTooltipTime,
 }: MiniChartProps) {
   const chartRef = useRef<HTMLDivElement>(null)
   const plotRef = useRef<uPlot | null>(null)
@@ -110,18 +135,15 @@ export function MiniChart({
     value: '',
   })
 
-  // Use raw data without smoothing to show actual values
-  const chartData = data
+  const hasTimestamps = !!(timestamps && timestamps.length > 0)
 
-  // Generate X-axis as time offset from start
-  // Left = oldest data (0), Right = newest data (max seconds)
   const xData = useMemo(() => {
-    const dataLength = chartData.length
-    // X values count up from 0 (oldest) to max (newest)
-    return Array.from({ length: dataLength }, (_, i) => i * 3)
-  }, [chartData.length])
+    // Check `timestamps` directly (not the derived `hasTimestamps`) so TS
+    // narrows the return type to `number[]` instead of `number[] | undefined`.
+    if (timestamps && timestamps.length > 0) return timestamps
+    return Array.from({ length: data.length }, (_, i) => i * 3)
+  }, [timestamps, data.length])
 
-  // Determine if this is a percentage metric (CPU/Memory) or bytes (Network)
   const isPercentage = color === 'cpu' || color === 'memory'
   const isCpu = color === 'cpu'
 
@@ -152,19 +174,19 @@ export function MiniChart({
       {
         // X-axis (time)
         show: showAxes,
-        space: 25,
+        space: hasTimestamps ? 60 : 25,
         stroke: '#64748b',
-        grid: {
-          show: false,
-        },
+        grid: hasTimestamps ? { show: showAxes, stroke: '#1e293b44', width: 1 } : { show: false },
         ticks: {
           show: true,
           stroke: '#cbd5e1',
           width: 1,
           size: 4,
         },
+        // Only use custom relative-time splits/values in index mode.
+        // In timestamp mode, uPlot's built-in time formatting handles the X-axis.
+        ...(hasTimestamps ? {} : {
         splits: (u: uPlot, _axisIdx: number, scaleMin: number, scaleMax: number) => {
-          // Check actual number of data points
           const dataPointCount = u.data[0]?.length ?? 0
 
           // Single data point - just show "now"
@@ -240,13 +262,13 @@ export function MiniChart({
           return uniqueTicks
         },
         values: (_u: uPlot, vals: number[]) => {
-          // Convert time offsets to "seconds ago" labels
           const maxVal = Math.max(...vals)
           return vals.map((v: number) => {
             const secondsAgo = maxVal - v
             return secondsAgo === 0 ? 'now' : formatRelativeTime(secondsAgo)
           })
         },
+        }),
         font: '11px system-ui, -apple-system, sans-serif',
       },
       {
@@ -287,7 +309,6 @@ export function MiniChart({
           const numTicks = 4
           const rawStep = scaleMax / numTicks
 
-          // Round step to nice values
           let niceStep: number
           if (rawStep < 10) niceStep = 10
           else if (rawStep < 50) niceStep = 50
@@ -302,7 +323,6 @@ export function MiniChart({
           else if (rawStep < k * k) niceStep = k * k
           else niceStep = Math.ceil(rawStep / (k * k)) * (k * k)
 
-          // Generate ticks at nice intervals
           const ticks = [0]
           for (let i = niceStep; i <= scaleMax; i += niceStep) {
             ticks.push(i)
@@ -310,7 +330,6 @@ export function MiniChart({
           return ticks
         },
         values: (_u: uPlot, vals: number[]) => {
-          // Format y-axis values based on metric type
           return vals.map((v: number) => formatYAxisValue(v, isPercentage))
         },
         font: '11px system-ui, -apple-system, sans-serif',
@@ -318,33 +337,24 @@ export function MiniChart({
     ],
     scales: {
       x: {
-        time: false, // We're using seconds-ago, not timestamps
+        time: hasTimestamps,
+        // In timestamp mode with a fixed timeWindow, lock the X-axis to a rolling window
+        // ending at "now". This prevents visual stretching when the data range is shorter
+        // than the view window (e.g., during initial data collection).
+        range: (_u: uPlot, dataMin: number, dataMax: number): uPlot.Range.MinMax => {
+          if (hasTimestamps && timeWindow) {
+            const now = Date.now() / 1000
+            return [now - timeWindow, now]
+          }
+          return [dataMin, dataMax]
+        },
       },
       y: {
         range: (_u: uPlot, dataMin: number, dataMax: number) => {
           if (showAxes) {
             // Enhanced mode: Smart ranges with zero baseline
             if (isPercentage) {
-              if (isCpu) {
-                // CPU: can exceed 100% on multi-core containers
-                if (dataMax < 0.8) return [0, 1]
-                else if (dataMax < 3) return [0, 5]
-                else if (dataMax < 10) return [0, 15]
-                else if (dataMax < 30) return [0, 40]
-                else if (dataMax < 50) return [0, 60]
-                else if (dataMax < 80) return [0, 100]
-                else {
-                  const step = getCpuScaleStep(dataMax)
-                  return [0, Math.ceil(dataMax / step) * step]
-                }
-              }
-              // Memory: always 0-100%
-              if (dataMax < 0.8) return [0, 1]
-              else if (dataMax < 3) return [0, 5]
-              else if (dataMax < 10) return [0, 15]
-              else if (dataMax < 30) return [0, 40]
-              else if (dataMax < 50) return [0, 60]
-              else return [0, 100]
+              return pctRange(dataMax, isCpu)
             }
             // For Network: use nice rounded scale values for stable gridlines
             if (dataMax - dataMin < 0.01) {
@@ -352,19 +362,16 @@ export function MiniChart({
             }
             // Add 10% padding then round to nice value for consistent display
             return [0, getNiceNetworkScaleMax(dataMax * 1.1)]
-          } else {
-            // Compact mode: Original auto-scaling with padding
-            if (dataMax - dataMin < 0.01) {
-              if (dataMax < 0.5) {
-                return [0, 1]
-              }
-              const center = dataMax
-              const margin = Math.max(center * 0.1, 0.1)
-              return [center - margin, center + margin]
-            }
-            const padding = (dataMax - dataMin) * 0.1
-            return [dataMin - padding, dataMax + padding]
           }
+          // Compact mode: Original auto-scaling with padding
+          if (dataMax - dataMin < 0.01) {
+            if (dataMax < 0.5) return [0, 1]
+            const center = dataMax
+            const margin = Math.max(center * 0.1, 0.1)
+            return [center - margin, center + margin]
+          }
+          const padding = (dataMax - dataMin) * 0.1
+          return [dataMin - padding, dataMax + padding]
         },
       },
     },
@@ -378,6 +385,8 @@ export function MiniChart({
         label: label || 'Value',
         stroke: CHART_COLORS[color],
         width: 2,
+        // Render gaps at null values (for downtime / missing data in historical views)
+        spanGaps: false,
         points: {
           show: showAxes, // Only show points in enhanced mode
           size: 4,
@@ -385,13 +394,13 @@ export function MiniChart({
           fill: '#ffffff',
           width: 2,
         },
-        value: (_u: uPlot, v: number) => {
-          // Format tooltip value based on metric type
+        value: (_u: uPlot, v: number | null) => {
+          // Format tooltip value based on metric type.
+          // With spanGaps: false, uPlot passes null at gap points.
           if (v == null) return '—'
           if (isPercentage) {
             return `${v.toFixed(1)}%`
           }
-          // Network bytes
           return formatYAxisValue(v, false)
         },
       },
@@ -407,7 +416,6 @@ export function MiniChart({
             return
           }
 
-          // Get data at cursor index
           const xVal = u.data[0]?.[idx]
           const yVal = u.data[1]?.[idx]
 
@@ -416,12 +424,20 @@ export function MiniChart({
             return
           }
 
-          // Calculate time ago
-          const maxXVal = u.data[0]?.[u.data[0].length - 1] ?? 0
-          const secondsAgo = maxXVal - xVal
-          const timeLabel = secondsAgo === 0 ? 'now' : `${formatRelativeTime(secondsAgo)} ago`
+          let timeLabel: string
+          if (hasTimestamps) {
+            // Timestamp mode: prefer the caller-provided formatter (which can
+            // honor the user's 12h/24h preference). Fall back to a locale-aware
+            // default if no formatter was wired up.
+            timeLabel = formatTooltipTime
+              ? formatTooltipTime(xVal)
+              : new Date(xVal * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+          } else {
+            const maxXVal = u.data[0]?.[u.data[0].length - 1] ?? 0
+            const secondsAgo = maxXVal - xVal
+            timeLabel = secondsAgo === 0 ? 'now' : `${formatRelativeTime(secondsAgo)} ago`
+          }
 
-          // Format value
           let valueLabel: string
           if (isPercentage) {
             valueLabel = `${yVal.toFixed(1)}%`
@@ -429,7 +445,7 @@ export function MiniChart({
             valueLabel = formatYAxisValue(yVal, false)
           }
 
-          // Get position of the actual data point (not cursor)
+          // Position at the data point, not the raw cursor — feels more precise on hover
           const left = u.valToPos(xVal, 'x')
           const top = u.valToPos(yVal, 'y')
 
@@ -443,30 +459,30 @@ export function MiniChart({
         },
       ],
     },
-  }), [width, height, color, label, isPercentage, isCpu, showAxes, setTooltip])
+  }), [width, height, color, label, isPercentage, isCpu, hasTimestamps, timeWindow, showAxes, formatTooltipTime, setTooltip])
 
-  // Initialize chart
+  // Tracks whether we've ever had a populated chart, so we only rebuild on the
+  // empty→populated transition (and on opts/color changes), not on every data
+  // tick. Per-tick data updates flow through `setData` in the effect below.
+  const hasData = data.length > 0
+
+  // Initialize / rebuild chart. Deps deliberately exclude `data` and `xData`:
+  // those are forwarded via `setData` in the next effect, which is the whole
+  // point of uPlot's incremental update API. Including them here would destroy
+  // and recreate the entire uPlot instance on every WebSocket tick.
   useEffect(() => {
     if (!chartRef.current) return
 
-    // Destroy existing chart if any
     if (plotRef.current) {
       plotRef.current.destroy()
       plotRef.current = null
     }
 
     try {
-      // Create uPlot instance
-      const plot = new uPlot(
-        opts,
-        [xData, chartData],
-        chartRef.current
-      )
-
+      const plot = new uPlot(opts, [xData, data], chartRef.current)
       plotRef.current = plot
-      debug.log('MiniChart', `Initialized ${color} chart with ${chartData.length} points`)
+      debug.log('MiniChart', `Initialized ${color} chart with ${data.length} points`)
 
-      // Cleanup on unmount
       return () => {
         plot.destroy()
         plotRef.current = null
@@ -475,23 +491,21 @@ export function MiniChart({
       debug.error('MiniChart', `Failed to initialize ${color} chart:`, error)
       return undefined
     }
-  }, [opts, xData, chartData, color]) // Reinitialize when config or data structure changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opts, color, hasData])
 
-  // Update chart data when it changes
+  // Push data updates through uPlot's incremental setData rather than rebuilding.
   useEffect(() => {
     if (!plotRef.current) return
-
     try {
-      plotRef.current.setData([xData, chartData])
+      plotRef.current.setData([xData, data])
     } catch (error) {
       debug.error('MiniChart', 'Failed to update chart data:', error)
     }
-  }, [xData, chartData])
+  }, [xData, data])
 
-  // Handle resize
   useEffect(() => {
     if (!plotRef.current) return
-
     try {
       plotRef.current.setSize({ width, height })
     } catch (error) {
@@ -536,5 +550,9 @@ export function MiniChart({
   )
 }
 
-// Memoize to prevent unnecessary re-renders
-export default React.memo(MiniChart)
+/**
+ * Memoized export — every consumer goes through this. Tens of MiniChart
+ * instances are visible on the dashboard at once and re-render on every
+ * stats tick, so referential prop equality is what keeps the page cheap.
+ */
+export const MiniChart = React.memo(MiniChartInner)

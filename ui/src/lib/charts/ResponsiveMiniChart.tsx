@@ -1,25 +1,11 @@
 /**
- * ResponsiveMiniChart - Auto-sizing wrapper for MiniChart
- *
- * FEATURES:
- * - Automatically fills parent container width
- * - Uses ResizeObserver for responsive updates
- * - Maintains aspect ratio
- * - Optimized with debouncing to prevent excessive re-renders
- *
- * USAGE:
- * ```tsx
- * <div className="flex-1">
- *   <ResponsiveMiniChart
- *     data={sparklineData}
- *     color="cpu"
- *     height={32}
- *   />
- * </div>
- * ```
+ * ResponsiveMiniChart — auto-sizing wrapper for MiniChart. Measures the parent
+ * container width via ResizeObserver (debounced) and forwards the resolved
+ * pixel width to MiniChart. Height is caller-supplied; nothing here maintains
+ * an aspect ratio.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { MiniChart, MiniChartProps } from './MiniChart'
 
 interface ResponsiveMiniChartProps extends Omit<MiniChartProps, 'width'> {
@@ -31,8 +17,9 @@ interface ResponsiveMiniChartProps extends Omit<MiniChartProps, 'width'> {
   debounceMs?: number
 }
 
-export function ResponsiveMiniChart({
+function ResponsiveMiniChartInner({
   data,
+  timestamps,
   color,
   height = 32,
   minWidth = 60,
@@ -40,6 +27,8 @@ export function ResponsiveMiniChart({
   debounceMs = 100,
   label,
   showAxes,
+  timeWindow,
+  formatTooltipTime,
 }: ResponsiveMiniChartProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [containerWidth, setContainerWidth] = useState<number>(minWidth)
@@ -49,7 +38,6 @@ export function ResponsiveMiniChart({
     const container = containerRef.current
     if (!container) return
 
-    // Initial measurement
     const updateWidth = () => {
       const width = container.clientWidth
       if (width > 0) {
@@ -61,14 +49,11 @@ export function ResponsiveMiniChart({
       }
     }
 
-    // Debounced resize handler
+    // Debounced so rapid parent resizes don't thrash uPlot.
     const handleResize = (entries: ResizeObserverEntry[]) => {
-      // Clear previous timeout
       if (resizeTimeoutRef.current) {
         clearTimeout(resizeTimeoutRef.current)
       }
-
-      // Debounce the update
       resizeTimeoutRef.current = setTimeout(() => {
         for (const entry of entries) {
           const width = entry.contentRect.width
@@ -83,14 +68,10 @@ export function ResponsiveMiniChart({
       }, debounceMs)
     }
 
-    // Set up ResizeObserver
     const resizeObserver = new ResizeObserver(handleResize)
     resizeObserver.observe(container)
-
-    // Initial measurement
     updateWidth()
 
-    // Cleanup
     return () => {
       resizeObserver.disconnect()
       if (resizeTimeoutRef.current) {
@@ -106,9 +87,18 @@ export function ResponsiveMiniChart({
         color={color}
         width={containerWidth}
         height={height}
-        {...(showAxes !== undefined && { showAxes })}
-        {...(label && { label })}
+        timestamps={timestamps}
+        showAxes={showAxes}
+        label={label}
+        timeWindow={timeWindow}
+        formatTooltipTime={formatTooltipTime}
       />
     </div>
   )
 }
+
+/**
+ * Memoized export — paired with the memoized inner `MiniChart` so the hot-path
+ * dashboard avoids re-rendering both wrappers on every parent re-render.
+ */
+export const ResponsiveMiniChart = memo(ResponsiveMiniChartInner)

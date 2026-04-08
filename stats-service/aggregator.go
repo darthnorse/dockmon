@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"time"
 
@@ -42,6 +41,12 @@ func NewAggregator(cache *StatsCache, streamManager *StreamManager, interval tim
 }
 
 // SetCascade enables persistence ingest. Pass nil to disable.
+//
+// Startup-ordering contract: callers MUST invoke SetCascade BEFORE
+// Start(ctx) is called in its own goroutine. a.cascade is read from the
+// aggregation goroutine without a mutex; wiring it in after Start has
+// spawned would race. Task 15 (main.go wiring) is the only intended
+// caller and enforces this by construction.
 func (a *Aggregator) SetCascade(c *persistence.Cascade) {
 	a.cascade = c
 }
@@ -109,7 +114,8 @@ func (a *Aggregator) aggregate() {
 					if cs.LastUpdate.Before(cutoff) {
 						continue
 					}
-					compositeID := fmt.Sprintf("%s:%s", cs.HostID, cs.ContainerID)
+					// Matches the composite-key format used in cache.go.
+					compositeID := cs.HostID + ":" + cs.ContainerID
 					a.cascade.Ingest(compositeID, false, now, sampleFromContainerStats(cs))
 				}
 			}

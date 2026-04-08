@@ -8,10 +8,19 @@ import (
 	"time"
 
 	sharedDocker "github.com/darthnorse/dockmon-shared/docker"
+	"github.com/darthnorse/dockmon-agent/internal/client/statsmsg"
 	"github.com/darthnorse/dockmon-agent/internal/docker"
 	"github.com/docker/docker/api/types/container"
 	"github.com/sirupsen/logrus"
 )
+
+// StatsServiceSender is the narrow interface the StatsHandler uses to ship
+// stats samples to stats-service. *client.StatsServiceClient satisfies this
+// interface structurally — handlers cannot import `client` directly because
+// `client` already imports `handlers` for the main WebSocket client.
+type StatsServiceSender interface {
+	Send(msg statsmsg.AgentStatsMsg)
+}
 
 // StatsHandler manages container stats collection and streaming
 type StatsHandler struct {
@@ -19,11 +28,15 @@ type StatsHandler struct {
 	log          *logrus.Logger
 
 	// Active stats streams
-	streams      map[string]context.CancelFunc
-	streamsMu    sync.RWMutex
+	streams   map[string]context.CancelFunc
+	streamsMu sync.RWMutex
 
 	// Callback to send stats to backend
-	sendMessage  func(msgType string, payload interface{}) error
+	sendMessage func(msgType string, payload interface{}) error
+
+	// Optional: if non-nil, stats are also dual-sent to stats-service for
+	// historical persistence. nil disables the dual-send. See spec §10.
+	statsService StatsServiceSender
 }
 
 // NewStatsHandler creates a new stats handler
@@ -34,6 +47,23 @@ func NewStatsHandler(dockerClient *docker.Client, log *logrus.Logger, sendMessag
 		streams:      make(map[string]context.CancelFunc),
 		sendMessage:  sendMessage,
 	}
+}
+
+// SetStatsServiceClient enables dual-send to stats-service. Pass nil to disable.
+// The constructor leaves statsService nil; the agent main loop (Task 22) wires
+// it up after the stats-service WebSocket client is built. Accepts any
+// implementation of StatsServiceSender; *client.StatsServiceClient satisfies
+// the interface structurally.
+func (h *StatsHandler) SetStatsServiceClient(c StatsServiceSender) {
+	// A typed-nil *client.StatsServiceClient passed as an interface is NOT
+	// nil when compared to untyped nil, so handle it explicitly: callers can
+	// pass nil (as an untyped nil literal) to disable dual-send, and we also
+	// want a typed-nil to disable rather than panic in processStats.
+	if c == nil {
+		h.statsService = nil
+		return
+	}
+	h.statsService = c
 }
 
 // StartStatsCollection begins stats collection for all running containers
@@ -165,5 +195,23 @@ func (h *StatsHandler) processStats(stat *container.StatsResponse, containerID, 
 	// Send to backend via WebSocket
 	if err := h.sendMessage("container_stats", statsMsg); err != nil {
 		h.log.Errorf("Failed to send stats for %s: %v", safeShortID(containerID), err)
+	}
+
+	// Dual-send to stats-service for historical persistence (spec §10).
+	// nil-safe: disabled until the agent main loop calls SetStatsServiceClient.
+	if h.statsService != nil {
+		h.statsService.Send(statsmsg.AgentStatsMsg{
+			ContainerID:   containerID,
+			ContainerName: containerName,
+			CPUPercent:    sharedDocker.RoundToDecimal(result.CPUPercent, 1),
+			MemoryUsage:   result.MemoryUsage,
+			MemoryLimit:   result.MemoryLimit,
+			MemoryPercent: sharedDocker.RoundToDecimal(result.MemoryPercent, 1),
+			NetworkRx:     result.NetworkRx,
+			NetworkTx:     result.NetworkTx,
+			DiskRead:      result.DiskRead,
+			DiskWrite:     result.DiskWrite,
+			Timestamp:     time.Now().UTC().Format(time.RFC3339),
+		})
 	}
 }

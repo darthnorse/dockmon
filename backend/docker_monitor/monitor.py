@@ -850,8 +850,7 @@ class DockerMonitor:
                         # reconnect attempt fails fast instead of waiting for the
                         # 5-minute token cache TTL. Non-fatal on failure.
                         try:
-                            from stats_client import get_stats_client as _get_stats_client
-                            await _get_stats_client().invalidate_agent_token(agent_id)
+                            await get_stats_client().invalidate_agent_token(agent_id)
                         except Exception as e:
                             logger.warning(
                                 f"Failed to invalidate agent token in stats service: {e}"

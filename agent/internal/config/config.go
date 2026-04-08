@@ -60,7 +60,10 @@ func LoadFromEnv() (*Config, error) {
 		DockerTLSVerify:  getEnvBool("DOCKER_TLS_VERIFY", false),
 
 		// Protocol
-		ProtoVersion:     getEnvOrDefault("PROTO_VERSION", "1.0"),
+		// 1.1: agent dual-sends container_stats to stats-service /api/stats/ws/ingest
+		// for historical persistence (spec §10). Older agents (1.0) continue to feed
+		// Python's in-memory buffer only — live sparklines still work but no history.
+		ProtoVersion:     getEnvOrDefault("PROTO_VERSION", "1.1"),
 
 		// Reconnection (exponential backoff: 1s → 60s)
 		ReconnectInitial: getEnvDuration("RECONNECT_INITIAL", 1*time.Second),

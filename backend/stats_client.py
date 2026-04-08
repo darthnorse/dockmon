@@ -5,7 +5,7 @@ import aiohttp
 import asyncio
 import logging
 import os
-from typing import Dict, Optional, Callable
+from typing import Any, Dict, Optional, Callable
 import json
 
 logger = logging.getLogger(__name__)
@@ -294,6 +294,89 @@ class StatsServiceClient:
                 logger.error(f"Error getting container stats from stats service: {e}")
                 return {}
         return {}
+
+    async def get_host_stats_history(
+        self,
+        host_id: str,
+        range_: Optional[str] = None,
+        from_: Optional[int] = None,
+        to: Optional[int] = None,
+        since: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Proxy to stats-service GET /api/stats/history/host.
+
+        Unlike the realtime stats helpers above, this method propagates HTTP
+        errors (400 from bad params, 500 from backend) to the caller so the
+        FastAPI proxy endpoint can mirror the stats-service response.
+        """
+        params: Dict[str, str] = {"host_id": host_id}
+        if range_ is not None:
+            params["range"] = range_
+        if from_ is not None:
+            params["from"] = str(from_)
+        if to is not None:
+            params["to"] = str(to)
+        if since is not None:
+            params["since"] = str(since)
+
+        url = f"{self.base_url}/api/stats/history/host"
+        for attempt in range(2):
+            try:
+                session = await self._get_session()
+                async with session.get(url, params=params) as resp:
+                    if resp.status == 401 and attempt == 0:
+                        logger.warning("Stats service returned 401, refreshing token...")
+                        await self._invalidate_auth()
+                        continue
+                    resp.raise_for_status()
+                    return await resp.json()
+            except aiohttp.ClientError as e:
+                logger.error(f"Failed to get host stats history from stats service: {e}")
+                raise
+        # Unreachable: the retry loop either returns JSON or raises.
+        raise RuntimeError("get_host_stats_history: retry loop exhausted without response")
+
+    async def get_container_stats_history(
+        self,
+        host_id: str,
+        container_id: str,
+        range_: Optional[str] = None,
+        from_: Optional[int] = None,
+        to: Optional[int] = None,
+        since: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Proxy to stats-service GET /api/stats/history/container.
+
+        Propagates HTTP errors (see get_host_stats_history for rationale).
+        """
+        params: Dict[str, str] = {"host_id": host_id, "container_id": container_id}
+        if range_ is not None:
+            params["range"] = range_
+        if from_ is not None:
+            params["from"] = str(from_)
+        if to is not None:
+            params["to"] = str(to)
+        if since is not None:
+            params["since"] = str(since)
+
+        url = f"{self.base_url}/api/stats/history/container"
+        for attempt in range(2):
+            try:
+                session = await self._get_session()
+                async with session.get(url, params=params) as resp:
+                    if resp.status == 401 and attempt == 0:
+                        logger.warning("Stats service returned 401, refreshing token...")
+                        await self._invalidate_auth()
+                        continue
+                    resp.raise_for_status()
+                    return await resp.json()
+            except aiohttp.ClientError as e:
+                logger.error(f"Failed to get container stats history from stats service: {e}")
+                raise
+        # Unreachable: the retry loop either returns JSON or raises.
+        raise RuntimeError("get_container_stats_history: retry loop exhausted without response")
 
     # Event service methods
 

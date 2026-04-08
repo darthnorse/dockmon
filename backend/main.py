@@ -1046,6 +1046,62 @@ async def get_host_metrics(host_id: str, current_user: dict = Depends(get_curren
         raise HTTPException(status_code=500, detail="Failed to fetch host metrics")
 
 
+@app.get(
+    "/api/hosts/{host_id}/stats/history",
+    tags=["hosts"],
+    dependencies=[Depends(require_capability("hosts.view"))],
+)
+async def get_host_stats_history(
+    host_id: str,
+    range_: Optional[str] = Query(None, alias="range", pattern="^(1h|8h|24h|7d|30d)$"),
+    from_: Optional[int] = Query(None, alias="from"),
+    to: Optional[int] = Query(None),
+    since: Optional[int] = Query(None),
+):
+    """Proxy to stats-service GET /api/stats/history/host (spec §9)."""
+    if range_ is None and from_ is None:
+        raise HTTPException(status_code=400, detail="must specify range or from/to")
+    from stats_client import get_stats_client
+    stats_client = get_stats_client()
+    return await stats_client.get_host_stats_history(
+        host_id=host_id,
+        range_=range_,
+        from_=from_,
+        to=to,
+        since=since,
+    )
+
+
+@app.get(
+    "/api/hosts/{host_id}/containers/{container_id}/stats/history",
+    tags=["containers"],
+    dependencies=[Depends(require_capability("containers.view"))],
+)
+async def get_container_stats_history(
+    host_id: str,
+    container_id: str,
+    range_: Optional[str] = Query(None, alias="range", pattern="^(1h|8h|24h|7d|30d)$"),
+    from_: Optional[int] = Query(None, alias="from"),
+    to: Optional[int] = Query(None),
+    since: Optional[int] = Query(None),
+):
+    """Proxy to stats-service GET /api/stats/history/container (spec §9)."""
+    if range_ is None and from_ is None:
+        raise HTTPException(status_code=400, detail="must specify range or from/to")
+    # Defense-in-depth: normalize container_id at endpoint entry (CLAUDE.md).
+    container_id = normalize_container_id(container_id)
+    from stats_client import get_stats_client
+    stats_client = get_stats_client()
+    return await stats_client.get_container_stats_history(
+        host_id=host_id,
+        container_id=container_id,
+        range_=range_,
+        from_=from_,
+        to=to,
+        since=since,
+    )
+
+
 @app.get("/api/hosts/{host_id}/agent", tags=["hosts"], dependencies=[Depends(require_capability("agents.view"))])
 async def get_host_agent_info(host_id: str, current_user: dict = Depends(get_current_user)):
     """

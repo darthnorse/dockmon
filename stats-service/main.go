@@ -370,6 +370,26 @@ func main() {
 	settingsHandler := &SettingsHandler{provider: settingsProvider}
 	mux.HandleFunc("/api/settings", authMiddleware(token, settingsHandler.ServeHTTP))
 
+	// Task 18: agent ingest WebSocket endpoint. Remote agents push their
+	// container stats directly into the same StatsCache that local and
+	// mTLS-remote stats feed into. Requires the persistence DB for agent
+	// token validation, so only registered when persistDB is available.
+	//
+	// NOT wrapped in authMiddleware (which uses the stats-service Bearer
+	// token): auth is per-WebSocket via the agent's permanent UUID token,
+	// validated against the agents table inside HandleWebSocket itself.
+	// See spec §10.
+	if persistDB != nil {
+		ingestHandler := &IngestHandler{
+			db:    persistDB,
+			cache: cache,
+			upgrader: websocket.Upgrader{
+				CheckOrigin: func(r *http.Request) bool { return true },
+			},
+		}
+		mux.HandleFunc("/api/stats/ws/ingest", ingestHandler.HandleWebSocket)
+	}
+
 	// Start stream for a container (called by Python backend) - PROTECTED
 	mux.HandleFunc("/api/streams/start", authMiddleware(token, limitRequestBody(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"math"
+	"sync"
 	"time"
 )
 
@@ -160,4 +161,90 @@ func lastContainerCount(samples []sample) int {
 		return 0
 	}
 	return samples[len(samples)-1].ContainerCount
+}
+
+// entityKey identifies one (entity, tier) slot in the cascade's state map.
+type entityKey struct {
+	entityID string
+	tierIdx  int
+}
+
+// tierState is the accumulating bucket for one (entity, tier).
+// A zero-valued tierState (bucketTs.IsZero()) represents "no bucket in flight."
+type tierState struct {
+	bucketTs time.Time
+	isHost   bool // remembered from first ingest so cascade-up can carry it
+	accum    []sample
+}
+
+// writeJob is the unit of work the writer goroutine consumes.
+type writeJob struct {
+	tier     string // "1h" | "8h" | "24h" | "7d" | "30d"
+	isHost   bool
+	entityID string    // composite container key OR host_id
+	ts       time.Time // bucket start (quantized)
+	value    sample
+}
+
+// Cascade owns in-memory bucket state for every (entity, tier) pair and emits
+// writeJobs to its writer channel as buckets cross their boundaries.
+type Cascade struct {
+	tiers  []Tier
+	state  map[entityKey]tierState
+	writes chan<- writeJob
+	mu     sync.Mutex
+}
+
+// NewCascade builds a fresh cascade.
+func NewCascade(tiers []Tier, writes chan<- writeJob) *Cascade {
+	return &Cascade{
+		tiers:  tiers,
+		state:  make(map[entityKey]tierState),
+		writes: writes,
+	}
+}
+
+// Ingest delivers one raw sample for one entity at one wall-clock time.
+// Raw samples only feed tier 0; cascade-up propagates inside feedTier when
+// a bucket boundary is crossed.
+func (c *Cascade) Ingest(entityID string, isHost bool, sampleTs time.Time, val sample) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.feedTier(entityID, isHost, 0, sampleTs, val)
+}
+
+// feedTier processes exactly ONE (entityID, tierIdx) — spec §5 invariant.
+// Raw samples enter at tierIdx=0 via Ingest. When a bucket fires, the blend
+// is cascade-fed to tierIdx+1 using the OLD bucket's ts (not sampleTs), so
+// each tier's grid is anchored to the tier below it, which is anchored to
+// the universal Unix-epoch grid.
+func (c *Cascade) feedTier(
+	entityID string, isHost bool, tierIdx int, sampleTs time.Time, val sample,
+) {
+	if tierIdx >= len(c.tiers) {
+		return
+	}
+	tier := c.tiers[tierIdx]
+	bts := sampleTs.Truncate(tier.Interval)
+	key := entityKey{entityID, tierIdx}
+	st := c.state[key]
+
+	if !st.bucketTs.IsZero() && bts.After(st.bucketTs) {
+		agg := blend(st.accum, tier.Alpha)
+		c.writes <- writeJob{
+			tier:     tier.Name,
+			isHost:   st.isHost,
+			entityID: entityID,
+			ts:       st.bucketTs,
+			value:    agg,
+		}
+		c.feedTier(entityID, isHost, tierIdx+1, st.bucketTs, agg)
+		st = tierState{}
+	}
+	if st.bucketTs.IsZero() {
+		st.bucketTs = bts
+		st.isHost = isHost
+	}
+	st.accum = append(st.accum, val)
+	c.state[key] = st
 }

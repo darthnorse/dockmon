@@ -221,3 +221,127 @@ func TestBucketQuantization_SubSecondInterval(t *testing.T) {
 			bucket, bucket.UnixNano(), wantUnixNs)
 	}
 }
+
+// drainAll synchronously collects everything currently buffered on the channel.
+func drainAll(ch chan writeJob) []writeJob {
+	var out []writeJob
+	for {
+		select {
+		case j := <-ch:
+			out = append(out, j)
+		default:
+			return out
+		}
+	}
+}
+
+func TestCascade_NoEmissionWithinSameBucket(t *testing.T) {
+	tiers := ComputeTiers(500)
+	writes := make(chan writeJob, 64)
+	c := NewCascade(tiers, writes)
+
+	// Align t0 to a tier-0 bucket boundary (7.2s) so all three samples
+	// below fall inside the same bucket. time.Unix(1_000_000,0) lands
+	// 6.4s into a bucket, so the +1s / +2s samples would cross into the
+	// next bucket — not what this test wants to assert.
+	t0 := time.Unix(1_000_000, 0).Truncate(tiers[0].Interval)
+	c.Ingest("c1", false, t0, sample{CPU: 10})
+	c.Ingest("c1", false, t0.Add(1*time.Second), sample{CPU: 20})
+	c.Ingest("c1", false, t0.Add(2*time.Second), sample{CPU: 30})
+
+	got := drainAll(writes)
+	if len(got) != 0 {
+		t.Errorf("got %d writes within one bucket, want 0", len(got))
+	}
+}
+
+func TestCascade_EmitsOnBucketBoundary(t *testing.T) {
+	tiers := ComputeTiers(500)
+	writes := make(chan writeJob, 64)
+	c := NewCascade(tiers, writes)
+
+	// Tier 0 interval = 7.2s. Pick timestamps that cross a tier-0 boundary.
+	base := time.Unix(0, 0).Add(7200 * time.Millisecond)
+	c.Ingest("c1", false, base, sample{CPU: 10})
+	c.Ingest("c1", false, base.Add(8*time.Second), sample{CPU: 50})
+
+	jobs := drainAll(writes)
+	var tier0 *writeJob
+	for i := range jobs {
+		if jobs[i].tier == "1h" && jobs[i].entityID == "c1" {
+			tier0 = &jobs[i]
+			break
+		}
+	}
+	if tier0 == nil {
+		t.Fatalf("expected a tier 1h write for c1, got %v", jobs)
+	}
+	if tier0.value.CPU != 10 {
+		t.Errorf("tier0 finalized CPU=%v, want 10 (the only sample in that bucket)", tier0.value.CPU)
+	}
+}
+
+func TestCascade_CascadeUpUsesBucketTsNotSampleTs(t *testing.T) {
+	// Tier 0 = 7.2s, Tier 1 = 57.6s (8 × tier 0). Push enough tier-0 samples
+	// that tier 1 eventually fires. Every tier 1 write timestamp must be
+	// aligned to 57.6s exactly.
+	tiers := ComputeTiers(500)
+	writes := make(chan writeJob, 1024)
+	c := NewCascade(tiers, writes)
+
+	base := time.Unix(0, 0)
+	for i := 0; i < 100; i++ {
+		ts := base.Add(time.Duration(i) * 8 * time.Second)
+		c.Ingest("c1", false, ts, sample{CPU: float64(i)})
+	}
+
+	jobs := drainAll(writes)
+	for _, j := range jobs {
+		if j.tier == "8h" {
+			if j.ts.UnixNano()%int64(57600*time.Millisecond) != 0 {
+				t.Errorf("8h tier write ts=%v not aligned to 57.6s", j.ts)
+			}
+		}
+	}
+}
+
+func TestCascade_FeedsTier0OnlyFromIngest(t *testing.T) {
+	tiers := ComputeTiers(500)
+	writes := make(chan writeJob, 64)
+	c := NewCascade(tiers, writes)
+
+	c.Ingest("c1", false, time.Unix(1_000_000, 0), sample{CPU: 42})
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for tierIdx, tierDef := range tiers {
+		st := c.state[entityKey{"c1", tierIdx}]
+		if tierIdx == 0 {
+			if len(st.accum) != 1 {
+				t.Errorf("tier 0 accum=%d, want 1", len(st.accum))
+			}
+		} else {
+			if len(st.accum) != 0 {
+				t.Errorf("tier %d (%s) accum=%d, want 0 (only tier 0 receives raw samples)",
+					tierIdx, tierDef.Name, len(st.accum))
+			}
+		}
+	}
+}
+
+func TestCascade_RestartIsClean(t *testing.T) {
+	// A fresh cascade after "restart" receiving a sample within the same tier-0
+	// bucket window must NOT produce a duplicate write for the bucket before restart.
+	tiers := ComputeTiers(500)
+	writes := make(chan writeJob, 64)
+	c := NewCascade(tiers, writes)
+	c.Ingest("c1", false, time.Unix(1_000_000, 0), sample{CPU: 10})
+
+	writes2 := make(chan writeJob, 64)
+	c2 := NewCascade(tiers, writes2)
+	c2.Ingest("c1", false, time.Unix(1_000_007, 0), sample{CPU: 20})
+	got := drainAll(writes2)
+	if len(got) != 0 {
+		t.Errorf("expected no writes after restart with samples in same bucket, got %v", got)
+	}
+}

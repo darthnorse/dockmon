@@ -21,14 +21,18 @@ branch_labels = None
 depends_on = None
 
 
+def get_inspector():
+    return sa.inspect(op.get_bind())
+
+
 def table_exists(table_name: str) -> bool:
-    return table_name in sa.inspect(op.get_bind()).get_table_names()
+    return table_name in get_inspector().get_table_names()
 
 
 def column_exists(table_name: str, column_name: str) -> bool:
-    return column_name in {
-        c['name'] for c in sa.inspect(op.get_bind()).get_columns(table_name)
-    }
+    if not table_exists(table_name):
+        return False
+    return column_name in {c['name'] for c in get_inspector().get_columns(table_name)}
 
 
 def upgrade():
@@ -49,6 +53,10 @@ def upgrade():
             sa.UniqueConstraint('container_id', 'resolution', 'timestamp',
                                 name='uq_container_stats'),
         )
+        # host_stats_history doesn't need a host index because its UNIQUE
+        # constraint already leads with host_id; this table's UNIQUE leads
+        # with container_id, so a separate host index is needed for the
+        # CASCADE delete and host-scoped retention sweeps.
         op.create_index('idx_container_stats_host', 'container_stats_history',
                         ['host_id'])
 

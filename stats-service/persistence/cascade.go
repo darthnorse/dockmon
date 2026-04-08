@@ -64,3 +64,84 @@ func ComputeTiers(pointsPerView int) []Tier {
 	}
 	return tiers
 }
+
+// sample is one observation fed into the cascade. Container samples leave
+// host-only fields (ContainerCount) zero; the writer ignores them.
+type sample struct {
+	CPU            float64
+	MemPercent     float64
+	MemUsed        uint64
+	MemLimit       uint64 // config, not blended — last non-zero wins
+	NetBps         float64
+	ContainerCount int // host-only snapshot, not blended — last value wins
+}
+
+// blend computes the per-bucket aggregate using a MAX/AVG mix:
+//
+//	value = alpha*max(samples) + (1-alpha)*avg(samples)
+//
+// MemLimit and ContainerCount bypass the blend (config / snapshot data).
+// Empty input → NaN for float fields; the writer translates NaN to SQL NULL.
+func blend(samples []sample, alpha float64) sample {
+	if len(samples) == 0 {
+		nan := math.NaN()
+		return sample{CPU: nan, MemPercent: nan, NetBps: nan}
+	}
+	return sample{
+		CPU:            blendField(samples, alpha, func(s sample) float64 { return s.CPU }),
+		MemPercent:     blendField(samples, alpha, func(s sample) float64 { return s.MemPercent }),
+		MemUsed:        blendUint(samples, alpha, func(s sample) uint64 { return s.MemUsed }),
+		MemLimit:       lastNonZeroLimit(samples),
+		NetBps:         blendField(samples, alpha, func(s sample) float64 { return s.NetBps }),
+		ContainerCount: lastContainerCount(samples),
+	}
+}
+
+func blendField(samples []sample, alpha float64, get func(sample) float64) float64 {
+	max := math.Inf(-1)
+	var sum float64
+	for _, s := range samples {
+		v := get(s)
+		if v > max {
+			max = v
+		}
+		sum += v
+	}
+	avg := sum / float64(len(samples))
+	return alpha*max + (1-alpha)*avg
+}
+
+func blendUint(samples []sample, alpha float64, get func(sample) uint64) uint64 {
+	var max, sum uint64
+	for _, s := range samples {
+		v := get(s)
+		if v > max {
+			max = v
+		}
+		sum += v
+	}
+	avg := float64(sum) / float64(len(samples))
+	return uint64(alpha*float64(max) + (1-alpha)*avg)
+}
+
+// lastNonZeroLimit returns the most recent non-zero memory limit from the
+// samples. MemLimit is configuration, not a metric — blending it produces
+// nonsense. Returning the latest non-zero value preserves the observed
+// limit even if the final sample reports zero (e.g., container removed).
+func lastNonZeroLimit(samples []sample) uint64 {
+	for i := len(samples) - 1; i >= 0; i-- {
+		if samples[i].MemLimit > 0 {
+			return samples[i].MemLimit
+		}
+	}
+	return 0
+}
+
+// lastContainerCount returns the most recent container count snapshot.
+// Averaging would smooth meaningful step changes.
+func lastContainerCount(samples []sample) int {
+	if len(samples) == 0 {
+		return 0
+	}
+	return samples[len(samples)-1].ContainerCount
+}

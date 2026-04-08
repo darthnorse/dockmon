@@ -97,31 +97,41 @@ func blend(samples []sample, alpha float64) sample {
 	}
 }
 
+// blendField computes alpha*max + (1-alpha)*avg for a float64 field.
+// Local names are maxV/sumV (not max/sum) so we do not shadow the Go 1.21+
+// built-in max, which would make future refactors to `max(a, b)` subtly wrong.
 func blendField(samples []sample, alpha float64, get func(sample) float64) float64 {
-	max := math.Inf(-1)
-	var sum float64
+	maxV := math.Inf(-1)
+	var sumV float64
 	for _, s := range samples {
 		v := get(s)
-		if v > max {
-			max = v
+		if v > maxV {
+			maxV = v
 		}
-		sum += v
+		sumV += v
 	}
-	avg := sum / float64(len(samples))
-	return alpha*max + (1-alpha)*avg
+	avg := sumV / float64(len(samples))
+	return alpha*maxV + (1-alpha)*avg
 }
 
+// blendUint is the uint64 variant for memory byte counts.
+//
+// Overflow bound on sumV: a single bucket holds at most one sample per
+// source per second. The largest tier 0 bucket is 7.2s, and higher tiers
+// cascade already-blended parent values (n ≈ 8 on cascade-up), so len is
+// small (≤ ~10 in practice). Even at an implausible 1 TB/sample, sumV
+// stays well under uint64 max (≈1.8e19). No overflow guard needed.
 func blendUint(samples []sample, alpha float64, get func(sample) uint64) uint64 {
-	var max, sum uint64
+	var maxV, sumV uint64
 	for _, s := range samples {
 		v := get(s)
-		if v > max {
-			max = v
+		if v > maxV {
+			maxV = v
 		}
-		sum += v
+		sumV += v
 	}
-	avg := float64(sum) / float64(len(samples))
-	return uint64(alpha*float64(max) + (1-alpha)*avg)
+	avg := float64(sumV) / float64(len(samples))
+	return uint64(alpha*float64(maxV) + (1-alpha)*avg)
 }
 
 // lastNonZeroLimit returns the most recent non-zero memory limit from the

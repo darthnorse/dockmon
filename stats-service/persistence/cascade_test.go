@@ -142,6 +142,71 @@ func TestBlend_ContainerCountIsLast(t *testing.T) {
 	}
 }
 
+func TestBlend_PureAvgAtAlpha0_UintField(t *testing.T) {
+	// Symmetric coverage with TestBlend_PureAvgAtAlpha0, but for the uint path:
+	// alpha=0 on MemUsed must be pure average, not max.
+	// avg(1000, 2000, 1500) = 1500
+	samples := []sample{
+		{MemUsed: 1000},
+		{MemUsed: 2000},
+		{MemUsed: 1500},
+	}
+	got := blend(samples, 0.0)
+	if got.MemUsed != 1500 {
+		t.Errorf("MemUsed=%d, want 1500 (avg)", got.MemUsed)
+	}
+}
+
+func TestBlend_SingleSampleBucket(t *testing.T) {
+	// A one-sample bucket must be idempotent: for any alpha, the result
+	// equals the input sample for every blended field. max == avg, so
+	// alpha*max + (1-alpha)*avg == max for all alpha.
+	s := sample{
+		CPU:            42.5,
+		MemPercent:     17.25,
+		MemUsed:        123456789,
+		MemLimit:       987654321,
+		NetBps:         5000,
+		ContainerCount: 3,
+	}
+	for _, alpha := range []float64{0.0, 0.25, 0.5, 0.75, 1.0} {
+		got := blend([]sample{s}, alpha)
+		if got.CPU != s.CPU {
+			t.Errorf("alpha=%v CPU=%v, want %v", alpha, got.CPU, s.CPU)
+		}
+		if got.MemPercent != s.MemPercent {
+			t.Errorf("alpha=%v MemPercent=%v, want %v", alpha, got.MemPercent, s.MemPercent)
+		}
+		if got.MemUsed != s.MemUsed {
+			t.Errorf("alpha=%v MemUsed=%d, want %d", alpha, got.MemUsed, s.MemUsed)
+		}
+		if got.MemLimit != s.MemLimit {
+			t.Errorf("alpha=%v MemLimit=%d, want %d", alpha, got.MemLimit, s.MemLimit)
+		}
+		if got.NetBps != s.NetBps {
+			t.Errorf("alpha=%v NetBps=%v, want %v", alpha, got.NetBps, s.NetBps)
+		}
+		if got.ContainerCount != s.ContainerCount {
+			t.Errorf("alpha=%v ContainerCount=%d, want %d", alpha, got.ContainerCount, s.ContainerCount)
+		}
+	}
+}
+
+func TestBlend_MemLimitAllZeroReturnsZero(t *testing.T) {
+	// When every sample in the bucket reports MemLimit=0 (no observed
+	// limit — e.g., unlimited container, or metric not yet populated),
+	// lastNonZeroLimit returns 0. Writer's nullIfZeroU64 will translate
+	// this to SQL NULL downstream.
+	samples := []sample{
+		{MemLimit: 0, CPU: 10},
+		{MemLimit: 0, CPU: 20},
+	}
+	got := blend(samples, 0.5)
+	if got.MemLimit != 0 {
+		t.Errorf("MemLimit=%d, want 0 (all-zero bucket)", got.MemLimit)
+	}
+}
+
 func TestBucketQuantization_SubSecondInterval(t *testing.T) {
 	// Tier 0 interval is 7.2s. time.Truncate floors to multiples of d from Unix epoch.
 	// 10000.5s / 7.2s ≈ 1389.0625 → floor=1389 → 1389*7.2 = 10000.8 (too large)

@@ -222,6 +222,15 @@ func TestBucketQuantization_SubSecondInterval(t *testing.T) {
 	}
 }
 
+// newTestCascade builds a Cascade wired to a buffered test channel.
+// Returns the cascade, its writes channel, and the tier table the cascade
+// was built from (callers often need tiers[0].Interval for bucket math).
+func newTestCascade(bufSize int) (*Cascade, chan writeJob, []Tier) {
+	tiers := ComputeTiers(500)
+	writes := make(chan writeJob, bufSize)
+	return NewCascade(tiers, writes), writes, tiers
+}
+
 // drainAll synchronously collects everything currently buffered on the channel.
 func drainAll(ch chan writeJob) []writeJob {
 	var out []writeJob
@@ -235,10 +244,18 @@ func drainAll(ch chan writeJob) []writeJob {
 	}
 }
 
+// findJob returns the first job matching tier and entityID, or nil.
+func findJob(jobs []writeJob, tier, entityID string) *writeJob {
+	for i := range jobs {
+		if jobs[i].tier == tier && jobs[i].entityID == entityID {
+			return &jobs[i]
+		}
+	}
+	return nil
+}
+
 func TestCascade_NoEmissionWithinSameBucket(t *testing.T) {
-	tiers := ComputeTiers(500)
-	writes := make(chan writeJob, 64)
-	c := NewCascade(tiers, writes)
+	c, writes, tiers := newTestCascade(64)
 
 	// Align t0 to a tier-0 bucket boundary (7.2s) so all three samples
 	// below fall inside the same bucket. time.Unix(1_000_000,0) lands
@@ -256,9 +273,7 @@ func TestCascade_NoEmissionWithinSameBucket(t *testing.T) {
 }
 
 func TestCascade_EmitsOnBucketBoundary(t *testing.T) {
-	tiers := ComputeTiers(500)
-	writes := make(chan writeJob, 64)
-	c := NewCascade(tiers, writes)
+	c, writes, _ := newTestCascade(64)
 
 	// Tier 0 interval = 7.2s. Pick timestamps that cross a tier-0 boundary.
 	base := time.Unix(0, 0).Add(7200 * time.Millisecond)
@@ -266,13 +281,7 @@ func TestCascade_EmitsOnBucketBoundary(t *testing.T) {
 	c.Ingest("c1", false, base.Add(8*time.Second), sample{CPU: 50})
 
 	jobs := drainAll(writes)
-	var tier0 *writeJob
-	for i := range jobs {
-		if jobs[i].tier == "1h" && jobs[i].entityID == "c1" {
-			tier0 = &jobs[i]
-			break
-		}
-	}
+	tier0 := findJob(jobs, "1h", "c1")
 	if tier0 == nil {
 		t.Fatalf("expected a tier 1h write for c1, got %v", jobs)
 	}
@@ -285,9 +294,7 @@ func TestCascade_CascadeUpUsesBucketTsNotSampleTs(t *testing.T) {
 	// Tier 0 = 7.2s, Tier 1 = 57.6s (8 × tier 0). Push enough tier-0 samples
 	// that tier 1 eventually fires. Every tier 1 write timestamp must be
 	// aligned to 57.6s exactly.
-	tiers := ComputeTiers(500)
-	writes := make(chan writeJob, 1024)
-	c := NewCascade(tiers, writes)
+	c, writes, _ := newTestCascade(1024)
 
 	base := time.Unix(0, 0)
 	for i := 0; i < 100; i++ {
@@ -295,20 +302,18 @@ func TestCascade_CascadeUpUsesBucketTsNotSampleTs(t *testing.T) {
 		c.Ingest("c1", false, ts, sample{CPU: float64(i)})
 	}
 
-	jobs := drainAll(writes)
-	for _, j := range jobs {
-		if j.tier == "8h" {
-			if j.ts.UnixNano()%int64(57600*time.Millisecond) != 0 {
-				t.Errorf("8h tier write ts=%v not aligned to 57.6s", j.ts)
-			}
+	for _, j := range drainAll(writes) {
+		if j.tier != "8h" {
+			continue
+		}
+		if j.ts.UnixNano()%int64(57600*time.Millisecond) != 0 {
+			t.Errorf("8h tier write ts=%v not aligned to 57.6s", j.ts)
 		}
 	}
 }
 
 func TestCascade_FeedsTier0OnlyFromIngest(t *testing.T) {
-	tiers := ComputeTiers(500)
-	writes := make(chan writeJob, 64)
-	c := NewCascade(tiers, writes)
+	c, _, tiers := newTestCascade(64)
 
 	c.Ingest("c1", false, time.Unix(1_000_000, 0), sample{CPU: 42})
 
@@ -316,15 +321,13 @@ func TestCascade_FeedsTier0OnlyFromIngest(t *testing.T) {
 	defer c.mu.Unlock()
 	for tierIdx, tierDef := range tiers {
 		st := c.state[entityKey{"c1", tierIdx}]
-		if tierIdx == 0 {
-			if len(st.accum) != 1 {
-				t.Errorf("tier 0 accum=%d, want 1", len(st.accum))
-			}
-		} else {
-			if len(st.accum) != 0 {
-				t.Errorf("tier %d (%s) accum=%d, want 0 (only tier 0 receives raw samples)",
-					tierIdx, tierDef.Name, len(st.accum))
-			}
+		if tierIdx == 0 && len(st.accum) != 1 {
+			t.Errorf("tier 0 accum=%d, want 1", len(st.accum))
+			continue
+		}
+		if tierIdx > 0 && len(st.accum) != 0 {
+			t.Errorf("tier %d (%s) accum=%d, want 0 (only tier 0 receives raw samples)",
+				tierIdx, tierDef.Name, len(st.accum))
 		}
 	}
 }
@@ -333,9 +336,7 @@ func TestCascade_CrossEntityIsolation(t *testing.T) {
 	// Two entities advancing through buckets in lockstep must not affect
 	// each other's state: each gets its own tierState in the map and each
 	// finalized bucket belongs to exactly the entity that produced it.
-	tiers := ComputeTiers(500)
-	writes := make(chan writeJob, 64)
-	c := NewCascade(tiers, writes)
+	c, writes, _ := newTestCascade(64)
 
 	t0 := time.Unix(0, 0)
 	// First bucket: one sample per entity inside tier-0 bucket 0.
@@ -348,18 +349,8 @@ func TestCascade_CrossEntityIsolation(t *testing.T) {
 	c.Ingest("c2", false, next, sample{CPU: 88})
 
 	jobs := drainAll(writes)
-	var c1Tier0, c2Tier0 *writeJob
-	for i := range jobs {
-		if jobs[i].tier != "1h" {
-			continue
-		}
-		switch jobs[i].entityID {
-		case "c1":
-			c1Tier0 = &jobs[i]
-		case "c2":
-			c2Tier0 = &jobs[i]
-		}
-	}
+	c1Tier0 := findJob(jobs, "1h", "c1")
+	c2Tier0 := findJob(jobs, "1h", "c2")
 	if c1Tier0 == nil || c2Tier0 == nil {
 		t.Fatalf("expected a 1h write for both c1 and c2, got %+v", jobs)
 	}
@@ -375,9 +366,7 @@ func TestCascade_IsHostPropagatesToWriteJob(t *testing.T) {
 	// A host entity (isHost=true) must carry isHost=true through to every
 	// writeJob it produces, including those emitted by cascade-up to higher
 	// tiers. Regression guard for the remembered-isHost contract in tierState.
-	tiers := ComputeTiers(500)
-	writes := make(chan writeJob, 1024)
-	c := NewCascade(tiers, writes)
+	c, writes, _ := newTestCascade(1024)
 
 	base := time.Unix(0, 0)
 	// Feed enough tier-0 buckets to guarantee a tier-1 cascade-up fires.
@@ -410,13 +399,10 @@ func TestCascade_IsHostPropagatesToWriteJob(t *testing.T) {
 func TestCascade_RestartIsClean(t *testing.T) {
 	// A fresh cascade after "restart" receiving a sample within the same tier-0
 	// bucket window must NOT produce a duplicate write for the bucket before restart.
-	tiers := ComputeTiers(500)
-	writes := make(chan writeJob, 64)
-	c := NewCascade(tiers, writes)
-	c.Ingest("c1", false, time.Unix(1_000_000, 0), sample{CPU: 10})
+	c1, _, _ := newTestCascade(64)
+	c1.Ingest("c1", false, time.Unix(1_000_000, 0), sample{CPU: 10})
 
-	writes2 := make(chan writeJob, 64)
-	c2 := NewCascade(tiers, writes2)
+	c2, writes2, _ := newTestCascade(64)
 	c2.Ingest("c1", false, time.Unix(1_000_007, 0), sample{CPU: 20})
 	got := drainAll(writes2)
 	if len(got) != 0 {

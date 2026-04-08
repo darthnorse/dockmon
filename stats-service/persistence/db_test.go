@@ -315,7 +315,78 @@ func TestQueryContainerHistory_ReturnsRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(rows) != 3 {
-		t.Errorf("got %d rows, want 3", len(rows))
+		t.Fatalf("got %d rows, want 3", len(rows))
+	}
+	// Verify memory_percent is computed from usage/limit. Row 0 in the
+	// result corresponds to i=1 (timestamp 1_000_010): memory_usage=100,
+	// memory_limit=8192, expected percent = 100 * 100 / 8192 ≈ 1.2207.
+	if rows[0].MemPercent == nil {
+		t.Fatal("MemPercent is nil, want computed value")
+	}
+	wantPct := 100.0 * 100.0 / 8192.0
+	if diff := *rows[0].MemPercent - wantPct; diff > 0.0001 || diff < -0.0001 {
+		t.Errorf("MemPercent[0]=%v, want %v", *rows[0].MemPercent, wantPct)
+	}
+	// Absolute bytes are still populated for the modal display.
+	if rows[0].MemUsed == nil || *rows[0].MemUsed != 100 {
+		t.Errorf("MemUsed[0]=%v, want 100", rows[0].MemUsed)
+	}
+	if rows[0].MemLimit == nil || *rows[0].MemLimit != 8192 {
+		t.Errorf("MemLimit[0]=%v, want 8192", rows[0].MemLimit)
+	}
+}
+
+func TestQueryContainerHistory_EmptyResult(t *testing.T) {
+	// No rows in the table — the query should return an empty slice (not an
+	// error) so the handler can gap-fill a pure-null response.
+	db, err := Open(makeFixtureDB(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	rows, err := db.QueryContainerHistory(
+		context.Background(), "h1:nonexistent1", "1h", 0, 9_999_999,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("got %d rows, want 0", len(rows))
+	}
+}
+
+func TestQueryContainerHistory_NullMemoryLimit(t *testing.T) {
+	// memory_limit=0 must NOT divide-by-zero; NULLIF turns it into SQL NULL
+	// which scans as a nil *float64 — rendered as a chart gap downstream.
+	path := makeFixtureDB(t)
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Write().Exec(`INSERT INTO docker_hosts (id,name) VALUES ('h1','h1')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Write().Exec(`INSERT INTO container_stats_history
+		(container_id, host_id, timestamp, resolution, cpu_percent, memory_usage, memory_limit, network_bps)
+		VALUES (?,?,?,?,?,?,?,?)`,
+		"h1:abc123abc123", "h1", int64(2_000_000), "1h",
+		float64(42), int64(1024), int64(0), float64(0)); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := db.QueryContainerHistory(
+		context.Background(), "h1:abc123abc123", "1h", 2_000_000, 2_000_000,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if rows[0].MemPercent != nil {
+		t.Errorf("MemPercent=%v, want nil (memory_limit=0 → NULL)", *rows[0].MemPercent)
 	}
 }
 

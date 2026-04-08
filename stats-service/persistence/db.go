@@ -175,10 +175,22 @@ type HistoryRow struct {
 
 // QueryContainerHistory returns rows for one container in [fromUnix, toUnix]
 // inclusive, ordered ascending by timestamp.
+//
+// memory_percent is derived in SQL from memory_usage / memory_limit so the
+// read path produces a unified `mem` percent column for both containers and
+// hosts. The container schema stores only absolute bytes (§6); computing the
+// percent here keeps FillGaps tier-agnostic and lets the Task 14 handler
+// serialize HistoryResponse without special-casing container vs host.
+// NULLIF guards against divide-by-zero when memory_limit is 0 or NULL.
 func (db *DB) QueryContainerHistory(
 	ctx context.Context, containerID, resolution string, fromUnix, toUnix int64,
 ) ([]HistoryRow, error) {
-	q := `SELECT timestamp, cpu_percent, memory_usage, memory_limit, network_bps
+	q := `SELECT timestamp,
+	             cpu_percent,
+	             (100.0 * memory_usage / NULLIF(memory_limit, 0)) AS memory_percent,
+	             memory_usage,
+	             memory_limit,
+	             network_bps
 	      FROM container_stats_history
 	      WHERE container_id = ? AND resolution = ?
 	        AND timestamp >= ? AND timestamp <= ?
@@ -191,7 +203,9 @@ func (db *DB) QueryContainerHistory(
 	var out []HistoryRow
 	for rows.Next() {
 		var r HistoryRow
-		if err := rows.Scan(&r.Timestamp, &r.CPU, &r.MemUsed, &r.MemLimit, &r.NetBps); err != nil {
+		if err := rows.Scan(
+			&r.Timestamp, &r.CPU, &r.MemPercent, &r.MemUsed, &r.MemLimit, &r.NetBps,
+		); err != nil {
 			return nil, fmt.Errorf("scan container history: %w", err)
 		}
 		out = append(out, r)

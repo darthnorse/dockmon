@@ -39,6 +39,11 @@ func SelectTier(tiers []Tier, want time.Duration) Tier {
 // `from` and `to` are snapped to bucket boundaries before walking the grid; the
 // response's From/To reflect the snapped values so the caller can't see a
 // mismatch between their requested window and the returned timestamps.
+//
+// Rows whose Timestamp falls outside [fromBucket, toBucket] are silently
+// ignored: the grid walk only looks up keys within that range. In normal
+// operation the caller provides rows from QueryContainer/HostHistory, which
+// already restricts results to the window, so this is defensive.
 func FillGaps(rows []HistoryRow, tier Tier, from, to time.Time) HistoryResponse {
 	fromBucket := from.Truncate(tier.Interval)
 	toBucket := to.Truncate(tier.Interval)

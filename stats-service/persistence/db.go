@@ -2,15 +2,9 @@
 // SQLite contract described in
 // docs/superpowers/specs/2026-04-07-stats-persistence-design.md §8.
 //
-// Task 3 (this file) provides the DB handle: a single-connection write
-// pool, a multi-connection read-only pool, and schema verification that
-// fails fast if Alembic migration 037 has not been applied.
-//
-// Later tasks add agent token validation (Task 4), the in-memory cascade
-// (Tasks 5-7), the batched writer goroutine (Task 9), read-side query
-// helpers (Task 13), and retention cleanup (Tasks 11-12). The tokenCache
-// fields on DB are scaffolding for Task 4 and are intentionally unused
-// in Task 3.
+// It provides a DB handle with a single-connection write pool, a
+// multi-connection read-only pool, and schema verification that fails
+// fast if Alembic migration 037 has not been applied.
 package persistence
 
 import (
@@ -18,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -31,8 +26,7 @@ type DB struct {
 	write *sql.DB
 	read  *sql.DB
 
-	// tokenMu / tokenCache are scaffolding for Task 4 (agent token
-	// validation). They are intentionally unused in Task 3.
+	// Scaffolding for agent token validation, populated by a later task.
 	tokenMu    sync.RWMutex
 	tokenCache map[string]tokenCacheEntry
 }
@@ -64,13 +58,16 @@ func buildDSN(dbPath string, params []string) string {
 // Open opens dockmon.db with the appropriate pragmas for stats-service.
 // The schema must already exist; Alembic owns CREATE TABLE.
 func Open(dbPath string) (*DB, error) {
-	writeDSN := buildDSN(dbPath, []string{
+	commonPragmas := []string{
 		"_pragma=journal_mode(WAL)",
 		"_pragma=synchronous(NORMAL)",
 		"_pragma=foreign_keys(on)",
+	}
+
+	writeDSN := buildDSN(dbPath, slices.Concat(commonPragmas, []string{
 		"_pragma=busy_timeout(30000)",
 		"_txlock=immediate",
-	})
+	}))
 	write, err := sql.Open("sqlite", writeDSN)
 	if err != nil {
 		return nil, fmt.Errorf("open write pool: %w", err)
@@ -78,19 +75,13 @@ func Open(dbPath string) (*DB, error) {
 	write.SetMaxOpenConns(1)
 	write.SetMaxIdleConns(1)
 
-	readDSN := buildDSN(dbPath, []string{
-		"_pragma=journal_mode(WAL)",
-		"_pragma=synchronous(NORMAL)",
-		"_pragma=foreign_keys(on)",
+	readDSN := buildDSN(dbPath, slices.Concat(commonPragmas, []string{
 		"_pragma=busy_timeout(5000)",
 		"mode=ro",
-	})
+	}))
 	read, err := sql.Open("sqlite", readDSN)
 	if err != nil {
-		if cerr := write.Close(); cerr != nil {
-			return nil, fmt.Errorf("open read pool: %w (also failed to close write pool: %v)", err, cerr)
-		}
-		return nil, fmt.Errorf("open read pool: %w", err)
+		return nil, errors.Join(fmt.Errorf("open read pool: %w", err), write.Close())
 	}
 	read.SetMaxOpenConns(8)
 	// Match idle to open so the pool does not churn connections under
@@ -103,10 +94,7 @@ func Open(dbPath string) (*DB, error) {
 		tokenCache: make(map[string]tokenCacheEntry),
 	}
 	if err := db.verifySchema(); err != nil {
-		if cerr := db.Close(); cerr != nil {
-			return nil, fmt.Errorf("%w (also failed to close pools: %v)", err, cerr)
-		}
-		return nil, err
+		return nil, errors.Join(err, db.Close())
 	}
 	return db, nil
 }
@@ -117,28 +105,19 @@ func (db *DB) Read() *sql.DB { return db.read }
 // Write returns the single-connection write pool.
 func (db *DB) Write() *sql.DB { return db.write }
 
-// Close releases both pools. Errors from both closes are joined so the
-// caller can inspect them with errors.Is / errors.As.
+// Close releases both pools, joining any errors from each close.
 func (db *DB) Close() error {
 	return errors.Join(db.write.Close(), db.read.Close())
 }
 
-// verifySchema fails if Alembic has not applied migration 037. We check
-// for the two history tables explicitly.
+// verifySchema fails if Alembic has not applied migration 037.
 //
-// We query through the write pool here, not the read pool. The first
-// connection to touch a fresh SQLite file needs write capability in
-// order to upgrade journal_mode to WAL; a mode=ro handle cannot perform
-// that upgrade and would fail with "attempt to write a readonly
-// database". Using the write pool also ensures the DB is in WAL mode by
-// the time the read pool opens its first connection. Note that
-// database/sql does not distinguish read vs write at the pool level -
-// the write pool can perform SELECTs without any restriction.
+// The query runs through the write pool so the first connection to a
+// fresh SQLite file can upgrade journal_mode to WAL; a mode=ro handle
+// cannot perform that upgrade. This also guarantees the DB is in WAL
+// mode by the time the read pool opens its first connection.
 func (db *DB) verifySchema() error {
-	required := []string{
-		"container_stats_history",
-		"host_stats_history",
-	}
+	required := []string{"container_stats_history", "host_stats_history"}
 	for _, table := range required {
 		var name string
 		err := db.write.QueryRow(

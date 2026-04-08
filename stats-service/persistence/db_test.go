@@ -6,24 +6,20 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
-// makeFixtureDB creates a sqlite file with the schema this package expects.
-// In real use Alembic creates this; for tests we create it inline.
+// makeFixtureDB creates a sqlite file in a fresh temp dir with the
+// schema this package expects (what Alembic would create in production).
 func makeFixtureDB(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.db")
+	path := filepath.Join(t.TempDir(), "test.db")
 	seedFixture(t, path)
 	return path
 }
 
-// seedFixture creates the schema this package expects at the given path.
-// Factored out of makeFixtureDB so tests that need a specific path (for
-// example, to exercise URI-special characters) can reuse the seed SQL.
-// Uses buildDSN so paths containing URI-special characters work.
+// seedFixture applies the expected schema at the given path. Separated
+// from makeFixtureDB so tests needing a specific path (e.g. URI-special
+// characters) can reuse the seed SQL.
 func seedFixture(t *testing.T, path string) {
 	t.Helper()
 	conn, err := sql.Open("sqlite", buildDSN(path, nil))
@@ -92,8 +88,7 @@ func TestOpen_VerifiesSchema(t *testing.T) {
 }
 
 func TestOpen_FailsOnMissingSchema(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "empty.db")
+	path := filepath.Join(t.TempDir(), "empty.db")
 	conn, err := sql.Open("sqlite", buildDSN(path, nil))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -136,17 +131,12 @@ func TestOpen_ReadHandleIsReadOnly(t *testing.T) {
 	}
 }
 
-// TestOpen_PathWithURISpecialChars is a regression test for the DSN
-// path-escaping bug. Before the fix, Open used fmt.Sprintf("file:%s?..."),
-// which let a '?' in dbPath corrupt the DSN: the driver split on the first
-// '?' and opened a file at a different location than dbPath. Paths like
-// this can occur in tests (t.TempDir can include non-deterministic
-// suffixes) and in real deployments with unusual mount points.
+// TestOpen_PathWithURISpecialChars guards against DSN path-escaping
+// regressions. If Open ever drops net/url and falls back to fmt.Sprintf,
+// the driver will split on the first '?' in dbPath and open a file at
+// the wrong location.
 func TestOpen_PathWithURISpecialChars(t *testing.T) {
-	// Build a fixture DB at a path that contains characters special to
-	// URI parsing: '?', '#', '%', and a space.
-	parent := t.TempDir()
-	dir := filepath.Join(parent, "dir with ? # % chars")
+	dir := filepath.Join(t.TempDir(), "dir with ? # % chars")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -163,8 +153,8 @@ func TestOpen_PathWithURISpecialChars(t *testing.T) {
 		}
 	})
 
-	// Confirm the write pool actually writes to the intended file, not
-	// a stray file created at a truncated path.
+	// Confirm the write pool targets the intended file, not a stray
+	// file at a truncated path.
 	if _, err := db.Write().Exec(`INSERT INTO docker_hosts (id, name) VALUES ('h1', 'host1')`); err != nil {
 		t.Fatalf("write to special-char path: %v", err)
 	}

@@ -3,7 +3,6 @@ package persistence
 import (
 	"fmt"
 	"math"
-	"strings"
 	"testing"
 	"time"
 )
@@ -418,6 +417,11 @@ func TestCascade_RestartIsClean(t *testing.T) {
 }
 
 func TestCascade_RemoveHost(t *testing.T) {
+	// Happy path: populate state for two hosts and their containers,
+	// remove host-1, verify host-1's entries are gone and host-2's remain.
+	// Assertions enumerate exact keys rather than re-implementing the
+	// predicate RemoveHost uses, so a regression in that predicate cannot
+	// be mirrored (and hidden) by identical test logic.
 	c, _, _ := newTestCascade(64)
 	now := time.Unix(1_000_000, 0)
 
@@ -431,12 +435,14 @@ func TestCascade_RemoveHost(t *testing.T) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for k := range c.state {
-		if k.entityID == "host-1" || strings.HasPrefix(k.entityID, "host-1:") {
-			t.Errorf("expected no state for host-1, found %+v", k)
+	// host-1 and its containers must be gone at tier 0 (the only tier
+	// raw samples populate).
+	for _, id := range []string{"host-1", "host-1:abc123def456", "host-1:def456abc123"} {
+		if _, ok := c.state[entityKey{id, 0}]; ok {
+			t.Errorf("expected no state for %q, still present", id)
 		}
 	}
-	// Host-2 and its container should still be present
+	// host-2 and its container must still be present.
 	if _, ok := c.state[entityKey{"host-2:fedcba987654", 0}]; !ok {
 		t.Errorf("host-2 container state was incorrectly removed")
 	}
@@ -466,5 +472,74 @@ func TestCascade_RemoveHost_NoPartialMatches(t *testing.T) {
 	}
 	if _, ok := c.state[entityKey{"host-100:ghi", 0}]; !ok {
 		t.Errorf("host-100 container was incorrectly removed (prefix collision)")
+	}
+}
+
+func TestCascade_RemoveHost_NoOpOnMissing(t *testing.T) {
+	// Removing a host that was never ingested must be a silent no-op:
+	// no panic, no mutation of unrelated entries.
+	c, _, _ := newTestCascade(64)
+	now := time.Unix(1_000_000, 0)
+
+	c.Ingest("host-2:abc", false, now, sample{CPU: 1})
+	c.Ingest("host-2", true, now, sample{CPU: 2})
+
+	c.RemoveHost("host-does-not-exist")
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.state[entityKey{"host-2:abc", 0}]; !ok {
+		t.Errorf("host-2 container state was incorrectly removed")
+	}
+	if _, ok := c.state[entityKey{"host-2", 0}]; !ok {
+		t.Errorf("host-2 host state was incorrectly removed")
+	}
+	if len(c.state) != 2 {
+		t.Errorf("expected 2 state entries after no-op removal, got %d", len(c.state))
+	}
+}
+
+func TestCascade_RemoveHost_EmptyCascade(t *testing.T) {
+	// Removing any host from a fresh, empty cascade must not panic.
+	c, _, _ := newTestCascade(64)
+
+	c.RemoveHost("host-1")
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.state) != 0 {
+		t.Errorf("expected empty state after RemoveHost on empty cascade, got %d entries", len(c.state))
+	}
+}
+
+func TestCascade_RemoveHost_ClearsAllTiers(t *testing.T) {
+	// RemoveHost must drop every (entity, tier) entry for the host, not
+	// just tier 0. Raw Ingest only feeds tier 0, so we populate higher
+	// tiers directly via c.state (same-package access) to assert that
+	// the removal loop does not accidentally filter by tierIdx.
+	c, _, _ := newTestCascade(64)
+
+	c.mu.Lock()
+	for tierIdx := 0; tierIdx < 5; tierIdx++ {
+		c.state[entityKey{"host-1", tierIdx}] = tierState{bucketTs: time.Unix(int64(tierIdx+1), 0), isHost: true}
+		c.state[entityKey{"host-1:container", tierIdx}] = tierState{bucketTs: time.Unix(int64(tierIdx+1), 0)}
+		c.state[entityKey{"host-2", tierIdx}] = tierState{bucketTs: time.Unix(int64(tierIdx+1), 0), isHost: true}
+	}
+	c.mu.Unlock()
+
+	c.RemoveHost("host-1")
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for tierIdx := 0; tierIdx < 5; tierIdx++ {
+		if _, ok := c.state[entityKey{"host-1", tierIdx}]; ok {
+			t.Errorf("host-1 tier %d state was not removed", tierIdx)
+		}
+		if _, ok := c.state[entityKey{"host-1:container", tierIdx}]; ok {
+			t.Errorf("host-1:container tier %d state was not removed", tierIdx)
+		}
+		if _, ok := c.state[entityKey{"host-2", tierIdx}]; !ok {
+			t.Errorf("host-2 tier %d state was incorrectly removed", tierIdx)
+		}
 	}
 }

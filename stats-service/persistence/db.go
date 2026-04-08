@@ -8,12 +8,15 @@
 package persistence
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -23,6 +26,14 @@ import (
 type DB struct {
 	write *sql.DB
 	read  *sql.DB
+
+	tokenMu    sync.RWMutex
+	tokenCache map[string]tokenCacheEntry
+}
+
+type tokenCacheEntry struct {
+	hostID string
+	expiry time.Time
 }
 
 // buildDSN returns a SQLite URI DSN for dbPath with the given raw query
@@ -77,7 +88,11 @@ func Open(dbPath string) (*DB, error) {
 	// steady read load. The default MaxIdleConns is 2.
 	read.SetMaxIdleConns(8)
 
-	db := &DB{write: write, read: read}
+	db := &DB{
+		write:      write,
+		read:       read,
+		tokenCache: make(map[string]tokenCacheEntry),
+	}
 	if err := db.verifySchema(); err != nil {
 		return nil, errors.Join(err, db.Close())
 	}
@@ -93,6 +108,56 @@ func (db *DB) Write() *sql.DB { return db.write }
 // Close releases both pools, joining any errors from each close.
 func (db *DB) Close() error {
 	return errors.Join(db.write.Close(), db.read.Close())
+}
+
+// ErrInvalidAgentToken is returned when ValidateAgentToken doesn't recognize a token.
+var ErrInvalidAgentToken = errors.New("invalid agent token")
+
+const agentTokenCacheTTL = 5 * time.Minute
+
+// ValidateAgentToken returns the host_id owning the given agent token.
+// Looks up the in-memory cache first; on miss, queries the agents table.
+//
+// The agents.id column IS the token (see backend/agent/manager.py:140
+// validate_permanent_token). We additionally project host_id and bind it
+// to the WebSocket connection so a compromised agent cannot lie about
+// which host it belongs to.
+func (db *DB) ValidateAgentToken(ctx context.Context, token string) (string, error) {
+	if token == "" {
+		return "", ErrInvalidAgentToken
+	}
+	now := time.Now()
+
+	db.tokenMu.RLock()
+	if e, ok := db.tokenCache[token]; ok && now.Before(e.expiry) {
+		db.tokenMu.RUnlock()
+		return e.hostID, nil
+	}
+	db.tokenMu.RUnlock()
+
+	var hostID string
+	err := db.read.QueryRowContext(ctx,
+		`SELECT host_id FROM agents WHERE id = ?`, token,
+	).Scan(&hostID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrInvalidAgentToken
+	}
+	if err != nil {
+		return "", err
+	}
+
+	db.tokenMu.Lock()
+	db.tokenCache[token] = tokenCacheEntry{hostID: hostID, expiry: now.Add(agentTokenCacheTTL)}
+	db.tokenMu.Unlock()
+	return hostID, nil
+}
+
+// InvalidateAgentToken evicts a token from the in-memory cache. The Python
+// backend calls this via POST /api/agents/invalidate when an agent is deleted.
+func (db *DB) InvalidateAgentToken(token string) {
+	db.tokenMu.Lock()
+	delete(db.tokenCache, token)
+	db.tokenMu.Unlock()
 }
 
 // verifySchema fails if Alembic has not applied migration 037.

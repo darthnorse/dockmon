@@ -3,6 +3,7 @@ package persistence
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -164,5 +165,114 @@ func TestOpen_PathWithURISpecialChars(t *testing.T) {
 	}
 	if info.Size() == 0 {
 		t.Fatalf("expected non-empty db file at %q", path)
+	}
+}
+
+func TestValidateAgentToken_Valid(t *testing.T) {
+	path := makeFixtureDB(t)
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Write().Exec(
+		`INSERT INTO docker_hosts (id, name) VALUES ('host-1', 'host one')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Write().Exec(
+		`INSERT INTO agents (id, host_id) VALUES ('token-abc', 'host-1')`); err != nil {
+		t.Fatal(err)
+	}
+	hostID, err := db.ValidateAgentToken(context.Background(), "token-abc")
+	if err != nil {
+		t.Fatalf("ValidateAgentToken: %v", err)
+	}
+	if hostID != "host-1" {
+		t.Errorf("hostID=%q, want host-1", hostID)
+	}
+}
+
+func TestValidateAgentToken_Invalid(t *testing.T) {
+	path := makeFixtureDB(t)
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	_, err = db.ValidateAgentToken(context.Background(), "nope")
+	if !errors.Is(err, ErrInvalidAgentToken) {
+		t.Errorf("err=%v, want ErrInvalidAgentToken", err)
+	}
+}
+
+func TestValidateAgentToken_EmptyToken(t *testing.T) {
+	path := makeFixtureDB(t)
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	_, err = db.ValidateAgentToken(context.Background(), "")
+	if !errors.Is(err, ErrInvalidAgentToken) {
+		t.Errorf("empty token: err=%v, want ErrInvalidAgentToken", err)
+	}
+}
+
+func TestValidateAgentToken_CacheHit(t *testing.T) {
+	path := makeFixtureDB(t)
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Write().Exec(
+		`INSERT INTO docker_hosts (id, name) VALUES ('host-1', 'a')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Write().Exec(
+		`INSERT INTO agents (id, host_id) VALUES ('tok', 'host-1')`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.ValidateAgentToken(context.Background(), "tok"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Write().Exec(`DELETE FROM agents WHERE id = 'tok'`); err != nil {
+		t.Fatal(err)
+	}
+	hostID, err := db.ValidateAgentToken(context.Background(), "tok")
+	if err != nil {
+		t.Fatalf("expected cache hit, got %v", err)
+	}
+	if hostID != "host-1" {
+		t.Errorf("got %q, want host-1", hostID)
+	}
+}
+
+func TestInvalidateAgentToken(t *testing.T) {
+	path := makeFixtureDB(t)
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Write().Exec(
+		`INSERT INTO docker_hosts (id, name) VALUES ('host-1', 'a')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Write().Exec(
+		`INSERT INTO agents (id, host_id) VALUES ('tok', 'host-1')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ValidateAgentToken(context.Background(), "tok"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Write().Exec(`DELETE FROM agents WHERE id = 'tok'`); err != nil {
+		t.Fatal(err)
+	}
+	db.InvalidateAgentToken("tok")
+	_, err = db.ValidateAgentToken(context.Background(), "tok")
+	if !errors.Is(err, ErrInvalidAgentToken) {
+		t.Errorf("after invalidate, expected ErrInvalidAgentToken, got %v", err)
 	}
 }

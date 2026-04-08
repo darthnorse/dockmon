@@ -14,8 +14,6 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-	"sync"
-	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -25,15 +23,6 @@ import (
 type DB struct {
 	write *sql.DB
 	read  *sql.DB
-
-	// Scaffolding for agent token validation, populated by a later task.
-	tokenMu    sync.RWMutex
-	tokenCache map[string]tokenCacheEntry
-}
-
-type tokenCacheEntry struct {
-	hostID string
-	expiry time.Time
 }
 
 // buildDSN returns a SQLite URI DSN for dbPath with the given raw query
@@ -88,11 +77,7 @@ func Open(dbPath string) (*DB, error) {
 	// steady read load. The default MaxIdleConns is 2.
 	read.SetMaxIdleConns(8)
 
-	db := &DB{
-		write:      write,
-		read:       read,
-		tokenCache: make(map[string]tokenCacheEntry),
-	}
+	db := &DB{write: write, read: read}
 	if err := db.verifySchema(); err != nil {
 		return nil, errors.Join(err, db.Close())
 	}

@@ -1,41 +1,38 @@
 package persistence
 
 import (
+	"fmt"
 	"math"
 	"testing"
 	"time"
 )
 
 func TestComputeTiers_DefaultPointsPerView(t *testing.T) {
-	tiers := ComputeTiers(500)
-	if len(tiers) != 5 {
-		t.Fatalf("len=%d, want 5", len(tiers))
+	want := []struct {
+		name     string
+		interval time.Duration
+		alpha    float64
+	}{
+		{"1h", 7200 * time.Millisecond, 0.75},
+		{"8h", 57600 * time.Millisecond, 0.50},
+		{"24h", 172800 * time.Millisecond, 0.25},
+		{"7d", 1209600 * time.Millisecond, 0.0},
+		{"30d", 5184 * time.Second, 0.0},
 	}
 
-	wantNames := []string{"1h", "8h", "24h", "7d", "30d"}
-	for i, w := range wantNames {
-		if tiers[i].Name != w {
-			t.Errorf("tiers[%d].Name=%q, want %q", i, tiers[i].Name, w)
+	got := ComputeTiers(500)
+	if len(got) != len(want) {
+		t.Fatalf("len=%d, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		if got[i].Name != w.name {
+			t.Errorf("tiers[%d].Name=%q, want %q", i, got[i].Name, w.name)
 		}
-	}
-
-	wantIntervals := []time.Duration{
-		7200 * time.Millisecond,
-		57600 * time.Millisecond,
-		172800 * time.Millisecond,
-		1209600 * time.Millisecond,
-		5184 * time.Second,
-	}
-	for i, w := range wantIntervals {
-		if tiers[i].Interval != w {
-			t.Errorf("tiers[%d].Interval=%v, want %v", i, tiers[i].Interval, w)
+		if got[i].Interval != w.interval {
+			t.Errorf("tiers[%d].Interval=%v, want %v", i, got[i].Interval, w.interval)
 		}
-	}
-
-	wantAlphas := []float64{0.75, 0.50, 0.25, 0.0, 0.0}
-	for i, w := range wantAlphas {
-		if math.Abs(tiers[i].Alpha-w) > 1e-9 {
-			t.Errorf("tiers[%d].Alpha=%v, want %v", i, tiers[i].Alpha, w)
+		if math.Abs(got[i].Alpha-w.alpha) > 1e-9 {
+			t.Errorf("tiers[%d].Alpha=%v, want %v", i, got[i].Alpha, w.alpha)
 		}
 	}
 }
@@ -66,8 +63,7 @@ func TestComputeTiers_PanicsOnNonPositivePointsPerView(t *testing.T) {
 	// nonsense all-1s tiers (for negatives). Upstream config validation
 	// enforces floor=100, ceiling=2000; this is a fail-fast safety net.
 	for _, n := range []int{0, -1, -500} {
-		n := n
-		t.Run("", func(t *testing.T) {
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
 			defer func() {
 				if r := recover(); r == nil {
 					t.Errorf("ComputeTiers(%d) did not panic", n)

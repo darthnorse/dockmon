@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dockmon/stats-service/persistence"
 	"github.com/gorilla/websocket"
 )
 
@@ -225,6 +226,40 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Open persistence DB. dockmon.db lives at the same path Python uses;
+	// the bind-mount makes it available at /app/data/dockmon.db inside both
+	// containers. The schema is owned by Alembic; we verify on open and fall
+	// back to "persistence disabled" if migration 037 hasn't run yet.
+	persistDBPath := getEnv("DOCKMON_DB_PATH", "/app/data/dockmon.db")
+	var persistErr error
+	persistDB, persistErr = persistence.Open(persistDBPath)
+	if persistErr != nil {
+		log.Printf("Persistence disabled: %v", persistErr)
+		persistDB = nil
+	}
+	defer func() {
+		if persistDB != nil {
+			if err := persistDB.Close(); err != nil {
+				log.Printf("Error closing persistence DB: %v", err)
+			}
+		}
+	}()
+
+	if persistDB != nil {
+		tiers := persistence.ComputeTiers(settingsProvider.pointsPerView)
+		writes := make(chan persistence.WriteJob, 4096)
+		cascade = persistence.NewCascade(tiers, writes)
+		writer = persistence.NewWriter(persistDB, writes)
+		retention = persistence.NewRetention(persistDB, tiers)
+		aggregator.SetCascade(cascade)
+
+		go writer.Run(ctx)
+		go retention.Run(ctx, settingsProvider)
+
+		log.Printf("Stats persistence enabled (tiers=%d, points_per_view=%d)",
+			len(tiers), settingsProvider.pointsPerView)
+	}
+
 	// Start aggregator
 	go aggregator.Start(ctx)
 
@@ -290,6 +325,15 @@ func main() {
 		containerStats := cache.GetAllContainerStats()
 		json.NewEncoder(w).Encode(containerStats)
 	}))
+
+	// Historical stats endpoints (PROTECTED) — Task 15 wiring.
+	if persistDB != nil {
+		historyHandler := NewHistoryHandler(persistDB, persistence.ComputeTiers(settingsProvider.pointsPerView))
+		mux.HandleFunc("/api/stats/history/container",
+			authMiddleware(token, historyHandler.ServeContainer))
+		mux.HandleFunc("/api/stats/history/host",
+			authMiddleware(token, historyHandler.ServeHost))
+	}
 
 	// Start stream for a container (called by Python backend) - PROTECTED
 	mux.HandleFunc("/api/streams/start", authMiddleware(token, limitRequestBody(func(w http.ResponseWriter, r *http.Request) {
@@ -424,6 +468,9 @@ func main() {
 		}
 
 		streamManager.RemoveDockerHost(req.HostID)
+		if cascade != nil {
+			cascade.RemoveHost(req.HostID)
+		}
 
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "removed"})

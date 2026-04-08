@@ -3448,7 +3448,12 @@ class DatabaseManager:
                     # Editor theme preference (v2.2.8+)
                     'editor_theme',
                     # Session timeout
-                    'session_timeout_hours'
+                    'session_timeout_hours',
+                    # Stats persistence (v2.4.0+): hot-pushed to stats-service
+                    # by main.update_settings; persisted here so the values
+                    # survive a backend restart.
+                    'stats_persistence_enabled', 'stats_retention_days',
+                    'stats_points_per_view',
                 }
 
                 for key, value in updates.items():

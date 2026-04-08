@@ -94,3 +94,54 @@ func TestSettingsHandler_RejectsNonPost(t *testing.T) {
 		t.Errorf("status=%d, want 405", w.Code)
 	}
 }
+
+// An empty body (Content-Length: 0) should be treated as a no-op read of the
+// current snapshot, not a 400. Python never sends an empty body (the client
+// short-circuits when the payload map is empty), but we keep this behaviour
+// as defence-in-depth so an unauthenticated ping from the same token doesn't
+// turn into a 4xx avalanche in the stats-service logs.
+func TestSettingsHandler_EmptyBodyIsNoop(t *testing.T) {
+	provider := &mainSettingsProvider{retentionDays: 30, pointsPerView: 500, persistEnabled: true}
+	h := &SettingsHandler{provider: provider}
+	req := httptest.NewRequest(http.MethodPost, "/api/settings", bytes.NewBufferString(""))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200 (empty body should be a no-op)", w.Code)
+	}
+	if provider.RetentionDays() != 30 {
+		t.Errorf("retention_days=%d, want 30 (unchanged)", provider.RetentionDays())
+	}
+	if provider.PointsPerView() != 500 {
+		t.Errorf("points_per_view=%d, want 500 (unchanged)", provider.PointsPerView())
+	}
+	if !provider.PersistEnabled() {
+		t.Errorf("persist_enabled=false, want true (unchanged)")
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response should echo current snapshot: %v", err)
+	}
+	if resp["stats_retention_days"].(float64) != 30 {
+		t.Errorf("resp retention_days=%v, want 30", resp["stats_retention_days"])
+	}
+}
+
+// Same for {} — Python sends this if it ever needs to probe the current
+// config without changing anything.
+func TestSettingsHandler_EmptyObjectIsNoop(t *testing.T) {
+	provider := &mainSettingsProvider{retentionDays: 42, pointsPerView: 800, persistEnabled: true}
+	h := &SettingsHandler{provider: provider}
+	req := httptest.NewRequest(http.MethodPost, "/api/settings", bytes.NewBufferString("{}"))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200", w.Code)
+	}
+	if provider.RetentionDays() != 42 {
+		t.Errorf("retention_days changed to %d, want 42 (unchanged)", provider.RetentionDays())
+	}
+}

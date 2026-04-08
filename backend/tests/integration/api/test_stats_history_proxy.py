@@ -12,13 +12,14 @@ upstream error mapping, and defense-in-depth container_id
 normalization.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, patch
 
 import aiohttp
 import pytest
 from fastapi.testclient import TestClient
 
-import main as main_module
+from database import GlobalSettings
 from main import app
 from stats_client import StatsServiceClient
 
@@ -380,39 +381,28 @@ class TestStatsClientHistoryMethod:
 
 
 @pytest.fixture
-def stub_settings_db(monkeypatch):
+def seed_global_settings(db_session):
     """
-    Stub monitor.db.update_settings so the POST /api/settings test doesn't
-    need a real GlobalSettings row (the test database is empty). Returns a
-    fake settings object with the attributes the endpoint reads after the
-    update, matching the GlobalSettings schema. The tests for Task 17 only
-    care about the hot-push code path, not the database layer itself.
-    """
-    # Fake "updated" settings object returned by db.update_settings.
-    fake_settings = MagicMock()
-    fake_settings.show_host_stats = True
-    fake_settings.show_container_stats = True
-    fake_settings.session_timeout_hours = 24
-    fake_settings.update_check_time = "03:00"
-    fake_settings.event_suppression_patterns = None
-    # All the fields the endpoint returns in its response dict — set to
-    # sensible defaults so getattr() returns real values.
-    for attr in (
-        "max_retries", "retry_delay", "default_auto_restart",
-        "polling_interval", "connection_timeout", "enable_notifications",
-        "alert_template", "alert_template_metric", "alert_template_state_change",
-        "alert_template_health", "alert_template_update", "blackout_windows",
-        "timezone_offset", "show_container_alerts_on_hosts",
-        "unused_tag_retention_days", "event_retention_days",
-    ):
-        setattr(fake_settings, attr, None)
+    Seed a real GlobalSettings row in the test database so the POST
+    /api/settings endpoint can actually read → mutate → commit → re-read it
+    via the real monitor.db.update_settings path. No stubs — the whole code
+    path (FastAPI → Pydantic → DatabaseManager.update_settings → SQLite →
+    response) is exercised end-to-end.
 
-    monkeypatch.setattr(
-        main_module.monitor.db, "update_settings", lambda updates: fake_settings
+    use_test_database_for_auth (autouse in this package's conftest.py)
+    already redirects monitor.db.get_session → this same db_session, so
+    update_settings() will see the row we commit here.
+    """
+    now = datetime.now(timezone.utc)
+    # Only explicit values — the rest come from ORM/server defaults, which
+    # is what a real fresh install looks like after migration 037 runs.
+    settings = GlobalSettings(
+        id=1,
+        updated_at=now,
     )
-    # monitor.settings is read for old_show_*_stats comparisons before the DB call.
-    monkeypatch.setattr(main_module.monitor, "settings", fake_settings)
-    return fake_settings
+    db_session.add(settings)
+    db_session.commit()
+    return settings
 
 
 @pytest.mark.integration
@@ -420,7 +410,7 @@ class TestPushSettingsUpdate:
     """Task 17: POST /api/settings with stats_* keys should push to stats-service."""
 
     def test_update_settings_pushes_stats_settings(
-        self, client, test_api_key_write, mock_stats_client, stub_settings_db
+        self, client, test_api_key_write, mock_stats_client, seed_global_settings
     ):
         mock_stats_client.push_settings_update = AsyncMock()
 
@@ -435,8 +425,48 @@ class TestPushSettingsUpdate:
             stats_points_per_view=750,
         )
 
+        # Regression for the database.py ALLOWED_SETTINGS whitelist bug:
+        # the values must actually be persisted, not silently dropped.
+        # Response body round-trips the stored values.
+        body = resp.json()
+        assert body["stats_retention_days"] == 45
+        assert body["stats_points_per_view"] == 750
+        assert body["stats_persistence_enabled"] is True  # unchanged
+
+    def test_update_settings_persists_stats_values_in_db(
+        self, client, test_api_key_write, mock_stats_client,
+        seed_global_settings, db_session,
+    ):
+        """
+        Regression test for the ALLOWED_SETTINGS whitelist bug: POST with
+        stats_* keys must actually UPDATE the row in the database, so on
+        backend restart the values survive. Reads back via a fresh query
+        on the same test session.
+        """
+        mock_stats_client.push_settings_update = AsyncMock()
+
+        resp = client.post(
+            "/api/settings",
+            json={
+                "stats_persistence_enabled": False,
+                "stats_retention_days": 14,
+                "stats_points_per_view": 1000,
+            },
+            headers={"Authorization": f"Bearer {test_api_key_write}"},
+        )
+        assert resp.status_code == 200, resp.text
+
+        # Expire the seeded row so we re-read fresh from the DB, not the
+        # SQLAlchemy identity map. This is the moment of truth: if the
+        # whitelist silently dropped the keys, these asserts will fail.
+        db_session.expire_all()
+        row = db_session.query(GlobalSettings).one()
+        assert row.stats_persistence_enabled is False
+        assert row.stats_retention_days == 14
+        assert row.stats_points_per_view == 1000
+
     def test_update_settings_without_stats_keys_does_not_push(
-        self, client, test_api_key_write, mock_stats_client, stub_settings_db
+        self, client, test_api_key_write, mock_stats_client, seed_global_settings
     ):
         mock_stats_client.push_settings_update = AsyncMock()
 
@@ -449,7 +479,7 @@ class TestPushSettingsUpdate:
         mock_stats_client.push_settings_update.assert_not_called()
 
     def test_update_settings_push_failure_is_non_fatal(
-        self, client, test_api_key_write, mock_stats_client, stub_settings_db
+        self, client, test_api_key_write, mock_stats_client, seed_global_settings
     ):
         mock_stats_client.push_settings_update = AsyncMock(
             side_effect=aiohttp.ClientError("connection refused")

@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 )
 
@@ -23,28 +25,27 @@ func (h *SettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Decode the payload. An empty body is treated as a no-op "refresh the
+	// current snapshot" request — matches Python's Pydantic behaviour when
+	// no stats_* keys are in the validated payload — so we only 400 on
+	// malformed JSON, not on an empty request body.
 	var req settingsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	h.provider.mu.Lock()
-	if req.StatsPersistenceEnabled != nil {
-		h.provider.persistEnabled = *req.StatsPersistenceEnabled
-	}
-	if req.StatsRetentionDays != nil && *req.StatsRetentionDays >= 1 && *req.StatsRetentionDays <= 90 {
-		h.provider.retentionDays = *req.StatsRetentionDays
-	}
-	if req.StatsPointsPerView != nil && *req.StatsPointsPerView >= 100 && *req.StatsPointsPerView <= 2000 {
-		h.provider.pointsPerView = *req.StatsPointsPerView
-	}
+	persistEnabled, retentionDays, pointsPerView := h.provider.ApplyPartialUpdate(
+		req.StatsPersistenceEnabled,
+		req.StatsRetentionDays,
+		req.StatsPointsPerView,
+	)
 	resp := map[string]any{
-		"stats_persistence_enabled": h.provider.persistEnabled,
-		"stats_retention_days":      h.provider.retentionDays,
-		"stats_points_per_view":     h.provider.pointsPerView,
+		"stats_persistence_enabled": persistEnabled,
+		"stats_retention_days":      retentionDays,
+		"stats_points_per_view":     pointsPerView,
 	}
-	h.provider.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)

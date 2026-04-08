@@ -55,12 +55,28 @@ func (p *mainSettingsProvider) PersistEnabled() bool {
 	return p.persistEnabled
 }
 
-// Update atomically replaces the live config. Task 17's settings handler
-// calls this when Python pushes new values.
-func (p *mainSettingsProvider) Update(retentionDays, pointsPerView int, enabled bool) {
+// ApplyPartialUpdate atomically applies a partial update to the live config,
+// enforcing the same ranges as the Python-side Pydantic validator (1..90 for
+// retention_days, 100..2000 for points_per_view). Out-of-range values are
+// silently ignored — the Python side already rejects them with 422 before
+// the push ever reaches here, so this is defense-in-depth only. Nil pointers
+// leave the corresponding field unchanged. Returns the post-update snapshot
+// so callers can echo it back in the response body.
+func (p *mainSettingsProvider) ApplyPartialUpdate(
+	persistEnabled *bool,
+	retentionDays *int,
+	pointsPerView *int,
+) (bool, int, int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.retentionDays = retentionDays
-	p.pointsPerView = pointsPerView
-	p.persistEnabled = enabled
+	if persistEnabled != nil {
+		p.persistEnabled = *persistEnabled
+	}
+	if retentionDays != nil && *retentionDays >= 1 && *retentionDays <= 90 {
+		p.retentionDays = *retentionDays
+	}
+	if pointsPerView != nil && *pointsPerView >= 100 && *pointsPerView <= 2000 {
+		p.pointsPerView = *pointsPerView
+	}
+	return p.persistEnabled, p.retentionDays, p.pointsPerView
 }

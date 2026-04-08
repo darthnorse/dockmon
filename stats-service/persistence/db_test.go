@@ -12,11 +12,10 @@ import (
 
 // makeFixtureDB creates a sqlite file in a fresh temp dir with the
 // schema this package expects (what Alembic would create in production).
+// Delegates to MakeFixtureDBForTest so the same seed is reused by handler
+// tests in the parent stats-service package.
 func makeFixtureDB(t *testing.T) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "test.db")
-	seedFixture(t, path)
-	return path
+	return MakeFixtureDBForTest(t)
 }
 
 // seedFixture applies the expected schema at the given path. Separated

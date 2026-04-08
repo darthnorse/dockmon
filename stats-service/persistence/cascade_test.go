@@ -60,3 +60,20 @@ func TestComputeTiers_HigherTiersAreMultiplesOfTier0(t *testing.T) {
 		}
 	}
 }
+
+func TestComputeTiers_PanicsOnNonPositivePointsPerView(t *testing.T) {
+	// Guard against a cryptic runtime "integer divide by zero" (for 0) or
+	// nonsense all-1s tiers (for negatives). Upstream config validation
+	// enforces floor=100, ceiling=2000; this is a fail-fast safety net.
+	for _, n := range []int{0, -1, -500} {
+		n := n
+		t.Run("", func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Errorf("ComputeTiers(%d) did not panic", n)
+				}
+			}()
+			_ = ComputeTiers(n)
+		})
+	}
+}

@@ -358,6 +358,12 @@ func main() {
 			authMiddleware(token, historyHandler.ServeContainer))
 		mux.HandleFunc("/api/stats/history/host",
 			authMiddleware(token, historyHandler.ServeHost))
+
+		// Task 17: hot-reload of stats settings pushed from Python.
+		// Python is the only caller; the endpoint is gated by the same
+		// Bearer token as the rest of the stats-service API.
+		settingsHandler := &SettingsHandler{provider: settingsProvider}
+		mux.HandleFunc("/api/settings", authMiddleware(token, settingsHandler.ServeHTTP))
 	}
 
 	// Start stream for a container (called by Python backend) - PROTECTED

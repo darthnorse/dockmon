@@ -12,12 +12,13 @@ upstream error mapping, and defense-in-depth container_id
 normalization.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
 from fastapi.testclient import TestClient
 
+import main as main_module
 from main import app
 from stats_client import StatsServiceClient
 
@@ -376,3 +377,88 @@ class TestStatsClientHistoryMethod:
         assert excinfo.value.status == 400
         assert "invalid range" in excinfo.value.body
         svc._invalidate_auth.assert_not_awaited()
+
+
+@pytest.fixture
+def stub_settings_db(monkeypatch):
+    """
+    Stub monitor.db.update_settings so the POST /api/settings test doesn't
+    need a real GlobalSettings row (the test database is empty). Returns a
+    fake settings object with the attributes the endpoint reads after the
+    update, matching the GlobalSettings schema. The tests for Task 17 only
+    care about the hot-push code path, not the database layer itself.
+    """
+    # Fake "updated" settings object returned by db.update_settings.
+    fake_settings = MagicMock()
+    fake_settings.show_host_stats = True
+    fake_settings.show_container_stats = True
+    fake_settings.session_timeout_hours = 24
+    fake_settings.update_check_time = "03:00"
+    fake_settings.event_suppression_patterns = None
+    # All the fields the endpoint returns in its response dict — set to
+    # sensible defaults so getattr() returns real values.
+    for attr in (
+        "max_retries", "retry_delay", "default_auto_restart",
+        "polling_interval", "connection_timeout", "enable_notifications",
+        "alert_template", "alert_template_metric", "alert_template_state_change",
+        "alert_template_health", "alert_template_update", "blackout_windows",
+        "timezone_offset", "show_container_alerts_on_hosts",
+        "unused_tag_retention_days", "event_retention_days",
+    ):
+        setattr(fake_settings, attr, None)
+
+    monkeypatch.setattr(
+        main_module.monitor.db, "update_settings", lambda updates: fake_settings
+    )
+    # monitor.settings is read for old_show_*_stats comparisons before the DB call.
+    monkeypatch.setattr(main_module.monitor, "settings", fake_settings)
+    return fake_settings
+
+
+@pytest.mark.integration
+class TestPushSettingsUpdate:
+    """Task 17: POST /api/settings with stats_* keys should push to stats-service."""
+
+    def test_update_settings_pushes_stats_settings(
+        self, client, test_api_key_write, mock_stats_client, stub_settings_db
+    ):
+        mock_stats_client.push_settings_update = AsyncMock()
+
+        resp = client.post(
+            "/api/settings",
+            json={"stats_retention_days": 45, "stats_points_per_view": 750},
+            headers={"Authorization": f"Bearer {test_api_key_write}"},
+        )
+        assert resp.status_code == 200, resp.text
+        mock_stats_client.push_settings_update.assert_called_once_with(
+            stats_retention_days=45,
+            stats_points_per_view=750,
+        )
+
+    def test_update_settings_without_stats_keys_does_not_push(
+        self, client, test_api_key_write, mock_stats_client, stub_settings_db
+    ):
+        mock_stats_client.push_settings_update = AsyncMock()
+
+        resp = client.post(
+            "/api/settings",
+            json={"max_retries": 5},
+            headers={"Authorization": f"Bearer {test_api_key_write}"},
+        )
+        assert resp.status_code == 200, resp.text
+        mock_stats_client.push_settings_update.assert_not_called()
+
+    def test_update_settings_push_failure_is_non_fatal(
+        self, client, test_api_key_write, mock_stats_client, stub_settings_db
+    ):
+        mock_stats_client.push_settings_update = AsyncMock(
+            side_effect=aiohttp.ClientError("connection refused")
+        )
+
+        resp = client.post(
+            "/api/settings",
+            json={"stats_retention_days": 30},
+            headers={"Authorization": f"Bearer {test_api_key_write}"},
+        )
+        # Should still succeed even though push failed
+        assert resp.status_code == 200, resp.text

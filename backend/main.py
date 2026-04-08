@@ -3483,6 +3483,20 @@ async def update_settings(
     if 'update_check_time' in validated_dict:
         monitor.periodic_jobs.notify_schedule_changed()
 
+    # Hot-push stats-related settings to stats-service so retention and the
+    # cascade pick up the new values without a service restart.
+    stats_keys = ("stats_persistence_enabled", "stats_retention_days", "stats_points_per_view")
+    stats_updates = {k: validated_dict[k] for k in stats_keys if k in validated_dict}
+    if stats_updates:
+        try:
+            from stats_client import get_stats_client
+            client = get_stats_client()
+            await client.push_settings_update(**stats_updates)
+        except Exception as e:
+            logger.warning(f"Failed to push stats settings update to stats-service: {e}")
+            # Non-fatal: Python has already persisted the settings; stats-service
+            # will pick them up on next restart.
+
     changed_keys = list(validated_dict.keys())
     _safe_audit(current_user, log_settings_change, ', '.join(changed_keys), request)
 

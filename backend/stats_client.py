@@ -409,6 +409,40 @@ class StatsServiceClient:
             "/api/stats/history/container", params, "container stats history"
         )
 
+    async def push_settings_update(
+        self,
+        stats_persistence_enabled: Optional[bool] = None,
+        stats_retention_days: Optional[int] = None,
+        stats_points_per_view: Optional[int] = None,
+    ) -> None:
+        """Notify stats-service of settings changes for hot reload.
+
+        Non-fatal: if the push fails, stats-service picks up the new values
+        on next restart. The caller should catch and log any exception.
+        """
+        payload: Dict[str, Any] = {}
+        if stats_persistence_enabled is not None:
+            payload["stats_persistence_enabled"] = stats_persistence_enabled
+        if stats_retention_days is not None:
+            payload["stats_retention_days"] = stats_retention_days
+        if stats_points_per_view is not None:
+            payload["stats_points_per_view"] = stats_points_per_view
+        if not payload:
+            return
+
+        try:
+            for attempt in range(2):
+                session = await self._get_session()
+                async with session.post(f"{self.base_url}/api/settings", json=payload) as resp:
+                    if resp.status == 401 and attempt == 0:
+                        await self._invalidate_auth()
+                        continue
+                    resp.raise_for_status()
+                    return
+        except aiohttp.ClientError as e:
+            logger.error(f"Failed to push stats settings to stats service: {e}")
+            raise
+
     # Event service methods
 
     async def add_event_host(self, host_id: str, host_name: str, host_address: str, tls_ca: str = None, tls_cert: str = None, tls_key: str = None) -> bool:

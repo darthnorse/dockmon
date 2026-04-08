@@ -208,9 +208,10 @@ func TestBlend_MemLimitAllZeroReturnsZero(t *testing.T) {
 }
 
 func TestBucketQuantization_SubSecondInterval(t *testing.T) {
-	// Tier 0 interval is 7.2s. time.Truncate floors to multiples of d from Unix epoch.
-	// 10000.5s / 7.2s ≈ 1389.0625 → floor=1389 → 1389*7.2 = 10000.8 (too large)
-	// So bucket = 1388 * 7.2 = 9993.6s = 9_993_600_000_000 ns.
+	// Tier 0 interval is 7.2s. time.Truncate floors the Unix-epoch duration
+	// to the largest multiple of the interval that is <= ts.
+	// 10000.5s / 7.2s ≈ 1388.958 → floor = 1388 → 1388 * 7.2 = 9993.6s
+	// = 9_993_600_000_000 ns.
 	interval := 7200 * time.Millisecond
 	ts := time.Unix(10000, 500_000_000) // 10000.5s
 	bucket := ts.Truncate(interval)

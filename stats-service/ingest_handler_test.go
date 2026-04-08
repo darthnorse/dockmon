@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -210,4 +213,72 @@ func TestIngestHandler_NormalizesLongContainerID(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Errorf("expected normalized 12-char container ID in cache")
+}
+
+// TestIngestHandler_ContextCancellationReturnsHandler verifies that when the
+// request context is cancelled (e.g. on server shutdown) the handler
+// goroutine unblocks from its ReadJSON loop and returns in a timely manner.
+// Without the watcher goroutine installed in HandleWebSocket, ReadJSON
+// would block until the client disconnected and this test would hang.
+func TestIngestHandler_ContextCancellationReturnsHandler(t *testing.T) {
+	_, db, h := makeIngestFixture(t)
+	if _, err := db.Write().Exec(
+		`INSERT INTO docker_hosts (id,name) VALUES ('host-1','h1')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Write().Exec(
+		`INSERT INTO agents (id, host_id) VALUES ('tok1','host-1')`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build a server whose BaseContext we control. Cancelling baseCtx
+	// propagates into every r.Context() the server constructs, which is
+	// the same signal the real main.go gives its handlers on shutdown.
+	baseCtx, cancelBase := context.WithCancel(context.Background())
+
+	// Wrap the handler so the test can observe when it returns.
+	var wg sync.WaitGroup
+	wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wg.Add(1)
+		defer wg.Done()
+		h.HandleWebSocket(w, r)
+	})
+
+	srv := httptest.NewUnstartedServer(wrapped)
+	srv.Config.BaseContext = func(net.Listener) context.Context { return baseCtx }
+	srv.Start()
+	// Defer order matters: cancel the base context BEFORE closing the
+	// server so an in-flight handler (blocking on ReadJSON) can unwind
+	// via the watcher rather than making srv.Close() hang.
+	defer srv.Close()
+	defer cancelBase()
+
+	url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/stats/ingest"
+	header := http.Header{"Authorization": {"Bearer tok1"}}
+	conn, _, err := websocket.DefaultDialer.Dial(url, header)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Let the handler reach its ReadJSON blocking loop.
+	time.Sleep(50 * time.Millisecond)
+
+	// Cancel the server-side base context. The watcher goroutine inside
+	// HandleWebSocket should observe this and close the connection,
+	// which unblocks ReadJSON and lets the handler return.
+	cancelBase()
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// handler returned as expected
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return within 2s of context cancellation")
+	}
 }

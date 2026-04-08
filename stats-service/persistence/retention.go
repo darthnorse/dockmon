@@ -37,8 +37,10 @@ func (r *Retention) RunRingBuffer(ctx context.Context) error {
 	start := time.Now()
 	var totalDeleted int64
 
+	// Local name is maxPoints (not max) so we do not shadow the Go 1.21+
+	// built-in max; see the same convention in cascade.go blendCore.
 	for _, tier := range r.tiers {
-		max := r.maxPointsForTier(tier)
+		maxPoints := r.maxPointsForTier(tier)
 
 		res, err := r.db.write.ExecContext(ctx, `
 			DELETE FROM container_stats_history
@@ -51,7 +53,7 @@ func (r *Retention) RunRingBuffer(ctx context.Context) error {
 					FROM container_stats_history
 					WHERE resolution = ?
 				) WHERE rn > ?
-			)`, tier.Name, max)
+			)`, tier.Name, maxPoints)
 		if err != nil {
 			return fmt.Errorf("ring buffer container tier %s: %w", tier.Name, err)
 		}
@@ -69,7 +71,7 @@ func (r *Retention) RunRingBuffer(ctx context.Context) error {
 					FROM host_stats_history
 					WHERE resolution = ?
 				) WHERE rn > ?
-			)`, tier.Name, max)
+			)`, tier.Name, maxPoints)
 		if err != nil {
 			return fmt.Errorf("ring buffer host tier %s: %w", tier.Name, err)
 		}

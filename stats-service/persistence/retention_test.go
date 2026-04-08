@@ -112,6 +112,34 @@ func TestRingBuffer_TrimsHostRows(t *testing.T) {
 	}
 }
 
+func TestRingBuffer_EmptyDatabase(t *testing.T) {
+	// Edge case from spec §15: empty tier. Running against a schema with no
+	// rows must complete cleanly and delete nothing, not error on the window
+	// function or on RowsAffected.
+	path := makeFixtureDB(t)
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	r := NewRetention(db, ComputeTiers(500))
+	if err := r.RunRingBuffer(context.Background()); err != nil {
+		t.Fatalf("empty-db ring buffer failed: %v", err)
+	}
+
+	var c, h int
+	if err := db.Read().QueryRow(`SELECT COUNT(*) FROM container_stats_history`).Scan(&c); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Read().QueryRow(`SELECT COUNT(*) FROM host_stats_history`).Scan(&h); err != nil {
+		t.Fatal(err)
+	}
+	if c != 0 || h != 0 {
+		t.Errorf("empty-db rows after run: container=%d host=%d, want 0/0", c, h)
+	}
+}
+
 func TestRingBuffer_RespectsTierMaxPoints(t *testing.T) {
 	// At points_per_view=500, all tiers hold exactly 500 max points.
 	tiers := ComputeTiers(500)

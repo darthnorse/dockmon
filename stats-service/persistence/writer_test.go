@@ -72,7 +72,7 @@ func TestWriter_BatchPersistsContainerRows(t *testing.T) {
 		value:    sample{CPU: 12.5, MemUsed: 1024, MemLimit: 8192, NetBps: 100.5},
 	}
 
-	stop() // force final flush
+	stop()
 
 	var count int
 	if err := db.Read().QueryRow(
@@ -111,7 +111,7 @@ func TestWriter_BatchPersistsHostRows(t *testing.T) {
 			NetBps: 1024, ContainerCount: 8,
 		},
 	}
-	stop() // force final flush
+	stop()
 
 	var count int
 	if err := db.Read().QueryRow(
@@ -134,7 +134,7 @@ func TestWriter_NaNBecomesNull(t *testing.T) {
 		ts:       time.Unix(1_000_000, 0),
 		value:    sample{CPU: math.NaN(), NetBps: math.NaN()},
 	}
-	stop() // force final flush
+	stop()
 
 	var cpu sql.NullFloat64
 	if err := db.Read().QueryRow(
@@ -161,7 +161,7 @@ func TestWriter_InsertOrReplaceDeduplicates(t *testing.T) {
 		tier: "1h", entityID: "host-1:dup000000000", ts: ts,
 		value: sample{CPU: 99},
 	}
-	stop() // force final flush
+	stop()
 
 	var cpu sql.NullFloat64
 	if err := db.Read().QueryRow(
@@ -177,26 +177,13 @@ func TestWriter_InsertOrReplaceDeduplicates(t *testing.T) {
 
 func TestWriter_FlushOnContextCancel(t *testing.T) {
 	db, ch, w := makeWriterFixture(t)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		w.Run(ctx)
-		close(done)
-	}()
+	stop := runWriter(t, w, ch)
 
 	ch <- writeJob{
 		tier: "1h", entityID: "host-1:cancelflush", ts: time.Unix(1_000_000, 0),
 		value: sample{CPU: 1},
 	}
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("writer Run did not return after cancel")
-	}
+	stop() // drain, then cancel — the cancel path must flush the in-memory batch
 
 	var count int
 	if err := db.Read().QueryRow(

@@ -81,3 +81,72 @@ func (r *Retention) RunRingBuffer(ctx context.Context) error {
 		totalDeleted, time.Since(start))
 	return nil
 }
+
+// RunTimeSweep deletes rows older than max(retentionDays, longestTierWindow).
+// Returns total rows deleted across both history tables.
+//
+// The cutoff is floored at the longest tier window so we never delete buckets
+// the cascade is still actively writing to.
+func (r *Retention) RunTimeSweep(ctx context.Context, retentionDays int) (int64, error) {
+	start := time.Now()
+
+	cutoffDuration := time.Duration(retentionDays) * 24 * time.Hour
+	for _, t := range r.tiers {
+		if t.Window > cutoffDuration {
+			cutoffDuration = t.Window
+		}
+	}
+	cutoff := time.Now().Add(-cutoffDuration).Unix()
+
+	res, err := r.db.write.ExecContext(ctx,
+		`DELETE FROM container_stats_history WHERE timestamp < ?`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("time sweep container: %w", err)
+	}
+	c, _ := res.RowsAffected()
+
+	res, err = r.db.write.ExecContext(ctx,
+		`DELETE FROM host_stats_history WHERE timestamp < ?`, cutoff)
+	if err != nil {
+		return c, fmt.Errorf("time sweep host: %w", err)
+	}
+	h, _ := res.RowsAffected()
+
+	total := c + h
+	log.Printf("Time sweep: deleted %d rows older than %v, took %v",
+		total, cutoffDuration, time.Since(start))
+	return total, nil
+}
+
+// SettingsProvider lets Retention read the current retention_days at run time
+// without tightly coupling to the rest of stats-service. The main package
+// supplies an implementation that reads from in-memory config (Task 15).
+type SettingsProvider interface {
+	RetentionDays() int
+}
+
+// Run is the long-lived scheduling loop. Fires ring buffer hourly and time
+// sweep daily until ctx is done.
+func (r *Retention) Run(ctx context.Context, settings SettingsProvider) {
+	ringTicker := time.NewTicker(1 * time.Hour)
+	defer ringTicker.Stop()
+	sweepTicker := time.NewTicker(24 * time.Hour)
+	defer sweepTicker.Stop()
+
+	log.Println("Retention scheduler started: ring buffer hourly, time sweep daily")
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("Retention scheduler stopped")
+			return
+		case <-ringTicker.C:
+			if err := r.RunRingBuffer(ctx); err != nil {
+				log.Printf("Retention: ring buffer error: %v", err)
+			}
+		case <-sweepTicker.C:
+			if _, err := r.RunTimeSweep(ctx, settings.RetentionDays()); err != nil {
+				log.Printf("Retention: time sweep error: %v", err)
+			}
+		}
+	}
+}

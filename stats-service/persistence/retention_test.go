@@ -3,6 +3,7 @@ package persistence
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func seedContainerRows(t *testing.T, db *DB, containerID, hostID, resolution string, n int) {
@@ -192,5 +193,95 @@ func TestRingBuffer_MultipleContainersMultipleTiers(t *testing.T) {
 				t.Errorf("%s tier %s: got %d rows, want %d", cid, tier, got, want)
 			}
 		}
+	}
+}
+
+func TestTimeSweep_DeletesOldRows(t *testing.T) {
+	path := makeFixtureDB(t)
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Write().Exec(
+		`INSERT INTO docker_hosts (id, name) VALUES ('h1','h1')`); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().Unix()
+	old := now - int64((45 * 24 * time.Hour).Seconds())   // 45 days ago
+	fresh := now - int64((10 * 24 * time.Hour).Seconds()) // 10 days ago
+
+	if _, err := db.Write().Exec(`INSERT INTO container_stats_history
+		(container_id, host_id, timestamp, resolution, cpu_percent)
+		VALUES (?, ?, ?, ?, ?)`,
+		"h1:abc123abc123", "h1", old, "1h", 1.0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Write().Exec(`INSERT INTO container_stats_history
+		(container_id, host_id, timestamp, resolution, cpu_percent)
+		VALUES (?, ?, ?, ?, ?)`,
+		"h1:abc123abc123", "h1", fresh, "1h", 2.0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Write().Exec(`INSERT INTO host_stats_history
+		(host_id, timestamp, resolution, cpu_percent)
+		VALUES (?, ?, ?, ?)`,
+		"h1", old, "30d", 1.0); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewRetention(db, ComputeTiers(500))
+	deleted, err := r.RunTimeSweep(context.Background(), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 2 {
+		t.Errorf("deleted=%d, want 2 (one container row, one host row)", deleted)
+	}
+
+	var n int
+	if err := db.Read().QueryRow(
+		`SELECT COUNT(*) FROM container_stats_history WHERE container_id = ?`,
+		"h1:abc123abc123",
+	).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("fresh row count=%d, want 1", n)
+	}
+}
+
+func TestTimeSweep_FloorsCutoffToLongestTierWindow(t *testing.T) {
+	// If user sets retention_days=5 but the longest tier is 30 days, the
+	// effective cutoff must NOT be 5 days — that would delete the 7d/30d
+	// tiers' working data.
+	path := makeFixtureDB(t)
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Write().Exec(
+		`INSERT INTO docker_hosts (id, name) VALUES ('h1','h1')`); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().Unix()
+	day10 := now - int64((10 * 24 * time.Hour).Seconds())
+	if _, err := db.Write().Exec(`INSERT INTO host_stats_history
+		(host_id, timestamp, resolution, cpu_percent)
+		VALUES (?, ?, ?, ?)`,
+		"h1", day10, "30d", 1.0); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewRetention(db, ComputeTiers(500))
+	deleted, err := r.RunTimeSweep(context.Background(), 5) // user-set 5 days
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 0 {
+		t.Errorf("deleted=%d, want 0 (cutoff floored to 30d tier window)", deleted)
 	}
 }

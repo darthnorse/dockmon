@@ -104,6 +104,19 @@ func main() {
 		log.WithError(err).Warn("Failed to check/apply pending update")
 	}
 
+	// Stats service dual-send: open a separate WebSocket to stats-service for
+	// historical stats persistence. Falls back gracefully if either the token
+	// or the URL is missing. The token is the agent's permanent UUID, the
+	// same value Python's validate_permanent_token() consumes.
+	if cfg.PermanentToken != "" && cfg.DockMonURL != "" {
+		statsClient := client.NewStatsServiceClient(cfg.DockMonURL, cfg.PermanentToken, log)
+		if statsHandler := wsClient.StatsHandler(); statsHandler != nil {
+			statsHandler.SetStatsServiceClient(statsClient)
+		}
+		go statsClient.Run(ctx)
+		log.Info("Stats service dual-send enabled")
+	}
+
 	// Start client in background
 	go func() {
 		if err := wsClient.Run(ctx); err != nil {

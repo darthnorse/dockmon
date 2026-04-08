@@ -152,6 +152,12 @@ func NewWebSocketClient(
 	return client, nil
 }
 
+// StatsHandler returns the internal StatsHandler so main.go can wire the
+// stats-service dual-send path into it at startup.
+func (c *WebSocketClient) StatsHandler() *handlers.StatsHandler {
+	return c.statsHandler
+}
+
 // Run starts the WebSocket client with automatic reconnection
 func (c *WebSocketClient) Run(ctx context.Context) error {
 	defer close(c.doneChan)

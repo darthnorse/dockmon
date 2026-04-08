@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -237,27 +238,49 @@ func main() {
 		log.Printf("Persistence disabled: %v", persistErr)
 		persistDB = nil
 	}
+	// persistWg tracks the writer and retention goroutines. The deferred
+	// cleanup below cancels the context, waits for them to drain, then
+	// closes the DB — in that order — so a mid-batch commit can never
+	// race a closed sqlite handle. The explicit cancel() at the bottom
+	// of main() signals shutdown on the normal SIGTERM path; this defer
+	// exists for both belt-and-suspenders and the panic unwind path.
+	var persistWg sync.WaitGroup
 	defer func() {
-		if persistDB != nil {
-			if err := persistDB.Close(); err != nil {
-				log.Printf("Error closing persistence DB: %v", err)
-			}
+		if persistDB == nil {
+			return
+		}
+		cancel()
+		persistWg.Wait()
+		if err := persistDB.Close(); err != nil {
+			log.Printf("Error closing persistence DB: %v", err)
 		}
 	}()
 
+	// tiers is computed once at startup from the live points_per_view and
+	// shared by the cascade, retention, and history-handler wiring below.
+	// Task 17's hot-reload handler will recompute and rebuild when the
+	// setting changes at runtime.
+	var persistTiers []persistence.Tier
 	if persistDB != nil {
-		tiers := persistence.ComputeTiers(settingsProvider.pointsPerView)
+		persistTiers = persistence.ComputeTiers(settingsProvider.PointsPerView())
 		writes := make(chan persistence.WriteJob, 4096)
-		cascade = persistence.NewCascade(tiers, writes)
+		cascade = persistence.NewCascade(persistTiers, writes)
 		writer = persistence.NewWriter(persistDB, writes)
-		retention = persistence.NewRetention(persistDB, tiers)
+		retention = persistence.NewRetention(persistDB, persistTiers)
 		aggregator.SetCascade(cascade)
 
-		go writer.Run(ctx)
-		go retention.Run(ctx, settingsProvider)
+		persistWg.Add(2)
+		go func() {
+			defer persistWg.Done()
+			writer.Run(ctx)
+		}()
+		go func() {
+			defer persistWg.Done()
+			retention.Run(ctx, settingsProvider)
+		}()
 
 		log.Printf("Stats persistence enabled (tiers=%d, points_per_view=%d)",
-			len(tiers), settingsProvider.pointsPerView)
+			len(persistTiers), settingsProvider.PointsPerView())
 	}
 
 	// Start aggregator
@@ -327,8 +350,10 @@ func main() {
 	}))
 
 	// Historical stats endpoints (PROTECTED) — Task 15 wiring.
+	// Reuses persistTiers computed above so the handler sees the exact
+	// same tier definitions the cascade/writer are feeding into the DB.
 	if persistDB != nil {
-		historyHandler := NewHistoryHandler(persistDB, persistence.ComputeTiers(settingsProvider.pointsPerView))
+		historyHandler := NewHistoryHandler(persistDB, persistTiers)
 		mux.HandleFunc("/api/stats/history/container",
 			authMiddleware(token, historyHandler.ServeContainer))
 		mux.HandleFunc("/api/stats/history/host",
@@ -678,7 +703,9 @@ func main() {
 		log.Printf("Server shutdown error: %v", err)
 	}
 
-	// Cancel context to stop aggregator
+	// Cancel context to stop aggregator. The persistence goroutines are
+	// drained and the DB is closed by the deferred cleanup above, in
+	// strict cancel → Wait → Close order.
 	cancel()
 
 	// Clean up token file

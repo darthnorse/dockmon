@@ -388,6 +388,14 @@ func main() {
 			},
 		}
 		mux.HandleFunc("/api/stats/ws/ingest", ingestHandler.HandleWebSocket)
+
+		// Task 19: agent token invalidation. Python posts here after
+		// deleting an agent row so stats-service evicts the cached
+		// token entry instead of honouring the now-deleted agent for
+		// up to the 5-minute cache TTL. Gated by the Bearer token
+		// (Python is the only caller and already has it). See spec §10.
+		invalidateHandler := &InvalidateHandler{db: persistDB}
+		mux.HandleFunc("/api/agents/invalidate", authMiddleware(token, invalidateHandler.ServeHTTP))
 	}
 
 	// Start stream for a container (called by Python backend) - PROTECTED

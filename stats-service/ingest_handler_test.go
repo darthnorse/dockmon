@@ -282,3 +282,94 @@ func TestIngestHandler_ContextCancellationReturnsHandler(t *testing.T) {
 		t.Fatal("handler did not return within 2s of context cancellation")
 	}
 }
+
+func TestInvalidateHandler_EvictsCachedToken(t *testing.T) {
+	path := persistence.MakeFixtureDBForTest(t)
+	db, err := persistence.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Write().Exec(
+		`INSERT INTO docker_hosts (id,name) VALUES ('host-1','h1')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Write().Exec(
+		`INSERT INTO agents (id, host_id) VALUES ('tok','host-1')`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Warm the token cache
+	if _, err := db.ValidateAgentToken(context.Background(), "tok"); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &InvalidateHandler{db: db}
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/invalidate",
+		strings.NewReader(`{"agent_id":"tok"}`))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// Delete the row from the DB; without invalidation the cache would
+	// still return the old host_id. With invalidation, the next lookup
+	// bypasses the cache and queries the DB → ErrInvalidAgentToken.
+	if _, err := db.Write().Exec(`DELETE FROM agents WHERE id = 'tok'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ValidateAgentToken(context.Background(), "tok"); err == nil {
+		t.Errorf("expected ErrInvalidAgentToken after invalidate")
+	}
+}
+
+func TestInvalidateHandler_RejectsBadJSON(t *testing.T) {
+	path := persistence.MakeFixtureDBForTest(t)
+	db, err := persistence.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	h := &InvalidateHandler{db: db}
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/invalidate",
+		strings.NewReader("{nonsense"))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400", w.Code)
+	}
+}
+
+func TestInvalidateHandler_RejectsEmptyAgentID(t *testing.T) {
+	path := persistence.MakeFixtureDBForTest(t)
+	db, err := persistence.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	h := &InvalidateHandler{db: db}
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/invalidate",
+		strings.NewReader(`{"agent_id":""}`))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400", w.Code)
+	}
+}
+
+func TestInvalidateHandler_RejectsNonPost(t *testing.T) {
+	path := persistence.MakeFixtureDBForTest(t)
+	db, err := persistence.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	h := &InvalidateHandler{db: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/agents/invalidate", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status=%d, want 405", w.Code)
+	}
+}

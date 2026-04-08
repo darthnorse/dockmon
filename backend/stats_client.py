@@ -443,6 +443,30 @@ class StatsServiceClient:
             logger.error(f"Failed to push stats settings to stats service: {e}")
             raise
 
+    async def invalidate_agent_token(self, agent_id: str) -> None:
+        """Tell stats-service to drop a given agent's cached token entry.
+
+        Non-fatal: if the push fails, the token cache will expire naturally
+        within 5 minutes. The caller should catch and log any exception.
+        """
+        payload = {"agent_id": agent_id}
+        try:
+            for attempt in range(2):
+                session = await self._get_session()
+                async with session.post(
+                    f"{self.base_url}/api/agents/invalidate", json=payload
+                ) as resp:
+                    if resp.status == 401 and attempt == 0:
+                        await self._invalidate_auth()
+                        continue
+                    if resp.status in (200, 204, 404):
+                        return
+                    resp.raise_for_status()
+                    return
+        except aiohttp.ClientError as e:
+            logger.error(f"Failed to invalidate agent token in stats service: {e}")
+            raise
+
     # Event service methods
 
     async def add_event_host(self, host_id: str, host_name: str, host_address: str, tls_ca: str = None, tls_cert: str = None, tls_key: str = None) -> bool:

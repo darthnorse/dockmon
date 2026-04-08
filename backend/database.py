@@ -733,6 +733,11 @@ class GlobalSettings(Base):
     # Session timeout (0 = never expires, 1-8760 hours)
     session_timeout_hours = Column(Integer, default=24)
 
+    # Stats persistence (v2.4.0+)
+    stats_persistence_enabled = Column(Boolean, default=True, nullable=False)
+    stats_retention_days = Column(Integer, default=30, nullable=False)  # 1..90
+    stats_points_per_view = Column(Integer, default=500, nullable=False)  # 100..2000
+
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 class ContainerUpdate(Base):

@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, inspect
 from alembic.config import Config
 from alembic import command
 
-from database import Base
+from database import Base, GlobalSettings
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 
@@ -146,3 +146,18 @@ def test_downgrade_removes_stats_schema(fresh_db):
     assert "stats_persistence_enabled" not in settings_cols
     assert "stats_retention_days" not in settings_cols
     assert "stats_points_per_view" not in settings_cols
+
+
+def test_global_settings_orm_has_new_fields():
+    cols = {c.name: c for c in GlobalSettings.__table__.columns}
+    assert "stats_persistence_enabled" in cols
+    assert "stats_retention_days" in cols
+    assert "stats_points_per_view" in cols
+
+    assert cols["stats_persistence_enabled"].default.arg is True
+    assert cols["stats_retention_days"].default.arg == 30
+    assert cols["stats_points_per_view"].default.arg == 500
+
+    assert cols["stats_persistence_enabled"].nullable is False
+    assert cols["stats_retention_days"].nullable is False
+    assert cols["stats_points_per_view"].nullable is False

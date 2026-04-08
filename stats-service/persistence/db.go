@@ -143,7 +143,7 @@ func (db *DB) ValidateAgentToken(ctx context.Context, token string) (string, err
 		return "", ErrInvalidAgentToken
 	}
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("validate agent token: %w", err)
 	}
 
 	db.tokenMu.Lock()

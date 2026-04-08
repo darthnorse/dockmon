@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // makeFixtureDB creates a sqlite file in a fresh temp dir with the
@@ -246,6 +247,47 @@ func TestValidateAgentToken_CacheHit(t *testing.T) {
 	}
 	if hostID != "host-1" {
 		t.Errorf("got %q, want host-1", hostID)
+	}
+}
+
+func TestValidateAgentToken_CacheExpiry(t *testing.T) {
+	path := makeFixtureDB(t)
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Write().Exec(
+		`INSERT INTO docker_hosts (id, name) VALUES ('host-1', 'a')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Write().Exec(
+		`INSERT INTO agents (id, host_id) VALUES ('tok', 'host-1')`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Populate the cache.
+	if _, err := db.ValidateAgentToken(context.Background(), "tok"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Force the cached entry to be expired, then delete the row so a
+	// stale cache hit would return the wrong answer. A correct TTL check
+	// must refuse the cached entry, re-query, miss, and return
+	// ErrInvalidAgentToken.
+	db.tokenMu.Lock()
+	entry := db.tokenCache["tok"]
+	entry.expiry = time.Now().Add(-time.Second)
+	db.tokenCache["tok"] = entry
+	db.tokenMu.Unlock()
+
+	if _, err := db.Write().Exec(`DELETE FROM agents WHERE id = 'tok'`); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = db.ValidateAgentToken(context.Background(), "tok")
+	if !errors.Is(err, ErrInvalidAgentToken) {
+		t.Errorf("expired entry should not satisfy lookup: err=%v, want ErrInvalidAgentToken", err)
 	}
 }
 

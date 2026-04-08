@@ -87,9 +87,26 @@ func (a *Aggregator) aggregate() {
 
 			if a.cascade != nil {
 				now := time.Now()
-				a.cascade.Ingest(hostID, true, now, sampleFromHostStats(hostStats))
+				// Freshness cutoff mirrors aggregateHostStats: skip containers
+				// whose stats have not been updated in the last 30 seconds so
+				// we do not persist stale values (zero deltas, dead counters).
+				cutoff := now.Add(-30 * time.Second)
+
+				// Sum per-container network rates into a host-level rate.
+				// Container NetBytesPerSec is already a delta rate computed
+				// by the cache on UpdateContainerStats; summing rates gives
+				// us a host rate without a second counter-delta calculation.
+				var hostNetBps float64
 				for _, cs := range containers {
-					if cs.LastUpdate.IsZero() {
+					if cs.LastUpdate.Before(cutoff) {
+						continue
+					}
+					hostNetBps += cs.NetBytesPerSec
+				}
+
+				a.cascade.Ingest(hostID, true, now, sampleFromHostStats(hostStats, hostNetBps))
+				for _, cs := range containers {
+					if cs.LastUpdate.Before(cutoff) {
 						continue
 					}
 					compositeID := fmt.Sprintf("%s:%s", cs.HostID, cs.ContainerID)
@@ -216,7 +233,18 @@ func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerSt
 	}
 }
 
-func sampleFromHostStats(h *HostStats) persistence.Sample {
+// sampleFromHostStats builds a persistence.Sample from aggregated HostStats.
+// HostStats.NetworkRxBytes/NetworkTxBytes are cumulative byte counters, not
+// rates, so the caller must compute the per-second rate (summed from each
+// container's cache-computed NetBytesPerSec) and pass it as netBps. See the
+// "combined rx+tx bytes/sec" column contract in spec §6.
+func sampleFromHostStats(h *HostStats, netBps float64) persistence.Sample {
+	// Recompute memory percent from bytes when a limit is known: both the
+	// /host/proc and container-aggregation paths in aggregateHostStats round
+	// MemoryPercent to 1 decimal for display. Historical persistence wants
+	// the unrounded value for more accurate blending, and the raw bytes are
+	// always set alongside the rounded percent. Fall back to the stored
+	// percentage only if MemoryLimitBytes is unknown.
 	var memPct float64
 	if h.MemoryLimitBytes > 0 {
 		memPct = float64(h.MemoryUsedBytes) / float64(h.MemoryLimitBytes) * 100
@@ -228,17 +256,21 @@ func sampleFromHostStats(h *HostStats) persistence.Sample {
 		MemPercent:     memPct,
 		MemUsed:        h.MemoryUsedBytes,
 		MemLimit:       h.MemoryLimitBytes,
-		NetBps:         float64(h.NetworkRxBytes + h.NetworkTxBytes),
+		NetBps:         netBps,
 		ContainerCount: h.ContainerCount,
 	}
 }
 
+// sampleFromContainerStats builds a persistence.Sample from ContainerStats.
+// NetBytesPerSec is already a delta rate computed by StatsCache on each
+// UpdateContainerStats call (cache.go), including counter-reset handling
+// and outlier capping — reusing it avoids duplicating that logic here.
 func sampleFromContainerStats(cs *ContainerStats) persistence.Sample {
 	return persistence.Sample{
 		CPU:        cs.CPUPercent,
 		MemPercent: cs.MemoryPercent,
 		MemUsed:    cs.MemoryUsage,
 		MemLimit:   cs.MemoryLimit,
-		NetBps:     float64(cs.NetworkRx + cs.NetworkTx),
+		NetBps:     cs.NetBytesPerSec,
 	}
 }

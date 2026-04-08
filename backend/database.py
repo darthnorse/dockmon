@@ -734,8 +734,7 @@ class GlobalSettings(Base):
     session_timeout_hours = Column(Integer, default=24)
 
     # Stats persistence (v2.4.0+). server_default mirrors migration 037 so
-    # fresh installs bootstrapped via Base.metadata.create_all() produce the
-    # same NOT NULL+DEFAULT schema as upgrades that run the migration.
+    # create_all()-bootstrapped fresh installs match migration-upgraded schemas.
     stats_persistence_enabled = Column(Boolean, nullable=False, server_default='1', default=True)
     stats_retention_days = Column(Integer, nullable=False, server_default='30', default=30)  # 1..90
     stats_points_per_view = Column(Integer, nullable=False, server_default='500', default=500)  # 100..2000

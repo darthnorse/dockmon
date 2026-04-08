@@ -149,33 +149,21 @@ def test_downgrade_removes_stats_schema(fresh_db):
 
 
 def test_global_settings_orm_has_new_fields():
-    """The ORM model must mirror migration 037 exactly so a fresh install
-    (Base.metadata.create_all) and a legacy upgrade (alembic) converge on the
-    same schema. That means matching types, nullability, python-side defaults,
-    and server_default DDL."""
+    """ORM columns must mirror migration 037 so fresh installs (create_all)
+    and legacy upgrades (alembic) converge on identical schemas."""
     cols = {c.name: c for c in GlobalSettings.__table__.columns}
-    assert "stats_persistence_enabled" in cols
-    assert "stats_retention_days" in cols
-    assert "stats_points_per_view" in cols
 
-    assert isinstance(cols["stats_persistence_enabled"].type, Boolean)
-    assert isinstance(cols["stats_retention_days"].type, Integer)
-    assert isinstance(cols["stats_points_per_view"].type, Integer)
+    expected = {
+        "stats_persistence_enabled": (Boolean, True, "1"),
+        "stats_retention_days": (Integer, 30, "30"),
+        "stats_points_per_view": (Integer, 500, "500"),
+    }
+    assert expected.keys() <= cols.keys()
 
-    assert cols["stats_persistence_enabled"].default.arg is True
-    assert cols["stats_retention_days"].default.arg == 30
-    assert cols["stats_points_per_view"].default.arg == 500
-
-    # server_default must be present so create_all()-built schemas match the
-    # migration-built schema (NOT NULL columns need a DDL default or raw
-    # INSERTs without explicit values will fail).
-    assert cols["stats_persistence_enabled"].server_default is not None
-    assert cols["stats_retention_days"].server_default is not None
-    assert cols["stats_points_per_view"].server_default is not None
-    assert cols["stats_persistence_enabled"].server_default.arg == "1"
-    assert cols["stats_retention_days"].server_default.arg == "30"
-    assert cols["stats_points_per_view"].server_default.arg == "500"
-
-    assert cols["stats_persistence_enabled"].nullable is False
-    assert cols["stats_retention_days"].nullable is False
-    assert cols["stats_points_per_view"].nullable is False
+    for name, (col_type, py_default, ddl_default) in expected.items():
+        col = cols[name]
+        assert isinstance(col.type, col_type)
+        assert col.nullable is False
+        assert col.default.arg == py_default
+        assert col.server_default is not None
+        assert col.server_default.arg == ddl_default

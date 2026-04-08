@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -56,14 +57,24 @@ func NewStatsHandler(dockerClient *docker.Client, log *logrus.Logger, sendMessag
 // the interface structurally.
 func (h *StatsHandler) SetStatsServiceClient(c StatsServiceSender) {
 	// A typed-nil *client.StatsServiceClient passed as an interface is NOT
-	// nil when compared to untyped nil, so handle it explicitly: callers can
-	// pass nil (as an untyped nil literal) to disable dual-send, and we also
-	// want a typed-nil to disable rather than panic in processStats.
-	if c == nil {
+	// == untyped nil, so a plain `c == nil` check lets a typed nil through
+	// and processStats then panics on the nil receiver. Normalize both cases
+	// here so the only contract callers need to honor is "pass nil (typed or
+	// untyped) to disable dual-send."
+	if c == nil || isNilPointer(c) {
 		h.statsService = nil
 		return
 	}
 	h.statsService = c
+}
+
+// isNilPointer reports whether v is an interface value wrapping a nil
+// pointer (the "typed nil" footgun). It returns false for non-pointer
+// concrete types, for non-nil pointers, and for an already-nil interface
+// (callers should check `c == nil` separately for clarity).
+func isNilPointer(v interface{}) bool {
+	rv := reflect.ValueOf(v)
+	return rv.Kind() == reflect.Ptr && rv.IsNil()
 }
 
 // StartStatsCollection begins stats collection for all running containers

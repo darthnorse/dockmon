@@ -169,21 +169,33 @@ func TestOpen_PathWithURISpecialChars(t *testing.T) {
 	}
 }
 
-func TestValidateAgentToken_Valid(t *testing.T) {
-	path := makeFixtureDB(t)
-	db, err := Open(path)
+// openWithSeededAgent returns a DB with a single docker_hosts row and a
+// single agents row pre-inserted, plus a t.Cleanup for Close. Used by
+// ValidateAgentToken tests to cut fixture boilerplate.
+func openWithSeededAgent(t *testing.T, token, hostID string) *DB {
+	t.Helper()
+	db, err := Open(makeFixtureDB(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
 	if _, err := db.Write().Exec(
-		`INSERT INTO docker_hosts (id, name) VALUES ('host-1', 'host one')`); err != nil {
+		`INSERT INTO docker_hosts (id, name) VALUES (?, ?)`, hostID, hostID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Write().Exec(
-		`INSERT INTO agents (id, host_id) VALUES ('token-abc', 'host-1')`); err != nil {
+		`INSERT INTO agents (id, host_id) VALUES (?, ?)`, token, hostID); err != nil {
 		t.Fatal(err)
 	}
+	return db
+}
+
+func TestValidateAgentToken_Valid(t *testing.T) {
+	db := openWithSeededAgent(t, "token-abc", "host-1")
 	hostID, err := db.ValidateAgentToken(context.Background(), "token-abc")
 	if err != nil {
 		t.Fatalf("ValidateAgentToken: %v", err)
@@ -194,8 +206,7 @@ func TestValidateAgentToken_Valid(t *testing.T) {
 }
 
 func TestValidateAgentToken_Invalid(t *testing.T) {
-	path := makeFixtureDB(t)
-	db, err := Open(path)
+	db, err := Open(makeFixtureDB(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,8 +218,7 @@ func TestValidateAgentToken_Invalid(t *testing.T) {
 }
 
 func TestValidateAgentToken_EmptyToken(t *testing.T) {
-	path := makeFixtureDB(t)
-	db, err := Open(path)
+	db, err := Open(makeFixtureDB(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,21 +230,7 @@ func TestValidateAgentToken_EmptyToken(t *testing.T) {
 }
 
 func TestValidateAgentToken_CacheHit(t *testing.T) {
-	path := makeFixtureDB(t)
-	db, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.Write().Exec(
-		`INSERT INTO docker_hosts (id, name) VALUES ('host-1', 'a')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Write().Exec(
-		`INSERT INTO agents (id, host_id) VALUES ('tok', 'host-1')`); err != nil {
-		t.Fatal(err)
-	}
-
+	db := openWithSeededAgent(t, "tok", "host-1")
 	if _, err := db.ValidateAgentToken(context.Background(), "tok"); err != nil {
 		t.Fatal(err)
 	}
@@ -251,22 +247,7 @@ func TestValidateAgentToken_CacheHit(t *testing.T) {
 }
 
 func TestValidateAgentToken_CacheExpiry(t *testing.T) {
-	path := makeFixtureDB(t)
-	db, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.Write().Exec(
-		`INSERT INTO docker_hosts (id, name) VALUES ('host-1', 'a')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Write().Exec(
-		`INSERT INTO agents (id, host_id) VALUES ('tok', 'host-1')`); err != nil {
-		t.Fatal(err)
-	}
-
-	// Populate the cache.
+	db := openWithSeededAgent(t, "tok", "host-1")
 	if _, err := db.ValidateAgentToken(context.Background(), "tok"); err != nil {
 		t.Fatal(err)
 	}
@@ -285,27 +266,14 @@ func TestValidateAgentToken_CacheExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = db.ValidateAgentToken(context.Background(), "tok")
+	_, err := db.ValidateAgentToken(context.Background(), "tok")
 	if !errors.Is(err, ErrInvalidAgentToken) {
 		t.Errorf("expired entry should not satisfy lookup: err=%v, want ErrInvalidAgentToken", err)
 	}
 }
 
 func TestInvalidateAgentToken(t *testing.T) {
-	path := makeFixtureDB(t)
-	db, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.Write().Exec(
-		`INSERT INTO docker_hosts (id, name) VALUES ('host-1', 'a')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Write().Exec(
-		`INSERT INTO agents (id, host_id) VALUES ('tok', 'host-1')`); err != nil {
-		t.Fatal(err)
-	}
+	db := openWithSeededAgent(t, "tok", "host-1")
 	if _, err := db.ValidateAgentToken(context.Background(), "tok"); err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +281,7 @@ func TestInvalidateAgentToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.InvalidateAgentToken("tok")
-	_, err = db.ValidateAgentToken(context.Background(), "tok")
+	_, err := db.ValidateAgentToken(context.Background(), "tok")
 	if !errors.Is(err, ErrInvalidAgentToken) {
 		t.Errorf("after invalidate, expected ErrInvalidAgentToken, got %v", err)
 	}

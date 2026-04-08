@@ -3,6 +3,7 @@ package persistence
 import (
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -413,5 +414,57 @@ func TestCascade_RestartIsClean(t *testing.T) {
 	got := drainAll(writes2)
 	if len(got) != 0 {
 		t.Errorf("expected no writes after restart with samples in same bucket, got %v", got)
+	}
+}
+
+func TestCascade_RemoveHost(t *testing.T) {
+	c, _, _ := newTestCascade(64)
+	now := time.Unix(1_000_000, 0)
+
+	c.Ingest("host-1:abc123def456", false, now, sample{CPU: 1})
+	c.Ingest("host-1:def456abc123", false, now, sample{CPU: 2})
+	c.Ingest("host-2:fedcba987654", false, now, sample{CPU: 3})
+	c.Ingest("host-1", true, now, sample{CPU: 4})
+	c.Ingest("host-2", true, now, sample{CPU: 5})
+
+	c.RemoveHost("host-1")
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k := range c.state {
+		if k.entityID == "host-1" || strings.HasPrefix(k.entityID, "host-1:") {
+			t.Errorf("expected no state for host-1, found %+v", k)
+		}
+	}
+	// Host-2 and its container should still be present
+	if _, ok := c.state[entityKey{"host-2:fedcba987654", 0}]; !ok {
+		t.Errorf("host-2 container state was incorrectly removed")
+	}
+	if _, ok := c.state[entityKey{"host-2", 0}]; !ok {
+		t.Errorf("host-2 host state was incorrectly removed")
+	}
+}
+
+func TestCascade_RemoveHost_NoPartialMatches(t *testing.T) {
+	// Verify RemoveHost("host-1") does NOT match "host-10" or "host-100".
+	c, _, _ := newTestCascade(64)
+	now := time.Unix(1_000_000, 0)
+
+	c.Ingest("host-1:abc", false, now, sample{CPU: 1})
+	c.Ingest("host-10:def", false, now, sample{CPU: 2})
+	c.Ingest("host-100:ghi", false, now, sample{CPU: 3})
+
+	c.RemoveHost("host-1")
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.state[entityKey{"host-1:abc", 0}]; ok {
+		t.Errorf("host-1's container should have been removed")
+	}
+	if _, ok := c.state[entityKey{"host-10:def", 0}]; !ok {
+		t.Errorf("host-10 container was incorrectly removed (prefix collision)")
+	}
+	if _, ok := c.state[entityKey{"host-100:ghi", 0}]; !ok {
+		t.Errorf("host-100 container was incorrectly removed (prefix collision)")
 	}
 }

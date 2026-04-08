@@ -3,6 +3,7 @@ package persistence
 import (
 	"log"
 	"math"
+	"strings"
 	"sync"
 	"time"
 )
@@ -267,4 +268,19 @@ func (c *Cascade) feedTier(
 	}
 	st.accum = append(st.accum, val)
 	c.state[key] = st
+}
+
+// RemoveHost drops all in-memory state for the given host: both the host
+// row itself and any container rows whose composite key is "<hostID>:...".
+// Called from the host-removal flow after StatsCache cleanup so the cascade
+// stops emitting writes for a host whose DB rows are about to cascade-delete.
+func (c *Cascade) RemoveHost(hostID string) {
+	prefix := hostID + ":"
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k := range c.state {
+		if k.entityID == hostID || strings.HasPrefix(k.entityID, prefix) {
+			delete(c.state, k)
+		}
+	}
 }

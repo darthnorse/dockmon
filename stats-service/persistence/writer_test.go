@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func makeWriterFixture(t *testing.T) (*DB, chan writeJob, *Writer) {
+func makeWriterFixture(t *testing.T) (*DB, chan WriteJob, *Writer) {
 	t.Helper()
 	path := makeFixtureDB(t)
 	db, err := Open(path)
@@ -20,7 +20,7 @@ func makeWriterFixture(t *testing.T) (*DB, chan writeJob, *Writer) {
 		`INSERT INTO docker_hosts (id, name) VALUES ('host-1','h1')`); err != nil {
 		t.Fatal(err)
 	}
-	ch := make(chan writeJob, 4096)
+	ch := make(chan WriteJob, 4096)
 	w := NewWriter(db, ch)
 	return db, ch, w
 }
@@ -32,7 +32,7 @@ func makeWriterFixture(t *testing.T) (*DB, chan writeJob, *Writer) {
 // to construct the writer so we can wait for the writer to drain every sent
 // job into its in-memory batch before cancelling — otherwise Go's select could
 // observe ctx.Done() before receiving the last buffered job and lose the row.
-func runWriter(t *testing.T, w *Writer, jobs chan writeJob) (stop func()) {
+func runWriter(t *testing.T, w *Writer, jobs chan WriteJob) (stop func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -65,11 +65,11 @@ func TestWriter_BatchPersistsContainerRows(t *testing.T) {
 	stop := runWriter(t, w, ch)
 
 	now := time.Unix(1_000_000, 0)
-	ch <- writeJob{
+	ch <- WriteJob{
 		tier: "1h", isHost: false,
 		entityID: "host-1:abc123abc123",
 		ts:       now,
-		value:    sample{CPU: 12.5, MemUsed: 1024, MemLimit: 8192, NetBps: 100.5},
+		value:    Sample{CPU: 12.5, MemUsed: 1024, MemLimit: 8192, NetBps: 100.5},
 	}
 
 	stop()
@@ -102,11 +102,11 @@ func TestWriter_BatchPersistsHostRows(t *testing.T) {
 	stop := runWriter(t, w, ch)
 
 	now := time.Unix(1_000_000, 0)
-	ch <- writeJob{
+	ch <- WriteJob{
 		tier: "1h", isHost: true,
 		entityID: "host-1",
 		ts:       now,
-		value: sample{
+		value: Sample{
 			CPU: 50, MemPercent: 60, MemUsed: 1 << 30, MemLimit: 4 << 30,
 			NetBps: 1024, ContainerCount: 8,
 		},
@@ -128,11 +128,11 @@ func TestWriter_NaNBecomesNull(t *testing.T) {
 	db, ch, w := makeWriterFixture(t)
 	stop := runWriter(t, w, ch)
 
-	ch <- writeJob{
+	ch <- WriteJob{
 		tier: "1h", isHost: false,
 		entityID: "host-1:nullsample00",
 		ts:       time.Unix(1_000_000, 0),
-		value:    sample{CPU: math.NaN(), NetBps: math.NaN()},
+		value:    Sample{CPU: math.NaN(), NetBps: math.NaN()},
 	}
 	stop()
 
@@ -153,13 +153,13 @@ func TestWriter_InsertOrReplaceDeduplicates(t *testing.T) {
 	stop := runWriter(t, w, ch)
 
 	ts := time.Unix(1_000_000, 0)
-	ch <- writeJob{
+	ch <- WriteJob{
 		tier: "1h", entityID: "host-1:dup000000000", ts: ts,
-		value: sample{CPU: 10},
+		value: Sample{CPU: 10},
 	}
-	ch <- writeJob{
+	ch <- WriteJob{
 		tier: "1h", entityID: "host-1:dup000000000", ts: ts,
-		value: sample{CPU: 99},
+		value: Sample{CPU: 99},
 	}
 	stop()
 
@@ -179,9 +179,9 @@ func TestWriter_FlushOnContextCancel(t *testing.T) {
 	db, ch, w := makeWriterFixture(t)
 	stop := runWriter(t, w, ch)
 
-	ch <- writeJob{
+	ch <- WriteJob{
 		tier: "1h", entityID: "host-1:cancelflush", ts: time.Unix(1_000_000, 0),
-		value: sample{CPU: 1},
+		value: Sample{CPU: 1},
 	}
 	stop() // drain, then cancel — the cancel path must flush the in-memory batch
 

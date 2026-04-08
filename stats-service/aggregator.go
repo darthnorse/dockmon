@@ -2,18 +2,28 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
 	dockerpkg "github.com/darthnorse/dockmon-shared/docker"
+	"github.com/dockmon/stats-service/persistence"
 )
+
+// streamManagerIface is the subset of *StreamManager that Aggregator needs.
+// Defined as an interface so tests can fake it without standing up a real
+// StreamManager (which requires Docker clients).
+type streamManagerIface interface {
+	HasHost(hostID string) bool
+}
 
 // Aggregator aggregates container stats into host-level metrics
 type Aggregator struct {
 	cache             *StatsCache
-	streamManager     *StreamManager
+	streamManager     streamManagerIface
 	aggregateInterval time.Duration
 	hostProcReader    *HostProcReader
+	cascade           *persistence.Cascade // optional; nil disables persistence ingest
 }
 
 // NewAggregator creates a new aggregator
@@ -29,6 +39,11 @@ func NewAggregator(cache *StatsCache, streamManager *StreamManager, interval tim
 		aggregateInterval: interval,
 		hostProcReader:    hostProcReader,
 	}
+}
+
+// SetCascade enables persistence ingest. Pass nil to disable.
+func (a *Aggregator) SetCascade(c *persistence.Cascade) {
+	a.cascade = c
 }
 
 // Start begins the aggregation loop
@@ -69,6 +84,18 @@ func (a *Aggregator) aggregate() {
 		if a.streamManager.HasHost(hostID) {
 			hostStats := a.aggregateHostStats(hostID, containers)
 			a.cache.UpdateHostStats(hostStats)
+
+			if a.cascade != nil {
+				now := time.Now()
+				a.cascade.Ingest(hostID, true, now, sampleFromHostStats(hostStats))
+				for _, cs := range containers {
+					if cs.LastUpdate.IsZero() {
+						continue
+					}
+					compositeID := fmt.Sprintf("%s:%s", cs.HostID, cs.ContainerID)
+					a.cascade.Ingest(compositeID, false, now, sampleFromContainerStats(cs))
+				}
+			}
 		}
 	}
 }
@@ -186,5 +213,32 @@ func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerSt
 		NetworkRxBytes:   totalNetRx,
 		NetworkTxBytes:   totalNetTx,
 		ContainerCount:   validContainers,
+	}
+}
+
+func sampleFromHostStats(h *HostStats) persistence.Sample {
+	var memPct float64
+	if h.MemoryLimitBytes > 0 {
+		memPct = float64(h.MemoryUsedBytes) / float64(h.MemoryLimitBytes) * 100
+	} else {
+		memPct = h.MemoryPercent
+	}
+	return persistence.Sample{
+		CPU:            h.CPUPercent,
+		MemPercent:     memPct,
+		MemUsed:        h.MemoryUsedBytes,
+		MemLimit:       h.MemoryLimitBytes,
+		NetBps:         float64(h.NetworkRxBytes + h.NetworkTxBytes),
+		ContainerCount: h.ContainerCount,
+	}
+}
+
+func sampleFromContainerStats(cs *ContainerStats) persistence.Sample {
+	return persistence.Sample{
+		CPU:        cs.CPUPercent,
+		MemPercent: cs.MemoryPercent,
+		MemUsed:    cs.MemoryUsage,
+		MemLimit:   cs.MemoryLimit,
+		NetBps:     float64(cs.NetworkRx + cs.NetworkTx),
 	}
 }

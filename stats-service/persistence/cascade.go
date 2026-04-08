@@ -68,9 +68,9 @@ func ComputeTiers(pointsPerView int) []Tier {
 	return tiers
 }
 
-// sample is one observation fed into the cascade. Container samples leave
+// Sample is one observation fed into the cascade. Container samples leave
 // host-only fields (ContainerCount) zero; the writer ignores them.
-type sample struct {
+type Sample struct {
 	CPU            float64
 	MemPercent     float64
 	MemUsed        uint64
@@ -85,17 +85,17 @@ type sample struct {
 //
 // MemLimit and ContainerCount bypass the blend (config / snapshot data).
 // Empty input → NaN for float fields; the writer translates NaN to SQL NULL.
-func blend(samples []sample, alpha float64) sample {
+func blend(samples []Sample, alpha float64) Sample {
 	if len(samples) == 0 {
 		nan := math.NaN()
-		return sample{CPU: nan, MemPercent: nan, NetBps: nan}
+		return Sample{CPU: nan, MemPercent: nan, NetBps: nan}
 	}
-	return sample{
-		CPU:            blendField(samples, alpha, func(s sample) float64 { return s.CPU }),
-		MemPercent:     blendField(samples, alpha, func(s sample) float64 { return s.MemPercent }),
-		MemUsed:        blendUint(samples, alpha, func(s sample) uint64 { return s.MemUsed }),
+	return Sample{
+		CPU:            blendField(samples, alpha, func(s Sample) float64 { return s.CPU }),
+		MemPercent:     blendField(samples, alpha, func(s Sample) float64 { return s.MemPercent }),
+		MemUsed:        blendUint(samples, alpha, func(s Sample) uint64 { return s.MemUsed }),
 		MemLimit:       lastNonZeroLimit(samples),
-		NetBps:         blendField(samples, alpha, func(s sample) float64 { return s.NetBps }),
+		NetBps:         blendField(samples, alpha, func(s Sample) float64 { return s.NetBps }),
 		ContainerCount: lastContainerCount(samples),
 	}
 }
@@ -119,7 +119,7 @@ type blendNumber interface {
 // higher tiers cascade already-blended parent values (n ≈ 8 on cascade-up),
 // so len is small (≤ ~10 in practice). Even at an implausible 1 TB/sample,
 // sumV stays well under uint64 max (≈1.8e19). No overflow guard needed.
-func blendCore[T blendNumber](samples []sample, alpha float64, maxInit T, get func(sample) T) float64 {
+func blendCore[T blendNumber](samples []Sample, alpha float64, maxInit T, get func(Sample) T) float64 {
 	maxV := maxInit
 	var sumV T
 	for _, s := range samples {
@@ -134,12 +134,12 @@ func blendCore[T blendNumber](samples []sample, alpha float64, maxInit T, get fu
 }
 
 // blendField computes the blend for a float64 field.
-func blendField(samples []sample, alpha float64, get func(sample) float64) float64 {
+func blendField(samples []Sample, alpha float64, get func(Sample) float64) float64 {
 	return blendCore(samples, alpha, math.Inf(-1), get)
 }
 
 // blendUint is the uint64 variant for memory byte counts.
-func blendUint(samples []sample, alpha float64, get func(sample) uint64) uint64 {
+func blendUint(samples []Sample, alpha float64, get func(Sample) uint64) uint64 {
 	return uint64(blendCore(samples, alpha, uint64(0), get))
 }
 
@@ -147,7 +147,7 @@ func blendUint(samples []sample, alpha float64, get func(sample) uint64) uint64 
 // samples. MemLimit is configuration, not a metric — blending it produces
 // nonsense. Returning the latest non-zero value preserves the observed
 // limit even if the final sample reports zero (e.g., container removed).
-func lastNonZeroLimit(samples []sample) uint64 {
+func lastNonZeroLimit(samples []Sample) uint64 {
 	for i := len(samples) - 1; i >= 0; i-- {
 		if samples[i].MemLimit > 0 {
 			return samples[i].MemLimit
@@ -158,7 +158,7 @@ func lastNonZeroLimit(samples []sample) uint64 {
 
 // lastContainerCount returns the most recent container count snapshot.
 // Averaging would smooth meaningful step changes.
-func lastContainerCount(samples []sample) int {
+func lastContainerCount(samples []Sample) int {
 	if len(samples) == 0 {
 		return 0
 	}
@@ -176,20 +176,20 @@ type entityKey struct {
 type tierState struct {
 	bucketTs time.Time
 	isHost   bool // remembered from first ingest so cascade-up can carry it
-	accum    []sample
+	accum    []Sample
 }
 
-// writeJob is the unit of work the writer goroutine consumes.
-type writeJob struct {
+// WriteJob is the unit of work the writer goroutine consumes.
+type WriteJob struct {
 	tier     string // "1h" | "8h" | "24h" | "7d" | "30d"
 	isHost   bool
 	entityID string    // composite container key OR host_id
 	ts       time.Time // bucket start (quantized)
-	value    sample
+	value    Sample
 }
 
 // Cascade owns in-memory bucket state for every (entity, tier) pair and emits
-// writeJobs to its writer channel as buckets cross their boundaries.
+// WriteJobs to its writer channel as buckets cross their boundaries.
 //
 // State lifetime: entries in the state map are created on first Ingest for a
 // given (entity, tier) and overwritten in place on every bucket finalization;
@@ -202,12 +202,12 @@ type writeJob struct {
 type Cascade struct {
 	tiers  []Tier
 	state  map[entityKey]tierState
-	writes chan<- writeJob
+	writes chan<- WriteJob
 	mu     sync.Mutex
 }
 
 // NewCascade builds a fresh cascade.
-func NewCascade(tiers []Tier, writes chan<- writeJob) *Cascade {
+func NewCascade(tiers []Tier, writes chan<- WriteJob) *Cascade {
 	return &Cascade{
 		tiers:  tiers,
 		state:  make(map[entityKey]tierState),
@@ -218,7 +218,7 @@ func NewCascade(tiers []Tier, writes chan<- writeJob) *Cascade {
 // Ingest delivers one raw sample for one entity at one wall-clock time.
 // Raw samples only feed tier 0; cascade-up propagates inside feedTier when
 // a bucket boundary is crossed.
-func (c *Cascade) Ingest(entityID string, isHost bool, sampleTs time.Time, val sample) {
+func (c *Cascade) Ingest(entityID string, isHost bool, sampleTs time.Time, val Sample) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.feedTier(entityID, isHost, 0, sampleTs, val)
@@ -230,7 +230,7 @@ func (c *Cascade) Ingest(entityID string, isHost bool, sampleTs time.Time, val s
 // each tier's grid is anchored to the tier below it, which is anchored to
 // the universal Unix-epoch grid.
 func (c *Cascade) feedTier(
-	entityID string, isHost bool, tierIdx int, sampleTs time.Time, val sample,
+	entityID string, isHost bool, tierIdx int, sampleTs time.Time, val Sample,
 ) {
 	if tierIdx >= len(c.tiers) {
 		return
@@ -248,7 +248,7 @@ func (c *Cascade) feedTier(
 		// to blocking the stats cache ingestion path, which would stall
 		// every other entity behind this mutex.
 		select {
-		case c.writes <- writeJob{
+		case c.writes <- WriteJob{
 			tier:     tier.Name,
 			isHost:   st.isHost,
 			entityID: entityID,
@@ -268,6 +268,15 @@ func (c *Cascade) feedTier(
 	}
 	st.accum = append(st.accum, val)
 	c.state[key] = st
+}
+
+// StateSize returns the number of (entity, tier) slots currently held.
+// Exposed for integration tests in the parent stats-service package;
+// not part of the production API.
+func (c *Cascade) StateSize() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.state)
 }
 
 // RemoveHost drops all in-memory state for the given host: both the host

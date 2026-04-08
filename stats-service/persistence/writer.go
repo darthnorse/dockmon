@@ -14,23 +14,23 @@ const (
 	writerFlushEvery = 1 * time.Second
 )
 
-// Writer drains writeJobs from a channel into batched SQL transactions.
+// Writer drains WriteJobs from a channel into batched SQL transactions.
 // A single Writer uses db.Write() (single-connection pool) so writes are
 // naturally serialized at the database level.
 type Writer struct {
 	db   *DB
-	jobs <-chan writeJob
+	jobs <-chan WriteJob
 }
 
 // NewWriter constructs a writer. Call Run in a goroutine.
-func NewWriter(db *DB, jobs <-chan writeJob) *Writer {
+func NewWriter(db *DB, jobs <-chan WriteJob) *Writer {
 	return &Writer{db: db, jobs: jobs}
 }
 
 // Run drains the channel until ctx is done. Flushes at writerBatchSize jobs,
 // at writerFlushEvery cadence, and once more on context cancellation.
 func (w *Writer) Run(ctx context.Context) {
-	batch := make([]writeJob, 0, writerBatchSize)
+	batch := make([]WriteJob, 0, writerBatchSize)
 	ticker := time.NewTicker(writerFlushEvery)
 	defer ticker.Stop()
 
@@ -60,7 +60,7 @@ func (w *Writer) Run(ctx context.Context) {
 	}
 }
 
-func (w *Writer) commitBatch(batch []writeJob) error {
+func (w *Writer) commitBatch(batch []WriteJob) error {
 	tx, err := w.db.write.Begin()
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)

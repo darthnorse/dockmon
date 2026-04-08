@@ -81,7 +81,7 @@ func TestComputeTiers_PanicsOnNonPositivePointsPerView(t *testing.T) {
 }
 
 func TestBlend_PureMaxAtAlpha1(t *testing.T) {
-	samples := []sample{
+	samples := []Sample{
 		{CPU: 10, MemPercent: 20, MemUsed: 1000, MemLimit: 5000, NetBps: 100},
 		{CPU: 50, MemPercent: 30, MemUsed: 2000, MemLimit: 5000, NetBps: 200},
 		{CPU: 30, MemPercent: 25, MemUsed: 1500, MemLimit: 5000, NetBps: 150},
@@ -96,7 +96,7 @@ func TestBlend_PureMaxAtAlpha1(t *testing.T) {
 }
 
 func TestBlend_PureAvgAtAlpha0(t *testing.T) {
-	samples := []sample{
+	samples := []Sample{
 		{CPU: 10},
 		{CPU: 50},
 		{CPU: 30},
@@ -110,7 +110,7 @@ func TestBlend_PureAvgAtAlpha0(t *testing.T) {
 
 func TestBlend_75_25Mix(t *testing.T) {
 	// max=50, avg=30, 0.75*50 + 0.25*30 = 37.5 + 7.5 = 45
-	samples := []sample{{CPU: 10}, {CPU: 50}, {CPU: 30}}
+	samples := []Sample{{CPU: 10}, {CPU: 50}, {CPU: 30}}
 	got := blend(samples, 0.75)
 	if math.Abs(got.CPU-45.0) > 1e-9 {
 		t.Errorf("CPU=%v, want 45", got.CPU)
@@ -125,7 +125,7 @@ func TestBlend_EmptyReturnsNaN(t *testing.T) {
 }
 
 func TestBlend_MemLimitIsLastNonZero(t *testing.T) {
-	samples := []sample{
+	samples := []Sample{
 		{MemLimit: 1000},
 		{MemLimit: 2000},
 		{MemLimit: 0}, // ignored
@@ -137,7 +137,7 @@ func TestBlend_MemLimitIsLastNonZero(t *testing.T) {
 }
 
 func TestBlend_ContainerCountIsLast(t *testing.T) {
-	samples := []sample{
+	samples := []Sample{
 		{ContainerCount: 5},
 		{ContainerCount: 10},
 		{ContainerCount: 7},
@@ -152,7 +152,7 @@ func TestBlend_PureAvgAtAlpha0_UintField(t *testing.T) {
 	// Symmetric coverage with TestBlend_PureAvgAtAlpha0, but for the uint path:
 	// alpha=0 on MemUsed must be pure average, not max.
 	// avg(1000, 2000, 1500) = 1500
-	samples := []sample{
+	samples := []Sample{
 		{MemUsed: 1000},
 		{MemUsed: 2000},
 		{MemUsed: 1500},
@@ -167,7 +167,7 @@ func TestBlend_SingleSampleBucket(t *testing.T) {
 	// A one-sample bucket must be idempotent: for any alpha, the result
 	// equals the input sample for every blended field. max == avg, so
 	// alpha*max + (1-alpha)*avg == max for all alpha.
-	s := sample{
+	s := Sample{
 		CPU:            42.5,
 		MemPercent:     17.25,
 		MemUsed:        123456789,
@@ -176,7 +176,7 @@ func TestBlend_SingleSampleBucket(t *testing.T) {
 		ContainerCount: 3,
 	}
 	for _, alpha := range []float64{0.0, 0.25, 0.5, 0.75, 1.0} {
-		got := blend([]sample{s}, alpha)
+		got := blend([]Sample{s}, alpha)
 		if got.CPU != s.CPU {
 			t.Errorf("alpha=%v CPU=%v, want %v", alpha, got.CPU, s.CPU)
 		}
@@ -203,7 +203,7 @@ func TestBlend_MemLimitAllZeroReturnsZero(t *testing.T) {
 	// limit — e.g., unlimited container, or metric not yet populated),
 	// lastNonZeroLimit returns 0. Writer's nullIfZeroU64 will translate
 	// this to SQL NULL downstream.
-	samples := []sample{
+	samples := []Sample{
 		{MemLimit: 0, CPU: 10},
 		{MemLimit: 0, CPU: 20},
 	}
@@ -231,15 +231,15 @@ func TestBucketQuantization_SubSecondInterval(t *testing.T) {
 // newTestCascade builds a Cascade wired to a buffered test channel.
 // Returns the cascade, its writes channel, and the tier table the cascade
 // was built from (callers often need tiers[0].Interval for bucket math).
-func newTestCascade(bufSize int) (*Cascade, chan writeJob, []Tier) {
+func newTestCascade(bufSize int) (*Cascade, chan WriteJob, []Tier) {
 	tiers := ComputeTiers(500)
-	writes := make(chan writeJob, bufSize)
+	writes := make(chan WriteJob, bufSize)
 	return NewCascade(tiers, writes), writes, tiers
 }
 
 // drainAll synchronously collects everything currently buffered on the channel.
-func drainAll(ch chan writeJob) []writeJob {
-	var out []writeJob
+func drainAll(ch chan WriteJob) []WriteJob {
+	var out []WriteJob
 	for {
 		select {
 		case j := <-ch:
@@ -251,7 +251,7 @@ func drainAll(ch chan writeJob) []writeJob {
 }
 
 // findJob returns the first job matching tier and entityID, or nil.
-func findJob(jobs []writeJob, tier, entityID string) *writeJob {
+func findJob(jobs []WriteJob, tier, entityID string) *WriteJob {
 	for i := range jobs {
 		if jobs[i].tier == tier && jobs[i].entityID == entityID {
 			return &jobs[i]
@@ -268,9 +268,9 @@ func TestCascade_NoEmissionWithinSameBucket(t *testing.T) {
 	// 6.4s into a bucket, so the +1s / +2s samples would cross into the
 	// next bucket — not what this test wants to assert.
 	t0 := time.Unix(1_000_000, 0).Truncate(tiers[0].Interval)
-	c.Ingest("c1", false, t0, sample{CPU: 10})
-	c.Ingest("c1", false, t0.Add(1*time.Second), sample{CPU: 20})
-	c.Ingest("c1", false, t0.Add(2*time.Second), sample{CPU: 30})
+	c.Ingest("c1", false, t0, Sample{CPU: 10})
+	c.Ingest("c1", false, t0.Add(1*time.Second), Sample{CPU: 20})
+	c.Ingest("c1", false, t0.Add(2*time.Second), Sample{CPU: 30})
 
 	got := drainAll(writes)
 	if len(got) != 0 {
@@ -283,8 +283,8 @@ func TestCascade_EmitsOnBucketBoundary(t *testing.T) {
 
 	// Tier 0 interval = 7.2s. Pick timestamps that cross a tier-0 boundary.
 	base := time.Unix(0, 0).Add(7200 * time.Millisecond)
-	c.Ingest("c1", false, base, sample{CPU: 10})
-	c.Ingest("c1", false, base.Add(8*time.Second), sample{CPU: 50})
+	c.Ingest("c1", false, base, Sample{CPU: 10})
+	c.Ingest("c1", false, base.Add(8*time.Second), Sample{CPU: 50})
 
 	jobs := drainAll(writes)
 	tier0 := findJob(jobs, "1h", "c1")
@@ -305,7 +305,7 @@ func TestCascade_CascadeUpUsesBucketTsNotSampleTs(t *testing.T) {
 	base := time.Unix(0, 0)
 	for i := 0; i < 100; i++ {
 		ts := base.Add(time.Duration(i) * 8 * time.Second)
-		c.Ingest("c1", false, ts, sample{CPU: float64(i)})
+		c.Ingest("c1", false, ts, Sample{CPU: float64(i)})
 	}
 
 	for _, j := range drainAll(writes) {
@@ -321,7 +321,7 @@ func TestCascade_CascadeUpUsesBucketTsNotSampleTs(t *testing.T) {
 func TestCascade_FeedsTier0OnlyFromIngest(t *testing.T) {
 	c, _, tiers := newTestCascade(64)
 
-	c.Ingest("c1", false, time.Unix(1_000_000, 0), sample{CPU: 42})
+	c.Ingest("c1", false, time.Unix(1_000_000, 0), Sample{CPU: 42})
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -346,13 +346,13 @@ func TestCascade_CrossEntityIsolation(t *testing.T) {
 
 	t0 := time.Unix(0, 0)
 	// First bucket: one sample per entity inside tier-0 bucket 0.
-	c.Ingest("c1", false, t0, sample{CPU: 10})
-	c.Ingest("c2", false, t0, sample{CPU: 99})
+	c.Ingest("c1", false, t0, Sample{CPU: 10})
+	c.Ingest("c2", false, t0, Sample{CPU: 99})
 	// Second bucket: one sample per entity in tier-0 bucket 1, which
 	// finalizes each entity's bucket-0 tier-0 write independently.
 	next := t0.Add(8 * time.Second)
-	c.Ingest("c1", false, next, sample{CPU: 20})
-	c.Ingest("c2", false, next, sample{CPU: 88})
+	c.Ingest("c1", false, next, Sample{CPU: 20})
+	c.Ingest("c2", false, next, Sample{CPU: 88})
 
 	jobs := drainAll(writes)
 	c1Tier0 := findJob(jobs, "1h", "c1")
@@ -370,7 +370,7 @@ func TestCascade_CrossEntityIsolation(t *testing.T) {
 
 func TestCascade_IsHostPropagatesToWriteJob(t *testing.T) {
 	// A host entity (isHost=true) must carry isHost=true through to every
-	// writeJob it produces, including those emitted by cascade-up to higher
+	// WriteJob it produces, including those emitted by cascade-up to higher
 	// tiers. Regression guard for the remembered-isHost contract in tierState.
 	c, writes, _ := newTestCascade(1024)
 
@@ -378,7 +378,7 @@ func TestCascade_IsHostPropagatesToWriteJob(t *testing.T) {
 	// Feed enough tier-0 buckets to guarantee a tier-1 cascade-up fires.
 	for i := 0; i < 20; i++ {
 		ts := base.Add(time.Duration(i) * 8 * time.Second)
-		c.Ingest("host-a", true, ts, sample{CPU: float64(i), ContainerCount: 5})
+		c.Ingest("host-a", true, ts, Sample{CPU: float64(i), ContainerCount: 5})
 	}
 
 	jobs := drainAll(writes)
@@ -406,10 +406,10 @@ func TestCascade_RestartIsClean(t *testing.T) {
 	// A fresh cascade after "restart" receiving a sample within the same tier-0
 	// bucket window must NOT produce a duplicate write for the bucket before restart.
 	c1, _, _ := newTestCascade(64)
-	c1.Ingest("c1", false, time.Unix(1_000_000, 0), sample{CPU: 10})
+	c1.Ingest("c1", false, time.Unix(1_000_000, 0), Sample{CPU: 10})
 
 	c2, writes2, _ := newTestCascade(64)
-	c2.Ingest("c1", false, time.Unix(1_000_007, 0), sample{CPU: 20})
+	c2.Ingest("c1", false, time.Unix(1_000_007, 0), Sample{CPU: 20})
 	got := drainAll(writes2)
 	if len(got) != 0 {
 		t.Errorf("expected no writes after restart with samples in same bucket, got %v", got)
@@ -425,11 +425,11 @@ func TestCascade_RemoveHost(t *testing.T) {
 	c, _, _ := newTestCascade(64)
 	now := time.Unix(1_000_000, 0)
 
-	c.Ingest("host-1:abc123def456", false, now, sample{CPU: 1})
-	c.Ingest("host-1:def456abc123", false, now, sample{CPU: 2})
-	c.Ingest("host-2:fedcba987654", false, now, sample{CPU: 3})
-	c.Ingest("host-1", true, now, sample{CPU: 4})
-	c.Ingest("host-2", true, now, sample{CPU: 5})
+	c.Ingest("host-1:abc123def456", false, now, Sample{CPU: 1})
+	c.Ingest("host-1:def456abc123", false, now, Sample{CPU: 2})
+	c.Ingest("host-2:fedcba987654", false, now, Sample{CPU: 3})
+	c.Ingest("host-1", true, now, Sample{CPU: 4})
+	c.Ingest("host-2", true, now, Sample{CPU: 5})
 
 	c.RemoveHost("host-1")
 
@@ -456,9 +456,9 @@ func TestCascade_RemoveHost_NoPartialMatches(t *testing.T) {
 	c, _, _ := newTestCascade(64)
 	now := time.Unix(1_000_000, 0)
 
-	c.Ingest("host-1:abc", false, now, sample{CPU: 1})
-	c.Ingest("host-10:def", false, now, sample{CPU: 2})
-	c.Ingest("host-100:ghi", false, now, sample{CPU: 3})
+	c.Ingest("host-1:abc", false, now, Sample{CPU: 1})
+	c.Ingest("host-10:def", false, now, Sample{CPU: 2})
+	c.Ingest("host-100:ghi", false, now, Sample{CPU: 3})
 
 	c.RemoveHost("host-1")
 
@@ -481,8 +481,8 @@ func TestCascade_RemoveHost_NoOpOnMissing(t *testing.T) {
 	c, _, _ := newTestCascade(64)
 	now := time.Unix(1_000_000, 0)
 
-	c.Ingest("host-2:abc", false, now, sample{CPU: 1})
-	c.Ingest("host-2", true, now, sample{CPU: 2})
+	c.Ingest("host-2:abc", false, now, Sample{CPU: 1})
+	c.Ingest("host-2", true, now, Sample{CPU: 2})
 
 	c.RemoveHost("host-does-not-exist")
 

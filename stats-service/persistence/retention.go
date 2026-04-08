@@ -37,8 +37,6 @@ func (r *Retention) RunRingBuffer(ctx context.Context) error {
 	start := time.Now()
 	var totalDeleted int64
 
-	// Local name is maxPoints (not max) so we do not shadow the Go 1.21+
-	// built-in max; see the same convention in cascade.go blendCore.
 	for _, tier := range r.tiers {
 		maxPoints := r.maxPointsForTier(tier)
 

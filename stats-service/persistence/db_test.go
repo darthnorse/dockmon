@@ -3,6 +3,7 @@ package persistence
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -15,11 +16,25 @@ func makeFixtureDB(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.db")
-	conn, err := sql.Open("sqlite", "file:"+path)
+	seedFixture(t, path)
+	return path
+}
+
+// seedFixture creates the schema this package expects at the given path.
+// Factored out of makeFixtureDB so tests that need a specific path (for
+// example, to exercise URI-special characters) can reuse the seed SQL.
+// Uses buildDSN so paths containing URI-special characters work.
+func seedFixture(t *testing.T, path string) {
+	t.Helper()
+	conn, err := sql.Open("sqlite", buildDSN(path, nil))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("close seed conn: %v", err)
+		}
+	}()
 	stmts := []string{
 		`CREATE TABLE docker_hosts (id TEXT PRIMARY KEY, name TEXT)`,
 		`CREATE TABLE agents (id TEXT PRIMARY KEY, host_id TEXT NOT NULL)`,
@@ -62,7 +77,6 @@ func makeFixtureDB(t *testing.T) string {
 			t.Fatalf("seed: %v: %s", err, s)
 		}
 	}
-	return path
 }
 
 func TestOpen_VerifiesSchema(t *testing.T) {
@@ -80,11 +94,17 @@ func TestOpen_VerifiesSchema(t *testing.T) {
 func TestOpen_FailsOnMissingSchema(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.db")
-	conn, _ := sql.Open("sqlite", "file:"+path)
-	conn.Exec(`CREATE TABLE docker_hosts (id TEXT PRIMARY KEY)`)
-	conn.Close()
-	_, err := Open(path)
-	if err == nil {
+	conn, err := sql.Open("sqlite", buildDSN(path, nil))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if _, err := conn.Exec(`CREATE TABLE docker_hosts (id TEXT PRIMARY KEY)`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close seed: %v", err)
+	}
+	if _, err := Open(path); err == nil {
 		t.Fatalf("expected schema verification error")
 	}
 }
@@ -113,5 +133,46 @@ func TestOpen_ReadHandleIsReadOnly(t *testing.T) {
 		`INSERT INTO docker_hosts (id, name) VALUES ('x','y')`)
 	if err == nil {
 		t.Fatal("expected error: read handle should be read-only")
+	}
+}
+
+// TestOpen_PathWithURISpecialChars is a regression test for the DSN
+// path-escaping bug. Before the fix, Open used fmt.Sprintf("file:%s?..."),
+// which let a '?' in dbPath corrupt the DSN: the driver split on the first
+// '?' and opened a file at a different location than dbPath. Paths like
+// this can occur in tests (t.TempDir can include non-deterministic
+// suffixes) and in real deployments with unusual mount points.
+func TestOpen_PathWithURISpecialChars(t *testing.T) {
+	// Build a fixture DB at a path that contains characters special to
+	// URI parsing: '?', '#', '%', and a space.
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "dir with ? # % chars")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	path := filepath.Join(dir, "test.db")
+	seedFixture(t, path)
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open with special chars in path: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+
+	// Confirm the write pool actually writes to the intended file, not
+	// a stray file created at a truncated path.
+	if _, err := db.Write().Exec(`INSERT INTO docker_hosts (id, name) VALUES ('h1', 'host1')`); err != nil {
+		t.Fatalf("write to special-char path: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat expected db file: %v", err)
+	}
+	if info.Size() == 0 {
+		t.Fatalf("expected non-empty db file at %q", path)
 	}
 }

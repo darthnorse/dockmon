@@ -2,7 +2,7 @@
 # Multi-stage build: Go stats service + Python backend + React frontend
 
 # Stage 1: Build Go services (stats-service and compose-service)
-FROM golang:1.24-alpine AS go-builder
+FROM golang:1.25-alpine AS go-builder
 
 WORKDIR /build
 
@@ -14,7 +14,10 @@ COPY shared/ /build/shared/
 WORKDIR /build/stats-service
 COPY stats-service/go.mod stats-service/go.sum* ./
 RUN go mod download
+# Copy top-level .go files AND the persistence/ subpackage
+# (a plain */.go glob would miss persistence/*.go)
 COPY stats-service/*.go ./
+COPY stats-service/persistence/ ./persistence/
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o stats-service .
 
 # Build compose-service

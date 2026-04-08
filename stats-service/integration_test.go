@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,7 +34,6 @@ func TestIntegration_AgentToHistoryRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
 
 	if _, err := db.Write().Exec(
 		`INSERT INTO docker_hosts (id,name) VALUES ('host-1','h1')`); err != nil {
@@ -50,13 +50,30 @@ func TestIntegration_AgentToHistoryRoundTrip(t *testing.T) {
 	writer := persistence.NewWriter(db, writes)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go writer.Run(ctx)
+
+	// wg tracks the writer and fake-aggregator goroutines. Cleanup below
+	// cancels the context, waits for both to return, THEN closes the DB —
+	// in that order — so a mid-batch commit can never race a closed sqlite
+	// handle. Mirrors the Task 15 main.go shutdown ordering.
+	var wg sync.WaitGroup
+	t.Cleanup(func() {
+		cancel()
+		wg.Wait()
+		_ = db.Close()
+	})
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		writer.Run(ctx)
+	}()
 
 	// Fake aggregator: pushes cache contents into the cascade every 100ms
 	// (instead of the production 1s tick) so the 10-second test window
 	// produces enough tier-0 ingest calls to cross a 7.2s bucket boundary.
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 		for {

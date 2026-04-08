@@ -286,3 +286,67 @@ func TestInvalidateAgentToken(t *testing.T) {
 		t.Errorf("after invalidate, expected ErrInvalidAgentToken, got %v", err)
 	}
 }
+
+func TestQueryContainerHistory_ReturnsRows(t *testing.T) {
+	path := makeFixtureDB(t)
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Write().Exec(`INSERT INTO docker_hosts (id,name) VALUES ('h1','h1')`); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if _, err := db.Write().Exec(`INSERT INTO container_stats_history
+			(container_id, host_id, timestamp, resolution, cpu_percent, memory_usage, memory_limit, network_bps)
+			VALUES (?,?,?,?,?,?,?,?)`,
+			"h1:abc123abc123", "h1", int64(1_000_000+i*10), "1h",
+			float64(i), int64(i*100), int64(8192), float64(i*1000)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rows, err := db.QueryContainerHistory(
+		context.Background(),
+		"h1:abc123abc123", "1h", 1_000_010, 1_000_030,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Errorf("got %d rows, want 3", len(rows))
+	}
+}
+
+func TestQueryHostHistory_ReturnsRows(t *testing.T) {
+	path := makeFixtureDB(t)
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Write().Exec(`INSERT INTO docker_hosts (id,name) VALUES ('h1','h1')`); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := db.Write().Exec(`INSERT INTO host_stats_history
+			(host_id, timestamp, resolution, cpu_percent, memory_percent,
+			 memory_used_bytes, memory_limit_bytes, network_bps, container_count)
+			VALUES (?,?,?,?,?,?,?,?,?)`,
+			"h1", int64(1_000_000+i*10), "1h",
+			float64(i*10), float64(i*5),
+			int64(1<<30), int64(8<<30), float64(i*100), i+1); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rows, err := db.QueryHostHistory(
+		context.Background(), "h1", "1h", 1_000_000, 1_000_020)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Errorf("got %d rows, want 3", len(rows))
+	}
+}

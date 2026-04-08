@@ -160,6 +160,74 @@ func (db *DB) InvalidateAgentToken(token string) {
 	db.tokenMu.Unlock()
 }
 
+// HistoryRow is a single retrieved bucket from one of the history tables.
+// Pointer fields are nullable: nil means SQL NULL, which the gap-fill renders
+// as a chart gap.
+type HistoryRow struct {
+	Timestamp      int64 // unix seconds
+	CPU            *float64
+	MemPercent     *float64
+	MemUsed        *int64
+	MemLimit       *int64
+	NetBps         *float64
+	ContainerCount *int // host-only
+}
+
+// QueryContainerHistory returns rows for one container in [fromUnix, toUnix]
+// inclusive, ordered ascending by timestamp.
+func (db *DB) QueryContainerHistory(
+	ctx context.Context, containerID, resolution string, fromUnix, toUnix int64,
+) ([]HistoryRow, error) {
+	q := `SELECT timestamp, cpu_percent, memory_usage, memory_limit, network_bps
+	      FROM container_stats_history
+	      WHERE container_id = ? AND resolution = ?
+	        AND timestamp >= ? AND timestamp <= ?
+	      ORDER BY timestamp ASC`
+	rows, err := db.read.QueryContext(ctx, q, containerID, resolution, fromUnix, toUnix)
+	if err != nil {
+		return nil, fmt.Errorf("query container history: %w", err)
+	}
+	defer rows.Close()
+	var out []HistoryRow
+	for rows.Next() {
+		var r HistoryRow
+		if err := rows.Scan(&r.Timestamp, &r.CPU, &r.MemUsed, &r.MemLimit, &r.NetBps); err != nil {
+			return nil, fmt.Errorf("scan container history: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// QueryHostHistory returns rows for one host in [fromUnix, toUnix].
+func (db *DB) QueryHostHistory(
+	ctx context.Context, hostID, resolution string, fromUnix, toUnix int64,
+) ([]HistoryRow, error) {
+	q := `SELECT timestamp, cpu_percent, memory_percent, memory_used_bytes,
+	             memory_limit_bytes, network_bps, container_count
+	      FROM host_stats_history
+	      WHERE host_id = ? AND resolution = ?
+	        AND timestamp >= ? AND timestamp <= ?
+	      ORDER BY timestamp ASC`
+	rows, err := db.read.QueryContext(ctx, q, hostID, resolution, fromUnix, toUnix)
+	if err != nil {
+		return nil, fmt.Errorf("query host history: %w", err)
+	}
+	defer rows.Close()
+	var out []HistoryRow
+	for rows.Next() {
+		var r HistoryRow
+		if err := rows.Scan(
+			&r.Timestamp, &r.CPU, &r.MemPercent, &r.MemUsed,
+			&r.MemLimit, &r.NetBps, &r.ContainerCount,
+		); err != nil {
+			return nil, fmt.Errorf("scan host history: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // verifySchema fails if Alembic has not applied migration 037.
 //
 // The query runs through the write pool so the first connection to a

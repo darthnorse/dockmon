@@ -189,6 +189,15 @@ type writeJob struct {
 
 // Cascade owns in-memory bucket state for every (entity, tier) pair and emits
 // writeJobs to its writer channel as buckets cross their boundaries.
+//
+// State lifetime: entries in the state map are created on first Ingest for a
+// given (entity, tier) and overwritten in place on every bucket finalization;
+// they are never deleted by Ingest itself. An entity that stops emitting
+// samples leaves its last-in-flight bucket in the map indefinitely. Explicit
+// cleanup for long-gone entities is the caller's responsibility (see Task 8's
+// RemoveHost). This is an intentional design trade-off: finalize vs. cleanup
+// is ambiguous without upstream lifecycle signals, so the cascade avoids
+// guessing and relies on the aggregator to tell it when an entity is gone.
 type Cascade struct {
 	tiers  []Tier
 	state  map[entityKey]tierState

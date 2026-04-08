@@ -45,8 +45,14 @@ func TestComputeTiers_FloorAtOneSecond(t *testing.T) {
 }
 
 func TestComputeTiers_HigherTiersAreMultiplesOfTier0(t *testing.T) {
-	// Critical invariant: tier N+1 interval must be an integer multiple of
-	// tier N interval, so cascade-up's bucketTs alignment holds.
+	// Every tier's interval must be an integer multiple of tier 0's interval
+	// at the default pointsPerView=500. This is not strictly required for
+	// cascade correctness — each tier independently re-truncates to the
+	// Unix-epoch grid in feedTier — but it keeps bucket counts per cascade-up
+	// predictable and makes the blend math reason about integer sample counts
+	// instead of fractional boundaries. Note this only holds tier-N-vs-tier-0;
+	// adjacent tiers need not be multiples of each other (e.g. at pps=500,
+	// 30d/7d ≈ 4.286).
 	tiers := ComputeTiers(500)
 	for i := 1; i < len(tiers); i++ {
 		ratio := tiers[i].Interval / tiers[0].Interval

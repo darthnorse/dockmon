@@ -25,12 +25,44 @@ func makeWriterFixture(t *testing.T) (*DB, chan writeJob, *Writer) {
 	return db, ch, w
 }
 
+// runWriter starts the writer in a goroutine and returns a stop function that
+// drains the jobs channel, cancels the context, and waits for Run to return.
+// Cancellation forces a final flush, so callers can observe all committed rows
+// without racing the 1s tick. The caller must pass the same jobs channel used
+// to construct the writer so we can wait for the writer to drain every sent
+// job into its in-memory batch before cancelling — otherwise Go's select could
+// observe ctx.Done() before receiving the last buffered job and lose the row.
+func runWriter(t *testing.T, w *Writer, jobs chan writeJob) (stop func()) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		w.Run(ctx)
+		close(done)
+	}()
+	return func() {
+		// Wait for the writer to drain the channel into its batch. Once
+		// len(jobs) == 0 the writer has received every sent job; any
+		// still-pending append will complete before the next select iteration.
+		deadline := time.Now().Add(2 * time.Second)
+		for len(jobs) > 0 {
+			if time.Now().After(deadline) {
+				t.Fatal("writer did not drain jobs channel")
+			}
+			time.Sleep(time.Millisecond)
+		}
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("writer Run did not return after cancel")
+		}
+	}
+}
+
 func TestWriter_BatchPersistsContainerRows(t *testing.T) {
 	db, ch, w := makeWriterFixture(t)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go w.Run(ctx)
+	stop := runWriter(t, w, ch)
 
 	now := time.Unix(1_000_000, 0)
 	ch <- writeJob{
@@ -40,7 +72,7 @@ func TestWriter_BatchPersistsContainerRows(t *testing.T) {
 		value:    sample{CPU: 12.5, MemUsed: 1024, MemLimit: 8192, NetBps: 100.5},
 	}
 
-	time.Sleep(1500 * time.Millisecond)
+	stop() // force final flush
 
 	var count int
 	if err := db.Read().QueryRow(
@@ -67,10 +99,7 @@ func TestWriter_BatchPersistsContainerRows(t *testing.T) {
 
 func TestWriter_BatchPersistsHostRows(t *testing.T) {
 	db, ch, w := makeWriterFixture(t)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go w.Run(ctx)
+	stop := runWriter(t, w, ch)
 
 	now := time.Unix(1_000_000, 0)
 	ch <- writeJob{
@@ -82,7 +111,7 @@ func TestWriter_BatchPersistsHostRows(t *testing.T) {
 			NetBps: 1024, ContainerCount: 8,
 		},
 	}
-	time.Sleep(1500 * time.Millisecond)
+	stop() // force final flush
 
 	var count int
 	if err := db.Read().QueryRow(
@@ -97,10 +126,7 @@ func TestWriter_BatchPersistsHostRows(t *testing.T) {
 
 func TestWriter_NaNBecomesNull(t *testing.T) {
 	db, ch, w := makeWriterFixture(t)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go w.Run(ctx)
+	stop := runWriter(t, w, ch)
 
 	ch <- writeJob{
 		tier: "1h", isHost: false,
@@ -108,7 +134,7 @@ func TestWriter_NaNBecomesNull(t *testing.T) {
 		ts:       time.Unix(1_000_000, 0),
 		value:    sample{CPU: math.NaN(), NetBps: math.NaN()},
 	}
-	time.Sleep(1500 * time.Millisecond)
+	stop() // force final flush
 
 	var cpu sql.NullFloat64
 	if err := db.Read().QueryRow(
@@ -124,10 +150,7 @@ func TestWriter_NaNBecomesNull(t *testing.T) {
 
 func TestWriter_InsertOrReplaceDeduplicates(t *testing.T) {
 	db, ch, w := makeWriterFixture(t)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go w.Run(ctx)
+	stop := runWriter(t, w, ch)
 
 	ts := time.Unix(1_000_000, 0)
 	ch <- writeJob{
@@ -138,7 +161,7 @@ func TestWriter_InsertOrReplaceDeduplicates(t *testing.T) {
 		tier: "1h", entityID: "host-1:dup000000000", ts: ts,
 		value: sample{CPU: 99},
 	}
-	time.Sleep(1500 * time.Millisecond)
+	stop() // force final flush
 
 	var cpu sql.NullFloat64
 	if err := db.Read().QueryRow(

@@ -295,6 +295,77 @@ class StatsServiceClient:
                 return {}
         return {}
 
+    class HistoryUpstreamError(Exception):
+        """
+        Raised when the stats-service returns a non-OK response for a
+        history query. Carries both the upstream HTTP status and the
+        response body so the FastAPI proxy can decide how to map it.
+
+        - 4xx from upstream → client-side bad request (mirror status)
+        - 5xx from upstream → 502 Bad Gateway at the proxy
+        """
+
+        def __init__(self, status: int, body: str):
+            self.status = status
+            self.body = body
+            super().__init__(f"stats-service returned {status}: {body}")
+
+    async def _get_history(
+        self,
+        endpoint: str,
+        params: Dict[str, str],
+        log_label: str,
+    ) -> Dict[str, Any]:
+        """
+        Shared GET helper for stats-service history endpoints.
+
+        Implements the standard 401-retry pattern used elsewhere in this
+        client, then either returns the decoded JSON body or raises
+        HistoryUpstreamError with the upstream status and body so the
+        FastAPI proxy can map upstream errors to appropriate responses.
+        """
+        url = f"{self.base_url}{endpoint}"
+        for attempt in range(2):
+            try:
+                session = await self._get_session()
+                async with session.get(url, params=params) as resp:
+                    if resp.status == 401 and attempt == 0:
+                        logger.warning("Stats service returned 401, refreshing token...")
+                        await self._invalidate_auth()
+                        continue
+                    if resp.status != 200:
+                        body = await resp.text()
+                        logger.warning(
+                            f"stats-service {log_label} returned {resp.status}: {body}"
+                        )
+                        raise StatsServiceClient.HistoryUpstreamError(resp.status, body)
+                    return await resp.json()
+            except aiohttp.ClientError as e:
+                logger.error(f"Failed to get {log_label} from stats service: {e}")
+                raise
+        # Unreachable: the retry loop either returns JSON or raises.
+        raise RuntimeError(f"_get_history({log_label}): retry loop exhausted without response")
+
+    @staticmethod
+    def _history_params(
+        base: Dict[str, str],
+        range_: Optional[str],
+        from_: Optional[int],
+        to: Optional[int],
+        since: Optional[int],
+    ) -> Dict[str, str]:
+        """Build the query-string params dict for a history request."""
+        params = dict(base)
+        if range_ is not None:
+            params["range"] = range_
+        if from_ is not None:
+            params["from"] = str(from_)
+        if to is not None:
+            params["to"] = str(to)
+        if since is not None:
+            params["since"] = str(since)
+        return params
+
     async def get_host_stats_history(
         self,
         host_id: str,
@@ -306,36 +377,15 @@ class StatsServiceClient:
         """
         Proxy to stats-service GET /api/stats/history/host.
 
-        Unlike the realtime stats helpers above, this method propagates HTTP
-        errors (400 from bad params, 500 from backend) to the caller so the
-        FastAPI proxy endpoint can mirror the stats-service response.
+        Raises HistoryUpstreamError if the stats-service returns a non-2xx
+        response; the FastAPI proxy endpoint maps that to an HTTPException.
         """
-        params: Dict[str, str] = {"host_id": host_id}
-        if range_ is not None:
-            params["range"] = range_
-        if from_ is not None:
-            params["from"] = str(from_)
-        if to is not None:
-            params["to"] = str(to)
-        if since is not None:
-            params["since"] = str(since)
-
-        url = f"{self.base_url}/api/stats/history/host"
-        for attempt in range(2):
-            try:
-                session = await self._get_session()
-                async with session.get(url, params=params) as resp:
-                    if resp.status == 401 and attempt == 0:
-                        logger.warning("Stats service returned 401, refreshing token...")
-                        await self._invalidate_auth()
-                        continue
-                    resp.raise_for_status()
-                    return await resp.json()
-            except aiohttp.ClientError as e:
-                logger.error(f"Failed to get host stats history from stats service: {e}")
-                raise
-        # Unreachable: the retry loop either returns JSON or raises.
-        raise RuntimeError("get_host_stats_history: retry loop exhausted without response")
+        params = self._history_params(
+            {"host_id": host_id}, range_, from_, to, since
+        )
+        return await self._get_history(
+            "/api/stats/history/host", params, "host stats history"
+        )
 
     async def get_container_stats_history(
         self,
@@ -349,34 +399,15 @@ class StatsServiceClient:
         """
         Proxy to stats-service GET /api/stats/history/container.
 
-        Propagates HTTP errors (see get_host_stats_history for rationale).
+        Raises HistoryUpstreamError on non-2xx upstream responses.
         """
-        params: Dict[str, str] = {"host_id": host_id, "container_id": container_id}
-        if range_ is not None:
-            params["range"] = range_
-        if from_ is not None:
-            params["from"] = str(from_)
-        if to is not None:
-            params["to"] = str(to)
-        if since is not None:
-            params["since"] = str(since)
-
-        url = f"{self.base_url}/api/stats/history/container"
-        for attempt in range(2):
-            try:
-                session = await self._get_session()
-                async with session.get(url, params=params) as resp:
-                    if resp.status == 401 and attempt == 0:
-                        logger.warning("Stats service returned 401, refreshing token...")
-                        await self._invalidate_auth()
-                        continue
-                    resp.raise_for_status()
-                    return await resp.json()
-            except aiohttp.ClientError as e:
-                logger.error(f"Failed to get container stats history from stats service: {e}")
-                raise
-        # Unreachable: the retry loop either returns JSON or raises.
-        raise RuntimeError("get_container_stats_history: retry loop exhausted without response")
+        params = self._history_params(
+            {"host_id": host_id, "container_id": container_id},
+            range_, from_, to, since,
+        )
+        return await self._get_history(
+            "/api/stats/history/container", params, "container stats history"
+        )
 
     # Event service methods
 

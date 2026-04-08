@@ -7,16 +7,19 @@ These cover:
 
 The endpoints forward to the Go stats-service. Tests patch
 stats_client.get_stats_client so they run without the Go service
-actually running — the focus is on request wiring, validation, and
-defense-in-depth container_id normalization.
+actually running — the focus is on request wiring, validation,
+upstream error mapping, and defense-in-depth container_id
+normalization.
 """
 
 from unittest.mock import AsyncMock, patch
 
+import aiohttp
 import pytest
 from fastapi.testclient import TestClient
 
 from main import app
+from stats_client import StatsServiceClient
 
 
 @pytest.fixture
@@ -233,3 +236,143 @@ class TestContainerStatsHistoryProxy:
             to=None,
             since=42,
         )
+
+
+@pytest.mark.integration
+class TestUpstreamErrorMapping:
+    """
+    The proxy must translate stats-service errors into appropriate
+    HTTP responses so a bad query doesn't look like a backend crash.
+    """
+
+    def test_upstream_400_is_mirrored_as_400(
+        self, client, test_api_key_write, mock_stats_client
+    ):
+        """4xx upstream errors surface to the caller as the same 4xx."""
+        mock_stats_client.get_host_stats_history = AsyncMock(
+            side_effect=StatsServiceClient.HistoryUpstreamError(
+                400, "requested window > tier window (1h)\n"
+            )
+        )
+
+        resp = client.get(
+            "/api/hosts/host-1/stats/history?range=1h&from=0&to=9999999",
+            headers={"Authorization": f"Bearer {test_api_key_write}"},
+        )
+
+        assert resp.status_code == 400, resp.text
+        assert "tier window" in resp.json()["detail"]
+
+    def test_upstream_500_is_mapped_to_502(
+        self, client, test_api_key_write, mock_stats_client
+    ):
+        """Upstream 5xx becomes 502 Bad Gateway at the proxy."""
+        mock_stats_client.get_host_stats_history = AsyncMock(
+            side_effect=StatsServiceClient.HistoryUpstreamError(
+                500, "database is locked"
+            )
+        )
+
+        resp = client.get(
+            "/api/hosts/host-1/stats/history?range=1h",
+            headers={"Authorization": f"Bearer {test_api_key_write}"},
+        )
+
+        assert resp.status_code == 502, resp.text
+        assert "stats-service error" in resp.json()["detail"]
+
+    def test_upstream_connection_error_is_mapped_to_502(
+        self, client, test_api_key_write, mock_stats_client
+    ):
+        """aiohttp connection errors become 502 at the proxy."""
+        mock_stats_client.get_container_stats_history = AsyncMock(
+            side_effect=aiohttp.ClientConnectionError("connection refused")
+        )
+
+        resp = client.get(
+            "/api/hosts/host-1/containers/abc123abc123/stats/history?range=1h",
+            headers={"Authorization": f"Bearer {test_api_key_write}"},
+        )
+
+        assert resp.status_code == 502, resp.text
+        assert "unavailable" in resp.json()["detail"]
+
+
+@pytest.mark.integration
+class TestStatsClientHistoryMethod:
+    """
+    Unit-level tests for the stats_client helper methods themselves,
+    exercising the 401-retry loop and error-raising behaviour without
+    going through the FastAPI app.
+    """
+
+    async def test_401_triggers_token_refresh_and_retry(self):
+        """First 401 should invalidate cached token and retry once."""
+        from unittest.mock import MagicMock
+        svc = StatsServiceClient()
+
+        # Build a response mock that returns 401 the first time and 200
+        # the second time. aiohttp's session.get returns an async context
+        # manager, so we need to fake that protocol.
+        class _FakeResp:
+            def __init__(self, status, payload):
+                self.status = status
+                self._payload = payload
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+            async def json(self):
+                return self._payload
+            async def text(self):
+                return ""
+
+        responses = [
+            _FakeResp(401, None),
+            _FakeResp(200, {"tier": "1h", "timestamps": []}),
+        ]
+
+        fake_session = MagicMock()
+        fake_session.get = MagicMock(side_effect=lambda *a, **kw: responses.pop(0))
+
+        svc._get_session = AsyncMock(return_value=fake_session)
+        svc._invalidate_auth = AsyncMock()
+
+        result = await svc.get_host_stats_history(host_id="h1", range_="1h")
+        assert result == {"tier": "1h", "timestamps": []}
+        svc._invalidate_auth.assert_awaited_once()
+        assert fake_session.get.call_count == 2
+
+    async def test_upstream_non_200_raises_history_upstream_error(self):
+        """Non-200 on the second attempt propagates as HistoryUpstreamError."""
+        from unittest.mock import MagicMock
+        svc = StatsServiceClient()
+
+        class _FakeResp:
+            def __init__(self, status, text_body):
+                self.status = status
+                self._text = text_body
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+            async def text(self):
+                return self._text
+            async def json(self):
+                raise AssertionError("should not decode JSON on error path")
+
+        fake_session = MagicMock()
+        fake_session.get = MagicMock(
+            return_value=_FakeResp(400, "invalid range \"99y\"\n")
+        )
+        svc._get_session = AsyncMock(return_value=fake_session)
+        svc._invalidate_auth = AsyncMock()
+
+        with pytest.raises(StatsServiceClient.HistoryUpstreamError) as excinfo:
+            await svc.get_container_stats_history(
+                host_id="h1", container_id="abc123abc123", range_="99y"
+            )
+
+        assert excinfo.value.status == 400
+        assert "invalid range" in excinfo.value.body
+        svc._invalidate_auth.assert_not_awaited()

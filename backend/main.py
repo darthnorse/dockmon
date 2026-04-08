@@ -1046,6 +1046,28 @@ async def get_host_metrics(host_id: str, current_user: dict = Depends(get_curren
         raise HTTPException(status_code=500, detail="Failed to fetch host metrics")
 
 
+def _map_history_upstream_error(exc: Exception) -> HTTPException:
+    """
+    Map a stats-service history client error to an HTTPException.
+
+    - HistoryUpstreamError with 4xx upstream status → mirror the status
+      (the caller sent bad params, so it's a client error at the proxy too)
+    - HistoryUpstreamError with 5xx upstream status → 502 Bad Gateway
+      (upstream itself failed — not the caller's fault)
+    - aiohttp.ClientError (connection refused, timeout, etc.) → 502
+    """
+    # Local import to avoid top-level aiohttp coupling in main.py.
+    import aiohttp
+    from stats_client import StatsServiceClient
+    if isinstance(exc, StatsServiceClient.HistoryUpstreamError):
+        if 400 <= exc.status < 500:
+            return HTTPException(status_code=exc.status, detail=exc.body.strip() or "stats-service rejected request")
+        return HTTPException(status_code=502, detail=f"stats-service error: {exc.body.strip() or exc.status}")
+    if isinstance(exc, aiohttp.ClientError):
+        return HTTPException(status_code=502, detail="stats-service unavailable")
+    return HTTPException(status_code=500, detail="internal error")
+
+
 @app.get(
     "/api/hosts/{host_id}/stats/history",
     tags=["hosts"],
@@ -1061,15 +1083,18 @@ async def get_host_stats_history(
     """Proxy to stats-service GET /api/stats/history/host (spec §9)."""
     if range_ is None and from_ is None:
         raise HTTPException(status_code=400, detail="must specify range or from/to")
-    from stats_client import get_stats_client
-    stats_client = get_stats_client()
-    return await stats_client.get_host_stats_history(
-        host_id=host_id,
-        range_=range_,
-        from_=from_,
-        to=to,
-        since=since,
-    )
+    from stats_client import get_stats_client, StatsServiceClient
+    import aiohttp
+    try:
+        return await get_stats_client().get_host_stats_history(
+            host_id=host_id,
+            range_=range_,
+            from_=from_,
+            to=to,
+            since=since,
+        )
+    except (StatsServiceClient.HistoryUpstreamError, aiohttp.ClientError) as e:
+        raise _map_history_upstream_error(e)
 
 
 @app.get(
@@ -1086,20 +1111,23 @@ async def get_container_stats_history(
     since: Optional[int] = Query(None),
 ):
     """Proxy to stats-service GET /api/stats/history/container (spec §9)."""
-    if range_ is None and from_ is None:
-        raise HTTPException(status_code=400, detail="must specify range or from/to")
     # Defense-in-depth: normalize container_id at endpoint entry (CLAUDE.md).
     container_id = normalize_container_id(container_id)
-    from stats_client import get_stats_client
-    stats_client = get_stats_client()
-    return await stats_client.get_container_stats_history(
-        host_id=host_id,
-        container_id=container_id,
-        range_=range_,
-        from_=from_,
-        to=to,
-        since=since,
-    )
+    if range_ is None and from_ is None:
+        raise HTTPException(status_code=400, detail="must specify range or from/to")
+    from stats_client import get_stats_client, StatsServiceClient
+    import aiohttp
+    try:
+        return await get_stats_client().get_container_stats_history(
+            host_id=host_id,
+            container_id=container_id,
+            range_=range_,
+            from_=from_,
+            to=to,
+            since=since,
+        )
+    except (StatsServiceClient.HistoryUpstreamError, aiohttp.ClientError) as e:
+        raise _map_history_upstream_error(e)
 
 
 @app.get("/api/hosts/{host_id}/agent", tags=["hosts"], dependencies=[Depends(require_capability("agents.view"))])

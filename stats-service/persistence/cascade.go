@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"log"
 	"math"
 	"sync"
 	"time"
@@ -231,12 +232,22 @@ func (c *Cascade) feedTier(
 
 	if !st.bucketTs.IsZero() && bts.After(st.bucketTs) {
 		agg := blend(st.accum, tier.Alpha)
-		c.writes <- writeJob{
+		// Non-blocking send: if the writer channel is full we drop the
+		// finalized bucket and log a warning. Spec §7: dropping a bucket
+		// becomes a chart null, recoverable on the next cycle — preferable
+		// to blocking the stats cache ingestion path, which would stall
+		// every other entity behind this mutex.
+		select {
+		case c.writes <- writeJob{
 			tier:     tier.Name,
 			isHost:   st.isHost,
 			entityID: entityID,
 			ts:       st.bucketTs,
 			value:    agg,
+		}:
+		default:
+			log.Printf("Cascade: writes channel full, dropping %s bucket for %s at %s",
+				tier.Name, entityID, st.bucketTs.Format(time.RFC3339))
 		}
 		c.feedTier(entityID, isHost, tierIdx+1, st.bucketTs, agg)
 		st = tierState{}

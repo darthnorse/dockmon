@@ -329,6 +329,84 @@ func TestCascade_FeedsTier0OnlyFromIngest(t *testing.T) {
 	}
 }
 
+func TestCascade_CrossEntityIsolation(t *testing.T) {
+	// Two entities advancing through buckets in lockstep must not affect
+	// each other's state: each gets its own tierState in the map and each
+	// finalized bucket belongs to exactly the entity that produced it.
+	tiers := ComputeTiers(500)
+	writes := make(chan writeJob, 64)
+	c := NewCascade(tiers, writes)
+
+	t0 := time.Unix(0, 0)
+	// First bucket: one sample per entity inside tier-0 bucket 0.
+	c.Ingest("c1", false, t0, sample{CPU: 10})
+	c.Ingest("c2", false, t0, sample{CPU: 99})
+	// Second bucket: one sample per entity in tier-0 bucket 1, which
+	// finalizes each entity's bucket-0 tier-0 write independently.
+	next := t0.Add(8 * time.Second)
+	c.Ingest("c1", false, next, sample{CPU: 20})
+	c.Ingest("c2", false, next, sample{CPU: 88})
+
+	jobs := drainAll(writes)
+	var c1Tier0, c2Tier0 *writeJob
+	for i := range jobs {
+		if jobs[i].tier != "1h" {
+			continue
+		}
+		switch jobs[i].entityID {
+		case "c1":
+			c1Tier0 = &jobs[i]
+		case "c2":
+			c2Tier0 = &jobs[i]
+		}
+	}
+	if c1Tier0 == nil || c2Tier0 == nil {
+		t.Fatalf("expected a 1h write for both c1 and c2, got %+v", jobs)
+	}
+	if c1Tier0.value.CPU != 10 {
+		t.Errorf("c1 tier0 CPU=%v, want 10 (c2's 99 must not leak in)", c1Tier0.value.CPU)
+	}
+	if c2Tier0.value.CPU != 99 {
+		t.Errorf("c2 tier0 CPU=%v, want 99 (c1's 10 must not leak in)", c2Tier0.value.CPU)
+	}
+}
+
+func TestCascade_IsHostPropagatesToWriteJob(t *testing.T) {
+	// A host entity (isHost=true) must carry isHost=true through to every
+	// writeJob it produces, including those emitted by cascade-up to higher
+	// tiers. Regression guard for the remembered-isHost contract in tierState.
+	tiers := ComputeTiers(500)
+	writes := make(chan writeJob, 1024)
+	c := NewCascade(tiers, writes)
+
+	base := time.Unix(0, 0)
+	// Feed enough tier-0 buckets to guarantee a tier-1 cascade-up fires.
+	for i := 0; i < 20; i++ {
+		ts := base.Add(time.Duration(i) * 8 * time.Second)
+		c.Ingest("host-a", true, ts, sample{CPU: float64(i), ContainerCount: 5})
+	}
+
+	jobs := drainAll(writes)
+	if len(jobs) == 0 {
+		t.Fatalf("expected at least one host write, got none")
+	}
+	sawTier1 := false
+	for _, j := range jobs {
+		if j.entityID != "host-a" {
+			t.Errorf("unexpected entityID %q on host write", j.entityID)
+		}
+		if !j.isHost {
+			t.Errorf("tier %s write for host-a has isHost=false, want true", j.tier)
+		}
+		if j.tier == "8h" {
+			sawTier1 = true
+		}
+	}
+	if !sawTier1 {
+		t.Errorf("expected cascade-up to produce at least one 8h write, got %d jobs at other tiers", len(jobs))
+	}
+}
+
 func TestCascade_RestartIsClean(t *testing.T) {
 	// A fresh cascade after "restart" receiving a sample within the same tier-0
 	// bucket window must NOT produce a duplicate write for the bucket before restart.

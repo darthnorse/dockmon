@@ -959,7 +959,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                   <input
                     type="number"
                     value={formData.threshold}
-                    onChange={(e) => handleChange('threshold', parseFloat(e.target.value))}
+                    onChange={(e) => handleChange('threshold', e.target.value ? parseFloat(e.target.value) : undefined)}
                     required={requiresMetric}
                     min={0}
                     max={formData.metric === CPU_METRIC ? MAX_CPU_THRESHOLD : 100}
@@ -1608,12 +1608,17 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
           <div className="w-80 p-6 bg-gray-800/30">
             <h3 className="text-sm font-semibold text-white mb-4">Rule Summary</h3>
             <div className="space-y-3">
-              {getSummaryText().map((line, idx) => (
-                <div key={idx} className="text-sm">
-                  <span className="text-gray-400">{line.split(':')[0]}:</span>
-                  <span className="text-white ml-1">{line.split(':')[1]}</span>
-                </div>
-              ))}
+              {getSummaryText().map((line, idx) => {
+                const colonIdx = line.indexOf(':')
+                const label = colonIdx >= 0 ? line.slice(0, colonIdx) : line
+                const value = colonIdx >= 0 ? line.slice(colonIdx + 1) : ''
+                return (
+                  <div key={idx} className="text-sm">
+                    <span className="text-gray-400">{label}:</span>
+                    <span className="text-white ml-1">{value}</span>
+                  </div>
+                )
+              })}
             </div>
           </div>
         </form>

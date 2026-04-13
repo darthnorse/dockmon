@@ -258,7 +258,7 @@ func main() {
 
 	// tiers is computed once at startup from the live points_per_view and
 	// shared by the cascade, retention, and history-handler wiring below.
-	// Task 17's hot-reload handler will recompute and rebuild when the
+	// The settings hot-reload handler will recompute and rebuild when the
 	// setting changes at runtime.
 	var persistTiers []persistence.Tier
 	if persistDB != nil {
@@ -349,9 +349,9 @@ func main() {
 		json.NewEncoder(w).Encode(containerStats)
 	}))
 
-	// Historical stats endpoints (PROTECTED) — Task 15 wiring.
-	// Reuses persistTiers computed above so the handler sees the exact
-	// same tier definitions the cascade/writer are feeding into the DB.
+	// Historical stats endpoints (PROTECTED). Reuses persistTiers computed
+	// above so the handler sees the same tier definitions the cascade/writer
+	// are feeding into the DB.
 	if persistDB != nil {
 		historyHandler := NewHistoryHandler(persistDB, persistTiers)
 		mux.HandleFunc("/api/stats/history/container",
@@ -360,25 +360,19 @@ func main() {
 			authMiddleware(token, historyHandler.ServeHost))
 	}
 
-	// Task 17: hot-reload of stats settings pushed from Python. Registered
-	// unconditionally (outside the persistDB != nil guard) so a user who
-	// wants to flip stats_persistence_enabled from false to true doesn't
-	// get a 404 — the flag lives on settingsProvider and is consulted by
-	// the ingest path, which can start honouring it without a restart.
-	// Python is the only caller; the endpoint is gated by the same
-	// Bearer token as the rest of the stats-service API.
+	// Hot-reload of stats settings pushed from Python. Registered
+	// unconditionally so a user who flips stats_persistence_enabled from
+	// false to true doesn't get a 404 — the flag lives on settingsProvider
+	// and is consulted by the ingest path without a restart.
 	settingsHandler := &SettingsHandler{provider: settingsProvider}
 	mux.HandleFunc("/api/settings", authMiddleware(token, settingsHandler.ServeHTTP))
 
-	// Task 18: agent ingest WebSocket endpoint. Remote agents push their
-	// container stats directly into the same StatsCache that local and
-	// mTLS-remote stats feed into. Requires the persistence DB for agent
-	// token validation, so only registered when persistDB is available.
+	// Agent ingest WebSocket endpoint. Remote agents push container stats
+	// directly into the same StatsCache that local and mTLS-remote stats
+	// feed into. Requires the persistence DB for agent token validation.
 	//
-	// NOT wrapped in authMiddleware (which uses the stats-service Bearer
-	// token): auth is per-WebSocket via the agent's permanent UUID token,
-	// validated against the agents table inside HandleWebSocket itself.
-	// See spec §10.
+	// NOT wrapped in authMiddleware: auth is per-WebSocket via the agent's
+	// permanent UUID token, validated inside HandleWebSocket itself.
 	if persistDB != nil {
 		ingestHandler := &IngestHandler{
 			db:    persistDB,
@@ -389,11 +383,9 @@ func main() {
 		}
 		mux.HandleFunc("/api/stats/ws/ingest", ingestHandler.HandleWebSocket)
 
-		// Task 19: agent token invalidation. Python posts here after
-		// deleting an agent row so stats-service evicts the cached
-		// token entry instead of honouring the now-deleted agent for
-		// up to the 5-minute cache TTL. Gated by the Bearer token
-		// (Python is the only caller and already has it). See spec §10.
+		// Agent token invalidation. Python posts here after deleting an
+		// agent row so stats-service evicts the cached token instead of
+		// honouring it for up to the 5-minute cache TTL.
 		invalidateHandler := &InvalidateHandler{db: persistDB}
 		mux.HandleFunc("/api/agents/invalidate", authMiddleware(token, invalidateHandler.ServeHTTP))
 	}
@@ -682,15 +674,33 @@ func main() {
 			return
 		}
 
-		// Handle connection (read loop to detect disconnect)
+		// Both the context-cancellation watcher and the read-loop can
+		// trigger a close; sync.Once prevents double-close errors.
+		var closeOnce sync.Once
+		closeConn := func() { closeOnce.Do(func() { conn.Close() }) }
+
+		// Close the connection when the request context is cancelled
+		// (server shutdown). ReadMessage blocks and does not observe
+		// context cancellation, so we need a watcher goroutine.
+		reqCtx := r.Context()
+		watcherDone := make(chan struct{})
+		go func() {
+			select {
+			case <-reqCtx.Done():
+				closeConn()
+			case <-watcherDone:
+			}
+		}()
+
+		// Read loop to detect client disconnect
 		go func() {
 			defer func() {
+				close(watcherDone)
 				eventBroadcaster.RemoveConnection(conn)
-				conn.Close()
+				closeConn()
 			}()
 
 			for {
-				// Read messages (just to detect disconnect, we don't expect any)
 				_, _, err := conn.ReadMessage()
 				if err != nil {
 					break
@@ -701,11 +711,15 @@ func main() {
 
 	// Create server with configured port
 	srv := &http.Server{
-		Addr:         ":" + config.Port,
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              ":" + config.Port,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		// ReadTimeout and WriteTimeout are intentionally omitted: they apply
+		// to the underlying TCP connection and would kill long-lived WebSocket
+		// connections (/ws/events, /api/stats/ws/ingest) that are idle for
+		// more than the timeout. Per-connection deadlines are managed at the
+		// application layer (ping/pong, context cancellation).
 	}
 
 	// Start server in goroutine

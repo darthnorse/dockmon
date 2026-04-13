@@ -51,10 +51,9 @@ func TestIntegration_AgentToHistoryRoundTrip(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// wg tracks the writer and fake-aggregator goroutines. Cleanup below
-	// cancels the context, waits for both to return, THEN closes the DB —
-	// in that order — so a mid-batch commit can never race a closed sqlite
-	// handle. Mirrors the Task 15 main.go shutdown ordering.
+	// wg tracks the writer and fake-aggregator goroutines. Cleanup cancels
+	// the context, waits for both to return, THEN closes the DB so a
+	// mid-batch commit can never race a closed sqlite handle.
 	var wg sync.WaitGroup
 	t.Cleanup(func() {
 		cancel()
@@ -173,8 +172,7 @@ func TestIntegration_AgentToHistoryRoundTrip(t *testing.T) {
 			len(body.CPU))
 	}
 
-	// Memory percent should also be populated (Task 13 added SQL-computed memory_percent
-	// for container queries).
+	// Memory percent should also be populated (SQL-computed from memory_usage/memory_limit).
 	nonNullMem := 0
 	for _, v := range body.Mem {
 		if v != nil {

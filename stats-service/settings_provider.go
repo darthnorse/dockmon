@@ -20,8 +20,8 @@ var (
 	}
 )
 
-// mainSettingsProvider holds the live retention / points_per_view config that
-// the retention scheduler and the settings endpoint (Task 17) both share.
+// mainSettingsProvider holds the live retention / points_per_view config
+// shared by the retention scheduler and the settings hot-reload endpoint.
 // Thread-safe via RWMutex, matching the SettingsProvider interface contract.
 type mainSettingsProvider struct {
 	mu             sync.RWMutex
@@ -38,8 +38,6 @@ func (p *mainSettingsProvider) RetentionDays() int {
 }
 
 // PointsPerView returns the current points_per_view under a read lock.
-// Used by main() during startup and will be read by Task 17's hot-reload
-// handler once cascade rebuilds on config change are wired up.
 func (p *mainSettingsProvider) PointsPerView() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -47,8 +45,8 @@ func (p *mainSettingsProvider) PointsPerView() int {
 }
 
 // PersistEnabled returns whether stats persistence is currently accepting
-// writes. Task 17 will flip this at runtime; Tasks 18+ will consult it on
-// the ingest path.
+// writes. The settings hot-reload handler flips this at runtime; the
+// aggregator consults it before feeding samples into the cascade.
 func (p *mainSettingsProvider) PersistEnabled() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()

@@ -79,9 +79,20 @@ func parseHistoryParams(q url.Values, tiers []persistence.Tier) (historyParams, 
 		if err != nil {
 			return historyParams{}, errors.New("invalid since")
 		}
-		// Strict: timestamp > since. Clients poll with the latest timestamp
-		// they have; we return only strictly-newer buckets.
-		p.from = time.Unix(s+1, 0)
+		// Snap forward to the next bucket boundary. A naive +1s is
+		// insufficient when bucket intervals have fractional seconds
+		// (e.g. 7.2s at default pointsPerView=500): the +1 lands inside
+		// the same bucket, causing FillGaps to re-emit it as a null gap.
+		candidate := time.Unix(s+1, 0)
+		bucket := candidate.Truncate(p.tier.Interval)
+		if bucket.Before(candidate) {
+			candidate = bucket.Add(p.tier.Interval)
+		}
+		if candidate.After(p.to) {
+			p.from = p.to
+		} else {
+			p.from = candidate
+		}
 	}
 	return p, nil
 }

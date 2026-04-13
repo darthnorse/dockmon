@@ -119,12 +119,11 @@ func (r *Retention) RunTimeSweep(ctx context.Context, retentionDays int) (int64,
 }
 
 // SettingsProvider lets Retention read the current retention_days at run time
-// without tightly coupling to the rest of stats-service. The main package
-// supplies an implementation that reads from in-memory config (Task 15).
+// without tightly coupling to the rest of stats-service.
 //
 // Implementations MUST be safe for concurrent use: Run calls RetentionDays
-// from the retention goroutine while the settings hot-reload handler
-// (Task 17) may write the underlying value from an HTTP goroutine.
+// from the retention goroutine while the settings hot-reload handler may
+// write the underlying value from an HTTP goroutine.
 type SettingsProvider interface {
 	RetentionDays() int
 }

@@ -1,7 +1,7 @@
 /**
  * Central stats view configuration. View definitions and helpers consumed by
- * StatsCharts and friends. Will be paired with a Go-side equivalent when the
- * persistent stats backend lands; until then there is no backend counterpart.
+ * StatsCharts and friends. The Go stats-service consumes the same view names
+ * for its tier/history queries.
  */
 
 export const VIEWS = [

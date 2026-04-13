@@ -86,6 +86,8 @@ from utils.base_path import get_base_path
 from utils.response_filtering import filter_container_env, filter_container_inspect_env, filter_ws_container_message
 from utils.host_ips import deserialize_host_ips
 from utils.client_ip import get_client_ip_ws
+import aiohttp
+from stats_client import get_stats_client, StatsServiceClient
 from updates.container_validator import ContainerValidator, ValidationResult
 from agent.manager import AgentManager
 from agent import handle_agent_websocket
@@ -1056,9 +1058,6 @@ def _map_history_upstream_error(exc: Exception) -> HTTPException:
       (upstream itself failed — not the caller's fault)
     - aiohttp.ClientError (connection refused, timeout, etc.) → 502
     """
-    # Local import to avoid top-level aiohttp coupling in main.py.
-    import aiohttp
-    from stats_client import StatsServiceClient
     if isinstance(exc, StatsServiceClient.HistoryUpstreamError):
         if 400 <= exc.status < 500:
             return HTTPException(status_code=exc.status, detail=exc.body.strip() or "stats-service rejected request")
@@ -1083,8 +1082,6 @@ async def get_host_stats_history(
     """Proxy to stats-service GET /api/stats/history/host (spec §9)."""
     if range_ is None and from_ is None:
         raise HTTPException(status_code=400, detail="must specify range or from/to")
-    from stats_client import get_stats_client, StatsServiceClient
-    import aiohttp
     try:
         return await get_stats_client().get_host_stats_history(
             host_id=host_id,
@@ -1115,8 +1112,6 @@ async def get_container_stats_history(
     container_id = normalize_container_id(container_id)
     if range_ is None and from_ is None:
         raise HTTPException(status_code=400, detail="must specify range or from/to")
-    from stats_client import get_stats_client, StatsServiceClient
-    import aiohttp
     try:
         return await get_stats_client().get_container_stats_history(
             host_id=host_id,
@@ -3493,7 +3488,6 @@ async def update_settings(
     stats_updates = {k: validated_dict[k] for k in stats_keys if k in validated_dict}
     if stats_updates:
         try:
-            from stats_client import get_stats_client
             client = get_stats_client()
             await client.push_settings_update(**stats_updates)
         except Exception as e:

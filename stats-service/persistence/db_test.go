@@ -18,9 +18,9 @@ func makeFixtureDB(t *testing.T) string {
 	return MakeFixtureDBForTest(t)
 }
 
-// seedFixture applies the expected schema at the given path. Separated
-// from makeFixtureDB so tests needing a specific path (e.g. URI-special
-// characters) can reuse the seed SQL.
+// seedFixture applies the expected schema at the given path. Separated from
+// makeFixtureDB so tests needing a specific path (e.g. URI-special characters)
+// can seed it directly.
 func seedFixture(t *testing.T, path string) {
 	t.Helper()
 	conn, err := sql.Open("sqlite", buildDSN(path, nil))
@@ -32,44 +32,7 @@ func seedFixture(t *testing.T, path string) {
 			t.Errorf("close seed conn: %v", err)
 		}
 	}()
-	stmts := []string{
-		`CREATE TABLE docker_hosts (id TEXT PRIMARY KEY, name TEXT)`,
-		`CREATE TABLE agents (id TEXT PRIMARY KEY, host_id TEXT NOT NULL)`,
-		`CREATE TABLE global_settings (
-			id INTEGER PRIMARY KEY,
-			stats_persistence_enabled BOOLEAN NOT NULL DEFAULT 1,
-			stats_retention_days INTEGER NOT NULL DEFAULT 30,
-			stats_points_per_view INTEGER NOT NULL DEFAULT 500
-		)`,
-		`INSERT INTO global_settings (id) VALUES (1)`,
-		`CREATE TABLE container_stats_history (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			container_id TEXT NOT NULL,
-			host_id TEXT NOT NULL REFERENCES docker_hosts(id) ON DELETE CASCADE,
-			timestamp INTEGER NOT NULL,
-			resolution TEXT NOT NULL,
-			cpu_percent REAL,
-			memory_usage INTEGER,
-			memory_limit INTEGER,
-			network_bps REAL,
-			UNIQUE (container_id, resolution, timestamp)
-		)`,
-		`CREATE INDEX idx_container_stats_host ON container_stats_history (host_id)`,
-		`CREATE TABLE host_stats_history (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			host_id TEXT NOT NULL REFERENCES docker_hosts(id) ON DELETE CASCADE,
-			timestamp INTEGER NOT NULL,
-			resolution TEXT NOT NULL,
-			cpu_percent REAL,
-			memory_percent REAL,
-			memory_used_bytes INTEGER,
-			memory_limit_bytes INTEGER,
-			network_bps REAL,
-			container_count INTEGER,
-			UNIQUE (host_id, resolution, timestamp)
-		)`,
-	}
-	for _, s := range stmts {
+	for _, s := range fixtureSchemaSQL {
 		if _, err := conn.Exec(s); err != nil {
 			t.Fatalf("seed: %v: %s", err, s)
 		}

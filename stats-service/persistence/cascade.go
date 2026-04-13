@@ -195,7 +195,7 @@ type WriteJob struct {
 // given (entity, tier) and overwritten in place on every bucket finalization;
 // they are never deleted by Ingest itself. An entity that stops emitting
 // samples leaves its last-in-flight bucket in the map indefinitely. Explicit
-// cleanup for long-gone entities is the caller's responsibility (see Task 8's
+// cleanup for long-gone entities is the caller's responsibility (see
 // RemoveHost). This is an intentional design trade-off: finalize vs. cleanup
 // is ambiguous without upstream lifecycle signals, so the cascade avoids
 // guessing and relies on the aggregator to tell it when an entity is gone.

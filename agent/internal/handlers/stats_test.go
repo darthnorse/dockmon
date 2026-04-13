@@ -20,9 +20,9 @@ import (
 // bug this test is meant to catch.
 //
 // Using reflection here is a deliberate test-only compromise: the full
-// processStats→dual-send path is exercised by Task 25's end-to-end
-// integration test, but verifying the normalization at this layer means
-// the typed-nil footgun can't regress silently into a production panic.
+// processStats dual-send path is exercised by the end-to-end integration test
+// in stats-service, but verifying the normalization at this layer means the
+// typed-nil footgun can't regress silently into a production panic.
 func statsServiceStrictlyNil(t *testing.T, h *handlers.StatsHandler) bool {
 	t.Helper()
 	f := reflect.ValueOf(h).Elem().FieldByName("statsService")
@@ -40,9 +40,7 @@ func statsServiceStrictlyNil(t *testing.T, h *handlers.StatsHandler) bool {
 	return f.IsNil()
 }
 
-// TestStatsHandler_SetStatsServiceClient verifies the nil-safe setter. The
-// full processStats→dual-send path is exercised by Task 25's end-to-end
-// integration test.
+// TestStatsHandler_SetStatsServiceClient verifies the nil-safe setter.
 //
 // This test deliberately lives in package `handlers_test` (external test
 // package) rather than `handlers`, because it needs to import
@@ -84,9 +82,7 @@ func TestStatsHandler_SetStatsServiceClient(t *testing.T) {
 }
 
 // TestStatsServiceSender_InterfaceSatisfaction is a compile-time check that
-// *client.StatsServiceClient satisfies handlers.StatsServiceSender. If this
-// ever stops compiling, the contract between the two packages has drifted
-// and main.go's wiring (Task 22) will break.
+// *client.StatsServiceClient satisfies handlers.StatsServiceSender.
 func TestStatsServiceSender_InterfaceSatisfaction(t *testing.T) {
 	var _ handlers.StatsServiceSender = (*client.StatsServiceClient)(nil)
 	// Also verify AgentStatsMsg round-trips through the alias.

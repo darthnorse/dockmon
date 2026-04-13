@@ -33,13 +33,13 @@ def client():
 @pytest.fixture
 def mock_stats_client():
     """
-    Patch stats_client.get_stats_client so the endpoints talk to a fake
-    client that doesn't need a running stats-service.
+    Patch get_stats_client where it is bound in main so the endpoints talk
+    to a fake client that doesn't need a running stats-service.
 
     Tests set .get_host_stats_history / .get_container_stats_history on
     the returned mock to configure the fake response.
     """
-    with patch("stats_client.get_stats_client") as mock_get:
+    with patch("main.get_stats_client") as mock_get:
         client_mock = AsyncMock()
         mock_get.return_value = client_mock
         yield client_mock

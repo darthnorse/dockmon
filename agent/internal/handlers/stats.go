@@ -37,7 +37,10 @@ type StatsHandler struct {
 
 	// Optional: if non-nil, stats are also dual-sent to stats-service for
 	// historical persistence. nil disables the dual-send. See spec §10.
-	statsService StatsServiceSender
+	// Protected by statsServiceMu because collectStats goroutines read it
+	// concurrently with SetStatsServiceClient writes.
+	statsService   StatsServiceSender
+	statsServiceMu sync.RWMutex
 }
 
 // NewStatsHandler creates a new stats handler
@@ -51,16 +54,15 @@ func NewStatsHandler(dockerClient *docker.Client, log *logrus.Logger, sendMessag
 }
 
 // SetStatsServiceClient enables dual-send to stats-service. Pass nil to disable.
-// The constructor leaves statsService nil; the agent main loop (Task 22) wires
-// it up after the stats-service WebSocket client is built. Accepts any
-// implementation of StatsServiceSender; *client.StatsServiceClient satisfies
-// the interface structurally.
+// Accepts any implementation of StatsServiceSender; *client.StatsServiceClient
+// satisfies the interface structurally. Safe to call concurrently with
+// processStats goroutines.
 func (h *StatsHandler) SetStatsServiceClient(c StatsServiceSender) {
-	// A typed-nil *client.StatsServiceClient passed as an interface is NOT
-	// == untyped nil, so a plain `c == nil` check lets a typed nil through
-	// and processStats then panics on the nil receiver. Normalize both cases
-	// here so the only contract callers need to honor is "pass nil (typed or
-	// untyped) to disable dual-send."
+	h.statsServiceMu.Lock()
+	defer h.statsServiceMu.Unlock()
+	// Normalize typed-nil to untyped nil so processStats can use a simple
+	// nil check. A typed-nil *client.StatsServiceClient would pass `!= nil`
+	// but panic on the nil receiver.
 	if c == nil || isNilPointer(c) {
 		h.statsService = nil
 		return
@@ -185,44 +187,46 @@ func (h *StatsHandler) collectStats(ctx context.Context, containerID, containerN
 
 // processStats processes raw Docker stats and sends to backend
 func (h *StatsHandler) processStats(stat *container.StatsResponse, containerID, containerName string) {
-	// Use shared package to calculate stats (same logic as stats-service!)
 	result := sharedDocker.CalculateStats(stat)
 
-	// Prepare stats message
+	now := time.Now().UTC().Format(time.RFC3339)
+	cpuPct := sharedDocker.RoundToDecimal(result.CPUPercent, 1)
+	memPct := sharedDocker.RoundToDecimal(result.MemoryPercent, 1)
+
 	statsMsg := map[string]interface{}{
-		"container_id":    containerID,
-		"container_name":  containerName,
-		"cpu_percent":     sharedDocker.RoundToDecimal(result.CPUPercent, 1),
-		"memory_usage":    result.MemoryUsage,
-		"memory_limit":    result.MemoryLimit,
-		"memory_percent":  sharedDocker.RoundToDecimal(result.MemoryPercent, 1),
-		"network_rx":      result.NetworkRx,
-		"network_tx":      result.NetworkTx,
-		"disk_read":       result.DiskRead,
-		"disk_write":      result.DiskWrite,
-		"timestamp":       time.Now().UTC().Format(time.RFC3339),
+		"container_id":   containerID,
+		"container_name": containerName,
+		"cpu_percent":    cpuPct,
+		"memory_usage":   result.MemoryUsage,
+		"memory_limit":   result.MemoryLimit,
+		"memory_percent": memPct,
+		"network_rx":     result.NetworkRx,
+		"network_tx":     result.NetworkTx,
+		"disk_read":      result.DiskRead,
+		"disk_write":     result.DiskWrite,
+		"timestamp":      now,
 	}
 
-	// Send to backend via WebSocket
 	if err := h.sendMessage("container_stats", statsMsg); err != nil {
 		h.log.Errorf("Failed to send stats for %s: %v", safeShortID(containerID), err)
 	}
 
-	// Dual-send to stats-service for historical persistence (spec §10).
-	// nil-safe: disabled until the agent main loop calls SetStatsServiceClient.
-	if h.statsService != nil {
-		h.statsService.Send(statsmsg.AgentStatsMsg{
+	h.statsServiceMu.RLock()
+	ss := h.statsService
+	h.statsServiceMu.RUnlock()
+	if ss != nil {
+		ss.Send(statsmsg.AgentStatsMsg{
 			ContainerID:   containerID,
 			ContainerName: containerName,
-			CPUPercent:    sharedDocker.RoundToDecimal(result.CPUPercent, 1),
+			CPUPercent:    cpuPct,
 			MemoryUsage:   result.MemoryUsage,
 			MemoryLimit:   result.MemoryLimit,
-			MemoryPercent: sharedDocker.RoundToDecimal(result.MemoryPercent, 1),
+			MemoryPercent: memPct,
 			NetworkRx:     result.NetworkRx,
 			NetworkTx:     result.NetworkTx,
 			DiskRead:      result.DiskRead,
 			DiskWrite:     result.DiskWrite,
-			Timestamp:     time.Now().UTC().Format(time.RFC3339),
+			Timestamp:     now,
 		})
 	}
 }

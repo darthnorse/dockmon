@@ -45,8 +45,7 @@ func NewAggregator(cache *StatsCache, streamManager *StreamManager, interval tim
 // Startup-ordering contract: callers MUST invoke SetCascade BEFORE
 // Start(ctx) is called in its own goroutine. a.cascade is read from the
 // aggregation goroutine without a mutex; wiring it in after Start has
-// spawned would race. Task 15 (main.go wiring) is the only intended
-// caller and enforces this by construction.
+// spawned would race. main() enforces this by construction.
 func (a *Aggregator) SetCascade(c *persistence.Cascade) {
 	a.cascade = c
 }
@@ -82,42 +81,46 @@ func (a *Aggregator) aggregate() {
 		hostContainers[stats.HostID] = append(hostContainers[stats.HostID], stats)
 	}
 
-	// Aggregate stats for each host that has a registered Docker client
 	for hostID, containers := range hostContainers {
-		// Only aggregate if the host still has a registered Docker client
-		// This prevents recreating stats for hosts that were just deleted
+		hostStats := a.aggregateHostStats(hostID, containers)
+
+		// Push to live dashboard cache only for hosts with a registered
+		// Docker client. Agent-managed hosts update the cache directly
+		// via the ingest WebSocket handler.
 		if a.streamManager.HasHost(hostID) {
-			hostStats := a.aggregateHostStats(hostID, containers)
 			a.cache.UpdateHostStats(hostStats)
+		}
 
-			if a.cascade != nil {
-				now := time.Now()
-				// Freshness cutoff mirrors aggregateHostStats: skip containers
-				// whose stats have not been updated in the last 30 seconds so
-				// we do not persist stale values (zero deltas, dead counters).
-				cutoff := now.Add(-30 * time.Second)
+		// Cascade ingest runs for ALL hosts (including agent-managed ones
+		// that don't register Docker clients). The 30-second freshness
+		// cutoff skips stale containers; cache.RemoveHost cleans up
+		// deleted hosts.
+		if a.cascade != nil && settingsProvider.PersistEnabled() {
+			now := time.Now()
+			cutoff := now.Add(-30 * time.Second)
 
-				// Sum per-container network rates into a host-level rate.
-				// Container NetBytesPerSec is already a delta rate computed
-				// by the cache on UpdateContainerStats; summing rates gives
-				// us a host rate without a second counter-delta calculation.
-				var hostNetBps float64
-				for _, cs := range containers {
-					if cs.LastUpdate.Before(cutoff) {
-						continue
-					}
-					hostNetBps += cs.NetBytesPerSec
+			var hostNetBps float64
+			var freshCount int
+			for _, cs := range containers {
+				if cs.LastUpdate.Before(cutoff) {
+					continue
 				}
+				hostNetBps += cs.NetBytesPerSec
+				freshCount++
+			}
 
+			// Only ingest host sample when there is fresh data. An
+			// all-stale host would produce an all-zeros sample that
+			// corrupts blended cascade tiers instead of leaving gaps.
+			if freshCount > 0 {
 				a.cascade.Ingest(hostID, true, now, sampleFromHostStats(hostStats, hostNetBps))
-				for _, cs := range containers {
-					if cs.LastUpdate.Before(cutoff) {
-						continue
-					}
-					// Matches the composite-key format used in cache.go.
-					compositeID := cs.HostID + ":" + cs.ContainerID
-					a.cascade.Ingest(compositeID, false, now, sampleFromContainerStats(cs))
+			}
+			for _, cs := range containers {
+				if cs.LastUpdate.Before(cutoff) {
+					continue
 				}
+				compositeID := cs.HostID + ":" + cs.ContainerID
+				a.cascade.Ingest(compositeID, false, now, sampleFromContainerStats(cs))
 			}
 		}
 	}

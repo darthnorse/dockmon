@@ -1,6 +1,9 @@
 package persistence
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // HistoryResponse is the column-major shape returned by the read endpoints.
 // Column-major is the native format StatsCharts consumes on the frontend —
@@ -47,7 +50,7 @@ func SelectTier(tiers []Tier, want time.Duration) Tier {
 func FillGaps(rows []HistoryRow, tier Tier, from, to time.Time) HistoryResponse {
 	fromBucket := from.Truncate(tier.Interval)
 	toBucket := to.Truncate(tier.Interval)
-	intervalSec := int64(tier.Interval.Seconds())
+	intervalSec := int64(math.Round(tier.Interval.Seconds()))
 	if intervalSec < 1 {
 		intervalSec = 1
 	}

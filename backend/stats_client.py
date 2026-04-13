@@ -401,8 +401,9 @@ class StatsServiceClient:
 
         Raises HistoryUpstreamError on non-2xx upstream responses.
         """
+        composite_id = f"{host_id}:{container_id}"
         params = self._history_params(
-            {"host_id": host_id, "container_id": container_id},
+            {"host_id": host_id, "container_id": composite_id},
             range_, from_, to, since,
         )
         return await self._get_history(

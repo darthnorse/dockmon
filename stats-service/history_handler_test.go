@@ -243,9 +243,9 @@ func TestHistoryHandler_Since(t *testing.T) {
 
 // TestHistoryHandler_ContainerMemPercent checks that the container endpoint
 // returns memory_percent computed from memory_usage/memory_limit in the SQL
-// layer (Task 13 fix). Uses a bucket-aligned timestamp (multiple of 36s,
-// which is 5 × the 7.2s 1h-tier interval) so FillGaps surfaces the row
-// without relying on DB-store vs grid-walk alignment coincidences.
+// layer. Uses a bucket-aligned timestamp (multiple of 36s, which is 5x the
+// 7.2s 1h-tier interval) so FillGaps surfaces the row without relying on
+// DB-store vs grid-walk alignment coincidences.
 func TestHistoryHandler_ContainerMemPercent(t *testing.T) {
 	path := persistence.MakeFixtureDBForTest(t)
 	db, err := persistence.Open(path)
@@ -303,8 +303,8 @@ func TestHistoryHandler_ContainerMemPercent(t *testing.T) {
 }
 
 // TestHistoryHandler_RejectsNonGet ensures the handler enforces method
-// restriction. Task 15 wires these behind authMiddleware; defense in depth
-// at the handler avoids accidental POST processing if the mux changes.
+// restriction. Defense in depth at the handler avoids accidental POST
+// processing if the mux changes.
 func TestHistoryHandler_RejectsNonGet(t *testing.T) {
 	_, h := makeHandlerFixture(t)
 

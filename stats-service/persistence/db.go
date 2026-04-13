@@ -179,7 +179,7 @@ type HistoryRow struct {
 // memory_percent is derived in SQL from memory_usage / memory_limit so the
 // read path produces a unified `mem` percent column for both containers and
 // hosts. The container schema stores only absolute bytes (§6); computing the
-// percent here keeps FillGaps tier-agnostic and lets the Task 14 handler
+// percent here keeps FillGaps tier-agnostic and lets the history handler
 // serialize HistoryResponse without special-casing container vs host.
 // NULLIF guards against divide-by-zero when memory_limit is 0 or NULL.
 func (db *DB) QueryContainerHistory(

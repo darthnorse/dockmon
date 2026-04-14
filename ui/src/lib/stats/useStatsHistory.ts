@@ -56,6 +56,9 @@ export function mergeHistoryDelta(
     ...cached,
     to: next.to,
     server_time: next.server_time,
+    // Prefer the server-fresh interval; protects trim math if stats-service
+    // points_per_view is changed mid-session.
+    interval_seconds: next.interval_seconds,
     timestamps: [...cached.timestamps, ...pick(next.timestamps)],
     cpu:     [...cached.cpu,     ...pick(next.cpu)],
     mem:     [...cached.mem,     ...pick(next.mem)],
@@ -64,16 +67,17 @@ export function mergeHistoryDelta(
 
   // Symmetric gating so a column that appears later in the cache's lifetime
   // is preserved. exactOptionalPropertyTypes forbids explicit undefined, so
-  // we only touch the key when at least one side has it.
+  // we only touch the key when at least one side has it. Length-based guard
+  // (not truthy) because `[]` is truthy in JS but carries no data.
   for (const key of OPTIONAL_COLUMNS) {
     const cachedCol = cached[key]
     const nextCol = next[key]
-    if (cachedCol || nextCol) {
+    if ((cachedCol?.length ?? 0) > 0 || (nextCol?.length ?? 0) > 0) {
       merged[key] = [...(cachedCol ?? []), ...(nextCol ? pick(nextCol) : [])]
     }
   }
 
-  const maxSlots = maxSlotsFor(range, cached.interval_seconds)
+  const maxSlots = maxSlotsFor(range, merged.interval_seconds)
   if (merged.timestamps.length > maxSlots) {
     const excess = merged.timestamps.length - maxSlots
     merged.timestamps = merged.timestamps.slice(excess)

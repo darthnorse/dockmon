@@ -3,12 +3,12 @@ import type { TimeRange } from './historyTypes'
 
 export const STORAGE_KEY = 'dockmon.statsHistoryRange'
 
-const VALID_RANGES: readonly TimeRange[] = [
+const VALID_RANGES = new Set<TimeRange>([
   'live', '1h', '8h', '24h', '7d', '30d', '60d', '90d',
-]
+])
 
 function isValidRange(v: string | null): v is TimeRange {
-  return v !== null && (VALID_RANGES as readonly string[]).includes(v)
+  return v !== null && VALID_RANGES.has(v as TimeRange)
 }
 
 function readInitial(): TimeRange {

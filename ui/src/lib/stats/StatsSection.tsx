@@ -1,28 +1,22 @@
 import { StatsCharts } from '@/lib/charts/StatsCharts'
 import { LIVE_TIME_WINDOW } from '@/lib/statsConfig'
+import { formatBytes, formatNetworkRate } from '@/lib/utils/formatting'
 import { StatsTimeRangeSelector } from './StatsTimeRangeSelector'
 import { useLastSelectedRange } from './useLastSelectedRange'
 import { useStatsHistory } from './useStatsHistory'
 import type { HistoricalRange, StatsHistoryResponse } from './historyTypes'
 
-interface LiveData {
-  cpu: (number | null)[]
-  mem: (number | null)[]
-  net: (number | null)[]
-  // Optional: most live call sites don't carry parallel timestamps — the
-  // underlying MiniChart renders against synthetic indices in that case and
-  // the time-window prop governs the x-axis. Pass real timestamps only if
-  // the caller already has them (none of the four integration points do today).
-  timestamps?: number[]
-  cpuValue?: string | undefined
-  memValue?: string | undefined
-  netValue?: string | undefined
-}
-
 interface Props {
   hostId: string
   containerId?: string
-  liveData: LiveData
+  liveData: {
+    cpu: (number | null)[]
+    mem: (number | null)[]
+    net: (number | null)[]
+    cpuValue?: string | undefined
+    memValue?: string | undefined
+    netValue?: string | undefined
+  }
 }
 
 /**
@@ -46,18 +40,14 @@ export function StatsSection({ hostId, containerId, liveData }: Props) {
           cpu={liveData.cpu}
           mem={liveData.mem}
           net={liveData.net}
-          timestamps={liveData.timestamps ?? []}
+          timestamps={[]}
           timeWindow={LIVE_TIME_WINDOW}
           cpuValue={liveData.cpuValue}
           memValue={liveData.memValue}
           netValue={liveData.netValue}
         />
       ) : (
-        <HistoricalCharts
-          hostId={hostId}
-          {...(containerId !== undefined && { containerId })}
-          range={range}
-        />
+        <HistoricalCharts hostId={hostId} containerId={containerId} range={range} />
       )}
     </div>
   )
@@ -67,7 +57,7 @@ function HistoricalCharts({
   hostId, containerId, range,
 }: {
   hostId: string
-  containerId?: string
+  containerId: string | undefined
   range: HistoricalRange
 }) {
   const { data, isLoading, isFetching, error, refetch } = useStatsHistory(hostId, containerId, range)
@@ -113,40 +103,39 @@ function HistoricalCharts({
       net={data.net_bps}
       timestamps={data.timestamps}
       timeWindow={data.tier_seconds}
-      cpuValue={formatLatestValue(data.cpu, '%')}
+      cpuValue={formatPercent(data.cpu)}
       memValue={formatMemValue(data)}
-      netValue={formatLatestValue(data.net_bps, ' B/s')}
+      netValue={formatNetValue(data.net_bps)}
       footer={footer}
     />
   )
 }
 
-function formatLatestValue(arr: (number | null)[], suffix: string): string | undefined {
-  for (let i = arr.length - 1; i >= 0; i--) {
-    const v = arr[i]
-    if (v !== null && v !== undefined) {
-      return `${Math.round(v * 10) / 10}${suffix}`
-    }
-  }
-  return undefined
+function formatPercent(arr: (number | null)[]): string | undefined {
+  const v = latestNonNull(arr)
+  return v === undefined ? undefined : `${Math.round(v * 10) / 10}%`
+}
+
+function formatNetValue(arr: (number | null)[]): string | undefined {
+  const v = latestNonNull(arr)
+  // Route through the project-wide formatter so historical and live panels
+  // render the same byte reading with identical units (KB/s/MB/s/etc.).
+  return v === undefined ? undefined : formatNetworkRate(v)
 }
 
 function formatMemValue(data: StatsHistoryResponse): string | undefined {
-  const latestPct = formatLatestValue(data.mem, '%')
+  const latestPct = formatPercent(data.mem)
+  if (latestPct === undefined) return undefined
   const used = latestNonNull(data.memory_used_bytes)
   const limit = latestNonNull(data.memory_limit_bytes)
-  if (latestPct === undefined) return undefined
   // Prefer the full "X% (used / limit)" form when limit is known (cgroups
   // reports a finite cap). When limit is 0/undefined (unlimited container),
-  // still show absolute used bytes if available — matching the live view's
-  // behavior for unlimited-memory containers rather than hiding the data.
-  if (used !== undefined) {
-    if (limit !== undefined && limit > 0) {
-      return `${latestPct} (${formatBytes(used)} / ${formatBytes(limit)})`
-    }
-    return `${latestPct} (${formatBytes(used)})`
+  // still show absolute used bytes if available — matches the live view.
+  if (used === undefined) return latestPct
+  if (limit !== undefined && limit > 0) {
+    return `${latestPct} (${formatBytes(used)} / ${formatBytes(limit)})`
   }
-  return latestPct
+  return `${latestPct} (${formatBytes(used)})`
 }
 
 function latestNonNull(arr: (number | null)[] | undefined): number | undefined {
@@ -156,15 +145,4 @@ function latestNonNull(arr: (number | null)[] | undefined): number | undefined {
     if (v !== null && v !== undefined) return v
   }
   return undefined
-}
-
-function formatBytes(n: number): string {
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
-  let v = n
-  let i = 0
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024
-    i++
-  }
-  return `${v.toFixed(1)} ${units[i]}`
 }

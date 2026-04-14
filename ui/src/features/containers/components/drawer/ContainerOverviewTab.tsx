@@ -292,7 +292,7 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
       <div className="border-t border-border pt-4">
         <StatsSection
           hostId={container.host_id || ''}
-          containerId={container.id.slice(0, 12)}
+          containerId={container.id}
           liveData={{
             cpu: cpuData,
             mem: memData,

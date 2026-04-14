@@ -10,9 +10,9 @@
 
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Cpu, MemoryStick, Network, Calendar, AlertCircle, ArrowUpCircle, RefreshCw } from 'lucide-react'
+import { Calendar, AlertCircle, ArrowUpCircle, RefreshCw } from 'lucide-react'
 import { useHostMetrics, useHostSparklines } from '@/lib/stats/StatsProvider'
-import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
+import { StatsSection } from '@/lib/stats/StatsSection'
 import { TagInput } from '@/components/TagInput'
 import { TagChip } from '@/components/TagChip'
 import { Button } from '@/components/ui/button'
@@ -323,97 +323,25 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
 
           {/* RIGHT COLUMN */}
           <div className="space-y-4 sm:space-y-6">
-            {/* Live Stats Header */}
-            <div className="-mb-2 sm:-mb-3">
-              <h4 className="text-base sm:text-lg font-medium text-foreground">Live Stats</h4>
-            </div>
-
-            {/* CPU Usage */}
-            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <Cpu className="h-4 w-4 text-amber-500" />
-                  <span className="font-medium text-sm">CPU Usage</span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  {metrics?.cpu_percent !== undefined
+            {/* Stats (live + historical via time-range selector) */}
+            <StatsSection
+              hostId={hostId}
+              liveData={{
+                cpu: sparklines?.cpu ?? [],
+                mem: sparklines?.mem ?? [],
+                net: sparklines?.net ?? [],
+                timestamps: [],
+                cpuValue:
+                  metrics?.cpu_percent !== undefined
                     ? `${metrics.cpu_percent.toFixed(0)}%`
-                    : '—'}
-                </span>
-              </div>
-              {sparklines?.cpu && sparklines.cpu.length > 0 ? (
-                <div className="h-[120px] w-full">
-                  <ResponsiveMiniChart
-                    data={sparklines.cpu}
-                    color="cpu"
-                    height={120}
-                    showAxes={true}
-                  />
-                </div>
-              ) : (
-                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
-                  No data available
-                </div>
-              )}
-            </div>
-
-            {/* Memory Usage */}
-            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <MemoryStick className="h-4 w-4 text-green-500" />
-                  <span className="font-medium text-sm">Memory Usage</span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  {metrics?.mem_bytes
-                    ? `${formatBytes(metrics.mem_bytes)}`
-                    : '—'}
-                </span>
-              </div>
-              {sparklines?.mem && sparklines.mem.length > 0 ? (
-                <div className="h-[120px] w-full">
-                  <ResponsiveMiniChart
-                    data={sparklines.mem}
-                    color="memory"
-                    height={120}
-                    showAxes={true}
-                  />
-                </div>
-              ) : (
-                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
-                  No data available
-                </div>
-              )}
-            </div>
-
-            {/* Network Traffic */}
-            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <Network className="h-4 w-4 text-orange-500" />
-                  <span className="font-medium text-sm">Network Traffic</span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  {metrics?.net_bytes_per_sec !== undefined
+                    : undefined,
+                memValue: metrics?.mem_bytes ? formatBytes(metrics.mem_bytes) : undefined,
+                netValue:
+                  metrics?.net_bytes_per_sec !== undefined
                     ? formatNetworkRate(metrics.net_bytes_per_sec)
-                    : '—'}
-                </span>
-              </div>
-              {sparklines?.net && sparklines.net.length > 0 ? (
-                <div className="h-[120px] w-full">
-                  <ResponsiveMiniChart
-                    data={sparklines.net}
-                    color="network"
-                    height={120}
-                    showAxes={true}
-                  />
-                </div>
-              ) : (
-                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
-                  No data available
-                </div>
-              )}
-            </div>
+                    : undefined,
+              }}
+            />
           </div>
         </div>
       </div>

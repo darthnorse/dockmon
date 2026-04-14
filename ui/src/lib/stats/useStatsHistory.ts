@@ -1,20 +1,17 @@
-import { useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api/client'
+import { VIEWS } from '@/lib/statsConfig'
 import type { HistoricalRange, StatsHistoryResponse } from './historyTypes'
 
 const POLL_INTERVAL_MS = 10_000
 export const MERGE_SLOT_HEADROOM = 2  // tolerate ~2 boundary buckets of slack
 
-const RANGE_SECONDS: Record<HistoricalRange, number> = {
-  '1h':  3600,
-  '8h':  28800,
-  '24h': 86400,
-  '7d':  604800,
-  '30d': 2592000,
-  '60d': 5184000,
-  '90d': 7776000,
-}
+// Derive the range→seconds table from the single source of truth in
+// statsConfig.VIEWS. Adding a new tier requires only one edit there plus the
+// matching Go cascade entry; this hook picks it up automatically.
+const RANGE_SECONDS: Record<HistoricalRange, number> = Object.fromEntries(
+  VIEWS.map((v) => [v.name, v.seconds]),
+) as Record<HistoricalRange, number>
 
 function endpointFor(hostId: string, containerId: string | undefined): string {
   return containerId
@@ -25,6 +22,27 @@ function endpointFor(hostId: string, containerId: string | undefined): string {
 function maxSlotsFor(range: HistoricalRange, intervalSeconds: number): number {
   const safeInterval = intervalSeconds > 0 ? intervalSeconds : 1
   return Math.ceil(RANGE_SECONDS[range] / safeInterval) + MERGE_SLOT_HEADROOM
+}
+
+/**
+ * Build a conditional partial for an optional host-only column during merge.
+ *
+ * Returns `{}` when neither side has the column (so the spread is a no-op and
+ * the key is absent on the merged object — required by exactOptionalPropertyTypes).
+ * Returns `{ [key]: merged }` when at least one side has it, using empty arrays
+ * as placeholders so a column that appears later in the cache lifetime is not
+ * silently dropped.
+ */
+function mergeOptionalColumn<K extends 'memory_used_bytes' | 'memory_limit_bytes' | 'container_count'>(
+  key: K,
+  cached: (number | null)[] | undefined,
+  next: (number | null)[] | undefined,
+  keepIndices: number[],
+): Partial<StatsHistoryResponse> {
+  if (!cached && !next) return {}
+  const nextPicked = next ? keepIndices.map((i) => next[i] as number | null) : []
+  const merged = [...(cached ?? []), ...nextPicked]
+  return { [key]: merged } as Partial<StatsHistoryResponse>
 }
 
 /**
@@ -67,26 +85,14 @@ export function mergeHistoryDelta(
     cpu:     [...cached.cpu,     ...(pickColumn(next.cpu)     ?? [])],
     mem:     [...cached.mem,     ...(pickColumn(next.mem)     ?? [])],
     net_bps: [...cached.net_bps, ...(pickColumn(next.net_bps) ?? [])],
-    // Preserve optional host-only fields when present; omit entirely otherwise
-    // (exactOptionalPropertyTypes disallows explicit undefined).
-    ...(cached.memory_used_bytes && {
-      memory_used_bytes: [
-        ...cached.memory_used_bytes,
-        ...(pickColumn(next.memory_used_bytes) ?? []),
-      ],
-    }),
-    ...(cached.memory_limit_bytes && {
-      memory_limit_bytes: [
-        ...cached.memory_limit_bytes,
-        ...(pickColumn(next.memory_limit_bytes) ?? []),
-      ],
-    }),
-    ...(cached.container_count && {
-      container_count: [
-        ...cached.container_count,
-        ...(pickColumn(next.container_count) ?? []),
-      ],
-    }),
+    // Preserve optional host-only fields when either side has them; omit
+    // entirely otherwise (exactOptionalPropertyTypes disallows explicit
+    // undefined). Symmetric gating means that if the seed response somehow
+    // lacked a column but a later poll has it, the column is still captured
+    // rather than silently dropped.
+    ...mergeOptionalColumn('memory_used_bytes', cached.memory_used_bytes, next.memory_used_bytes, keepIndices),
+    ...mergeOptionalColumn('memory_limit_bytes', cached.memory_limit_bytes, next.memory_limit_bytes, keepIndices),
+    ...mergeOptionalColumn('container_count', cached.container_count, next.container_count, keepIndices),
   }
 
   const maxSlots = maxSlotsFor(range, cached.interval_seconds)
@@ -117,10 +123,9 @@ export function useStatsHistory(
   range: HistoricalRange,
 ) {
   const queryClient = useQueryClient()
-  const queryKey = useMemo(
-    () => ['stats-history', hostId, containerId ?? '__host__', range] as const,
-    [hostId, containerId, range],
-  )
+  // TanStack Query compares queryKey structurally per render, so wrapping
+  // this in useMemo adds bookkeeping without benefit. A plain array is fine.
+  const queryKey = ['stats-history', hostId, containerId ?? '__host__', range] as const
 
   return useQuery<StatsHistoryResponse>({
     queryKey,

@@ -4,14 +4,12 @@ import { VIEWS } from '@/lib/statsConfig'
 import type { HistoricalRange, StatsHistoryResponse } from './historyTypes'
 
 const POLL_INTERVAL_MS = 10_000
-export const MERGE_SLOT_HEADROOM = 2  // tolerate ~2 boundary buckets of slack
+const MERGE_SLOT_HEADROOM = 2  // tolerate ~2 boundary buckets of slack
 
-// Derive the range→seconds table from the single source of truth in
-// statsConfig.VIEWS. Adding a new tier requires only one edit there plus the
-// matching Go cascade entry; this hook picks it up automatically.
-const RANGE_SECONDS: Record<HistoricalRange, number> = Object.fromEntries(
-  VIEWS.map((v) => [v.name, v.seconds]),
-) as Record<HistoricalRange, number>
+// Optional host-only columns on StatsHistoryResponse. Listed as a const tuple
+// so the merge and trim loops iterate the same keys and the key type stays
+// in sync with the interface at compile time.
+const OPTIONAL_COLUMNS = ['memory_used_bytes', 'memory_limit_bytes', 'container_count'] as const
 
 function endpointFor(hostId: string, containerId: string | undefined): string {
   return containerId
@@ -21,28 +19,11 @@ function endpointFor(hostId: string, containerId: string | undefined): string {
 
 function maxSlotsFor(range: HistoricalRange, intervalSeconds: number): number {
   const safeInterval = intervalSeconds > 0 ? intervalSeconds : 1
-  return Math.ceil(RANGE_SECONDS[range] / safeInterval) + MERGE_SLOT_HEADROOM
-}
-
-/**
- * Build a conditional partial for an optional host-only column during merge.
- *
- * Returns `{}` when neither side has the column (so the spread is a no-op and
- * the key is absent on the merged object — required by exactOptionalPropertyTypes).
- * Returns `{ [key]: merged }` when at least one side has it, using empty arrays
- * as placeholders so a column that appears later in the cache lifetime is not
- * silently dropped.
- */
-function mergeOptionalColumn<K extends 'memory_used_bytes' | 'memory_limit_bytes' | 'container_count'>(
-  key: K,
-  cached: (number | null)[] | undefined,
-  next: (number | null)[] | undefined,
-  keepIndices: number[],
-): Partial<StatsHistoryResponse> {
-  if (!cached && !next) return {}
-  const nextPicked = next ? keepIndices.map((i) => next[i] as number | null) : []
-  const merged = [...(cached ?? []), ...nextPicked]
-  return { [key]: merged } as Partial<StatsHistoryResponse>
+  // VIEWS is the single source of truth for range→seconds; find() over 7
+  // entries is cheaper than maintaining a duplicate Record table.
+  const view = VIEWS.find((v) => v.name === range)
+  const windowSeconds = view?.seconds ?? 0
+  return Math.ceil(windowSeconds / safeInterval) + MERGE_SLOT_HEADROOM
 }
 
 /**
@@ -70,29 +51,29 @@ export function mergeHistoryDelta(
   }
 
   // Parallel-array access: keepIndices only contains valid indices from the
-  // response, so arr[i] is non-undefined. Assertion avoids noUncheckedIndexedAccess friction.
-  function pickColumn<T>(arr: T[] | undefined): T[] | undefined {
-    if (!arr) return undefined
-    return keepIndices.map((i) => arr[i] as T)
-  }
+  // response. Non-null assertion silences noUncheckedIndexedAccess.
+  const pick = <T>(arr: T[]): T[] => keepIndices.map((i) => arr[i] as T)
 
-  const appendedTimestamps = keepIndices.map((i) => next.timestamps[i] as number)
   const merged: StatsHistoryResponse = {
     ...cached,
     to: next.to,
     server_time: next.server_time,
-    timestamps: [...cached.timestamps, ...appendedTimestamps],
-    cpu:     [...cached.cpu,     ...(pickColumn(next.cpu)     ?? [])],
-    mem:     [...cached.mem,     ...(pickColumn(next.mem)     ?? [])],
-    net_bps: [...cached.net_bps, ...(pickColumn(next.net_bps) ?? [])],
-    // Preserve optional host-only fields when either side has them; omit
-    // entirely otherwise (exactOptionalPropertyTypes disallows explicit
-    // undefined). Symmetric gating means that if the seed response somehow
-    // lacked a column but a later poll has it, the column is still captured
-    // rather than silently dropped.
-    ...mergeOptionalColumn('memory_used_bytes', cached.memory_used_bytes, next.memory_used_bytes, keepIndices),
-    ...mergeOptionalColumn('memory_limit_bytes', cached.memory_limit_bytes, next.memory_limit_bytes, keepIndices),
-    ...mergeOptionalColumn('container_count', cached.container_count, next.container_count, keepIndices),
+    timestamps: [...cached.timestamps, ...pick(next.timestamps)],
+    cpu:     [...cached.cpu,     ...pick(next.cpu)],
+    mem:     [...cached.mem,     ...pick(next.mem)],
+    net_bps: [...cached.net_bps, ...pick(next.net_bps)],
+  }
+
+  // Optional host-only columns: symmetric gating so a column that appears
+  // later in the cache's lifetime is preserved rather than silently dropped.
+  // exactOptionalPropertyTypes forbids explicit undefined assignments, so
+  // we only touch the key when at least one side has the column.
+  for (const key of OPTIONAL_COLUMNS) {
+    const cachedCol = cached[key]
+    const nextCol = next[key]
+    if (cachedCol || nextCol) {
+      merged[key] = [...(cachedCol ?? []), ...(nextCol ? pick(nextCol) : [])]
+    }
   }
 
   const maxSlots = maxSlotsFor(range, cached.interval_seconds)
@@ -102,9 +83,10 @@ export function mergeHistoryDelta(
     merged.cpu = merged.cpu.slice(excess)
     merged.mem = merged.mem.slice(excess)
     merged.net_bps = merged.net_bps.slice(excess)
-    if (merged.memory_used_bytes) merged.memory_used_bytes = merged.memory_used_bytes.slice(excess)
-    if (merged.memory_limit_bytes) merged.memory_limit_bytes = merged.memory_limit_bytes.slice(excess)
-    if (merged.container_count) merged.container_count = merged.container_count.slice(excess)
+    for (const key of OPTIONAL_COLUMNS) {
+      const col = merged[key]
+      if (col) merged[key] = col.slice(excess)
+    }
     // trim-after-append guarantees at least maxSlots >= 1 elements remain.
     merged.from = merged.timestamps[0] as number
   }
@@ -123,8 +105,8 @@ export function useStatsHistory(
   range: HistoricalRange,
 ) {
   const queryClient = useQueryClient()
-  // TanStack Query compares queryKey structurally per render, so wrapping
-  // this in useMemo adds bookkeeping without benefit. A plain array is fine.
+  // TanStack Query compares queryKey structurally per render, so useMemo would
+  // be bookkeeping without benefit. Plain array is fine.
   const queryKey = ['stats-history', hostId, containerId ?? '__host__', range] as const
 
   return useQuery<StatsHistoryResponse>({

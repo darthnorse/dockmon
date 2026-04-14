@@ -11,9 +11,9 @@
 
 import { useEffect, useState, useMemo } from 'react'
 import { useAuth } from '@/features/auth/AuthContext'
-import { Circle, Cpu, MemoryStick, Network } from 'lucide-react'
+import { Circle } from 'lucide-react'
 import { useContainer, useContainerSparklines } from '@/lib/stats/StatsProvider'
-import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
+import { StatsSection } from '@/lib/stats/StatsSection'
 import { TagEditor } from './TagEditor'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
@@ -288,86 +288,24 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
         </div>
       </div>
 
-      {/* Stats Section with Sparklines */}
-      <div className="border-t border-border pt-4 space-y-4">
-        <h4 className="text-sm font-medium text-foreground mb-3">Performance</h4>
-
-        {/* CPU Usage */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Cpu className="h-4 w-4 text-amber-500" />
-              <span className="text-sm font-medium">CPU Usage</span>
-            </div>
-            <span className="text-sm font-mono">
-              {container.cpu_percent?.toFixed(1) || '0.0'}%
-            </span>
-          </div>
-          {cpuData.length > 0 ? (
-            <ResponsiveMiniChart
-              data={cpuData}
-              color="cpu"
-              height={100}
-              showAxes={true}
-            />
-          ) : (
-            <div className="h-[100px] flex items-center justify-center bg-muted/20 rounded text-xs text-muted-foreground">
-              {container.state === 'running' ? 'Collecting data...' : 'No data available'}
-            </div>
-          )}
-        </div>
-
-        {/* Memory Usage */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <MemoryStick className="h-4 w-4 text-blue-500" />
-              <span className="text-sm font-medium">Memory Usage</span>
-            </div>
-            <span className="text-sm font-mono">
-              {formatBytes(container.memory_usage)}
-            </span>
-          </div>
-          {memData.length > 0 ? (
-            <ResponsiveMiniChart
-              data={memData}
-              color="memory"
-              height={100}
-              showAxes={true}
-            />
-          ) : (
-            <div className="h-[100px] flex items-center justify-center bg-muted/20 rounded text-xs text-muted-foreground">
-              {container.state === 'running' ? 'Collecting data...' : 'No data available'}
-            </div>
-          )}
-        </div>
-
-        {/* Network I/O */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Network className="h-4 w-4 text-green-500" />
-              <span className="text-sm font-medium">Network I/O</span>
-            </div>
-            <span className="text-sm font-mono text-xs">
-              {container.net_bytes_per_sec !== undefined && container.net_bytes_per_sec !== null
+      {/* Stats (live + historical via time-range selector) */}
+      <div className="border-t border-border pt-4">
+        <StatsSection
+          hostId={container.host_id || ''}
+          containerId={container.id.slice(0, 12)}
+          liveData={{
+            cpu: cpuData,
+            mem: memData,
+            net: netData,
+            timestamps: [],
+            cpuValue: `${container.cpu_percent?.toFixed(1) || '0.0'}%`,
+            memValue: formatBytes(container.memory_usage),
+            netValue:
+              container.net_bytes_per_sec !== undefined && container.net_bytes_per_sec !== null
                 ? formatNetworkRate(container.net_bytes_per_sec)
-                : '-'}
-            </span>
-          </div>
-          {netData.length > 0 ? (
-            <ResponsiveMiniChart
-              data={netData}
-              color="network"
-              height={100}
-              showAxes={true}
-            />
-          ) : (
-            <div className="h-[100px] flex items-center justify-center bg-muted/20 rounded text-xs text-muted-foreground">
-              {container.state === 'running' ? 'Collecting data...' : 'No data available'}
-            </div>
-          )}
-        </div>
+                : undefined,
+          }}
+        />
       </div>
     </div>
   )

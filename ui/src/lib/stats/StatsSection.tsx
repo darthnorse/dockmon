@@ -20,11 +20,8 @@ interface Props {
 }
 
 /**
- * Composition of the time-range selector, the existing StatsCharts, and
- * historical loading/error states. Keep this component boundary narrow:
- * it knows only about hostId + optional containerId + generic live data
- * arrays; it does not care whether the caller is a container or a host
- * view.
+ * Selector + StatsCharts + historical loading/error states. Entity-agnostic:
+ * takes hostId, optional containerId, and generic live arrays.
  */
 export function StatsSection({ hostId, containerId, liveData }: Props) {
   const [range, setRange] = useLastSelectedRange()
@@ -62,10 +59,8 @@ function HistoricalCharts({
 }) {
   const { data, isLoading, isFetching, error, refetch } = useStatsHistory(hostId, containerId, range)
 
-  // Show the loading spinner for any fetch that has no data yet — covers both
-  // the first mount (isLoading) and the brief transition after a range change
-  // where isLoading has flipped to false but the new data hasn't hydrated yet.
-  // Without this, the chart area briefly returns null and the layout shifts.
+  // Keep the spinner while any fetch has no data yet — prevents the chart
+  // area from briefly returning null during a range-change transition.
   if (!data && (isLoading || isFetching)) {
     return (
       <div className="flex items-center justify-center py-8 text-muted-foreground text-sm">
@@ -118,8 +113,6 @@ function formatPercent(arr: (number | null)[]): string | undefined {
 
 function formatNetValue(arr: (number | null)[]): string | undefined {
   const v = latestNonNull(arr)
-  // Route through the project-wide formatter so historical and live panels
-  // render the same byte reading with identical units (KB/s/MB/s/etc.).
   return v === undefined ? undefined : formatNetworkRate(v)
 }
 
@@ -128,10 +121,8 @@ function formatMemValue(data: StatsHistoryResponse): string | undefined {
   if (latestPct === undefined) return undefined
   const used = latestNonNull(data.memory_used_bytes)
   const limit = latestNonNull(data.memory_limit_bytes)
-  // Prefer the full "X% (used / limit)" form when limit is known (cgroups
-  // reports a finite cap). When limit is 0/undefined (unlimited container),
-  // still show absolute used bytes if available — matches the live view.
   if (used === undefined) return latestPct
+  // Show absolute used bytes even when limit is 0/undefined (unlimited cgroup).
   if (limit !== undefined && limit > 0) {
     return `${latestPct} (${formatBytes(used)} / ${formatBytes(limit)})`
   }

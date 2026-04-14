@@ -4,11 +4,12 @@ import { VIEWS } from '@/lib/statsConfig'
 import type { HistoricalRange, StatsHistoryResponse } from './historyTypes'
 
 const POLL_INTERVAL_MS = 10_000
-const MERGE_SLOT_HEADROOM = 2  // tolerate ~2 boundary buckets of slack
+// Extra slots above the exact window/interval quotient to absorb boundary
+// buckets; without this we could trim a bucket the server still considers
+// in-window.
+const MERGE_SLOT_HEADROOM = 2
 
-// Optional host-only columns on StatsHistoryResponse. Listed as a const tuple
-// so the merge and trim loops iterate the same keys and the key type stays
-// in sync with the interface at compile time.
+// Host-only optional columns. Tuple lets merge+trim loops share the key set.
 const OPTIONAL_COLUMNS = ['memory_used_bytes', 'memory_limit_bytes', 'container_count'] as const
 
 function endpointFor(hostId: string, containerId: string | undefined): string {
@@ -19,10 +20,7 @@ function endpointFor(hostId: string, containerId: string | undefined): string {
 
 function maxSlotsFor(range: HistoricalRange, intervalSeconds: number): number {
   const safeInterval = intervalSeconds > 0 ? intervalSeconds : 1
-  // VIEWS is the single source of truth for range→seconds; find() over 7
-  // entries is cheaper than maintaining a duplicate Record table.
-  const view = VIEWS.find((v) => v.name === range)
-  const windowSeconds = view?.seconds ?? 0
+  const windowSeconds = VIEWS.find((v) => v.name === range)?.seconds ?? 0
   return Math.ceil(windowSeconds / safeInterval) + MERGE_SLOT_HEADROOM
 }
 
@@ -50,8 +48,8 @@ export function mergeHistoryDelta(
     return { ...cached, server_time: next.server_time, to: next.to }
   }
 
-  // Parallel-array access: keepIndices only contains valid indices from the
-  // response. Non-null assertion silences noUncheckedIndexedAccess.
+  // keepIndices only contains valid indices from next.timestamps, so arr[i]
+  // is never undefined — the `as T` silences noUncheckedIndexedAccess.
   const pick = <T>(arr: T[]): T[] => keepIndices.map((i) => arr[i] as T)
 
   const merged: StatsHistoryResponse = {
@@ -64,10 +62,9 @@ export function mergeHistoryDelta(
     net_bps: [...cached.net_bps, ...pick(next.net_bps)],
   }
 
-  // Optional host-only columns: symmetric gating so a column that appears
-  // later in the cache's lifetime is preserved rather than silently dropped.
-  // exactOptionalPropertyTypes forbids explicit undefined assignments, so
-  // we only touch the key when at least one side has the column.
+  // Symmetric gating so a column that appears later in the cache's lifetime
+  // is preserved. exactOptionalPropertyTypes forbids explicit undefined, so
+  // we only touch the key when at least one side has it.
   for (const key of OPTIONAL_COLUMNS) {
     const cachedCol = cached[key]
     const nextCol = next[key]
@@ -87,7 +84,6 @@ export function mergeHistoryDelta(
       const col = merged[key]
       if (col) merged[key] = col.slice(excess)
     }
-    // trim-after-append guarantees at least maxSlots >= 1 elements remain.
     merged.from = merged.timestamps[0] as number
   }
 
@@ -105,8 +101,6 @@ export function useStatsHistory(
   range: HistoricalRange,
 ) {
   const queryClient = useQueryClient()
-  // TanStack Query compares queryKey structurally per render, so useMemo would
-  // be bookkeeping without benefit. Plain array is fine.
   const queryKey = ['stats-history', hostId, containerId ?? '__host__', range] as const
 
   return useQuery<StatsHistoryResponse>({

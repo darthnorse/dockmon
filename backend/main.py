@@ -1048,11 +1048,8 @@ async def get_host_metrics(host_id: str, current_user: dict = Depends(get_curren
         raise HTTPException(status_code=500, detail="Failed to fetch host metrics")
 
 
-# Canonical range validation pattern for the /stats/history proxy endpoints.
-# Keep in lockstep with shared/persistence ComputeTiers() and the frontend
-# TimeRange type in ui/src/lib/stats/historyTypes.ts. Single source of truth
-# to prevent drift between the two endpoints (which previously each carried
-# their own regex and fell out of sync when the 60d/90d tiers were added).
+# Range validation for /stats/history proxy endpoints. Must stay in lockstep
+# with stats-service ComputeTiers() and frontend TimeRange in historyTypes.ts.
 STATS_RANGE_PATTERN = r"^(1h|8h|24h|7d|30d|60d|90d)$"
 
 

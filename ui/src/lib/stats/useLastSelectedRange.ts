@@ -47,11 +47,9 @@ export function useLastSelectedRange(): [TimeRange, (r: TimeRange) => void] {
   const [range, setRangeState] = useState<TimeRange>(readInitial)
 
   useEffect(() => {
-    // In-tab sync: react to writes from any other hook instance.
     const onBroadcast: Listener = (r) => setRangeState(r)
     listeners.add(onBroadcast)
 
-    // Cross-tab sync: react to localStorage writes from another tab.
     const onStorage = (e: StorageEvent) => {
       if (e.key !== STORAGE_KEY) return
       if (isValidRange(e.newValue)) setRangeState(e.newValue)

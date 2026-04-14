@@ -20,10 +20,9 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '@/features/auth/AuthContext'
-import { Cpu, MemoryStick, Network } from 'lucide-react'
 import type { Container } from '../../types'
 import { useContainerSparklines } from '@/lib/stats/StatsProvider'
-import { ResponsiveMiniChart } from '@/lib/charts/ResponsiveMiniChart'
+import { StatsSection } from '@/lib/stats/StatsSection'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
 import { TagInput } from '@/components/TagInput'
@@ -457,79 +456,27 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
               </div>
             </fieldset>
 
-            {/* Live Stats Header */}
-            <div className="-mb-3">
-              <h4 className="text-lg font-medium text-foreground">Live Stats</h4>
-            </div>
-
-            {/* CPU */}
-            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden" data-testid="cpu-usage">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <Cpu className="h-4 w-4 text-amber-500" />
-                  <span className="font-medium text-sm">CPU Usage</span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  {container.cpu_percent !== null && container.cpu_percent !== undefined
+            {/* Stats (live + historical via time-range selector) */}
+            <StatsSection
+              hostId={container.host_id || ''}
+              containerId={containerShortId}
+              liveData={{
+                cpu: cpuData,
+                mem: memData,
+                net: netData,
+                timestamps: [],
+                cpuValue:
+                  container.cpu_percent !== null && container.cpu_percent !== undefined
                     ? `${container.cpu_percent.toFixed(0)}%`
-                    : '-'}
-                </span>
-              </div>
-              {cpuData.length > 0 ? (
-                <div className="h-[120px] w-full">
-                  <ResponsiveMiniChart data={cpuData} color="cpu" height={120} showAxes={true} />
-                </div>
-              ) : (
-                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
-                  No data available
-                </div>
-              )}
-            </div>
-
-            {/* Memory */}
-            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden" data-testid="memory-usage">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <MemoryStick className="h-4 w-4 text-green-500" />
-                  <span className="font-medium text-sm">Memory Usage</span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  {container.memory_usage ? formatBytes(container.memory_usage) : '-'}
-                  {container.memory_limit && ` / ${formatBytes(container.memory_limit)}`}
-                </span>
-              </div>
-              {memData.length > 0 ? (
-                <div className="h-[120px] w-full">
-                  <ResponsiveMiniChart data={memData} color="memory" height={120} showAxes={true} />
-                </div>
-              ) : (
-                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
-                  No data available
-                </div>
-              )}
-            </div>
-
-            {/* Network */}
-            <div className="bg-surface-2 rounded-lg p-3 border border-border overflow-hidden" data-testid="network-io">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <Network className="h-4 w-4 text-orange-500" />
-                  <span className="font-medium text-sm">Network I/O</span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  {formatNetworkRate(container.net_bytes_per_sec)}
-                </span>
-              </div>
-              {netData.length > 0 ? (
-                <div className="h-[120px] w-full">
-                  <ResponsiveMiniChart data={netData} color="network" height={120} showAxes={true} />
-                </div>
-              ) : (
-                <div className="h-[120px] flex items-center justify-center text-muted-foreground text-xs">
-                  No data available
-                </div>
-              )}
-            </div>
+                    : undefined,
+                memValue: container.memory_usage
+                  ? `${formatBytes(container.memory_usage)}${
+                      container.memory_limit ? ` / ${formatBytes(container.memory_limit)}` : ''
+                    }`
+                  : undefined,
+                netValue: formatNetworkRate(container.net_bytes_per_sec),
+              }}
+            />
           </div>
         </div>
       </div>

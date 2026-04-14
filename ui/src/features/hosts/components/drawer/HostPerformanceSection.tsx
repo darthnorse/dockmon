@@ -26,7 +26,6 @@ export function HostPerformanceSection({ hostId }: HostPerformanceSectionProps) 
           cpu: sparklines?.cpu ?? [],
           mem: sparklines?.mem ?? [],
           net: sparklines?.net ?? [],
-          timestamps: [],
           cpuValue:
             metrics?.cpu_percent !== undefined
               ? `${metrics.cpu_percent.toFixed(1)}%`

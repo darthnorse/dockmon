@@ -297,7 +297,6 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
             cpu: cpuData,
             mem: memData,
             net: netData,
-            timestamps: [],
             cpuValue: `${container.cpu_percent?.toFixed(1) || '0.0'}%`,
             memValue: formatBytes(container.memory_usage),
             netValue:

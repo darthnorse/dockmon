@@ -464,7 +464,6 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                 cpu: cpuData,
                 mem: memData,
                 net: netData,
-                timestamps: [],
                 cpuValue:
                   container.cpu_percent !== null && container.cpu_percent !== undefined
                     ? `${container.cpu_percent.toFixed(0)}%`

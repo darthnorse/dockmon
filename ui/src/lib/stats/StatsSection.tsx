@@ -9,7 +9,11 @@ interface LiveData {
   cpu: (number | null)[]
   mem: (number | null)[]
   net: (number | null)[]
-  timestamps: number[]
+  // Optional: most live call sites don't carry parallel timestamps — the
+  // underlying MiniChart renders against synthetic indices in that case and
+  // the time-window prop governs the x-axis. Pass real timestamps only if
+  // the caller already has them (none of the four integration points do today).
+  timestamps?: number[]
   cpuValue?: string | undefined
   memValue?: string | undefined
   netValue?: string | undefined
@@ -42,7 +46,7 @@ export function StatsSection({ hostId, containerId, liveData }: Props) {
           cpu={liveData.cpu}
           mem={liveData.mem}
           net={liveData.net}
-          timestamps={liveData.timestamps}
+          timestamps={liveData.timestamps ?? []}
           timeWindow={LIVE_TIME_WINDOW}
           cpuValue={liveData.cpuValue}
           memValue={liveData.memValue}
@@ -66,9 +70,13 @@ function HistoricalCharts({
   containerId?: string
   range: HistoricalRange
 }) {
-  const { data, isLoading, error, refetch } = useStatsHistory(hostId, containerId, range)
+  const { data, isLoading, isFetching, error, refetch } = useStatsHistory(hostId, containerId, range)
 
-  if (isLoading) {
+  // Show the loading spinner for any fetch that has no data yet — covers both
+  // the first mount (isLoading) and the brief transition after a range change
+  // where isLoading has flipped to false but the new data hasn't hydrated yet.
+  // Without this, the chart area briefly returns null and the layout shifts.
+  if (!data && (isLoading || isFetching)) {
     return (
       <div className="flex items-center justify-center py-8 text-muted-foreground text-sm">
         Loading history...
@@ -128,8 +136,15 @@ function formatMemValue(data: StatsHistoryResponse): string | undefined {
   const used = latestNonNull(data.memory_used_bytes)
   const limit = latestNonNull(data.memory_limit_bytes)
   if (latestPct === undefined) return undefined
-  if (used !== undefined && limit !== undefined && limit > 0) {
-    return `${latestPct} (${formatBytes(used)} / ${formatBytes(limit)})`
+  // Prefer the full "X% (used / limit)" form when limit is known (cgroups
+  // reports a finite cap). When limit is 0/undefined (unlimited container),
+  // still show absolute used bytes if available — matching the live view's
+  // behavior for unlimited-memory containers rather than hiding the data.
+  if (used !== undefined) {
+    if (limit !== undefined && limit > 0) {
+      return `${latestPct} (${formatBytes(used)} / ${formatBytes(limit)})`
+    }
+    return `${latestPct} (${formatBytes(used)})`
   }
   return latestPct
 }

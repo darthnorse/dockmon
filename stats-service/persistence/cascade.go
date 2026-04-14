@@ -11,7 +11,7 @@ import (
 // Tier describes one resolution level in the RRD-style cascade.
 // See spec §4 for the model.
 type Tier struct {
-	Name     string        // "1h" | "8h" | "24h" | "7d" | "30d"
+	Name     string        // "1h" | "8h" | "24h" | "7d" | "30d" | "60d" | "90d"
 	Window   time.Duration // total time the tier covers
 	Interval time.Duration // bucket size = max(window/points_per_view, 1s)
 	Alpha    float64       // MAX/AVG blend coefficient: max(0, 0.75-i*0.25)
@@ -48,6 +48,8 @@ func ComputeTiers(pointsPerView int) []Tier {
 		{"24h", 24 * time.Hour},
 		{"7d", 7 * 24 * time.Hour},
 		{"30d", 30 * 24 * time.Hour},
+		{"60d", 60 * 24 * time.Hour},
+		{"90d", 90 * 24 * time.Hour},
 	}
 	tiers := make([]Tier, len(views))
 	for i, v := range views {

@@ -16,8 +16,8 @@ func TestSelectTier_ExactMatch(t *testing.T) {
 func TestSelectTier_FallsThroughToLargest(t *testing.T) {
 	tiers := ComputeTiers(500)
 	got := SelectTier(tiers, 365*24*time.Hour)
-	if got.Name != "30d" {
-		t.Errorf("got %q, want 30d (largest tier)", got.Name)
+	if got.Name != "90d" {
+		t.Errorf("got %q, want 90d (largest tier)", got.Name)
 	}
 }
 

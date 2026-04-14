@@ -18,6 +18,8 @@ func TestComputeTiers_DefaultPointsPerView(t *testing.T) {
 		{"24h", 172800 * time.Millisecond, 0.25},
 		{"7d", 1209600 * time.Millisecond, 0.0},
 		{"30d", 5184 * time.Second, 0.0},
+		{"60d", 10368 * time.Second, 0.0},
+		{"90d", 15552 * time.Second, 0.0},
 	}
 
 	got := ComputeTiers(500)

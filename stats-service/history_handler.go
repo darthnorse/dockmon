@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -141,7 +142,8 @@ func (h *HistoryHandler) ServeContainer(w http.ResponseWriter, r *http.Request) 
 	rows, err := h.db.QueryContainerHistory(
 		r.Context(), containerID, p.tier.Name, p.from.Unix(), p.to.Unix())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("QueryContainerHistory: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, persistence.FillGaps(rows, p.tier, p.from, p.to))
@@ -166,7 +168,8 @@ func (h *HistoryHandler) ServeHost(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.QueryHostHistory(
 		r.Context(), hostID, p.tier.Name, p.from.Unix(), p.to.Unix())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("QueryHostHistory: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, persistence.FillGaps(rows, p.tier, p.from, p.to))

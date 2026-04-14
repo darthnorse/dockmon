@@ -17,7 +17,7 @@ type Tier struct {
 	Alpha    float64       // MAX/AVG blend coefficient: max(0, 0.75-i*0.25)
 }
 
-// ComputeTiers builds the 5-tier definition for the given points_per_view.
+// ComputeTiers builds the 7-tier definition for the given points_per_view.
 // Default is 500. Higher values increase resolution per tier but grow
 // in-memory cascade state and disk rows per series proportionally.
 //
@@ -183,7 +183,7 @@ type tierState struct {
 
 // WriteJob is the unit of work the writer goroutine consumes.
 type WriteJob struct {
-	tier     string // "1h" | "8h" | "24h" | "7d" | "30d"
+	tier     string // "1h" | "8h" | "24h" | "7d" | "30d" | "60d" | "90d"
 	isHost   bool
 	entityID string    // composite container key OR host_id
 	ts       time.Time // bucket start (quantized)

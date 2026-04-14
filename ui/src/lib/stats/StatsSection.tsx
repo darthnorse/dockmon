@@ -28,7 +28,7 @@ export function StatsSection({ hostId, containerId, liveData }: Props) {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-semibold">Stats</h3>
         <StatsTimeRangeSelector value={range} onChange={setRange} />
       </div>

@@ -19,7 +19,7 @@ export function HostPerformanceSection({ hostId }: HostPerformanceSectionProps) 
   const sparklines = useHostSparklines(hostId)
 
   return (
-    <DrawerSection title="Performance">
+    <DrawerSection>
       <StatsSection
         hostId={hostId}
         liveData={{

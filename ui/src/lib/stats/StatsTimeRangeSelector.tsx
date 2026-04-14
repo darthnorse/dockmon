@@ -22,7 +22,7 @@ interface Props {
  */
 export function StatsTimeRangeSelector({ value, onChange }: Props) {
   return (
-    <div className="flex gap-1" role="group" aria-label="Stats time range">
+    <div className="flex flex-wrap gap-1" role="group" aria-label="Stats time range">
       {RANGES.map((r) => {
         const active = r.value === value
         return (

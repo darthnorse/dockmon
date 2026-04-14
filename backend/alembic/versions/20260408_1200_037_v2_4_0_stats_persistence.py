@@ -86,7 +86,7 @@ def upgrade():
     if not column_exists('global_settings', 'stats_retention_days'):
         op.add_column('global_settings',
                       sa.Column('stats_retention_days', sa.Integer,
-                                server_default='30', nullable=False))
+                                server_default='90', nullable=False))
     if not column_exists('global_settings', 'stats_points_per_view'):
         op.add_column('global_settings',
                       sa.Column('stats_points_per_view', sa.Integer,

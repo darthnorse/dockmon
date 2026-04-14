@@ -14,7 +14,7 @@ var (
 	writer           *persistence.Writer
 	retention        *persistence.Retention
 	settingsProvider = &mainSettingsProvider{
-		retentionDays:  30,
+		retentionDays:  90,
 		pointsPerView:  500,
 		persistEnabled: true,
 	}

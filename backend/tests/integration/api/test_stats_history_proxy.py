@@ -150,6 +150,28 @@ class TestHostStatsHistoryProxy:
         # FastAPI returns 422 for query-param validation failures.
         assert resp.status_code == 422
 
+    @pytest.mark.parametrize("rng", ["1h", "8h", "24h", "7d", "30d", "60d", "90d"])
+    def test_all_documented_ranges_are_accepted(
+        self, client, test_api_key_write, mock_stats_client, rng
+    ):
+        """
+        Guardrail against tier/regex drift: every TimeRange value in
+        ui/src/lib/stats/historyTypes.ts (minus 'live') must be accepted by
+        the proxy and forwarded verbatim to stats-service. Adding a new
+        tier in cascade.go without updating main.STATS_RANGE_PATTERN now
+        fails here instead of at runtime in the UI.
+        """
+        mock_stats_client.get_host_stats_history = AsyncMock(
+            return_value=_host_history_payload()
+        )
+        resp = client.get(
+            f"/api/hosts/host-1/stats/history?range={rng}",
+            headers={"Authorization": f"Bearer {test_api_key_write}"},
+        )
+        assert resp.status_code == 200, resp.text
+        call_kwargs = mock_stats_client.get_host_stats_history.call_args.kwargs
+        assert call_kwargs["range_"] == rng
+
 
 @pytest.mark.integration
 class TestContainerStatsHistoryProxy:
@@ -238,6 +260,26 @@ class TestContainerStatsHistoryProxy:
             to=None,
             since=42,
         )
+
+    @pytest.mark.parametrize("rng", ["1h", "8h", "24h", "7d", "30d", "60d", "90d"])
+    def test_all_documented_ranges_are_accepted(
+        self, client, test_api_key_write, mock_stats_client, rng
+    ):
+        """
+        Same guardrail as the host variant: any tier added to cascade.go
+        must also be present in main.STATS_RANGE_PATTERN or this test
+        catches the drift before it reaches the UI.
+        """
+        mock_stats_client.get_container_stats_history = AsyncMock(
+            return_value=_container_history_payload()
+        )
+        resp = client.get(
+            f"/api/hosts/host-1/containers/abc123abc123/stats/history?range={rng}",
+            headers={"Authorization": f"Bearer {test_api_key_write}"},
+        )
+        assert resp.status_code == 200, resp.text
+        call_kwargs = mock_stats_client.get_container_stats_history.call_args.kwargs
+        assert call_kwargs["range_"] == rng
 
 
 @pytest.mark.integration

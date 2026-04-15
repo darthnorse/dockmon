@@ -3458,6 +3458,7 @@ async def update_settings(
     # Check if stats settings changed
     old_show_host_stats = monitor.settings.show_host_stats
     old_show_container_stats = monitor.settings.show_container_stats
+    old_stats_persistence_enabled = getattr(monitor.settings, 'stats_persistence_enabled', False)
 
     # Convert to dict, excluding unset fields (supports partial updates)
     validated_dict = settings.dict(exclude_unset=True)
@@ -3471,6 +3472,19 @@ async def update_settings(
         logger.info(f"Host stats collection {'enabled' if updated.show_host_stats else 'disabled'}")
     if 'show_container_stats' in validated_dict and old_show_container_stats != updated.show_container_stats:
         logger.info(f"Container stats collection {'enabled' if updated.show_container_stats else 'disabled'}")
+
+    # Persistence toggled off with no viewers: sync gate won't teardown in-flight streams.
+    new_stats_persistence_enabled = getattr(updated, 'stats_persistence_enabled', False)
+    if (old_stats_persistence_enabled and not new_stats_persistence_enabled
+            and len(monitor.manager.active_connections) == 0):
+        def _handle_task_exception(task):
+            try:
+                task.result()
+            except Exception as e:
+                logger.error(f"Task exception during stream teardown: {e}", exc_info=True)
+
+        await monitor.stats_manager.stop_all_streams(get_stats_client(), _handle_task_exception)
+        logger.info("Stopped all stats streams (persistence disabled with no viewers)")
 
     # Invalidate session timeout cache so change takes effect immediately
     if 'session_timeout_hours' in validated_dict:
@@ -6104,10 +6118,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         # Clear modal containers for this connection only (not all users)
         monitor.stats_manager.clear_modal_containers_for_connection(connection_id)
 
-        # Event-driven stats control: stop stats streams when the last viewer
-        # disconnects — but only when persistence is off. With persistence on,
-        # streams must stay live so historical collection continues while the
-        # browser is closed.
+        # Stop streams on last viewer disconnect, unless persistence keeps them live.
         if len(monitor.manager.active_connections) == 0:
             persistence_on = getattr(monitor.settings, 'stats_persistence_enabled', False)
             if not persistence_on:

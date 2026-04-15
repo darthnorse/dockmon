@@ -1675,11 +1675,8 @@ class DockerMonitor:
                 has_viewers = self.manager.has_active_connections()
                 logger.debug(f"Monitor loop: has_viewers={has_viewers}, active_connections={len(self.manager.active_connections)}")
 
-                # Periodic stats stream reconciliation (safety net for cleanup)
-                # This ensures stale streams (e.g., from recreated containers with new IDs) are stopped
-                # and new containers get streams started even if no WebSocket reconnect happens.
-                # Runs whenever there are viewers OR when stats persistence is enabled
-                # (historical views need continuous collection regardless of viewer presence).
+                # Periodic stream reconciliation (safety net) — also runs with
+                # no viewers when persistence is on so historical collection continues.
                 persistence_on = getattr(self.settings, 'stats_persistence_enabled', False)
                 if (has_viewers or persistence_on) and containers:
                     try:

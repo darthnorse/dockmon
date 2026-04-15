@@ -84,7 +84,6 @@ class StatsManager:
         """
         containers_needing_stats = set()
 
-        # Rule 1 + 2: Persistence OR live-view flags = ALL running containers
         persistence_on = getattr(settings, 'stats_persistence_enabled', False)
         if persistence_on or settings.show_container_stats or settings.show_host_stats:
             for container in containers:
@@ -92,7 +91,7 @@ class StatsManager:
                     # Use short_id for consistency
                     containers_needing_stats.add(make_composite_key(container.host_id, container.short_id))
 
-        # Rule 2: Always add modal containers (even if settings are off)
+        # Rule 3: Always add modal containers (even if settings are off)
         # Modal containers are already stored as composite keys
         for modal_composite_key in self.modal_containers:
             # Verify container is still running before adding

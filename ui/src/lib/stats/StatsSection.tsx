@@ -78,9 +78,11 @@ function HistoricalCharts({
         <button
           type="button"
           onClick={() => refetch()}
-          className="px-3 py-1 text-xs rounded bg-primary text-primary-foreground hover:opacity-90"
+          disabled={isFetching}
+          aria-busy={isFetching}
+          className="px-3 py-1 text-xs rounded bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Retry
+          {isFetching ? 'Retrying…' : 'Retry'}
         </button>
       </div>
     )
@@ -117,23 +119,34 @@ function formatNetValue(arr: (number | null)[]): string | undefined {
 }
 
 function formatMemValue(data: StatsHistoryResponse): string | undefined {
-  const latestPct = formatPercent(data.mem)
-  if (latestPct === undefined) return undefined
-  const used = latestNonNull(data.memory_used_bytes)
-  const limit = latestNonNull(data.memory_limit_bytes)
-  if (used === undefined) return latestPct
-  // Show absolute used bytes even when limit is 0/undefined (unlimited cgroup).
-  if (limit !== undefined && limit > 0) {
-    return `${latestPct} (${formatBytes(used)} / ${formatBytes(limit)})`
+  // Pick the latest bucket where mem% is non-null and read used/limit from
+  // that SAME index — otherwise used and limit can come from different
+  // buckets and display a nonsensical ratio (e.g., used > limit) when a
+  // container's memory_limit was reconfigured mid-window.
+  const i = latestNonNullIndex(data.mem)
+  if (i < 0) return undefined
+  const pct = data.mem[i] as number
+  const pctStr = `${Math.round(pct * 10) / 10}%`
+  const used = data.memory_used_bytes?.[i] ?? null
+  const limit = data.memory_limit_bytes?.[i] ?? null
+  if (used === null) return pctStr
+  if (limit !== null && limit > 0) {
+    return `${pctStr} (${formatBytes(used)} / ${formatBytes(limit)})`
   }
-  return `${latestPct} (${formatBytes(used)})`
+  return `${pctStr} (${formatBytes(used)})`
 }
 
 function latestNonNull(arr: (number | null)[] | undefined): number | undefined {
   if (!arr) return undefined
+  const i = latestNonNullIndex(arr)
+  return i < 0 ? undefined : (arr[i] as number)
+}
+
+function latestNonNullIndex(arr: (number | null)[] | undefined): number {
+  if (!arr) return -1
   for (let i = arr.length - 1; i >= 0; i--) {
     const v = arr[i]
-    if (v !== null && v !== undefined) return v
+    if (v !== null && v !== undefined) return i
   }
-  return undefined
+  return -1
 }

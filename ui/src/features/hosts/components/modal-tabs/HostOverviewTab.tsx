@@ -332,7 +332,7 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
                 net: sparklines?.net ?? [],
                 cpuValue:
                   metrics?.cpu_percent !== undefined
-                    ? `${metrics.cpu_percent.toFixed(0)}%`
+                    ? `${metrics.cpu_percent.toFixed(1)}%`
                     : undefined,
                 memValue: metrics?.mem_bytes ? formatBytes(metrics.mem_bytes) : undefined,
                 netValue:

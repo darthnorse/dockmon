@@ -1677,8 +1677,11 @@ class DockerMonitor:
 
                 # Periodic stats stream reconciliation (safety net for cleanup)
                 # This ensures stale streams (e.g., from recreated containers with new IDs) are stopped
-                # and new containers get streams started even if no WebSocket reconnect happens
-                if has_viewers and containers:
+                # and new containers get streams started even if no WebSocket reconnect happens.
+                # Runs whenever there are viewers OR when stats persistence is enabled
+                # (historical views need continuous collection regardless of viewer presence).
+                persistence_on = getattr(self.settings, 'stats_persistence_enabled', False)
+                if (has_viewers or persistence_on) and containers:
                     try:
                         containers_needing_stats = self.stats_manager.determine_containers_needing_stats(
                             containers,

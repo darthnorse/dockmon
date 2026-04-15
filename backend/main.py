@@ -6104,20 +6104,26 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         # Clear modal containers for this connection only (not all users)
         monitor.stats_manager.clear_modal_containers_for_connection(connection_id)
 
-        # Event-driven stats control: Stop stats streams when last viewer disconnects
+        # Event-driven stats control: stop stats streams when the last viewer
+        # disconnects — but only when persistence is off. With persistence on,
+        # streams must stay live so historical collection continues while the
+        # browser is closed.
         if len(monitor.manager.active_connections) == 0:
-            # No more viewers - stop all stats streams immediately
-            from stats_client import get_stats_client
-            stats_client = get_stats_client()
+            persistence_on = getattr(monitor.settings, 'stats_persistence_enabled', False)
+            if not persistence_on:
+                from stats_client import get_stats_client
+                stats_client = get_stats_client()
 
-            def _handle_task_exception(task):
-                try:
-                    task.result()
-                except Exception as e:
-                    logger.error(f"Task exception: {e}", exc_info=True)
+                def _handle_task_exception(task):
+                    try:
+                        task.result()
+                    except Exception as e:
+                        logger.error(f"Task exception: {e}", exc_info=True)
 
-            await monitor.stats_manager.stop_all_streams(stats_client, _handle_task_exception)
-            logger.info("Stopped all stats streams (last viewer disconnected)")
+                await monitor.stats_manager.stop_all_streams(stats_client, _handle_task_exception)
+                logger.info("Stopped all stats streams (last viewer disconnected)")
+            else:
+                logger.info("Last viewer disconnected but persistence is on — keeping streams live")
 
         # Clean up rate limiter tracking
         ws_rate_limiter.cleanup_connection(connection_id)

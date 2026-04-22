@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/cli"
@@ -39,6 +40,60 @@ const (
 	// Used when StacksDir is not specified in the request
 	defaultStacksDir = "/app/data/stacks"
 )
+
+// hostStacksDiscovery lazily resolves the container-internal stacks directory
+// to its host-side source path via /proc/self/mountinfo. Done once per process
+// since the mount layout does not change under us at runtime.
+//
+// The cached value is keyed implicitly to the first caller's stacksDir.
+// This is safe today because StacksDir is process-global (defaultStacksDir);
+// if it ever becomes per-request, this cache must be re-keyed by stacksDir.
+//
+// On read error the cache stores "" and never retries — mountinfo I/O failures
+// are pathological, not transient, and a permanent fallback to the explicit
+// HOST_STACKS_DIR env var is the desired behavior.
+var hostStacksDiscovery struct {
+	once sync.Once
+	path string
+}
+
+// resolveHostStacksDir returns the host-side stacks directory for the given
+// DeployRequest, applying the fallback order: explicit request value,
+// auto-discovery (local engines only), empty. Callers still gate on
+// DockerHost == "" before using this for path rewrites, because host paths
+// are meaningless for mTLS remote hosts.
+func resolveHostStacksDir(req DeployRequest, stacksDir string, log *logrus.Logger) string {
+	if req.HostStacksDir != "" {
+		return req.HostStacksDir
+	}
+	if req.DockerHost != "" {
+		return ""
+	}
+	hostStacksDiscovery.once.Do(func() {
+		host, err := DiscoverHostPath(stacksDir)
+		if err != nil && log != nil {
+			log.WithError(err).WithField("stacks_dir", stacksDir).
+				Warn("Failed to auto-discover host stacks path; falling back to request value")
+		}
+		// If discovery returns the input unchanged, we're either running
+		// on the host or on a non-Linux kernel — no rewrite needed. Store
+		// "" so the deploy flow treats it the same as no configuration.
+		if host == stacksDir {
+			hostStacksDiscovery.path = ""
+			return
+		}
+		hostStacksDiscovery.path = host
+		// Logged inside Once.Do so it fires exactly once per process — not a
+		// bug, just less noise across many deploys.
+		if log != nil {
+			log.WithFields(logrus.Fields{
+				"container_stacks_dir": stacksDir,
+				"host_stacks_dir":      host,
+			}).Info("Auto-discovered host stacks directory from /proc/self/mountinfo")
+		}
+	})
+	return hostStacksDiscovery.path
+}
 
 // isDockerHub returns true if the registry URL refers to Docker Hub
 func isDockerHub(registryURL string) bool {
@@ -332,6 +387,27 @@ func (s *Service) loadProject(ctx context.Context, composeFile, projectName stri
 	return project, nil
 }
 
+// firstStrayBindSource returns the source of the first bind mount that would
+// resolve to the wrong host path: non-absolute (compose-go failed to resolve)
+// or still under containerStacksDir (rewrite missed it). Returns "" when safe.
+func firstStrayBindSource(project *types.Project, containerStacksDir string) string {
+	prefix := containerStacksDir + "/"
+	for _, svc := range project.Services {
+		for _, vol := range svc.Volumes {
+			if vol.Type != types.VolumeTypeBind {
+				continue
+			}
+			if !filepath.IsAbs(vol.Source) {
+				return vol.Source
+			}
+			if vol.Source == containerStacksDir || strings.HasPrefix(vol.Source, prefix) {
+				return vol.Source
+			}
+		}
+	}
+	return ""
+}
+
 // rewriteBindMountPaths rewrites bind mount source paths from container-internal
 // paths to host filesystem paths. compose-go resolves relative paths against the
 // container-internal working directory, but the Docker daemon needs host paths
@@ -496,12 +572,22 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 	defer tlsFiles.Cleanup(s.log)
 
 	// Compute host-side working directory for bind mount resolution.
-	// Only applies when HostStacksDir is configured (containerized deployments)
-	// AND the Docker engine is local. For mTLS remote hosts the engine is on
-	// a different machine, so local host paths are meaningless.
+	// Only applies for local Docker engines — for mTLS remote hosts the
+	// engine is on a different machine, so host paths are meaningless.
+	// The effective host stacks dir comes from the request if set, otherwise
+	// we auto-discover it by reading /proc/self/mountinfo.
+	stacksDir := req.StacksDir
+	if stacksDir == "" {
+		stacksDir = defaultStacksDir
+	}
+	// Normalize so trailing-slash inputs don't break prefix matching in
+	// firstStrayBindSource (it builds containerStacksDir + "/" as a prefix).
+	stacksDir = filepath.Clean(stacksDir)
+	effectiveHostStacksDir := resolveHostStacksDir(req, stacksDir, s.log)
+
 	var hostWorkingDir string
-	if req.HostStacksDir != "" && req.DockerHost == "" {
-		hostWorkingDir = filepath.Join(req.HostStacksDir, req.ProjectName)
+	if effectiveHostStacksDir != "" && req.DockerHost == "" {
+		hostWorkingDir = filepath.Join(effectiveHostStacksDir, req.ProjectName)
 		s.logInfo("Using host-side working directory for bind mount resolution", logrus.Fields{
 			"host_working_dir":      hostWorkingDir,
 			"container_working_dir": filepath.Dir(composeFile),
@@ -511,6 +597,20 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 	project, err := s.loadProject(ctx, composeFile, req.ProjectName, req.Profiles, hostWorkingDir)
 	if err != nil {
 		return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to load compose project: %v", err))
+	}
+
+	// Defensive check: if we attempted a rewrite but a bind source is still
+	// rooted at the container-internal stacks dir, the Docker daemon will
+	// silently mount from the wrong host path (Issue #211). Fail fast with
+	// an actionable message rather than producing an empty-looking volume.
+	if req.DockerHost == "" && effectiveHostStacksDir != "" {
+		if stray := firstStrayBindSource(project, stacksDir); stray != "" {
+			return s.failResult(req.DeploymentID, fmt.Sprintf(
+				"Bind mount source %q is a container-internal path. "+
+					"Auto-discovery of the host stacks directory failed for this deployment. "+
+					"Set HOST_STACKS_DIR to the host path that maps to your %s volume and redeploy.",
+				stray, filepath.Dir(stacksDir)))
+		}
 	}
 
 	project = project.WithoutUnnecessaryResources()

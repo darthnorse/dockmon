@@ -11,6 +11,84 @@ func newTestService() *Service {
 	return &Service{log: logrus.New()}
 }
 
+func TestFirstStrayBindSource(t *testing.T) {
+	containerStacksDir := "/app/data/stacks"
+	tests := []struct {
+		name    string
+		project *types.Project
+		want    string
+	}{
+		{
+			name:    "no services",
+			project: &types.Project{Services: types.Services{}},
+			want:    "",
+		},
+		{
+			name: "only rewritten bind mounts (host paths)",
+			project: &types.Project{Services: types.Services{
+				"web": types.ServiceConfig{Volumes: []types.ServiceVolumeConfig{
+					{Type: types.VolumeTypeBind, Source: "/opt/dockmon/data/stacks/myproj/data"},
+				}},
+			}},
+			want: "",
+		},
+		{
+			name: "stray container-internal bind source",
+			project: &types.Project{Services: types.Services{
+				"web": types.ServiceConfig{Volumes: []types.ServiceVolumeConfig{
+					{Type: types.VolumeTypeBind, Source: "/app/data/stacks/myproj/data"},
+				}},
+			}},
+			want: "/app/data/stacks/myproj/data",
+		},
+		{
+			name: "user-provided absolute path outside stacks tree is allowed",
+			project: &types.Project{Services: types.Services{
+				"web": types.ServiceConfig{Volumes: []types.ServiceVolumeConfig{
+					{Type: types.VolumeTypeBind, Source: "/etc/ssl/certs"},
+				}},
+			}},
+			want: "",
+		},
+		{
+			name: "named volumes ignored",
+			project: &types.Project{Services: types.Services{
+				"db": types.ServiceConfig{Volumes: []types.ServiceVolumeConfig{
+					{Type: types.VolumeTypeVolume, Source: "pgdata"},
+				}},
+			}},
+			want: "",
+		},
+		{
+			name: "sibling path under /app/data not flagged (not under /app/data/stacks)",
+			project: &types.Project{Services: types.Services{
+				"web": types.ServiceConfig{Volumes: []types.ServiceVolumeConfig{
+					{Type: types.VolumeTypeBind, Source: "/app/data-other/something"},
+				}},
+			}},
+			want: "",
+		},
+		{
+			name: "non-absolute bind source flagged (compose-go resolution failure)",
+			project: &types.Project{Services: types.Services{
+				"web": types.ServiceConfig{Volumes: []types.ServiceVolumeConfig{
+					{Type: types.VolumeTypeBind, Source: "./data"},
+				}},
+			}},
+			want: "./data",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := firstStrayBindSource(tc.project, containerStacksDir)
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRewriteBindMountPaths(t *testing.T) {
 	tests := []struct {
 		name             string

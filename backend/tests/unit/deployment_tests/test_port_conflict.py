@@ -139,6 +139,24 @@ services:
 """
         assert extract_ports_from_compose(yaml) == []
 
+    def test_services_not_dict_returns_empty(self):
+        """Compose with services declared as a list (structurally invalid) returns empty, not a crash."""
+        yaml = """
+services:
+  - web
+"""
+        assert extract_ports_from_compose(yaml) == []
+
+    def test_ports_not_list_skipped(self):
+        """Service with ports declared as a scalar (structurally invalid) is skipped, not a crash."""
+        yaml = """
+services:
+  web:
+    image: nginx
+    ports: 8080
+"""
+        assert extract_ports_from_compose(yaml) == []
+
     def test_malformed_yaml_raises(self):
         with pytest.raises(ValueError, match="Invalid compose YAML"):
             extract_ports_from_compose("services:\n  web:\n    image: [unclosed")

@@ -109,6 +109,8 @@ def extract_ports_from_compose(compose_yaml: str) -> list[PortSpec]:
         raise ValueError(f"Invalid compose YAML: {exc}") from exc
 
     services = doc.get("services") or {}
+    if not isinstance(services, dict):
+        return []
     seen: set[PortSpec] = set()
     result: list[PortSpec] = []
 
@@ -117,6 +119,8 @@ def extract_ports_from_compose(compose_yaml: str) -> list[PortSpec]:
             continue
         ports = service.get("ports")
         if not ports:
+            continue
+        if not isinstance(ports, list):
             continue
         for entry in ports:
             specs: Iterable[PortSpec]

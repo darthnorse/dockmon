@@ -71,7 +71,6 @@ func TestSettingsHandler_AcceptsPartialUpdate(t *testing.T) {
 func TestSettingsHandler_RejectsOutOfRange(t *testing.T) {
 	provider := &mainSettingsProvider{retentionDays: 30, pointsPerView: 500, persistEnabled: true}
 	h := &SettingsHandler{provider: provider}
-	// retention_days=1000 is above the 90 ceiling
 	req := httptest.NewRequest(http.MethodPost, "/api/settings",
 		bytes.NewBufferString(`{"stats_retention_days":1000}`))
 	w := httptest.NewRecorder()
@@ -132,7 +131,7 @@ func TestSettingsHandler_EmptyBodyIsNoop(t *testing.T) {
 // Same for {} — Python sends this if it ever needs to probe the current
 // config without changing anything.
 func TestSettingsHandler_EmptyObjectIsNoop(t *testing.T) {
-	provider := &mainSettingsProvider{retentionDays: 42, pointsPerView: 800, persistEnabled: true}
+	provider := &mainSettingsProvider{retentionDays: 25, pointsPerView: 800, persistEnabled: true}
 	h := &SettingsHandler{provider: provider}
 	req := httptest.NewRequest(http.MethodPost, "/api/settings", bytes.NewBufferString("{}"))
 	w := httptest.NewRecorder()
@@ -141,7 +140,7 @@ func TestSettingsHandler_EmptyObjectIsNoop(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d, want 200", w.Code)
 	}
-	if provider.RetentionDays() != 42 {
-		t.Errorf("retention_days changed to %d, want 42 (unchanged)", provider.RetentionDays())
+	if provider.RetentionDays() != 25 {
+		t.Errorf("retention_days changed to %d, want 25 (unchanged)", provider.RetentionDays())
 	}
 }

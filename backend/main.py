@@ -1050,7 +1050,7 @@ async def get_host_metrics(host_id: str, current_user: dict = Depends(get_curren
 
 # Range validation for /stats/history proxy endpoints. Must stay in lockstep
 # with stats-service ComputeTiers() and frontend TimeRange in historyTypes.ts.
-STATS_RANGE_PATTERN = r"^(1h|8h|24h|7d|30d|60d|90d)$"
+STATS_RANGE_PATTERN = r"^(1h|8h|24h|7d|30d)$"
 
 
 def _map_history_upstream_error(exc: Exception) -> HTTPException:
@@ -3433,7 +3433,7 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "session_timeout_hours": getattr(settings, 'session_timeout_hours', 24),
         # Stats persistence (v2.4.0+)
         "stats_persistence_enabled": getattr(settings, 'stats_persistence_enabled', True),
-        "stats_retention_days": getattr(settings, 'stats_retention_days', 90),
+        "stats_retention_days": getattr(settings, 'stats_retention_days', 30),
         "stats_points_per_view": getattr(settings, 'stats_points_per_view', 500),
     }
 
@@ -3565,7 +3565,7 @@ async def update_settings(
         "session_timeout_hours": getattr(updated, 'session_timeout_hours', 24),
         # Stats persistence (v2.4.0+) — hot-pushed to stats-service above
         "stats_persistence_enabled": getattr(updated, 'stats_persistence_enabled', True),
-        "stats_retention_days": getattr(updated, 'stats_retention_days', 90),
+        "stats_retention_days": getattr(updated, 'stats_retention_days', 30),
         "stats_points_per_view": getattr(updated, 'stats_points_per_view', 500),
     }
 

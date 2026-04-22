@@ -10,8 +10,6 @@ export const VIEWS = [
   { name: '24h' as const, seconds: 86400, label: '24h' },
   { name: '7d' as const, seconds: 604800, label: '7d' },
   { name: '30d' as const, seconds: 2592000, label: '30d' },
-  { name: '60d' as const, seconds: 5184000, label: '60d' },
-  { name: '90d' as const, seconds: 7776000, label: '90d' },
 ] as const
 
 export const DEFAULT_POINTS_PER_VIEW = 500

@@ -150,7 +150,7 @@ class TestHostStatsHistoryProxy:
         # FastAPI returns 422 for query-param validation failures.
         assert resp.status_code == 422
 
-    @pytest.mark.parametrize("rng", ["1h", "8h", "24h", "7d", "30d", "60d", "90d"])
+    @pytest.mark.parametrize("rng", ["1h", "8h", "24h", "7d", "30d"])
     def test_all_documented_ranges_are_accepted(
         self, client, test_api_key_write, mock_stats_client, rng
     ):
@@ -261,7 +261,7 @@ class TestContainerStatsHistoryProxy:
             since=42,
         )
 
-    @pytest.mark.parametrize("rng", ["1h", "8h", "24h", "7d", "30d", "60d", "90d"])
+    @pytest.mark.parametrize("rng", ["1h", "8h", "24h", "7d", "30d"])
     def test_all_documented_ranges_are_accepted(
         self, client, test_api_key_write, mock_stats_client, rng
     ):
@@ -458,12 +458,12 @@ class TestPushSettingsUpdate:
 
         resp = client.post(
             "/api/settings",
-            json={"stats_retention_days": 45, "stats_points_per_view": 750},
+            json={"stats_retention_days": 25, "stats_points_per_view": 750},
             headers={"Authorization": f"Bearer {test_api_key_write}"},
         )
         assert resp.status_code == 200, resp.text
         mock_stats_client.push_settings_update.assert_called_once_with(
-            stats_retention_days=45,
+            stats_retention_days=25,
             stats_points_per_view=750,
         )
 
@@ -471,7 +471,7 @@ class TestPushSettingsUpdate:
         # the values must actually be persisted, not silently dropped.
         # Response body round-trips the stored values.
         body = resp.json()
-        assert body["stats_retention_days"] == 45
+        assert body["stats_retention_days"] == 25
         assert body["stats_points_per_view"] == 750
         assert body["stats_persistence_enabled"] is True  # unchanged
 

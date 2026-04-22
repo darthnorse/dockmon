@@ -736,7 +736,7 @@ class GlobalSettings(Base):
     # Stats persistence (v2.4.0+). server_default mirrors migration 037 so
     # create_all()-bootstrapped fresh installs match migration-upgraded schemas.
     stats_persistence_enabled = Column(Boolean, nullable=False, server_default='1', default=True)
-    stats_retention_days = Column(Integer, nullable=False, server_default='90', default=90)  # 1..90
+    stats_retention_days = Column(Integer, nullable=False, server_default='30', default=30)  # 1..30
     stats_points_per_view = Column(Integer, nullable=False, server_default='500', default=500)  # 100..2000
 
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)

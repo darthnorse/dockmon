@@ -1,14 +1,9 @@
+import { VIEWS } from '@/lib/statsConfig'
 import type { TimeRange } from './historyTypes'
 
 const RANGES: { value: TimeRange; label: string }[] = [
   { value: 'live', label: 'Live' },
-  { value: '1h',   label: '1h' },
-  { value: '8h',   label: '8h' },
-  { value: '24h',  label: '24h' },
-  { value: '7d',   label: '7d' },
-  { value: '30d',  label: '30d' },
-  { value: '60d',  label: '60d' },
-  { value: '90d',  label: '90d' },
+  ...VIEWS.map((v) => ({ value: v.name, label: v.label })),
 ]
 
 interface Props {

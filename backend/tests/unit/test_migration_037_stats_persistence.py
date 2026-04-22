@@ -155,7 +155,7 @@ def test_global_settings_orm_has_new_fields():
 
     expected = {
         "stats_persistence_enabled": (Boolean, True, "1"),
-        "stats_retention_days": (Integer, 90, "90"),
+        "stats_retention_days": (Integer, 30, "30"),
         "stats_points_per_view": (Integer, 500, "500"),
     }
     assert expected.keys() <= cols.keys()

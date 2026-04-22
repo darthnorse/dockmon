@@ -14,7 +14,7 @@ var (
 	writer           *persistence.Writer
 	retention        *persistence.Retention
 	settingsProvider = &mainSettingsProvider{
-		retentionDays:  90,
+		retentionDays:  30,
 		pointsPerView:  500,
 		persistEnabled: true,
 	}
@@ -54,7 +54,7 @@ func (p *mainSettingsProvider) PersistEnabled() bool {
 }
 
 // ApplyPartialUpdate atomically applies a partial update to the live config,
-// enforcing the same ranges as the Python-side Pydantic validator (1..90 for
+// enforcing the same ranges as the Python-side Pydantic validator (1..30 for
 // retention_days, 100..2000 for points_per_view). Out-of-range values are
 // silently ignored — the Python side already rejects them with 422 before
 // the push ever reaches here, so this is defense-in-depth only. Nil pointers
@@ -70,7 +70,7 @@ func (p *mainSettingsProvider) ApplyPartialUpdate(
 	if persistEnabled != nil {
 		p.persistEnabled = *persistEnabled
 	}
-	if retentionDays != nil && *retentionDays >= 1 && *retentionDays <= 90 {
+	if retentionDays != nil && *retentionDays >= 1 && *retentionDays <= 30 {
 		p.retentionDays = *retentionDays
 	}
 	if pointsPerView != nil && *pointsPerView >= 100 && *pointsPerView <= 2000 {

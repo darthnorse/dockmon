@@ -16,7 +16,7 @@ var fixtureSchemaSQL = []string{
 	`CREATE TABLE global_settings (
 		id INTEGER PRIMARY KEY,
 		stats_persistence_enabled BOOLEAN NOT NULL DEFAULT 1,
-		stats_retention_days INTEGER NOT NULL DEFAULT 90,
+		stats_retention_days INTEGER NOT NULL DEFAULT 30,
 		stats_points_per_view INTEGER NOT NULL DEFAULT 500
 	)`,
 	`INSERT INTO global_settings (id) VALUES (1)`,

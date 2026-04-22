@@ -4,7 +4,7 @@
  * HistoryResponse struct (see stats-service/persistence/read.go).
  */
 
-export type TimeRange = 'live' | '1h' | '8h' | '24h' | '7d' | '30d' | '60d' | '90d'
+export type TimeRange = 'live' | '1h' | '8h' | '24h' | '7d' | '30d'
 
 export type HistoricalRange = Exclude<TimeRange, 'live'>
 

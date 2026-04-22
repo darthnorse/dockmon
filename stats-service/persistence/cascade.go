@@ -9,15 +9,15 @@ import (
 )
 
 // Tier describes one resolution level in the RRD-style cascade.
-// See spec §4 for the model.
+// See spec §4 for the model. For the canonical tier list, see ComputeTiers.
 type Tier struct {
-	Name     string        // "1h" | "8h" | "24h" | "7d" | "30d" | "60d" | "90d"
+	Name     string        // canonical values defined by ComputeTiers
 	Window   time.Duration // total time the tier covers
 	Interval time.Duration // bucket size = max(window/points_per_view, 1s)
 	Alpha    float64       // MAX/AVG blend coefficient: max(0, 0.75-i*0.25)
 }
 
-// ComputeTiers builds the 7-tier definition for the given points_per_view.
+// ComputeTiers builds the 5-tier definition for the given points_per_view.
 // Default is 500. Higher values increase resolution per tier but grow
 // in-memory cascade state and disk rows per series proportionally.
 //
@@ -48,8 +48,6 @@ func ComputeTiers(pointsPerView int) []Tier {
 		{"24h", 24 * time.Hour},
 		{"7d", 7 * 24 * time.Hour},
 		{"30d", 30 * 24 * time.Hour},
-		{"60d", 60 * 24 * time.Hour},
-		{"90d", 90 * 24 * time.Hour},
 	}
 	tiers := make([]Tier, len(views))
 	for i, v := range views {
@@ -183,7 +181,7 @@ type tierState struct {
 
 // WriteJob is the unit of work the writer goroutine consumes.
 type WriteJob struct {
-	tier     string // "1h" | "8h" | "24h" | "7d" | "30d" | "60d" | "90d"
+	tier     string // canonical values defined by ComputeTiers
 	isHost   bool
 	entityID string    // composite container key OR host_id
 	ts       time.Time // bucket start (quantized)

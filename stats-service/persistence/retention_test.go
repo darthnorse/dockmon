@@ -209,10 +209,10 @@ func TestTimeSweep_DeletesOldRows(t *testing.T) {
 	}
 
 	now := time.Now().Unix()
-	// "old" must exceed the longest tier window (now 90d). The time sweep
+	// "old" must exceed the longest tier window (now 30d). The time sweep
 	// floors the cutoff to max(retentionDays, longestTierWindow), so rows
-	// within 90 days are always kept regardless of retentionDays.
-	old := now - int64((100 * 24 * time.Hour).Seconds())  // 100 days ago
+	// within 30 days are always kept regardless of retentionDays.
+	old := now - int64((45 * 24 * time.Hour).Seconds())  // 45 days ago
 	fresh := now - int64((10 * 24 * time.Hour).Seconds()) // 10 days ago
 
 	if _, err := db.Write().Exec(`INSERT INTO container_stats_history
@@ -235,7 +235,7 @@ func TestTimeSweep_DeletesOldRows(t *testing.T) {
 	}
 
 	r := NewRetention(db, ComputeTiers(500))
-	deleted, err := r.RunTimeSweep(context.Background(), 90)
+	deleted, err := r.RunTimeSweep(context.Background(), 30)
 	if err != nil {
 		t.Fatal(err)
 	}

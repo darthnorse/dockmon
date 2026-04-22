@@ -17,9 +17,7 @@ func TestComputeTiers_DefaultPointsPerView(t *testing.T) {
 		{"8h", 57600 * time.Millisecond, 0.50},
 		{"24h", 172800 * time.Millisecond, 0.25},
 		{"7d", 1209600 * time.Millisecond, 0.0},
-		{"30d", 5184 * time.Second, 0.0},
-		{"60d", 10368 * time.Second, 0.0},
-		{"90d", 15552 * time.Second, 0.0},
+		{"30d", 5184000 * time.Millisecond, 0.0},
 	}
 
 	got := ComputeTiers(500)
@@ -520,9 +518,10 @@ func TestCascade_RemoveHost_ClearsAllTiers(t *testing.T) {
 	// tiers directly via c.state (same-package access) to assert that
 	// the removal loop does not accidentally filter by tierIdx.
 	c, _, _ := newTestCascade(64)
+	numTiers := len(ComputeTiers(500))
 
 	c.mu.Lock()
-	for tierIdx := 0; tierIdx < 5; tierIdx++ {
+	for tierIdx := 0; tierIdx < numTiers; tierIdx++ {
 		c.state[entityKey{"host-1", tierIdx}] = tierState{bucketTs: time.Unix(int64(tierIdx+1), 0), isHost: true}
 		c.state[entityKey{"host-1:container", tierIdx}] = tierState{bucketTs: time.Unix(int64(tierIdx+1), 0)}
 		c.state[entityKey{"host-2", tierIdx}] = tierState{bucketTs: time.Unix(int64(tierIdx+1), 0), isHost: true}
@@ -533,7 +532,7 @@ func TestCascade_RemoveHost_ClearsAllTiers(t *testing.T) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for tierIdx := 0; tierIdx < 5; tierIdx++ {
+	for tierIdx := 0; tierIdx < numTiers; tierIdx++ {
 		if _, ok := c.state[entityKey{"host-1", tierIdx}]; ok {
 			t.Errorf("host-1 tier %d state was not removed", tierIdx)
 		}

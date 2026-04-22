@@ -674,30 +674,13 @@ func main() {
 			return
 		}
 
-		// Both the context-cancellation watcher and the read-loop can
-		// trigger a close; sync.Once prevents double-close errors.
-		var closeOnce sync.Once
-		closeConn := func() { closeOnce.Do(func() { conn.Close() }) }
-
-		// Close the connection when the request context is cancelled
-		// (server shutdown). ReadMessage blocks and does not observe
-		// context cancellation, so we need a watcher goroutine.
-		reqCtx := r.Context()
-		watcherDone := make(chan struct{})
-		go func() {
-			select {
-			case <-reqCtx.Done():
-				closeConn()
-			case <-watcherDone:
-			}
-		}()
-
-		// Read loop to detect client disconnect
+		// Read loop detects client disconnect. Server shutdown is handled
+		// separately by EventBroadcaster.CloseAll, which closes every conn
+		// and forces ReadMessage to error out here.
 		go func() {
 			defer func() {
-				close(watcherDone)
 				eventBroadcaster.RemoveConnection(conn)
-				closeConn()
+				conn.Close()
 			}()
 
 			for {

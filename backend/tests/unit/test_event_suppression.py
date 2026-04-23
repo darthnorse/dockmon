@@ -4,6 +4,8 @@ Unit tests for event suppression pattern matching.
 Tests the container name pattern matching for event log suppression.
 """
 
+import asyncio
+
 import pytest
 from unittest.mock import MagicMock, patch
 from event_logger import EventLogger, EventCategory, EventContext
@@ -193,6 +195,9 @@ class TestEventSuppressionIntegration:
         self.mock_db.get_settings.return_value = None
         self.event_logger = EventLogger(self.mock_db)
         self.event_logger._suppression_patterns = ["runner-*"]
+        # start() creates the queue against the running loop; these tests
+        # exercise log_event synchronously, so construct one directly.
+        self.event_logger._event_queue = asyncio.Queue(maxsize=10000)
 
     def test_container_event_suppressed(self):
         """Test that matching container events are suppressed"""

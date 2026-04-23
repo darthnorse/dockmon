@@ -86,7 +86,12 @@ class EventLogger:
     def __init__(self, db: DatabaseManager, websocket_manager=None):
         self.db = db
         self.websocket_manager = websocket_manager
-        self._event_queue = asyncio.Queue(maxsize=10000)  # Prevent unbounded memory growth
+        # Queue is created in start() so it binds to the running event loop.
+        # An asyncio.Queue ties its internal futures to the first loop that uses
+        # it; reusing one across lifespan restarts (e.g. multiple TestClient
+        # instances) leaves those futures on a closed loop and every get()/
+        # put_nowait() then raises "bound to a different event loop".
+        self._event_queue: Optional[asyncio.Queue] = None
         self._processing_task: Optional[asyncio.Task] = None
         self._active_correlations: Dict[str, List[str]] = {}
         self._correlation_timestamps: Dict[str, datetime] = {}  # Track correlation age (Issue #2 fix)
@@ -102,6 +107,8 @@ class EventLogger:
     async def start(self):
         """Start the event processing task"""
         if not self._processing_task:
+            # Fresh queue on every start so its futures bind to the current loop.
+            self._event_queue = asyncio.Queue(maxsize=10000)
             self._processing_task = asyncio.create_task(self._process_events())
             logger.info("Event logger started")
 
@@ -161,13 +168,17 @@ class EventLogger:
                 pass
 
             # Drain the queue to prevent memory leak
-            while not self._event_queue.empty():
-                try:
-                    self._event_queue.get_nowait()
-                    self._event_queue.task_done()
-                except Exception:
-                    break
+            if self._event_queue is not None:
+                while not self._event_queue.empty():
+                    try:
+                        self._event_queue.get_nowait()
+                        self._event_queue.task_done()
+                    except Exception:
+                        break
 
+            # Release the queue so the next start() builds a fresh one on the
+            # new event loop instead of reusing futures tied to this one.
+            self._event_queue = None
             self._processing_task = None
             logger.info("Event logger stopped")
 
@@ -255,18 +266,21 @@ class EventLogger:
                         del self._recent_events[k]
                     logger.warning(f"Event deduplication cache exceeded limit, removed {len(keys_to_remove)} oldest entries")
 
-        # Add to queue for async processing
-        try:
-            self._event_queue.put_nowait(event_data)
-        except asyncio.QueueFull:
-            self._dropped_events_count += 1
-            # Log more prominently for critical events
-            if severity in [EventSeverity.CRITICAL, EventSeverity.ERROR]:
-                logger.error(f"Event queue FULL! Dropped {severity.value} event: {title} (total dropped: {self._dropped_events_count})")
-            else:
-                # Periodic warning to avoid log spam
-                if self._dropped_events_count % 100 == 1:
-                    logger.warning(f"Event queue full, dropped {self._dropped_events_count} events total")
+        # Add to queue for async processing. Queue is None before start() has
+        # run; fall through to the Python logger emit below so the event is
+        # still visible, it just isn't persisted to the DB.
+        if self._event_queue is not None:
+            try:
+                self._event_queue.put_nowait(event_data)
+            except asyncio.QueueFull:
+                self._dropped_events_count += 1
+                # Log more prominently for critical events
+                if severity in [EventSeverity.CRITICAL, EventSeverity.ERROR]:
+                    logger.error(f"Event queue FULL! Dropped {severity.value} event: {title} (total dropped: {self._dropped_events_count})")
+                else:
+                    # Periodic warning to avoid log spam
+                    if self._dropped_events_count % 100 == 1:
+                        logger.warning(f"Event queue full, dropped {self._dropped_events_count} events total")
 
         # Also log to Python logger for immediate visibility
         python_logger_level = {

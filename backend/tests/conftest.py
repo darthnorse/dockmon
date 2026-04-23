@@ -58,34 +58,37 @@ REQUIRED_IMAGES = [
 @pytest.fixture(scope="session", autouse=True)
 def ensure_docker_images():
     """
-    Ensure required Docker images are available before running tests.
+    Verify required Docker images are available before running tests.
 
-    Pulls images only if missing - never re-pulls or deletes.
-    Runs once per pytest session (not per test).
-    Images persist on the system for future test runs.
+    Auto-pulling is opt-in via DOCKMON_TEST_PULL_IMAGES=1. The Docker SDK's
+    high-level images.pull() buffers streaming pull responses in memory, and
+    pulling the full set (postgres, grafana, redis, nginx, alpine) on a
+    constrained dev VM has triggered host-wide OOM kills.
 
-    This prevents:
-    - Test failures due to missing images
-    - Redundant image pulls (rate limit protection)
-    - Manual setup steps before running tests
+    Default behavior: log which required images are missing; tests that need
+    a missing image will fail loudly with ImageNotFound. Pull manually with:
 
-    Benefits:
-    - First run: Auto-pulls missing images (~30-60s one-time cost)
-    - Subsequent runs: Instant (images already cached)
-    - Multiple test runs: No additional downloads
-    - Rate limit safe: Only pulls when actually missing
+        docker pull alpine:latest nginx:latest grafana/grafana:latest \
+                    redis:latest postgres:latest
     """
+    pull_missing = os.environ.get("DOCKMON_TEST_PULL_IMAGES") == "1"
+
     try:
         client = docker.from_env(version="auto")
 
         for image_name in REQUIRED_IMAGES:
             try:
                 client.images.get(image_name)
-                logger.debug(f"✓ Image {image_name} available")
             except docker.errors.ImageNotFound:
-                logger.info(f"Pulling {image_name}...")
-                client.images.pull(image_name)
-                logger.info(f"✓ Pulled {image_name}")
+                if pull_missing:
+                    logger.info(f"Pulling {image_name}...")
+                    client.images.pull(image_name)
+                    logger.info(f"Pulled {image_name}")
+                else:
+                    logger.warning(
+                        f"Image {image_name} missing; skipping auto-pull "
+                        "(set DOCKMON_TEST_PULL_IMAGES=1 to enable)"
+                    )
 
         client.close()
 
@@ -701,9 +704,14 @@ def client(test_db, monkeypatch):
 
     main.app.dependency_overrides[get_current_user] = mock_get_current_user
 
-    # Create test client
-    with TestClient(main.app) as test_client:
-        yield test_client
+    # Construct TestClient without entering its context manager so the app's
+    # lifespan does not run. Lifespan starts real background tasks (Docker
+    # monitor, stats WebSocket, alert evaluator, HTTP health checker) that
+    # aren't appropriate for route-level tests and add hundreds of ms of
+    # setup per test. Tests that actually need lifespan-initialized globals
+    # should arrange them explicitly.
+    test_client = TestClient(main.app)
+    yield test_client
 
     # Clean up overrides
     main.app.dependency_overrides.clear()

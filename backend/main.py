@@ -550,7 +550,25 @@ async def root(current_user: dict = Depends(get_current_user)):
 @app.get("/health", tags=["system"])
 async def health_check():
     """Health check endpoint for Docker health checks - no authentication required"""
-    return {"status": "healthy", "service": "dockmon-backend"}
+    subsystems = {}
+    event_logger = getattr(monitor, "event_logger", None)
+    if event_logger is not None:
+        subsystems["event_logger"] = event_logger.is_healthy()
+
+    if subsystems and not all(subsystems.values()):
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "service": "dockmon-backend",
+                "subsystems": subsystems,
+            },
+        )
+    return {
+        "status": "healthy",
+        "service": "dockmon-backend",
+        "subsystems": subsystems,
+    }
 
 @app.get("/docs", include_in_schema=False)
 async def redoc_html():

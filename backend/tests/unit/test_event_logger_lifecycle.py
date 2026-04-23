@@ -124,29 +124,17 @@ def test_process_events_bails_out_on_persistent_queue_error(caplog):
     with caplog.at_level(logging.ERROR, logger="event_logger"):
         asyncio.run(run())
 
-    # Bail-out is exact: one get() per consecutive error, then break.
-    # Allow +1 slack for any future implementation flexibility; catching
-    # a loose off-by-one or a forgotten counter reset is the point.
-    assert broken.gets <= cap + 1, (
-        f"_process_events looped {broken.gets} times on persistent errors; "
-        f"expected <= {cap + 1} (cap={cap})"
-    )
+    # One get() per consecutive error, then break. Tight bound catches
+    # off-by-one regressions or a forgotten counter reset.
+    assert broken.gets == cap, f"expected {cap} get() calls, got {broken.gets}"
 
-    error_records = [r for r in caplog.records if r.name == "event_logger"]
     # Exactly two error lines: first-error report + bail-out summary.
-    # Anything higher is log spam and defeats the safety budget.
-    assert len(error_records) <= 3, (
-        f"log spam exceeded safety budget: {len(error_records)} records. "
-        "Under pytest's caplog this is what drives RSS to 15 GB."
-    )
+    error_records = [r for r in caplog.records if r.name == "event_logger"]
+    assert len(error_records) == 2, f"expected 2 error records, got {len(error_records)}"
     assert any("stopping after" in r.getMessage() for r in error_records), (
-        "bail-out summary message missing; operators need the explicit "
-        "'processor stopping' line to distinguish bail-out from ordinary errors"
+        "bail-out summary not logged"
     )
-    assert el._processor_failed is True, (
-        "_processor_failed flag must be set so is_healthy() / health endpoints "
-        "can report that event persistence is offline"
-    )
+    assert not el.is_healthy(), "processor bailed out; is_healthy() must return False"
 
 
 def test_process_events_survives_transient_processing_errors():
@@ -186,19 +174,11 @@ def test_process_events_survives_transient_processing_errors():
                 severity=EventSeverity.INFO,
                 event_type=EventType.STARTUP,
             )
-        # Let the consumer drain.
-        for _ in range(20):
-            await asyncio.sleep(0.02)
-            if calls["n"] >= total:
-                break
-        assert el.is_healthy(), (
-            "processor bailed out on transient add_event errors; queue-level "
-            "bail-out was incorrectly triggered by per-event failures"
-        )
-        assert calls["n"] >= total, (
-            f"only {calls['n']} of {total} events were processed; processor "
-            "stopped dequeueing despite the queue being healthy"
-        )
+        # Wait for the consumer to drain — fails fast with a clear timeout
+        # if the processor bailed out instead of surviving the transient errors.
+        await asyncio.wait_for(el._event_queue.join(), timeout=1.0)
+        assert el.is_healthy(), "processor bailed out on transient processing errors"
+        assert calls["n"] == total, f"processed {calls['n']}/{total} events"
         await el.stop()
 
     asyncio.run(run())

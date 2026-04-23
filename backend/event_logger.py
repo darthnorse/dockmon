@@ -99,7 +99,7 @@ class EventLogger:
         # put_nowait() then raises "bound to a different event loop".
         self._event_queue: Optional[asyncio.Queue] = None
         self._processing_task: Optional[asyncio.Task] = None
-        self._processor_failed: bool = False  # Set when _process_events bails out; surfaced via is_healthy()
+        self._processor_failed: bool = False
         self._active_correlations: Dict[str, List[str]] = {}
         self._correlation_timestamps: Dict[str, datetime] = {}  # Track correlation age (Issue #2 fix)
         self._correlation_cleanup_task: Optional[asyncio.Task] = None  # Periodic cleanup task (Issue #2 fix)
@@ -115,11 +115,11 @@ class EventLogger:
         """
         Report whether event persistence is operational.
 
-        Returns False if `_process_events` bailed out after exceeding
-        MAX_CONSECUTIVE_QUEUE_ERRORS. Events are still accepted into the
-        queue while unhealthy, but they accumulate until maxsize and then
-        drop with QueueFull — so this flag is the authoritative "events
-        aren't being persisted" signal for health endpoints / metrics.
+        Once `_process_events` bails out, `log_event()` calls still enqueue
+        successfully until the queue hits maxsize and then silently drop
+        with QueueFull — callers see back-pressure, not dead-end. This is
+        the authoritative "events aren't being persisted" signal for
+        health endpoints and metrics.
         """
         return not self._processor_failed
 
@@ -333,6 +333,9 @@ class EventLogger:
 
         Runs every 5 minutes to prevent unbounded memory growth.
         """
+        # Unlike `_process_events`, this loop's 300 s sleep rate-limits any
+        # persistent-error storm, so the bounded bail-out pattern is not
+        # needed here.
         while True:
             try:
                 await asyncio.sleep(300)  # Run every 5 minutes
@@ -414,24 +417,12 @@ class EventLogger:
         """
         Process events from the queue.
 
-        Two failure classes are treated differently:
-
-        1. Queue-level failures (``await self._event_queue.get()`` raises)
-           mean no future event can be dequeued — the queue itself is broken.
-           A persistent failure here was the 15 GB OOM trap: the previous
-           handler tight-looped at ~80k error records/sec and pytest's
-           caplog retained every one. We bail out after
-           ``MAX_CONSECUTIVE_QUEUE_ERRORS`` with linear backoff.
-
-        2. Per-event processing failures (e.g. a DB blip inside
-           ``add_event``) are transient. We log, drop the offending event,
-           and keep running — the queue is fine, the next event may succeed.
-
-        CancelledError during the queue.get() await cleanly terminates the
-        task. CancelledError raised during the backoff sleep below is
-        asymmetric (propagates out as unhandled) but benign: that path is
-        only reached if the queue itself is broken, which is already a
-        bail-out state.
+        Queue-level failures (``queue.get()`` raises) and per-event
+        processing failures (e.g. a DB blip inside ``add_event``) are
+        treated differently: a broken queue bails out after
+        ``MAX_CONSECUTIVE_QUEUE_ERRORS`` with linear backoff — the
+        unbounded form of this was the 15 GB OOM trap — while a transient
+        item-level error is logged and the offending event dropped.
         """
         consecutive_queue_errors = 0
 
@@ -497,10 +488,7 @@ class EventLogger:
             finally:
                 # Always mark the dequeued item as done, even on failure, so
                 # queue.join() (if any caller waits on it) can complete.
-                try:
-                    self._event_queue.task_done()
-                except Exception:
-                    pass
+                self._event_queue.task_done()
 
     # Convenience methods for common event types
 

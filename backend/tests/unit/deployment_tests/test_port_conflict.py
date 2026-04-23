@@ -7,7 +7,6 @@ auto-assigned ports, dedup across services.
 
 from dataclasses import dataclass
 from typing import Optional
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -178,7 +177,7 @@ services:
         assert extract_ports_from_compose(yaml) == [PortSpec(port=8080, protocol="tcp")]
 
 
-@dataclass
+@dataclass(frozen=True)
 class _FakeContainer:
     """Minimal fake matching the fields find_port_conflicts reads."""
     id: str
@@ -187,57 +186,38 @@ class _FakeContainer:
     labels: Optional[dict[str, str]]
 
 
-def _make_monitor(containers_by_host: dict[str, list[_FakeContainer]]) -> MagicMock:
-    """
-    Build a mock monitor whose `get_containers(host_id=...)` coroutine returns
-    the provided list for the given host, or [] for unknown hosts.
-    """
-    monitor = MagicMock()
-
-    async def _get(host_id=None):
-        return containers_by_host.get(host_id, [])
-
-    monitor.get_containers = AsyncMock(side_effect=_get)
-    return monitor
-
-
 class TestFindPortConflicts:
-    @pytest.mark.asyncio
-    async def test_empty_cache_no_conflicts(self):
-        monitor = _make_monitor({"host-A": []})
-        result = await find_port_conflicts(
-            host_id="host-A",
+    def test_empty_cache_no_conflicts(self):
+        result = find_port_conflicts(
             requested=[PortSpec(port=8080, protocol="tcp")],
+            containers=[],
             exclude_project=None,
-            monitor=monitor,
         )
         assert result == []
 
-    @pytest.mark.asyncio
-    async def test_single_match(self):
-        monitor = _make_monitor({
-            "host-A": [
+    def test_single_match(self):
+        result = find_port_conflicts(
+            requested=[PortSpec(port=8080, protocol="tcp")],
+            containers=[
                 _FakeContainer(
                     id="aaaaaaaaaaaa", name="nginx-proxy",
                     ports=["8080:80/tcp"], labels={},
                 ),
             ],
-        })
-        result = await find_port_conflicts(
-            host_id="host-A",
-            requested=[PortSpec(port=8080, protocol="tcp")],
             exclude_project=None,
-            monitor=monitor,
         )
         assert result == [Conflict(
             port=8080, protocol="tcp",
             container_id="aaaaaaaaaaaa", container_name="nginx-proxy",
         )]
 
-    @pytest.mark.asyncio
-    async def test_multiple_matches(self):
-        monitor = _make_monitor({
-            "host-A": [
+    def test_multiple_matches(self):
+        result = find_port_conflicts(
+            requested=[
+                PortSpec(port=8080, protocol="tcp"),
+                PortSpec(port=443, protocol="tcp"),
+            ],
+            containers=[
                 _FakeContainer(
                     id="aaaaaaaaaaaa", name="nginx",
                     ports=["8080:80/tcp"], labels={},
@@ -247,125 +227,89 @@ class TestFindPortConflicts:
                     ports=["443:443/tcp"], labels={},
                 ),
             ],
-        })
-        result = await find_port_conflicts(
-            host_id="host-A",
-            requested=[
-                PortSpec(port=8080, protocol="tcp"),
-                PortSpec(port=443, protocol="tcp"),
-            ],
             exclude_project=None,
-            monitor=monitor,
         )
         assert len(result) == 2
         ports = {c.port for c in result}
         assert ports == {8080, 443}
 
-    @pytest.mark.asyncio
-    async def test_tcp_udp_separation(self):
-        monitor = _make_monitor({
-            "host-A": [
+    def test_tcp_udp_separation(self):
+        result = find_port_conflicts(
+            requested=[PortSpec(port=53, protocol="tcp")],  # TCP, not UDP
+            containers=[
                 _FakeContainer(
                     id="aaaaaaaaaaaa", name="dns",
                     ports=["53:53/udp"], labels={},
                 ),
             ],
-        })
-        result = await find_port_conflicts(
-            host_id="host-A",
-            requested=[PortSpec(port=53, protocol="tcp")],  # TCP, not UDP
             exclude_project=None,
-            monitor=monitor,
         )
         assert result == []
 
-    @pytest.mark.asyncio
-    async def test_exclude_project_filter_hits(self):
-        monitor = _make_monitor({
-            "host-A": [
+    def test_exclude_project_filter_hits(self):
+        result = find_port_conflicts(
+            requested=[PortSpec(port=8080, protocol="tcp")],
+            containers=[
                 _FakeContainer(
                     id="aaaaaaaaaaaa", name="foo-web",
                     ports=["8080:80/tcp"],
                     labels={"com.docker.compose.project": "foo"},
                 ),
             ],
-        })
-        result = await find_port_conflicts(
-            host_id="host-A",
-            requested=[PortSpec(port=8080, protocol="tcp")],
             exclude_project="foo",
-            monitor=monitor,
         )
         # foo's own container is excluded - no conflict reported
         assert result == []
 
-    @pytest.mark.asyncio
-    async def test_exclude_project_filter_misses(self):
-        monitor = _make_monitor({
-            "host-A": [
+    def test_exclude_project_filter_misses(self):
+        result = find_port_conflicts(
+            requested=[PortSpec(port=8080, protocol="tcp")],
+            containers=[
                 _FakeContainer(
                     id="aaaaaaaaaaaa", name="bar-web",
                     ports=["8080:80/tcp"],
                     labels={"com.docker.compose.project": "bar"},
                 ),
             ],
-        })
-        result = await find_port_conflicts(
-            host_id="host-A",
-            requested=[PortSpec(port=8080, protocol="tcp")],
             exclude_project="foo",  # looking for foo, but bar is what's there
-            monitor=monitor,
         )
         assert len(result) == 1
         assert result[0].container_name == "bar-web"
 
-    @pytest.mark.asyncio
-    async def test_external_docker_run_still_flagged(self):
+    def test_external_docker_run_still_flagged(self):
         """Containers without compose labels are flagged even when exclude_project is set."""
-        monitor = _make_monitor({
-            "host-A": [
+        result = find_port_conflicts(
+            requested=[PortSpec(port=8080, protocol="tcp")],
+            containers=[
                 _FakeContainer(
                     id="aaaaaaaaaaaa", name="rogue",
                     ports=["8080:80/tcp"],
                     labels={},  # no compose project label
                 ),
             ],
-        })
-        result = await find_port_conflicts(
-            host_id="host-A",
-            requested=[PortSpec(port=8080, protocol="tcp")],
             exclude_project="foo",
-            monitor=monitor,
         )
         assert len(result) == 1
         assert result[0].container_name == "rogue"
 
-    @pytest.mark.asyncio
-    async def test_no_cache_for_host(self):
-        monitor = _make_monitor({})  # host not in cache
-        result = await find_port_conflicts(
-            host_id="host-unknown",
+    def test_no_containers(self):
+        result = find_port_conflicts(
             requested=[PortSpec(port=8080, protocol="tcp")],
+            containers=[],
             exclude_project=None,
-            monitor=monitor,
         )
         assert result == []
 
-    @pytest.mark.asyncio
-    async def test_port_with_no_protocol_defaults_tcp(self):
+    def test_port_with_no_protocol_defaults_tcp(self):
         """Container.ports strings may lack a protocol suffix (bare '8080:80')."""
-        monitor = _make_monitor({
-            "host-A": [
+        result = find_port_conflicts(
+            requested=[PortSpec(port=8080, protocol="tcp")],
+            containers=[
                 _FakeContainer(
                     id="aaaaaaaaaaaa", name="x",
                     ports=["8080:80"], labels={},
                 ),
             ],
-        })
-        result = await find_port_conflicts(
-            host_id="host-A",
-            requested=[PortSpec(port=8080, protocol="tcp")],
             exclude_project=None,
-            monitor=monitor,
         )
         assert len(result) == 1

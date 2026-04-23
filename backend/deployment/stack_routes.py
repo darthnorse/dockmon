@@ -228,12 +228,12 @@ async def validate_stack_ports(
     existing bindings as conflicts.
 
     Returns 404 if the stack doesn't exist, 400 if the compose is malformed,
-    and 409 if the host is unreachable or not in the monitor cache.
+    and 409 if the host is unreachable.
     """
-    if not await stack_storage.stack_exists(name):
+    try:
+        compose_yaml, _env = await stack_storage.read_stack(name)
+    except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Stack '{name}' not found")
-
-    compose_yaml, _env = await stack_storage.read_stack(name)
 
     try:
         requested = extract_ports_from_compose(compose_yaml)
@@ -244,32 +244,22 @@ async def validate_stack_ports(
         return ValidatePortsResponse(conflicts=[])
 
     monitor = get_docker_monitor()
-    try:
-        conflicts = await find_port_conflicts(
-            host_id=request.host_id,
-            requested=requested,
-            exclude_project=name,
-            monitor=monitor,
-        )
-    except Exception as exc:
-        # Host offline, cache miss, or transient Docker error - surface as 409
-        # so the UI shows the neutral "skipped" variant rather than a hard error.
-        logger.warning(
-            "validate-ports failed for stack=%s host=%s: %s",
-            name, request.host_id, exc,
-        )
+    host = monitor.hosts.get(request.host_id)
+    if host is None or host.status != "online":
         raise HTTPException(status_code=409, detail="Host not available for port check")
 
+    # Use the 2-second-stale cache rather than a live Docker fan-out; this
+    # endpoint is advisory and may fire on every host change + deploy click.
+    containers = [c for c in monitor.get_last_containers() if c.host_id == request.host_id]
+
+    conflicts = find_port_conflicts(
+        requested=requested,
+        containers=containers,
+        exclude_project=name,
+    )
+
     return ValidatePortsResponse(
-        conflicts=[
-            PortConflictItem(
-                port=c.port,
-                protocol=c.protocol,
-                container_id=c.container_id,
-                container_name=c.container_name,
-            )
-            for c in conflicts
-        ]
+        conflicts=[PortConflictItem.model_validate(c, from_attributes=True) for c in conflicts]
     )
 
 

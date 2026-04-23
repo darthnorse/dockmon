@@ -24,6 +24,7 @@ interface UsePortConflictsResult {
 }
 
 const QUERY_KEY_ROOT = 'port-conflicts' as const
+const EMPTY_CONFLICTS: readonly PortConflict[] = Object.freeze([])
 
 async function fetchConflicts(stackName: string, hostId: string): Promise<PortConflict[]> {
   const data = await apiClient.post<ValidatePortsResponse>(
@@ -55,7 +56,7 @@ export function usePortConflicts({ stackName, hostId }: UsePortConflictsArgs): U
   }
 
   return {
-    conflicts: query.data ?? [],
+    conflicts: query.data ?? (EMPTY_CONFLICTS as PortConflict[]),
     isLoading: query.isLoading,
     error: query.error,
     recheck,

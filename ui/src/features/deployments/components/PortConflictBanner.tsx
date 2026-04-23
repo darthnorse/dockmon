@@ -41,7 +41,7 @@ export function PortConflictBanner({
   return (
     <div className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm">
       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
-      <div className="flex-1 space-y-1">
+      <div className="space-y-1">
         <p className="font-medium text-warning">
           Port conflicts on {hostName}
         </p>

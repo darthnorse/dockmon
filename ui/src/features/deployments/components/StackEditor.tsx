@@ -178,7 +178,6 @@ export function StackEditor({
     [hostId, deployedTo]
   )
 
-  // Port conflict check against the selected host's running containers.
   const {
     conflicts: portConflicts,
     isLoading: portCheckLoading,
@@ -189,7 +188,7 @@ export function StackEditor({
     hostId: hostId || null,
   })
 
-  const [pendingDeploy, setPendingDeploy] = useState<null | { conflicts: PortConflict[] }>(null)
+  const [showPortConfirm, setShowPortConfirm] = useState(false)
 
   // Reset form state
   const resetForm = useCallback(() => {
@@ -422,7 +421,7 @@ export function StackEditor({
       return
     }
     if (fresh.length > 0) {
-      setPendingDeploy({ conflicts: fresh })
+      setShowPortConfirm(true)
       return
     }
     await executeDeploy()
@@ -802,10 +801,7 @@ export function StackEditor({
       </AlertDialog>
 
       {/* Port conflict confirmation */}
-      <AlertDialog
-        open={pendingDeploy !== null}
-        onOpenChange={(open) => !open && setPendingDeploy(null)}
-      >
+      <AlertDialog open={showPortConfirm} onOpenChange={setShowPortConfirm}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Port conflicts detected</AlertDialogTitle>
@@ -815,24 +811,22 @@ export function StackEditor({
                   The following host ports are already in use on this target.
                   Deploying anyway may fail when Docker tries to bind them.
                 </p>
-                {pendingDeploy?.conflicts && (
-                  <ul className="space-y-0.5 text-sm">
-                    {pendingDeploy.conflicts.map((c) => (
-                      <li key={`${c.port}-${c.protocol}-${c.container_id}`}>
-                        Port <code className="rounded bg-muted px-1">{c.port}/{c.protocol}</code>
-                        {' '}— {c.container_name}
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                <ul className="space-y-0.5 text-sm">
+                  {portConflicts.map((c) => (
+                    <li key={`${c.port}-${c.protocol}-${c.container_id}`}>
+                      Port <code className="rounded bg-muted px-1">{c.port}/{c.protocol}</code>
+                      {' '}— {c.container_name}
+                    </li>
+                  ))}
+                </ul>
               </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => setPendingDeploy(null)}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={async () => {
-                setPendingDeploy(null)
+                setShowPortConfirm(false)
                 await executeDeploy()
               }}
             >

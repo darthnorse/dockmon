@@ -5,8 +5,21 @@ Covers: conflict detection, self-exclusion on redeploy, 404/400/409 paths,
 and graceful degradation when the host is unreachable.
 """
 
+from dataclasses import dataclass
+from typing import Optional
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+
+@dataclass(frozen=True)
+class _FakeContainer:
+    """Matches the fields validate-ports reads from the monitor cache."""
+    id: str
+    name: str
+    host_id: str
+    ports: Optional[list[str]]
+    labels: Optional[dict[str, str]]
 
 
 @pytest.fixture
@@ -22,12 +35,8 @@ services:
 
 @pytest.fixture
 def stack_exists(monkeypatch, valid_compose_yaml):
-    """Make stack_storage report the stack exists and return valid compose."""
+    """Make stack_storage.read_stack return valid compose."""
     from deployment import stack_storage
-    monkeypatch.setattr(
-        stack_storage, "stack_exists",
-        AsyncMock(return_value=True),
-    )
     monkeypatch.setattr(
         stack_storage, "read_stack",
         AsyncMock(return_value=(valid_compose_yaml, "")),
@@ -66,39 +75,29 @@ def override_monitor(monkeypatch):
     """
     Replace the monitor used by stack_routes with a MagicMock.
 
-    The route calls `get_docker_monitor()` (exported from deployment.routes)
-    to fetch the monitor. We swap that module-level reference to a freshly
-    configured MagicMock whose `get_containers` attribute the individual
-    tests can then rewire per-test.
+    The route reads `monitor.hosts[host_id].status` and
+    `monitor.get_last_containers()`. By default the mock host is online
+    with an empty cache; individual tests override per-test.
     """
     from deployment import routes as deployment_routes
 
     mock_monitor = MagicMock()
-    mock_monitor.get_containers = AsyncMock(return_value=[])
+    mock_monitor.hosts = {"host-A": MagicMock(status="online")}
+    mock_monitor.get_last_containers = MagicMock(return_value=[])
 
-    # deployment.routes owns the singleton; stack_routes imports
-    # get_docker_monitor from deployment.routes and calls it at request time,
-    # so patching the module-level _docker_monitor in deployment.routes is enough.
     monkeypatch.setattr(deployment_routes, "_docker_monitor", mock_monitor)
 
     return mock_monitor
 
 
-def _fake_container(id, name, ports, labels=None):
-    """Build a duck-typed container with the attributes find_port_conflicts reads."""
-    c = MagicMock()
-    c.id = id
-    c.name = name
-    c.ports = ports
-    c.labels = labels or {}
-    return c
-
-
 @pytest.mark.integration
 class TestValidatePortsRoute:
     def test_conflict_returned(self, authed_client, stack_exists, override_monitor):
-        override_monitor.get_containers = AsyncMock(return_value=[
-            _fake_container("aaaaaaaaaaaa", "nginx-proxy", ["8080:80/tcp"]),
+        override_monitor.get_last_containers = MagicMock(return_value=[
+            _FakeContainer(
+                id="aaaaaaaaaaaa", name="nginx-proxy", host_id="host-A",
+                ports=["8080:80/tcp"], labels={},
+            ),
         ])
 
         response = authed_client.post(
@@ -116,8 +115,6 @@ class TestValidatePortsRoute:
         assert conflict["container_id"] == "aaaaaaaaaaaa"
 
     def test_no_conflicts(self, authed_client, stack_exists, override_monitor):
-        override_monitor.get_containers = AsyncMock(return_value=[])
-
         response = authed_client.post(
             "/api/stacks/foo/validate-ports",
             json={"host_id": "host-A"},
@@ -127,9 +124,10 @@ class TestValidatePortsRoute:
         assert response.json() == {"conflicts": []}
 
     def test_redeploy_self_exclusion(self, authed_client, stack_exists, override_monitor):
-        override_monitor.get_containers = AsyncMock(return_value=[
-            _fake_container(
-                "aaaaaaaaaaaa", "foo-web", ["8080:80/tcp"],
+        override_monitor.get_last_containers = MagicMock(return_value=[
+            _FakeContainer(
+                id="aaaaaaaaaaaa", name="foo-web", host_id="host-A",
+                ports=["8080:80/tcp"],
                 labels={"com.docker.compose.project": "foo"},
             ),
         ])
@@ -145,8 +143,8 @@ class TestValidatePortsRoute:
     def test_stack_not_found(self, authed_client, monkeypatch, override_monitor):
         from deployment import stack_storage
         monkeypatch.setattr(
-            stack_storage, "stack_exists",
-            AsyncMock(return_value=False),
+            stack_storage, "read_stack",
+            AsyncMock(side_effect=FileNotFoundError("Stack 'does-not-exist' not found")),
         )
 
         response = authed_client.post(
@@ -156,29 +154,26 @@ class TestValidatePortsRoute:
 
         assert response.status_code == 404
 
-    def test_host_unavailable(self, authed_client, stack_exists, override_monitor):
-        # get_containers raises — e.g., host offline
-        override_monitor.get_containers = AsyncMock(
-            side_effect=RuntimeError("host offline")
-        )
+    def test_host_offline(self, authed_client, stack_exists, override_monitor):
+        override_monitor.hosts["host-A"] = MagicMock(status="offline")
 
         response = authed_client.post(
             "/api/stacks/foo/validate-ports",
-            json={"host_id": "host-offline"},
+            json={"host_id": "host-A"},
+        )
+
+        assert response.status_code == 409
+
+    def test_host_unknown(self, authed_client, stack_exists, override_monitor):
+        response = authed_client.post(
+            "/api/stacks/foo/validate-ports",
+            json={"host_id": "host-unknown"},
         )
 
         assert response.status_code == 409
 
     def test_malformed_compose(self, authed_client, monkeypatch, override_monitor):
         from deployment import stack_storage
-        monkeypatch.setattr(
-            stack_storage, "stack_exists",
-            AsyncMock(return_value=True),
-        )
-        # Return compose that's structurally valid YAML but raises ValueError
-        # from extract_ports_from_compose (services as a list).
-        # Actually: services-as-list now returns [] gracefully (handled in Task 1
-        # fix commit bc70d0f), so we need a TRULY malformed YAML here.
         monkeypatch.setattr(
             stack_storage, "read_stack",
             AsyncMock(return_value=("services:\n  web:\n    image: [unclosed", "")),

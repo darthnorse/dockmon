@@ -15,6 +15,8 @@ from typing import Iterable
 
 import yaml
 
+from deployment.container_utils import get_container_compose_project
+
 logger = logging.getLogger(__name__)
 
 # Short-form pattern: [ip:]host_port[-range][:container_port[-range]][/protocol]
@@ -58,7 +60,6 @@ def _parse_short_form(entry: str) -> list[PortSpec]:
     if container is None:
         return []
 
-    # Expand range like "3000-3005"
     if "-" in host:
         start_str, end_str = host.split("-", 1)
         start, end = int(start_str), int(end_str)
@@ -169,44 +170,31 @@ def _parse_cache_port(entry: str) -> PortSpec | None:
     return PortSpec(port=int(host), protocol=protocol)
 
 
-async def find_port_conflicts(
-    host_id: str,
+def find_port_conflicts(
     requested: list[PortSpec],
+    containers: list,
     exclude_project: str | None,
-    monitor,
 ) -> list[Conflict]:
     """
-    Return the subset of `requested` port bindings that would collide with
-    containers currently running on `host_id`.
+    Return the subset of `requested` port bindings that collide with ports
+    already bound by `containers` on the same host.
 
     Containers whose `com.docker.compose.project` label equals
     `exclude_project` are ignored (self-exclusion on redeploy).
 
     Args:
-        host_id: Target host UUID.
         requested: Port bindings the stack is asking for.
+        containers: Cached container records from the target host. Each
+            must expose `.id`, `.name`, `.ports`, `.labels`.
         exclude_project: Compose project name whose containers should be
             excluded from the baseline. Typically the stack's own name.
-        monitor: DockerMonitor instance with `get_containers(host_id=...)`.
-
-    Returns:
-        One Conflict per requested port that matches a running container's
-        host port + protocol. Empty list on no match, unknown host, or
-        empty `requested`.
     """
-    if not requested:
+    if not requested or not containers:
         return []
 
-    containers = await monitor.get_containers(host_id=host_id)
-    if not containers:
-        return []
-
-    # Build a map of (port, protocol) -> (container_id, container_name),
-    # skipping excluded project.
     baseline: dict[PortSpec, tuple[str, str]] = {}
     for c in containers:
-        labels = c.labels or {}
-        if exclude_project and labels.get("com.docker.compose.project") == exclude_project:
+        if exclude_project and get_container_compose_project(c) == exclude_project:
             continue
         for entry in (c.ports or []):
             spec = _parse_cache_port(entry)

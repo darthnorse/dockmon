@@ -217,15 +217,19 @@ async def find_port_conflicts(
             # and not ours to deduplicate against.
             baseline.setdefault(spec, (c.id[:12], c.name))
 
-    requested_set = set(requested)
     conflicts: list[Conflict] = []
+    reported: set[PortSpec] = set()
     for spec in requested:
-        if spec in requested_set and spec in baseline:
-            cid, cname = baseline[spec]
-            conflicts.append(Conflict(
-                port=spec.port, protocol=spec.protocol,
-                container_id=cid, container_name=cname,
-            ))
-            requested_set.discard(spec)  # dedup across the requested input
+        if spec in reported:
+            continue
+        match = baseline.get(spec)
+        if match is None:
+            continue
+        cid, cname = match
+        conflicts.append(Conflict(
+            port=spec.port, protocol=spec.protocol,
+            container_id=cid, container_name=cname,
+        ))
+        reported.add(spec)
 
     return conflicts

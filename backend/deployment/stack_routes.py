@@ -213,7 +213,7 @@ async def get_stack(name: str, user=Depends(get_current_user)):
 @router.post(
     "/{name}/validate-ports",
     response_model=ValidatePortsResponse,
-    dependencies=[Depends(require_capability("stacks.deploy"))],
+    dependencies=[rate_limit_stacks, Depends(require_capability("stacks.deploy"))],
 )
 async def validate_stack_ports(
     name: str,

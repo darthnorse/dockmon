@@ -414,7 +414,13 @@ export function StackEditor({
   // the user before proceeding. Docker is still the final gate.
   const onDeployClick = async () => {
     if (!hostId || !selectedStackName || selectedStackName === '__new__') return
-    const fresh = await recheckPorts()
+    let fresh: PortConflict[] = []
+    try {
+      fresh = await recheckPorts()
+    } catch {
+      await executeDeploy()
+      return
+    }
     if (fresh.length > 0) {
       setPendingDeploy({ conflicts: fresh })
       return

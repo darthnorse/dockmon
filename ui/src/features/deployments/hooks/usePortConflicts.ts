@@ -57,7 +57,7 @@ export function usePortConflicts({ stackName, hostId }: UsePortConflictsArgs): U
   return {
     conflicts: query.data ?? [],
     isLoading: query.isLoading,
-    error: (query.error as Error) ?? null,
+    error: query.error,
     recheck,
   }
 }

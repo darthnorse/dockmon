@@ -89,18 +89,7 @@ def test_log_event_before_start_is_safe():
 
 
 def test_process_events_bails_out_on_persistent_queue_error(caplog):
-    """
-    If queue.get() raises persistently, `_process_events` must bail out
-    within a bounded number of iterations instead of tight-looping through
-    `except Exception: logger.error; continue`.
-
-    Regression guard for the 15 GB OOM: an unfixed loop-binding bug drove
-    ~80k error records/sec through the Python logger; pytest's caplog buffer
-    held every record and anon RSS reached 15 GB in seconds, OOM-killing
-    the host. This test pins the backoff + bail-out behaviour so that even
-    if a future bug causes `get()` to raise persistently again, the failure
-    mode is "processor exits, a few errors logged" rather than "host dies".
-    """
+    """Persistent queue.get() failures must bail out within MAX_CONSECUTIVE_QUEUE_ERRORS."""
     el = _make_logger()
     cap = EventLogger.MAX_CONSECUTIVE_QUEUE_ERRORS
 
@@ -117,41 +106,25 @@ def test_process_events_bails_out_on_persistent_queue_error(caplog):
     async def run():
         el._event_queue = broken
         task = asyncio.create_task(el._process_events())
-        # Generous timeout: a well-behaved bailout completes in < 1 s.
-        # A tight loop would blow through millions of iterations before this.
         await asyncio.wait_for(task, timeout=5.0)
 
     with caplog.at_level(logging.ERROR, logger="event_logger"):
         asyncio.run(run())
 
-    # One get() per consecutive error, then break. Tight bound catches
-    # off-by-one regressions or a forgotten counter reset.
     assert broken.gets == cap, f"expected {cap} get() calls, got {broken.gets}"
 
-    # Exactly two error lines: first-error report + bail-out summary.
     error_records = [r for r in caplog.records if r.name == "event_logger"]
+    # first-error log + bail-out summary.
     assert len(error_records) == 2, f"expected 2 error records, got {len(error_records)}"
-    assert any("stopping after" in r.getMessage() for r in error_records), (
-        "bail-out summary not logged"
-    )
-    assert not el.is_healthy(), "processor bailed out; is_healthy() must return False"
+    assert any("stopping after" in r.getMessage() for r in error_records)
+    assert not el.is_healthy()
 
 
 def test_process_events_survives_transient_processing_errors():
-    """
-    Per-event processing failures (e.g. a DB blip inside `add_event`) must
-    NOT trip the queue-level bail-out. Only the queue itself being broken
-    triggers the safety shutdown; a transient DB error should be logged,
-    the event dropped, and the processor should keep going.
-
-    This pins the invariant that separates item-level failures from
-    queue-level failures: a 2-second DB network hiccup must not take down
-    event persistence for the rest of the process lifetime.
-    """
+    """Item-level add_event failures must not trip the queue-error bail-out."""
     el = _make_logger()
     cap = EventLogger.MAX_CONSECUTIVE_QUEUE_ERRORS
-    # Inject more consecutive add_event failures than the queue-error cap
-    # so a broad `except Exception` catch (the old code) would bail out.
+    # More failures than the queue-error cap, so a broad catch would bail.
     failures_before_success = cap + 3
 
     calls = {"n": 0}
@@ -160,7 +133,7 @@ def test_process_events_survives_transient_processing_errors():
         calls["n"] += 1
         if calls["n"] <= failures_before_success:
             raise RuntimeError("transient DB blip")
-        return None  # Success; no WS broadcast path needed
+        return None
 
     el.db.add_event = flaky_add
 
@@ -174,10 +147,8 @@ def test_process_events_survives_transient_processing_errors():
                 severity=EventSeverity.INFO,
                 event_type=EventType.STARTUP,
             )
-        # Wait for the consumer to drain — fails fast with a clear timeout
-        # if the processor bailed out instead of surviving the transient errors.
         await asyncio.wait_for(el._event_queue.join(), timeout=1.0)
-        assert el.is_healthy(), "processor bailed out on transient processing errors"
+        assert el.is_healthy()
         assert calls["n"] == total, f"processed {calls['n']}/{total} events"
         await el.stop()
 
@@ -185,7 +156,7 @@ def test_process_events_survives_transient_processing_errors():
 
 
 def test_is_healthy_true_by_default_and_after_clean_lifecycle():
-    """is_healthy() reports True on a fresh logger and after a clean stop."""
+    """is_healthy() reports True on a fresh logger, during run, and after a clean stop."""
     el = _make_logger()
     assert el.is_healthy() is True
 
@@ -195,5 +166,4 @@ def test_is_healthy_true_by_default_and_after_clean_lifecycle():
         await el.stop()
 
     asyncio.run(cycle())
-    # After a clean stop, healthy stays True — only explicit bail-out flips it.
     assert el.is_healthy() is True

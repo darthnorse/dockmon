@@ -84,9 +84,9 @@ class EventLogger:
     """Comprehensive event logging service"""
 
     # Consecutive queue-level errors that trigger bail-out from
-    # _process_events. Keeps the failure bounded if the queue itself is
-    # broken (e.g. futures bound to a dead loop) — the incident that drove
-    # anon RSS to 15 GB under pytest's caplog.
+    # _process_events. Bounds the failure if the queue itself is broken
+    # (e.g. futures bound to a dead loop) so a tight error loop can't
+    # flood the Python logger.
     MAX_CONSECUTIVE_QUEUE_ERRORS = 5
 
     def __init__(self, db: DatabaseManager, websocket_manager=None):
@@ -112,15 +112,7 @@ class EventLogger:
         self._suppression_patterns: List[str] = []  # Glob patterns for container names to suppress
 
     def is_healthy(self) -> bool:
-        """
-        Report whether event persistence is operational.
-
-        Once `_process_events` bails out, `log_event()` calls still enqueue
-        successfully until the queue hits maxsize and then silently drop
-        with QueueFull — callers see back-pressure, not dead-end. This is
-        the authoritative "events aren't being persisted" signal for
-        health endpoints and metrics.
-        """
+        """True unless `_process_events` has bailed out."""
         return not self._processor_failed
 
     async def start(self):
@@ -333,9 +325,6 @@ class EventLogger:
 
         Runs every 5 minutes to prevent unbounded memory growth.
         """
-        # Unlike `_process_events`, this loop's 300 s sleep rate-limits any
-        # persistent-error storm, so the bounded bail-out pattern is not
-        # needed here.
         while True:
             try:
                 await asyncio.sleep(300)  # Run every 5 minutes
@@ -417,12 +406,11 @@ class EventLogger:
         """
         Process events from the queue.
 
-        Queue-level failures (``queue.get()`` raises) and per-event
+        Queue-level failures (``queue.get()`` raises) bail out after
+        ``MAX_CONSECUTIVE_QUEUE_ERRORS`` with linear backoff. Per-event
         processing failures (e.g. a DB blip inside ``add_event``) are
-        treated differently: a broken queue bails out after
-        ``MAX_CONSECUTIVE_QUEUE_ERRORS`` with linear backoff — the
-        unbounded form of this was the 15 GB OOM trap — while a transient
-        item-level error is logged and the offending event dropped.
+        logged, the offending event dropped, and the loop continues —
+        item-level faults don't count toward the bail-out threshold.
         """
         consecutive_queue_errors = 0
 
@@ -443,14 +431,9 @@ class EventLogger:
                     )
                     self._processor_failed = True
                     break
-                # Linear backoff so transient queue hiccups don't burn a CPU
-                # before the bail-out threshold.
                 await asyncio.sleep(min(0.05 * consecutive_queue_errors, 0.5))
                 continue
 
-            # Successful dequeue — process the event. Failures here do NOT
-            # count toward the bail-out threshold; the queue is fine, we
-            # just drop this event and move on.
             try:
                 event_obj = self.db.add_event(event_data)
 
@@ -486,8 +469,6 @@ class EventLogger:
             except Exception as e:
                 logger.error(f"Error processing event: {e}")
             finally:
-                # Always mark the dequeued item as done, even on failure, so
-                # queue.join() (if any caller waits on it) can complete.
                 self._event_queue.task_done()
 
     # Convenience methods for common event types

@@ -151,6 +151,12 @@ services:
 """
         assert extract_ports_from_compose(yaml) == []
 
+    def test_non_dict_yaml_root_returns_empty(self):
+        """Valid YAML whose top level isn't a mapping (list, string, int) returns empty, not a crash."""
+        assert extract_ports_from_compose("- a\n- b") == []
+        assert extract_ports_from_compose("'just a string'") == []
+        assert extract_ports_from_compose("42") == []
+
     def test_ports_not_list_skipped(self):
         """Service with ports declared as a scalar (structurally invalid) is skipped, not a crash."""
         yaml = """

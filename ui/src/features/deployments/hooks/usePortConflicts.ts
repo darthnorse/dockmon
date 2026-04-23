@@ -47,7 +47,7 @@ export function usePortConflicts({ stackName, hostId }: UsePortConflictsArgs): U
   })
 
   const recheck = async (): Promise<PortConflict[]> => {
-    if (!stackName || !hostId) return []
+    if (!stackName || !hostId) return EMPTY_CONFLICTS as PortConflict[]
     return queryClient.fetchQuery({
       queryKey: [QUERY_KEY_ROOT, stackName, hostId],
       queryFn: () => fetchConflicts(stackName, hostId),

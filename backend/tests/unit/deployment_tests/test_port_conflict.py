@@ -165,6 +165,18 @@ services:
         with pytest.raises(ValueError, match="Invalid compose YAML"):
             extract_ports_from_compose("services:\n  web:\n    image: [unclosed")
 
+    def test_malformed_long_form_published_raises(self):
+        yaml = """
+services:
+  web:
+    image: nginx
+    ports:
+      - target: 80
+        published: 8080-abc
+"""
+        with pytest.raises(ValueError, match="Invalid published port"):
+            extract_ports_from_compose(yaml)
+
     def test_numeric_port_values(self):
         # Compose allows numeric (integer) port values in short form
         yaml = """

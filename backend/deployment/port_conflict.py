@@ -1,9 +1,9 @@
 """
 Port collision detection for stack deployments.
 
-Pure module — no Docker calls, no I/O beyond YAML parsing. Operates on the
-monitor's in-memory container cache to surface host-port conflicts before
-a stack deploy is submitted.
+Pure module — no Docker calls, no I/O beyond YAML parsing. Callers pass
+in a pre-fetched container list; this module reports which of the
+stack's requested host-port bindings would collide.
 
 See docs/superpowers/specs/2026-04-22-port-collision-detection-design.md
 """
@@ -78,6 +78,9 @@ def _parse_long_form(entry: dict) -> list[PortSpec]:
     Example: {target: 80, published: 8080, protocol: tcp, mode: host}
 
     Returns [] if `published` is missing (auto-assign).
+
+    Raises:
+        ValueError: if `published` is not a valid port number or range.
     """
     published = entry.get("published")
     if published is None:
@@ -85,13 +88,16 @@ def _parse_long_form(entry: dict) -> list[PortSpec]:
     protocol = entry.get("protocol") or "tcp"
     # published can be int or string like "8080" or "8080-8085"
     pub_str = str(published)
-    if "-" in pub_str:
-        start_str, end_str = pub_str.split("-", 1)
-        start, end = int(start_str), int(end_str)
-        if start > end:
-            return []
-        return [PortSpec(port=p, protocol=protocol) for p in range(start, end + 1)]
-    return [PortSpec(port=int(pub_str), protocol=protocol)]
+    try:
+        if "-" in pub_str:
+            start_str, end_str = pub_str.split("-", 1)
+            start, end = int(start_str), int(end_str)
+            if start > end:
+                return []
+            return [PortSpec(port=p, protocol=protocol) for p in range(start, end + 1)]
+        return [PortSpec(port=int(pub_str), protocol=protocol)]
+    except ValueError as exc:
+        raise ValueError(f"Invalid published port in compose: {pub_str!r}") from exc
 
 
 def extract_ports_from_compose(compose_yaml: str) -> list[PortSpec]:
@@ -115,7 +121,7 @@ def extract_ports_from_compose(compose_yaml: str) -> list[PortSpec]:
     seen: set[PortSpec] = set()
     result: list[PortSpec] = []
 
-    for service_name, service in services.items():
+    for service in services.values():
         if not isinstance(service, dict):
             continue
         ports = service.get("ports")
@@ -206,10 +212,7 @@ def find_port_conflicts(
             baseline.setdefault(spec, (c.id[:12], c.name))
 
     conflicts: list[Conflict] = []
-    reported: set[PortSpec] = set()
     for spec in requested:
-        if spec in reported:
-            continue
         match = baseline.get(spec)
         if match is None:
             continue
@@ -218,6 +221,5 @@ def find_port_conflicts(
             port=spec.port, protocol=spec.protocol,
             container_id=cid, container_name=cname,
         ))
-        reported.add(spec)
 
     return conflicts

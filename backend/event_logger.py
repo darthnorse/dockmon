@@ -83,6 +83,12 @@ class EventContext:
 class EventLogger:
     """Comprehensive event logging service"""
 
+    # Consecutive queue-level errors that trigger bail-out from
+    # _process_events. Keeps the failure bounded if the queue itself is
+    # broken (e.g. futures bound to a dead loop) — the incident that drove
+    # anon RSS to 15 GB under pytest's caplog.
+    MAX_CONSECUTIVE_QUEUE_ERRORS = 5
+
     def __init__(self, db: DatabaseManager, websocket_manager=None):
         self.db = db
         self.websocket_manager = websocket_manager
@@ -93,6 +99,7 @@ class EventLogger:
         # put_nowait() then raises "bound to a different event loop".
         self._event_queue: Optional[asyncio.Queue] = None
         self._processing_task: Optional[asyncio.Task] = None
+        self._processor_failed: bool = False  # Set when _process_events bails out; surfaced via is_healthy()
         self._active_correlations: Dict[str, List[str]] = {}
         self._correlation_timestamps: Dict[str, datetime] = {}  # Track correlation age (Issue #2 fix)
         self._correlation_cleanup_task: Optional[asyncio.Task] = None  # Periodic cleanup task (Issue #2 fix)
@@ -104,11 +111,24 @@ class EventLogger:
         self.CORRELATION_TTL = 3600  # 1 hour in seconds (Issue #2 fix)
         self._suppression_patterns: List[str] = []  # Glob patterns for container names to suppress
 
+    def is_healthy(self) -> bool:
+        """
+        Report whether event persistence is operational.
+
+        Returns False if `_process_events` bailed out after exceeding
+        MAX_CONSECUTIVE_QUEUE_ERRORS. Events are still accepted into the
+        queue while unhealthy, but they accumulate until maxsize and then
+        drop with QueueFull — so this flag is the authoritative "events
+        aren't being persisted" signal for health endpoints / metrics.
+        """
+        return not self._processor_failed
+
     async def start(self):
         """Start the event processing task"""
         if not self._processing_task:
             # Fresh queue on every start so its futures bind to the current loop.
             self._event_queue = asyncio.Queue(maxsize=10000)
+            self._processor_failed = False
             self._processing_task = asyncio.create_task(self._process_events())
             logger.info("Event logger started")
 
@@ -391,19 +411,56 @@ class EventLogger:
             logger.error(f"Error cleaning up correlations: {e}", exc_info=True)
 
     async def _process_events(self):
-        """Process events from the queue"""
-        # Bail out after this many consecutive queue errors. Persistent
-        # failures (e.g. a queue whose futures are bound to a dead loop)
-        # previously tight-looped through `logger.error; continue`, which
-        # under pytest's caplog drove anon RSS to 15 GB in seconds and
-        # OOM-killed the host. Breaking out keeps the failure mode bounded.
-        MAX_CONSECUTIVE_ERRORS = 5
-        consecutive_errors = 0
+        """
+        Process events from the queue.
+
+        Two failure classes are treated differently:
+
+        1. Queue-level failures (``await self._event_queue.get()`` raises)
+           mean no future event can be dequeued — the queue itself is broken.
+           A persistent failure here was the 15 GB OOM trap: the previous
+           handler tight-looped at ~80k error records/sec and pytest's
+           caplog retained every one. We bail out after
+           ``MAX_CONSECUTIVE_QUEUE_ERRORS`` with linear backoff.
+
+        2. Per-event processing failures (e.g. a DB blip inside
+           ``add_event``) are transient. We log, drop the offending event,
+           and keep running — the queue is fine, the next event may succeed.
+
+        CancelledError during the queue.get() await cleanly terminates the
+        task. CancelledError raised during the backoff sleep below is
+        asymmetric (propagates out as unhandled) but benign: that path is
+        only reached if the queue itself is broken, which is already a
+        bail-out state.
+        """
+        consecutive_queue_errors = 0
 
         while True:
             try:
                 event_data = await self._event_queue.get()
-                # Save to database
+                consecutive_queue_errors = 0
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                consecutive_queue_errors += 1
+                if consecutive_queue_errors == 1:
+                    logger.error(f"Queue error in event processor: {e}")
+                if consecutive_queue_errors >= self.MAX_CONSECUTIVE_QUEUE_ERRORS:
+                    logger.error(
+                        f"Event processor stopping after {consecutive_queue_errors} "
+                        f"consecutive queue errors; last error: {e}"
+                    )
+                    self._processor_failed = True
+                    break
+                # Linear backoff so transient queue hiccups don't burn a CPU
+                # before the bail-out threshold.
+                await asyncio.sleep(min(0.05 * consecutive_queue_errors, 0.5))
+                continue
+
+            # Successful dequeue — process the event. Failures here do NOT
+            # count toward the bail-out threshold; the queue is fine, we
+            # just drop this event and move on.
+            try:
                 event_obj = self.db.add_event(event_data)
 
                 # Broadcast to WebSocket clients
@@ -433,24 +490,17 @@ class EventLogger:
                         })
                     except Exception as ws_error:
                         logger.debug(f"WebSocket broadcast failed (non-critical): {ws_error}")
-
-                self._event_queue.task_done()
-                consecutive_errors = 0
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                consecutive_errors += 1
-                if consecutive_errors == 1:
-                    logger.error(f"Error processing event: {e}")
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                    logger.error(
-                        f"Event processor stopping after {consecutive_errors} "
-                        f"consecutive errors; last error: {e}"
-                    )
-                    break
-                # Linear backoff so a transient fault doesn't burn a CPU
-                # before MAX_CONSECUTIVE_ERRORS is reached.
-                await asyncio.sleep(min(0.05 * consecutive_errors, 0.5))
+                logger.error(f"Error processing event: {e}")
+            finally:
+                # Always mark the dequeued item as done, even on failure, so
+                # queue.join() (if any caller waits on it) can complete.
+                try:
+                    self._event_queue.task_done()
+                except Exception:
+                    pass
 
     # Convenience methods for common event types
 

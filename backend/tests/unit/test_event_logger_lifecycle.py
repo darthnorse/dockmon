@@ -88,7 +88,7 @@ def test_log_event_before_start_is_safe():
     )
 
 
-def test_process_events_bails_out_on_persistent_error(caplog):
+def test_process_events_bails_out_on_persistent_queue_error(caplog):
     """
     If queue.get() raises persistently, `_process_events` must bail out
     within a bounded number of iterations instead of tight-looping through
@@ -102,6 +102,7 @@ def test_process_events_bails_out_on_persistent_error(caplog):
     mode is "processor exits, a few errors logged" rather than "host dies".
     """
     el = _make_logger()
+    cap = EventLogger.MAX_CONSECUTIVE_QUEUE_ERRORS
 
     class BrokenQueue:
         def __init__(self):
@@ -123,12 +124,96 @@ def test_process_events_bails_out_on_persistent_error(caplog):
     with caplog.at_level(logging.ERROR, logger="event_logger"):
         asyncio.run(run())
 
-    assert broken.gets < 100, (
+    # Bail-out is exact: one get() per consecutive error, then break.
+    # Allow +1 slack for any future implementation flexibility; catching
+    # a loose off-by-one or a forgotten counter reset is the point.
+    assert broken.gets <= cap + 1, (
         f"_process_events looped {broken.gets} times on persistent errors; "
-        "expected bounded bail-out (a tight loop reaches millions)"
+        f"expected <= {cap + 1} (cap={cap})"
     )
+
     error_records = [r for r in caplog.records if r.name == "event_logger"]
-    assert len(error_records) < 20, (
+    # Exactly two error lines: first-error report + bail-out summary.
+    # Anything higher is log spam and defeats the safety budget.
+    assert len(error_records) <= 3, (
         f"log spam exceeded safety budget: {len(error_records)} records. "
         "Under pytest's caplog this is what drives RSS to 15 GB."
     )
+    assert any("stopping after" in r.getMessage() for r in error_records), (
+        "bail-out summary message missing; operators need the explicit "
+        "'processor stopping' line to distinguish bail-out from ordinary errors"
+    )
+    assert el._processor_failed is True, (
+        "_processor_failed flag must be set so is_healthy() / health endpoints "
+        "can report that event persistence is offline"
+    )
+
+
+def test_process_events_survives_transient_processing_errors():
+    """
+    Per-event processing failures (e.g. a DB blip inside `add_event`) must
+    NOT trip the queue-level bail-out. Only the queue itself being broken
+    triggers the safety shutdown; a transient DB error should be logged,
+    the event dropped, and the processor should keep going.
+
+    This pins the invariant that separates item-level failures from
+    queue-level failures: a 2-second DB network hiccup must not take down
+    event persistence for the rest of the process lifetime.
+    """
+    el = _make_logger()
+    cap = EventLogger.MAX_CONSECUTIVE_QUEUE_ERRORS
+    # Inject more consecutive add_event failures than the queue-error cap
+    # so a broad `except Exception` catch (the old code) would bail out.
+    failures_before_success = cap + 3
+
+    calls = {"n": 0}
+
+    def flaky_add(event_data):
+        calls["n"] += 1
+        if calls["n"] <= failures_before_success:
+            raise RuntimeError("transient DB blip")
+        return None  # Success; no WS broadcast path needed
+
+    el.db.add_event = flaky_add
+
+    async def run():
+        await el.start()
+        total = failures_before_success + 2
+        for i in range(total):
+            el.log_system_event(
+                title=f"probe-{i}",
+                message=f"probe-{i}",
+                severity=EventSeverity.INFO,
+                event_type=EventType.STARTUP,
+            )
+        # Let the consumer drain.
+        for _ in range(20):
+            await asyncio.sleep(0.02)
+            if calls["n"] >= total:
+                break
+        assert el.is_healthy(), (
+            "processor bailed out on transient add_event errors; queue-level "
+            "bail-out was incorrectly triggered by per-event failures"
+        )
+        assert calls["n"] >= total, (
+            f"only {calls['n']} of {total} events were processed; processor "
+            "stopped dequeueing despite the queue being healthy"
+        )
+        await el.stop()
+
+    asyncio.run(run())
+
+
+def test_is_healthy_true_by_default_and_after_clean_lifecycle():
+    """is_healthy() reports True on a fresh logger and after a clean stop."""
+    el = _make_logger()
+    assert el.is_healthy() is True
+
+    async def cycle():
+        await el.start()
+        assert el.is_healthy() is True
+        await el.stop()
+
+    asyncio.run(cycle())
+    # After a clean stop, healthy stays True — only explicit bail-out flips it.
+    assert el.is_healthy() is True

@@ -23,6 +23,7 @@ from auth.utils import get_auditable_user_info
 from database import DatabaseManager, StackMetadata
 from deployment import stack_storage
 from deployment.container_utils import scan_deployed_stacks
+from deployment.port_conflict import extract_ports_from_compose, find_port_conflicts
 from deployment.routes import get_docker_monitor
 from security.rate_limiting import rate_limit_stacks
 from utils.response_filtering import filter_stack_env_content
@@ -119,6 +120,23 @@ class StackResponse(BaseModel):
     env_content: Optional[str] = None
 
 
+class ValidatePortsRequest(BaseModel):
+    """Request body for pre-deploy port conflict validation."""
+    host_id: str = Field(..., description="UUID of the target Docker host")
+
+
+class PortConflictItem(BaseModel):
+    """A single port conflict against an existing container."""
+    port: int
+    protocol: str
+    container_id: str
+    container_name: str
+
+
+class ValidatePortsResponse(BaseModel):
+    conflicts: List[PortConflictItem]
+
+
 # ==================== Endpoints ====================
 
 @router.get("", response_model=List[StackListItem], dependencies=[Depends(require_capability("stacks.view"))])
@@ -189,6 +207,69 @@ async def get_stack(name: str, user=Depends(get_current_user)):
         deployed_to=deployed_to,
         compose_yaml=compose_yaml,
         env_content=filter_stack_env_content(env_content, can_view_env),
+    )
+
+
+@router.post(
+    "/{name}/validate-ports",
+    response_model=ValidatePortsResponse,
+    dependencies=[Depends(require_capability("stacks.deploy"))],
+)
+async def validate_stack_ports(
+    name: str,
+    request: ValidatePortsRequest,
+    user=Depends(get_current_user),
+):
+    """
+    Report host-port conflicts for the stack's compose against the target host.
+
+    Excludes the stack's own containers (via com.docker.compose.project label)
+    so that redeploying the same stack to the same host doesn't flag its own
+    existing bindings as conflicts.
+
+    Returns 404 if the stack doesn't exist, 400 if the compose is malformed,
+    and 409 if the host is unreachable or not in the monitor cache.
+    """
+    if not await stack_storage.stack_exists(name):
+        raise HTTPException(status_code=404, detail=f"Stack '{name}' not found")
+
+    compose_yaml, _env = await stack_storage.read_stack(name)
+
+    try:
+        requested = extract_ports_from_compose(compose_yaml)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if not requested:
+        return ValidatePortsResponse(conflicts=[])
+
+    monitor = get_docker_monitor()
+    try:
+        conflicts = await find_port_conflicts(
+            host_id=request.host_id,
+            requested=requested,
+            exclude_project=name,
+            monitor=monitor,
+        )
+    except Exception as exc:
+        # Host offline, cache miss, or transient Docker error - surface as 409
+        # so the UI shows the neutral "skipped" variant rather than a hard error.
+        logger.warning(
+            "validate-ports failed for stack=%s host=%s: %s",
+            name, request.host_id, exc,
+        )
+        raise HTTPException(status_code=409, detail="Host not available for port check")
+
+    return ValidatePortsResponse(
+        conflicts=[
+            PortConflictItem(
+                port=c.port,
+                protocol=c.protocol,
+                container_id=c.container_id,
+                container_name=c.container_name,
+            )
+            for c in conflicts
+        ]
     )
 
 

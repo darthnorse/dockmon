@@ -392,6 +392,14 @@ class EventLogger:
 
     async def _process_events(self):
         """Process events from the queue"""
+        # Bail out after this many consecutive queue errors. Persistent
+        # failures (e.g. a queue whose futures are bound to a dead loop)
+        # previously tight-looped through `logger.error; continue`, which
+        # under pytest's caplog drove anon RSS to 15 GB in seconds and
+        # OOM-killed the host. Breaking out keeps the failure mode bounded.
+        MAX_CONSECUTIVE_ERRORS = 5
+        consecutive_errors = 0
+
         while True:
             try:
                 event_data = await self._event_queue.get()
@@ -427,10 +435,22 @@ class EventLogger:
                         logger.debug(f"WebSocket broadcast failed (non-critical): {ws_error}")
 
                 self._event_queue.task_done()
+                consecutive_errors = 0
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error processing event: {e}")
+                consecutive_errors += 1
+                if consecutive_errors == 1:
+                    logger.error(f"Error processing event: {e}")
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    logger.error(
+                        f"Event processor stopping after {consecutive_errors} "
+                        f"consecutive errors; last error: {e}"
+                    )
+                    break
+                # Linear backoff so a transient fault doesn't burn a CPU
+                # before MAX_CONSECUTIVE_ERRORS is reached.
+                await asyncio.sleep(min(0.05 * consecutive_errors, 0.5))
 
     # Convenience methods for common event types
 

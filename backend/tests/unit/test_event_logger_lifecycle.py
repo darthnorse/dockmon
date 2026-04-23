@@ -86,3 +86,49 @@ def test_log_event_before_start_is_safe():
         severity=EventSeverity.INFO,
         event_type=EventType.STARTUP,
     )
+
+
+def test_process_events_bails_out_on_persistent_error(caplog):
+    """
+    If queue.get() raises persistently, `_process_events` must bail out
+    within a bounded number of iterations instead of tight-looping through
+    `except Exception: logger.error; continue`.
+
+    Regression guard for the 15 GB OOM: an unfixed loop-binding bug drove
+    ~80k error records/sec through the Python logger; pytest's caplog buffer
+    held every record and anon RSS reached 15 GB in seconds, OOM-killing
+    the host. This test pins the backoff + bail-out behaviour so that even
+    if a future bug causes `get()` to raise persistently again, the failure
+    mode is "processor exits, a few errors logged" rather than "host dies".
+    """
+    el = _make_logger()
+
+    class BrokenQueue:
+        def __init__(self):
+            self.gets = 0
+
+        async def get(self):
+            self.gets += 1
+            raise RuntimeError("bound to a different event loop")
+
+    broken = BrokenQueue()
+
+    async def run():
+        el._event_queue = broken
+        task = asyncio.create_task(el._process_events())
+        # Generous timeout: a well-behaved bailout completes in < 1 s.
+        # A tight loop would blow through millions of iterations before this.
+        await asyncio.wait_for(task, timeout=5.0)
+
+    with caplog.at_level(logging.ERROR, logger="event_logger"):
+        asyncio.run(run())
+
+    assert broken.gets < 100, (
+        f"_process_events looped {broken.gets} times on persistent errors; "
+        "expected bounded bail-out (a tight loop reaches millions)"
+    )
+    error_records = [r for r in caplog.records if r.name == "event_logger"]
+    assert len(error_records) < 20, (
+        f"log spam exceeded safety budget: {len(error_records)} records. "
+        "Under pytest's caplog this is what drives RSS to 15 GB."
+    )

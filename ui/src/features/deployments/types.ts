@@ -266,3 +266,17 @@ export interface RunningProject {
   container_count: number
   services: string[]
 }
+
+/**
+ * Single host-port conflict surfaced by POST /stacks/{name}/validate-ports.
+ */
+export interface PortConflict {
+  port: number
+  protocol: 'tcp' | 'udp'
+  container_id: string
+  container_name: string
+}
+
+export interface ValidatePortsResponse {
+  conflicts: PortConflict[]
+}

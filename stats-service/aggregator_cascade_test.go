@@ -14,7 +14,7 @@ type stubStreamManager struct{}
 func (s stubStreamManager) HasHost(string) bool { return true }
 
 func TestAggregator_FeedsCascade(t *testing.T) {
-	// Persistence is off by default; flip on for this test and restore.
+	// Default is off; this test exercises the on-state path.
 	on := true
 	settingsProvider.ApplyPartialUpdate(&on, nil, nil)
 	t.Cleanup(func() {

@@ -256,10 +256,7 @@ func main() {
 		}
 	}()
 
-	// Seed the settings provider from the DB so user opt-ins (persistence
-	// on, retention, points-per-view) survive a restart. Without this the
-	// in-memory defaults silently override the saved preferences until the
-	// next settings POST.
+	// Seed settings from the DB so user opt-ins survive a restart.
 	if persistDB != nil {
 		if s, err := persistDB.LoadGlobalSettings(ctx); err != nil {
 			log.Printf("Could not load stats settings from DB; using defaults: %v", err)
@@ -268,10 +265,9 @@ func main() {
 		}
 	}
 
-	// tiers is computed once at startup from the live points_per_view and
-	// shared by the cascade, retention, and history-handler wiring below.
-	// The settings hot-reload handler will recompute and rebuild when the
-	// setting changes at runtime.
+	// Tiers are computed once at startup. Runtime points_per_view changes
+	// land in settingsProvider but do not rebuild the cascade or retention
+	// tier list — a restart is required for that setting to take effect.
 	var persistTiers []persistence.Tier
 	if persistDB != nil {
 		persistTiers = persistence.ComputeTiers(settingsProvider.PointsPerView())

@@ -242,8 +242,6 @@ func (db *DB) QueryHostHistory(
 	return out, rows.Err()
 }
 
-// GlobalSettings is the subset of the global_settings row that the
-// stats-service consults at boot to seed its in-process settings provider.
 type GlobalSettings struct {
 	PersistEnabled bool
 	RetentionDays  int
@@ -252,10 +250,6 @@ type GlobalSettings struct {
 
 // LoadGlobalSettings reads the stats_* columns of global_settings.id=1.
 // Returns (nil, nil) if no row exists yet — caller falls back to defaults.
-//
-// Without this read, the in-process defaults (off, 30 days, 500 points)
-// silently override the user's saved preferences after every restart, and
-// a user opt-in to persistence is undone until the next settings POST.
 func (db *DB) LoadGlobalSettings(ctx context.Context) (*GlobalSettings, error) {
 	var s GlobalSettings
 	err := db.read.QueryRowContext(ctx,

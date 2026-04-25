@@ -14,6 +14,14 @@ type stubStreamManager struct{}
 func (s stubStreamManager) HasHost(string) bool { return true }
 
 func TestAggregator_FeedsCascade(t *testing.T) {
+	// Persistence is off by default; flip on for this test and restore.
+	on := true
+	settingsProvider.ApplyPartialUpdate(&on, nil, nil)
+	t.Cleanup(func() {
+		off := false
+		settingsProvider.ApplyPartialUpdate(&off, nil, nil)
+	})
+
 	cache := NewStatsCache()
 	cache.UpdateContainerStats(&ContainerStats{
 		ContainerID: "abc123abc123",

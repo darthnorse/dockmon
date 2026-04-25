@@ -234,7 +234,7 @@ class GlobalSettingsUpdate(BaseModel):
     # Session timeout
     session_timeout_hours: Optional[int] = Field(None, ge=0, le=8760, description="Session timeout in hours (0=never, 1-8760)")
 
-    # Stats persistence (v2.4.0+)
+    # Stats persistence (v2.3.4+)
     stats_persistence_enabled: Optional[bool] = Field(None, description="Enable persistent stats history")
     stats_retention_days: Optional[int] = Field(None, ge=1, le=30, description="Stats history retention in days (1-30)")
     stats_points_per_view: Optional[int] = Field(None, ge=100, le=2000, description="Stats points per view/tier (100-2000)")

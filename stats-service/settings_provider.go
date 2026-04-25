@@ -16,7 +16,7 @@ var (
 	settingsProvider = &mainSettingsProvider{
 		retentionDays:  30,
 		pointsPerView:  500,
-		persistEnabled: true,
+		persistEnabled: false,
 	}
 )
 

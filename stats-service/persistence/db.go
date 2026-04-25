@@ -242,6 +242,35 @@ func (db *DB) QueryHostHistory(
 	return out, rows.Err()
 }
 
+// GlobalSettings is the subset of the global_settings row that the
+// stats-service consults at boot to seed its in-process settings provider.
+type GlobalSettings struct {
+	PersistEnabled bool
+	RetentionDays  int
+	PointsPerView  int
+}
+
+// LoadGlobalSettings reads the stats_* columns of global_settings.id=1.
+// Returns (nil, nil) if no row exists yet — caller falls back to defaults.
+//
+// Without this read, the in-process defaults (off, 30 days, 500 points)
+// silently override the user's saved preferences after every restart, and
+// a user opt-in to persistence is undone until the next settings POST.
+func (db *DB) LoadGlobalSettings(ctx context.Context) (*GlobalSettings, error) {
+	var s GlobalSettings
+	err := db.read.QueryRowContext(ctx,
+		`SELECT stats_persistence_enabled, stats_retention_days, stats_points_per_view
+		 FROM global_settings WHERE id = 1`,
+	).Scan(&s.PersistEnabled, &s.RetentionDays, &s.PointsPerView)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load global settings: %w", err)
+	}
+	return &s, nil
+}
+
 // verifySchema fails if Alembic has not applied migration 037.
 //
 // The query runs through the write pool so the first connection to a

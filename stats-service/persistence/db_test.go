@@ -383,3 +383,73 @@ func TestQueryHostHistory_ReturnsRows(t *testing.T) {
 		t.Errorf("got %d rows, want 3", len(rows))
 	}
 }
+
+func TestLoadGlobalSettings_DefaultRow(t *testing.T) {
+	db, err := Open(makeFixtureDB(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	s, err := db.LoadGlobalSettings(context.Background())
+	if err != nil {
+		t.Fatalf("LoadGlobalSettings: %v", err)
+	}
+	if s == nil {
+		t.Fatal("expected settings, got nil (fixture seeds id=1)")
+	}
+	if s.PersistEnabled {
+		t.Errorf("PersistEnabled=true, want false (DDL default 0)")
+	}
+	if s.RetentionDays != 30 {
+		t.Errorf("RetentionDays=%d, want 30", s.RetentionDays)
+	}
+	if s.PointsPerView != 500 {
+		t.Errorf("PointsPerView=%d, want 500", s.PointsPerView)
+	}
+}
+
+func TestLoadGlobalSettings_UserOptedIn(t *testing.T) {
+	db, err := Open(makeFixtureDB(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if _, err := db.Write().Exec(
+		`UPDATE global_settings
+		 SET stats_persistence_enabled = 1,
+		     stats_retention_days = 14,
+		     stats_points_per_view = 1000
+		 WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := db.LoadGlobalSettings(context.Background())
+	if err != nil {
+		t.Fatalf("LoadGlobalSettings: %v", err)
+	}
+	if !s.PersistEnabled || s.RetentionDays != 14 || s.PointsPerView != 1000 {
+		t.Errorf("got %+v, want {true 14 1000}", *s)
+	}
+}
+
+func TestLoadGlobalSettings_NoRow(t *testing.T) {
+	db, err := Open(makeFixtureDB(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if _, err := db.Write().Exec(`DELETE FROM global_settings WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := db.LoadGlobalSettings(context.Background())
+	if err != nil {
+		t.Fatalf("LoadGlobalSettings: %v", err)
+	}
+	if s != nil {
+		t.Errorf("got %+v, want nil (no row)", *s)
+	}
+}

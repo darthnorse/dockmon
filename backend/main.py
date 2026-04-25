@@ -3440,8 +3440,8 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "editor_theme": getattr(settings, 'editor_theme', 'aura'),
         # Session timeout
         "session_timeout_hours": getattr(settings, 'session_timeout_hours', 24),
-        # Stats persistence (v2.4.0+)
-        "stats_persistence_enabled": getattr(settings, 'stats_persistence_enabled', True),
+        # Stats persistence (v2.3.4+)
+        "stats_persistence_enabled": getattr(settings, 'stats_persistence_enabled', False),
         "stats_retention_days": getattr(settings, 'stats_retention_days', 30),
         "stats_points_per_view": getattr(settings, 'stats_points_per_view', 500),
     }
@@ -3572,8 +3572,8 @@ async def update_settings(
         "editor_theme": getattr(updated, 'editor_theme', 'aura'),
         # Session timeout
         "session_timeout_hours": getattr(updated, 'session_timeout_hours', 24),
-        # Stats persistence (v2.4.0+) — hot-pushed to stats-service above
-        "stats_persistence_enabled": getattr(updated, 'stats_persistence_enabled', True),
+        # Stats persistence (v2.3.4+) — hot-pushed to stats-service above
+        "stats_persistence_enabled": getattr(updated, 'stats_persistence_enabled', False),
         "stats_retention_days": getattr(updated, 'stats_retention_days', 30),
         "stats_points_per_view": getattr(updated, 'stats_points_per_view', 500),
     }

@@ -34,7 +34,7 @@ def fresh_db():
         cfg.set_main_option("script_location", str(BACKEND_DIR / "alembic"))
         cfg.set_main_option("sqlalchemy.url", f"sqlite:///{path}")
         command.stamp(cfg, "036_v2_3_1_drop_legacy_api_key_cols")
-        command.upgrade(cfg, "037_v2_4_0_stats_persistence")
+        command.upgrade(cfg, "037_v2_3_4_stats_persistence")
 
         yield engine
     finally:
@@ -154,7 +154,7 @@ def test_global_settings_orm_has_new_fields():
     cols = {c.name: c for c in GlobalSettings.__table__.columns}
 
     expected = {
-        "stats_persistence_enabled": (Boolean, True, "1"),
+        "stats_persistence_enabled": (Boolean, False, "0"),
         "stats_retention_days": (Integer, 30, "30"),
         "stats_points_per_view": (Integer, 500, "500"),
     }

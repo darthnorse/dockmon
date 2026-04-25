@@ -1,6 +1,6 @@
-"""v2.4.0 upgrade - Persistent stats history
+"""v2.3.4 upgrade - Persistent stats history
 
-Revision ID: 037_v2_4_0_stats_persistence
+Revision ID: 037_v2_3_4_stats_persistence
 Revises: 036_v2_3_1_drop_legacy_api_key_cols
 Create Date: 2026-04-08
 
@@ -11,11 +11,13 @@ CHANGES:
   stats_points_per_view
 - UNIQUE constraints on (entity_id, resolution, timestamp) act as both dedup
   enforcement and read indexes
+- stats_persistence_enabled defaults to OFF so upgrades don't change behavior
+  for existing users; opt-in via the settings UI.
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = '037_v2_4_0_stats_persistence'
+revision = '037_v2_3_4_stats_persistence'
 down_revision = '036_v2_3_1_drop_legacy_api_key_cols'
 branch_labels = None
 depends_on = None
@@ -82,7 +84,7 @@ def upgrade():
     if not column_exists('global_settings', 'stats_persistence_enabled'):
         op.add_column('global_settings',
                       sa.Column('stats_persistence_enabled', sa.Boolean,
-                                server_default='1', nullable=False))
+                                server_default='0', nullable=False))
     if not column_exists('global_settings', 'stats_retention_days'):
         op.add_column('global_settings',
                       sa.Column('stats_retention_days', sa.Integer,

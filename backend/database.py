@@ -733,9 +733,11 @@ class GlobalSettings(Base):
     # Session timeout (0 = never expires, 1-8760 hours)
     session_timeout_hours = Column(Integer, default=24)
 
-    # Stats persistence (v2.4.0+). server_default mirrors migration 037 so
-    # create_all()-bootstrapped fresh installs match migration-upgraded schemas.
-    stats_persistence_enabled = Column(Boolean, nullable=False, server_default='1', default=True)
+    # Stats persistence (v2.3.4+). Disabled by default so upgrades don't
+    # change behavior for existing users; opt-in via the settings UI.
+    # server_default mirrors migration 037 so create_all()-bootstrapped fresh
+    # installs match migration-upgraded schemas.
+    stats_persistence_enabled = Column(Boolean, nullable=False, server_default='0', default=False)
     stats_retention_days = Column(Integer, nullable=False, server_default='30', default=30)  # 1..30
     stats_points_per_view = Column(Integer, nullable=False, server_default='500', default=500)  # 100..2000
 
@@ -3449,7 +3451,7 @@ class DatabaseManager:
                     'editor_theme',
                     # Session timeout
                     'session_timeout_hours',
-                    # Stats persistence (v2.4.0+): hot-pushed to stats-service
+                    # Stats persistence (v2.3.4+): hot-pushed to stats-service
                     # by main.update_settings; persisted here so the values
                     # survive a backend restart.
                     'stats_persistence_enabled', 'stats_retention_days',

@@ -473,7 +473,7 @@ class TestPushSettingsUpdate:
         body = resp.json()
         assert body["stats_retention_days"] == 25
         assert body["stats_points_per_view"] == 750
-        assert body["stats_persistence_enabled"] is True  # unchanged
+        assert body["stats_persistence_enabled"] is False  # unchanged (server default)
 
     def test_update_settings_persists_stats_values_in_db(
         self, client, test_api_key_write, mock_stats_client,

@@ -35,6 +35,9 @@ export function SystemSettings() {
   const [eventRetentionDays, setEventRetentionDays] = useState(settings?.event_retention_days ?? 60)
   const [alertRetentionDays, setAlertRetentionDays] = useState(settings?.alert_retention_days ?? 90)
   const [externalUrl, setExternalUrl] = useState(settings?.external_url ?? '')
+  const [statsPersistenceEnabled, setStatsPersistenceEnabled] = useState(settings?.stats_persistence_enabled ?? false)
+  const [statsRetentionDays, setStatsRetentionDays] = useState(settings?.stats_retention_days ?? 30)
+  const [statsPointsPerView, setStatsPointsPerView] = useState(settings?.stats_points_per_view ?? 500)
 
   // Sync state when settings load from API
   useEffect(() => {
@@ -48,6 +51,9 @@ export function SystemSettings() {
       setEventRetentionDays(settings.event_retention_days ?? 60)
       setAlertRetentionDays(settings.alert_retention_days ?? 90)
       setExternalUrl(settings.external_url ?? '')
+      setStatsPersistenceEnabled(settings.stats_persistence_enabled ?? false)
+      setStatsRetentionDays(settings.stats_retention_days ?? 30)
+      setStatsPointsPerView(settings.stats_points_per_view ?? 500)
     }
   }, [settings])
 
@@ -138,6 +144,39 @@ export function SystemSettings() {
     } catch (error) {
       toast.error('Failed to update auto-restart setting')
       setDefaultAutoRestart(!checked) // Revert on error
+    }
+  }
+
+  const handleStatsPersistenceToggle = async (checked: boolean) => {
+    setStatsPersistenceEnabled(checked)
+    try {
+      await updateSettings.mutateAsync({ stats_persistence_enabled: checked })
+      toast.success(checked ? 'Stats persistence enabled' : 'Stats persistence disabled')
+    } catch (error) {
+      toast.error('Failed to update stats persistence')
+      setStatsPersistenceEnabled(!checked)
+    }
+  }
+
+  const handleStatsRetentionBlur = async () => {
+    if (statsRetentionDays !== settings?.stats_retention_days) {
+      try {
+        await updateSettings.mutateAsync({ stats_retention_days: statsRetentionDays })
+        toast.success('Stats retention updated')
+      } catch (error) {
+        toast.error('Failed to update stats retention')
+      }
+    }
+  }
+
+  const handleStatsPointsPerViewBlur = async () => {
+    if (statsPointsPerView !== settings?.stats_points_per_view) {
+      try {
+        await updateSettings.mutateAsync({ stats_points_per_view: statsPointsPerView })
+        toast.success('Chart resolution updated — restart to apply')
+      } catch (error) {
+        toast.error('Failed to update chart resolution')
+      }
     }
   }
 
@@ -396,6 +435,66 @@ export function SystemSettings() {
             />
             <p className="mt-1 text-xs text-gray-400">
               How long to keep resolved alerts. Resolved alerts older than this are automatically deleted during nightly maintenance. Set to 0 to keep alerts forever. (0-730 days)
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Stats History */}
+      <div>
+        <div className="mb-4">
+          <h3 className="text-lg font-semibold text-white">Stats History</h3>
+          <p className="text-xs text-gray-400 mt-1">
+            Persisted CPU, memory, and network history for the long-range chart views (1h / 8h / 24h / 7d / 30d).
+            Live charts work without this; persistence is only required for views that look back further than the live window.
+          </p>
+        </div>
+        <div className="space-y-4">
+          <ToggleSwitch
+            id="stats-persistence-enabled"
+            label="Persist stats to disk"
+            description="Off by default. Turn on to start recording samples for the historical chart views."
+            checked={statsPersistenceEnabled}
+            onChange={handleStatsPersistenceToggle}
+            disabled={!canManage}
+          />
+
+          <div>
+            <label htmlFor="stats-retention-days" className="block text-sm font-medium text-gray-300 mb-2">
+              Retention (days)
+            </label>
+            <input
+              id="stats-retention-days"
+              type="number"
+              min="1"
+              max="30"
+              value={statsRetentionDays}
+              onChange={(e) => setStatsRetentionDays(Number(e.target.value))}
+              onBlur={handleStatsRetentionBlur}
+              className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <p className="mt-1 text-xs text-gray-400">
+              How long to keep persisted stats. Older buckets are dropped during the periodic retention pass. (1-30 days)
+            </p>
+          </div>
+
+          <div>
+            <label htmlFor="stats-points-per-view" className="block text-sm font-medium text-gray-300 mb-2">
+              Chart resolution (points per view)
+            </label>
+            <input
+              id="stats-points-per-view"
+              type="number"
+              min="100"
+              max="2000"
+              value={statsPointsPerView}
+              onChange={(e) => setStatsPointsPerView(Number(e.target.value))}
+              onBlur={handleStatsPointsPerViewBlur}
+              className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <p className="mt-1 text-xs text-gray-400">
+              Number of data points per chart view. Higher = smoother charts, more disk and memory.{' '}
+              <strong>Requires a restart to take effect.</strong> (100-2000)
             </p>
           </div>
         </div>

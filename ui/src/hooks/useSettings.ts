@@ -57,6 +57,10 @@ export interface GlobalSettings {
   editor_theme?: string
   // Session timeout
   session_timeout_hours?: number
+  // Stats history persistence (v2.3.4+)
+  stats_persistence_enabled?: boolean
+  stats_retention_days?: number
+  stats_points_per_view?: number
 }
 
 export interface TemplateVariable {

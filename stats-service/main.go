@@ -279,8 +279,8 @@ func main() {
 			retention.Run(ctx, settingsProvider)
 		}()
 
-		log.Printf("Stats persistence enabled (tiers=%d, points_per_view=%d)",
-			len(persistTiers), settingsProvider.PointsPerView())
+		log.Printf("Stats persistence subsystems initialized (tiers=%d, points_per_view=%d, persist_enabled=%t)",
+			len(persistTiers), settingsProvider.PointsPerView(), settingsProvider.PersistEnabled())
 	}
 
 	// Start aggregator

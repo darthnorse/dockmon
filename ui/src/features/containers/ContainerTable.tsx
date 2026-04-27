@@ -17,7 +17,6 @@ import {
   type ColumnDef,
   type SortingState,
   type ColumnFiltersState,
-  type Table,
 } from '@tanstack/react-table'
 
 // Extend TanStack Table's ColumnMeta to include our custom align property
@@ -358,8 +357,10 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const [searchParams, setSearchParams] = useSearchParams()
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedContainerId, setSelectedContainerId] = useState<string | null>(null)
-  // Use composite keys {host_id}:{container_id} for multi-host support (cloned VMs with same short IDs)
-  const [selectedContainerIds, setSelectedContainerIds] = useState<Set<string>>(new Set())
+  // TanStack Table selection state. getRowId below returns the composite
+  // key {host_id}:{container_id}, so Object.keys(rowSelection) IS the
+  // composite-key list backends expect. No parallel Set needed.
+  const [rowSelection, setRowSelection] = useState<Record<string, boolean>>({})
   const [confirmModalOpen, setConfirmModalOpen] = useState(false)
   const [pendingAction, setPendingAction] = useState<'start' | 'stop' | 'restart' | null>(null)
   const [deleteConfirmModalOpen, setDeleteConfirmModalOpen] = useState(false)
@@ -491,47 +492,10 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     setShowJobPanel(false)
   }, [])
 
-  // Selection handlers
-  // containerId should be composite key: {host_id}:{container_id}
-  const toggleContainerSelection = (containerId: string) => {
-    setSelectedContainerIds(prev => {
-      const newSet = new Set(prev)
-      if (newSet.has(containerId)) {
-        newSet.delete(containerId)
-      } else {
-        newSet.add(containerId)
-      }
-      return newSet
-    })
-  }
+  const clearSelection = useCallback(() => setRowSelection({}), [])
 
-  const toggleSelectAll = (table: Table<Container>) => {
-    const currentRows = table.getFilteredRowModel().rows
-    const currentCompositeKeys = currentRows.map((row) => makeCompositeKey(row.original))
-
-    // Check if all current rows are selected
-    const allCurrentSelected = currentCompositeKeys.every((key: string) => selectedContainerIds.has(key))
-
-    if (allCurrentSelected) {
-      // Deselect all current rows
-      setSelectedContainerIds(prev => {
-        const newSet = new Set(prev)
-        currentCompositeKeys.forEach((key: string) => newSet.delete(key))
-        return newSet
-      })
-    } else {
-      // Select all current rows
-      setSelectedContainerIds(prev => {
-        const newSet = new Set(prev)
-        currentCompositeKeys.forEach((key: string) => newSet.add(key))
-        return newSet
-      })
-    }
-  }
-
-  const clearSelection = () => {
-    setSelectedContainerIds(new Set())
-  }
+  const selectedKeys = useMemo(() => Object.keys(rowSelection), [rowSelection])
+  const selectedCount = selectedKeys.length
 
   const handleBulkAction = (action: 'start' | 'stop' | 'restart') => {
     setPendingAction(action)
@@ -542,7 +506,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     if (!pendingAction) return
     batchMutation.mutate({
       action: pendingAction,
-      containerIds: Array.from(selectedContainerIds),
+      containerIds: selectedKeys,
     })
     setConfirmModalOpen(false)
     setPendingAction(null)
@@ -551,14 +515,13 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const handleCheckUpdates = () => {
     batchMutation.mutate({
       action: 'check-updates',
-      containerIds: Array.from(selectedContainerIds),
+      containerIds: selectedKeys,
     })
   }
 
   const handleBulkTagUpdate = async (mode: 'add' | 'remove', tags: string[]) => {
     if (!data) return
 
-    const selectedContainers = data.filter((c) => selectedContainerIds.has(makeCompositeKey(c)))
     const action = mode === 'add' ? 'add-tags' : 'remove-tags'
 
     try {
@@ -566,7 +529,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
       const result = await apiClient.post<{ job_id: string }>('/batch', {
         scope: 'container',
         action,
-        ids: Array.from(selectedContainerIds), // Send composite keys to backend
+        ids: selectedKeys, // Send composite keys to backend
         params: { tags },
       })
       setBatchJobId(result.job_id)
@@ -584,14 +547,14 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const handleBulkAutoRestartUpdate = async (enabled: boolean) => {
     if (!data) return
 
-    const count = selectedContainerIds.size
+    const count = selectedCount
 
     try {
       // Create batch job for auto-restart update
       const result = await apiClient.post<{ job_id: string }>('/batch', {
         scope: 'container',
         action: 'set-auto-restart',
-        ids: Array.from(selectedContainerIds),
+        ids: selectedKeys,
         params: { enabled },
       })
       setBatchJobId(result.job_id)
@@ -607,14 +570,14 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const handleBulkAutoUpdateUpdate = async (enabled: boolean, floatingTagMode: string) => {
     if (!data) return
 
-    const count = selectedContainerIds.size
+    const count = selectedCount
 
     try {
       // Create batch job for auto-update
       const result = await apiClient.post<{ job_id: string }>('/batch', {
         scope: 'container',
         action: 'set-auto-update',
-        ids: Array.from(selectedContainerIds),
+        ids: selectedKeys,
         params: { enabled, floating_tag_mode: floatingTagMode },
       })
       setBatchJobId(result.job_id)
@@ -631,14 +594,14 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const handleBulkDesiredStateUpdate = async (state: 'should_run' | 'on_demand') => {
     if (!data) return
 
-    const count = selectedContainerIds.size
+    const count = selectedCount
 
     try {
       // Create batch job for desired state update
       const result = await apiClient.post<{ job_id: string }>('/batch', {
         scope: 'container',
         action: 'set-desired-state',
-        ids: Array.from(selectedContainerIds),
+        ids: selectedKeys,
         params: { desired_state: state },
       })
       setBatchJobId(result.job_id)
@@ -659,14 +622,14 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const handleConfirmDeleteContainers = async (removeVolumes: boolean) => {
     if (!data) return
 
-    const count = selectedContainerIds.size
+    const count = selectedCount
 
     try {
       // Create batch job for container deletion
       const result = await apiClient.post<{ job_id: string }>('/batch', {
         scope: 'container',
         action: 'delete-containers',
-        ids: Array.from(selectedContainerIds),
+        ids: selectedKeys,
         params: { remove_volumes: removeVolumes },
       })
       setBatchJobId(result.job_id)
@@ -681,7 +644,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   }
 
   const handleUpdateContainers = async () => {
-    if (!data || selectedContainerIds.size === 0) return
+    if (!data || selectedCount === 0) return
 
     try {
       // Call pre-flight validation endpoint
@@ -691,7 +654,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         blocked: Array<{ container_id: string; container_name: string; reason: string }>
         summary: { total: number; allowed: number; warned: number; blocked: number }
       }>('/batch/validate-update', {
-        container_ids: Array.from(selectedContainerIds),
+        container_ids: selectedKeys,
       })
 
       // If there are warned or blocked containers, show validation modal
@@ -711,14 +674,14 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const handleConfirmUpdateContainers = async () => {
     if (!data) return
 
-    const count = selectedContainerIds.size
+    const count = selectedCount
 
     try {
       // Create batch job for container updates
       const result = await apiClient.post<{ job_id: string }>('/batch', {
         scope: 'container',
         action: 'update-containers',
-        ids: Array.from(selectedContainerIds),
+        ids: selectedKeys,
       })
       setBatchJobId(result.job_id)
       setShowJobPanel(true)
@@ -801,6 +764,13 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     },
   })
 
+  // Resolved containers for the four bulk-action consumers. Re-derived only
+  // when selection or data changes; not on every cell render.
+  const selectedContainers = useMemo(
+    () => (data ?? []).filter((c) => rowSelection[makeCompositeKey(c)]),
+    [data, rowSelection]
+  )
+
   // Apply custom filters to container data
   // Performance: Uses batch data from useAllAutoUpdateConfigs and useAllHealthCheckConfigs
   // to avoid N+1 queries (single API call instead of N individual calls)
@@ -876,31 +846,29 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   // Table columns
   const columns = useMemo<ColumnDef<Container>[]>(
     () => [
-      // 0. Selection checkbox
+      // 0. Selection checkbox — uses TanStack Table's built-in row selection
+      // so column identity is stable across selection changes.
       {
         id: 'select',
-        header: ({ table }) => {
-          const currentRows = table.getFilteredRowModel().rows
-          const currentCompositeKeys = currentRows.map(row => makeCompositeKey(row.original))
-          const allCurrentSelected = currentCompositeKeys.length > 0 && currentCompositeKeys.every(key => selectedContainerIds.has(key))
-
-          return (
-            <fieldset disabled={!canOperate} className="flex items-center justify-center disabled:opacity-60">
-              <input
-                type="checkbox"
-                checked={allCurrentSelected}
-                onChange={() => toggleSelectAll(table)}
-                className="h-4 w-4 rounded border-border text-primary focus:ring-primary cursor-pointer"
-              />
-            </fieldset>
-          )
-        },
+        header: ({ table }) => (
+          <fieldset disabled={!canOperate} className="flex items-center justify-center disabled:opacity-60">
+            <input
+              type="checkbox"
+              checked={table.getIsAllRowsSelected()}
+              ref={(el) => {
+                if (el) el.indeterminate = !table.getIsAllRowsSelected() && table.getIsSomeRowsSelected()
+              }}
+              onChange={table.getToggleAllRowsSelectedHandler()}
+              className="h-4 w-4 rounded border-border text-primary focus:ring-primary cursor-pointer"
+            />
+          </fieldset>
+        ),
         cell: ({ row }) => (
           <fieldset disabled={!canOperate} className="flex items-center justify-center disabled:opacity-60">
             <input
               type="checkbox"
-              checked={selectedContainerIds.has(makeCompositeKey(row.original))}
-              onChange={() => toggleContainerSelection(makeCompositeKey(row.original))}
+              checked={row.getIsSelected()}
+              onChange={row.getToggleSelectedHandler()}
               onClick={(e) => e.stopPropagation()}
               className="h-4 w-4 rounded border-border text-primary focus:ring-primary cursor-pointer"
             />
@@ -1432,12 +1400,16 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         },
       },
     ],
-    [executeAction, isContainerPending, selectedContainerIds, data, toggleContainerSelection, toggleSelectAll, alertCounts, allAutoUpdateConfigs, allHealthCheckConfigs, canOperate]
+    [executeAction, isContainerPending, alertCounts, allAutoUpdateConfigs, allHealthCheckConfigs, canOperate]
   )
 
   const table = useReactTable({
     data: filteredData || [],
     columns,
+    // Composite key as row ID so rowSelection keys match the host:container
+    // composites the backend expects, and selection survives reordering.
+    getRowId: (row) => makeCompositeKey(row),
+    enableRowSelection: true,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
@@ -1446,6 +1418,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     onGlobalFilterChange: setGlobalFilter,
     onColumnVisibilityChange: setColumnVisibility,
     onColumnOrderChange: setColumnOrder,
+    onRowSelectionChange: setRowSelection,
     globalFilterFn: (row, _columnId, filterValue) => {
       const searchValue = String(filterValue).toLowerCase()
       const container = row.original
@@ -1498,6 +1471,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
       globalFilter,
       columnVisibility,
       columnOrder,
+      rowSelection,
     },
   })
 
@@ -1613,7 +1587,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   }
 
   return (
-    <div className={`space-y-4 ${selectedContainerIds.size > 0 ? 'pb-[280px]' : ''}`}>
+    <div className={`space-y-4 ${selectedCount > 0 ? 'pb-[280px]' : ''}`}>
       {/* Search and Filters */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
         {/* Left: Search */}
@@ -1940,8 +1914,8 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
 
       {/* Bulk Action Bar */}
       <BulkActionBar
-        selectedCount={selectedContainerIds.size}
-        selectedContainers={data?.filter((c) => selectedContainerIds.has(makeCompositeKey(c))) || []}
+        selectedCount={selectedCount}
+        selectedContainers={selectedContainers}
         onClearSelection={clearSelection}
         onAction={handleBulkAction}
         onCheckUpdates={handleCheckUpdates}
@@ -1963,7 +1937,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         onConfirm={handleConfirmBulkAction}
         action={pendingAction || 'start'}
         containers={
-          data?.filter((c) => selectedContainerIds.has(makeCompositeKey(c))) || []
+          selectedContainers
         }
       />
 
@@ -1973,7 +1947,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         onClose={() => setDeleteConfirmModalOpen(false)}
         onConfirm={handleConfirmDeleteContainers}
         containers={
-          data?.filter((c) => selectedContainerIds.has(makeCompositeKey(c))) || []
+          selectedContainers
         }
       />
 
@@ -1983,7 +1957,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         onClose={() => setUpdateConfirmModalOpen(false)}
         onConfirm={handleConfirmUpdateContainers}
         containers={
-          data?.filter((c) => selectedContainerIds.has(makeCompositeKey(c))) || []
+          selectedContainers
         }
       />
 
@@ -2008,7 +1982,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         isVisible={showJobPanel}
         onClose={() => setShowJobPanel(false)}
         onJobComplete={handleJobComplete}
-        bulkActionBarOpen={selectedContainerIds.size > 0}
+        bulkActionBarOpen={selectedCount > 0}
       />
 
       {/* Alert Details Drawer */}

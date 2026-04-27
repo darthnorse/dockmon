@@ -13,7 +13,6 @@ import {
   getCoreRowModel,
   getSortedRowModel,
   getFilteredRowModel,
-  flexRender,
   type ColumnDef,
   type SortingState,
   type ColumnFiltersState,
@@ -57,6 +56,7 @@ import { DropdownMenu, DropdownMenuSeparator } from '@/components/ui/dropdown-me
 import { useAlertCounts, type AlertSeverityCounts } from '@/features/alerts/hooks/useAlerts'
 import { AlertDetailsDrawer } from '@/features/alerts/components/AlertDetailsDrawer'
 import { ContainerDrawer } from './components/ContainerDrawer'
+import { VirtualizedTable } from './components/VirtualizedTable'
 import { BulkActionBar } from './components/BulkActionBar'
 import { BulkActionConfirmModal } from './components/BulkActionConfirmModal'
 import { DeleteConfirmModal } from './components/DeleteConfirmModal'
@@ -1835,65 +1835,8 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         </div>
       </div>
 
-      {/* Table */}
-      <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full" data-testid="containers-table">
-          <thead className="border-b border-border bg-muted/50 sticky top-0 z-10">
-            {table.getHeaderGroups().map((headerGroup) => (
-              <tr key={headerGroup.id}>
-                {headerGroup.headers.map((header) => (
-                  <th
-                    key={header.id}
-                    className={`px-4 py-3 text-sm font-medium ${
-                      header.column.columnDef.meta?.align === 'center' ? 'text-center' : 'text-left'
-                    }`}
-                  >
-                    {header.isPlaceholder
-                      ? null
-                      : flexRender(
-                          header.column.columnDef.header,
-                          header.getContext()
-                        )}
-                  </th>
-                ))}
-              </tr>
-            ))}
-          </thead>
-          <tbody className="divide-y divide-border">
-            {table.getRowModel().rows.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={columns.length}
-                  className="px-4 py-8 text-center text-sm text-muted-foreground"
-                >
-                  No containers found
-                </td>
-              </tr>
-            ) : (
-              table.getRowModel().rows.map((row) => (
-                <tr
-                  key={row.id}
-                  className="border-t hover:bg-[#151827] transition-colors"
-                >
-                  {row.getVisibleCells().map((cell) => (
-                    <td
-                      key={cell.id}
-                      className={`px-4 py-3 ${
-                        cell.column.columnDef.meta?.align === 'center' ? 'text-center' : ''
-                      }`}
-                    >
-                      {flexRender(
-                        cell.column.columnDef.cell,
-                        cell.getContext()
-                      )}
-                    </td>
-                  ))}
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+      <VirtualizedTable table={table} />
+
 
       {/* Container Drawer */}
       <ContainerDrawer

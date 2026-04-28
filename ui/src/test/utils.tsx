@@ -75,17 +75,12 @@ export function createTestQueryClient() {
   return new QueryClient({
     defaultOptions: {
       queries: {
-        retry: false, // Don't retry in tests
-        gcTime: Infinity, // Keep cache forever in tests
+        retry: false,
+        gcTime: Infinity,
       },
       mutations: {
         retry: false,
       },
-    },
-    logger: {
-      log: () => {},
-      warn: () => {},
-      error: () => {}, // Silence errors in tests
     },
   })
 }

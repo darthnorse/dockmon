@@ -37,6 +37,11 @@ export function VirtualizedTable({ table }: VirtualizedTableProps) {
     update()
     const observer = new ResizeObserver(update)
     observer.observe(containerRef.current)
+    // Observe document.body so layout shifts above the table (banners
+    // toggling, modals expanding the page) re-measure scrollMargin.
+    // ResizeObserver on the table alone misses these — siblings change
+    // the table's position without changing its size.
+    observer.observe(document.body)
     window.addEventListener('resize', update)
     return () => {
       observer.disconnect()

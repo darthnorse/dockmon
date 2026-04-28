@@ -357,9 +357,8 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
   const [searchParams, setSearchParams] = useSearchParams()
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedContainerId, setSelectedContainerId] = useState<string | null>(null)
-  // TanStack Table selection state. getRowId below returns the composite
-  // key {host_id}:{container_id}, so Object.keys(rowSelection) IS the
-  // composite-key list backends expect. No parallel Set needed.
+  // getRowId below returns {host_id}:{container_id}, so Object.keys(rowSelection)
+  // IS the composite-key list backends expect — no parallel Set needed.
   const [rowSelection, setRowSelection] = useState<Record<string, boolean>>({})
   const [confirmModalOpen, setConfirmModalOpen] = useState(false)
   const [pendingAction, setPendingAction] = useState<'start' | 'stop' | 'restart' | null>(null)
@@ -494,7 +493,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
 
   const clearSelection = useCallback(() => setRowSelection({}), [])
 
-  const selectedKeys = useMemo(() => Object.keys(rowSelection), [rowSelection])
+  const selectedKeys = Object.keys(rowSelection)
   const selectedCount = selectedKeys.length
 
   const handleBulkAction = (action: 'start' | 'stop' | 'restart') => {
@@ -529,7 +528,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
       const result = await apiClient.post<{ job_id: string }>('/batch', {
         scope: 'container',
         action,
-        ids: selectedKeys, // Send composite keys to backend
+        ids: selectedKeys,
         params: { tags },
       })
       setBatchJobId(result.job_id)
@@ -764,7 +763,6 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     },
   })
 
-  // Resolved containers for the four bulk-action consumers.
   const selectedContainers = useMemo(
     () => (data ?? []).filter((c) => rowSelection[makeCompositeKey(c)]),
     [data, rowSelection]

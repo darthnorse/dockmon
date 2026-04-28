@@ -1,18 +1,18 @@
 /**
- * Virtualized container table body. Uses TanStack Virtual's window-scroll
- * virtualizer so the page-level scroll model is preserved (no inner scroll
- * container, sticky thead still sticks to the viewport).
- *
- * Layout: <table> -> display:grid; rows are display:grid with a shared
- * gridTemplateColumns derived from each column's getSize(). Body rows are
- * absolutely positioned with translateY so only the visible window mounts.
+ * Virtualized container table. Uses window-scroll virtualization so the
+ * page-level scroll model is preserved (no inner scroll container, the
+ * sticky header still sticks to the viewport).
  */
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { flexRender, Table as ReactTable } from '@tanstack/react-table'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { flexRender, Column, Table as ReactTable } from '@tanstack/react-table'
 import { useWindowVirtualizer } from '@tanstack/react-virtual'
 
 import type { Container } from '../types'
+
+function alignClass(column: Column<Container>, fallback = ''): string {
+  return column.columnDef.meta?.align === 'center' ? 'text-center' : fallback
+}
 
 interface VirtualizedTableProps {
   table: ReactTable<Container>
@@ -51,9 +51,10 @@ export function VirtualizedTable({ table }: VirtualizedTableProps) {
     scrollMargin,
   })
 
-  // Reset virtualizer state when the row set changes (filter, sort).
-  // Without this, scroll position can land on virtualized rows that no
-  // longer exist after a filter narrows the result.
+  // TanStack Virtual caches measured heights by index, not by row identity.
+  // After a sort, index N can be a different Container with a different
+  // height (the tags column wraps), so without measure() the row lays out
+  // at the previous occupant's cached height — visible row overlap.
   useEffect(() => {
     virtualizer.measure()
   }, [rows, virtualizer])
@@ -67,6 +68,17 @@ export function VirtualizedTable({ table }: VirtualizedTableProps) {
       return size <= 100 ? `${size}px` : `minmax(${size}px, 1fr)`
     })
     .join(' ')
+
+  const rowBaseStyle = useMemo(
+    () => ({
+      gridTemplateColumns: gridTemplate,
+      position: 'absolute' as const,
+      top: 0,
+      left: 0,
+      width: '100%' as const,
+    }),
+    [gridTemplate],
+  )
 
   const virtualItems = virtualizer.getVirtualItems()
 
@@ -90,9 +102,7 @@ export function VirtualizedTable({ table }: VirtualizedTableProps) {
               <div
                 key={header.id}
                 role="columnheader"
-                className={`px-4 py-3 text-sm font-medium min-w-0 ${
-                  header.column.columnDef.meta?.align === 'center' ? 'text-center' : 'text-left'
-                }`}
+                className={`px-4 py-3 text-sm font-medium min-w-0 ${alignClass(header.column, 'text-left')}`}
               >
                 {header.isPlaceholder
                   ? null
@@ -127,11 +137,7 @@ export function VirtualizedTable({ table }: VirtualizedTableProps) {
                 ref={virtualizer.measureElement}
                 className="grid border-t hover:bg-[#151827] transition-colors"
                 style={{
-                  gridTemplateColumns: gridTemplate,
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
+                  ...rowBaseStyle,
                   transform: `translateY(${vRow.start - virtualizer.options.scrollMargin}px)`,
                 }}
               >
@@ -139,9 +145,7 @@ export function VirtualizedTable({ table }: VirtualizedTableProps) {
                   <div
                     key={cell.id}
                     role="cell"
-                    className={`px-4 py-3 min-w-0 ${
-                      cell.column.columnDef.meta?.align === 'center' ? 'text-center' : ''
-                    }`}
+                    className={`px-4 py-3 min-w-0 ${alignClass(cell.column)}`}
                   >
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </div>

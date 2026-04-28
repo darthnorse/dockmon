@@ -764,8 +764,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
     },
   })
 
-  // Resolved containers for the four bulk-action consumers. Re-derived only
-  // when selection or data changes; not on every cell render.
+  // Resolved containers for the four bulk-action consumers.
   const selectedContainers = useMemo(
     () => (data ?? []).filter((c) => rowSelection[makeCompositeKey(c)]),
     [data, rowSelection]

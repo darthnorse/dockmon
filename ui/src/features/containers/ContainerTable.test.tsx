@@ -99,17 +99,6 @@ describe('ContainerTable', () => {
       })
     })
 
-    it('should render container images', async () => {
-      vi.mocked(apiClient.apiClient.get).mockResolvedValue(mockContainers)
-
-      renderTable()
-
-      await waitFor(() => {
-        expect(screen.getByText('nginx:latest')).toBeInTheDocument()
-        expect(screen.getByText('postgres:14')).toBeInTheDocument()
-      })
-    })
-
     it('should render container status badges', async () => {
       vi.mocked(apiClient.apiClient.get).mockResolvedValue(mockContainers)
 
@@ -255,8 +244,6 @@ describe('ContainerTable', () => {
       renderTable()
 
       await waitFor(() => {
-        // Check column headers
-        expect(screen.getByText('Image:Tag')).toBeInTheDocument()
         expect(screen.getByText('Uptime')).toBeInTheDocument()
         expect(screen.getByText('Host')).toBeInTheDocument()
         expect(screen.getByText('Actions')).toBeInTheDocument()

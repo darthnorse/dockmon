@@ -8,7 +8,7 @@
  * absolutely positioned with translateY so only the visible window mounts.
  */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { flexRender, Table as ReactTable } from '@tanstack/react-table'
 import { useWindowVirtualizer } from '@tanstack/react-virtual'
 
@@ -58,28 +58,22 @@ export function VirtualizedTable({ table }: VirtualizedTableProps) {
     virtualizer.measure()
   }, [rows, virtualizer])
 
-  // gridTemplate maps the table's visible columns to grid tracks. Small
-  // columns (≤100px) get fixed widths; larger ones flex with a minimum so
-  // the layout never collapses when the viewport is narrow.
-  const gridTemplate = useMemo(() => {
-    return table.getVisibleLeafColumns()
-      .map((col) => {
-        const size = col.getSize()
-        return size <= 100 ? `${size}px` : `minmax(${size}px, 1fr)`
-      })
-      .join(' ')
-  }, [
-    table,
-    table.getState().columnVisibility,
-    table.getState().columnOrder,
-    table.getState().columnSizing,
-  ])
+  // Small columns (≤100px) get fixed widths; larger ones flex with a
+  // minimum so the layout never collapses when the viewport is narrow.
+  // min-w-0 on each cell lets long content shrink below intrinsic width.
+  const gridTemplate = table.getVisibleLeafColumns()
+    .map((col) => {
+      const size = col.getSize()
+      return size <= 100 ? `${size}px` : `minmax(${size}px, 1fr)`
+    })
+    .join(' ')
 
   const virtualItems = virtualizer.getVirtualItems()
 
   return (
     <div
       ref={containerRef}
+      role="table"
       className="rounded-lg border border-border overflow-x-auto"
       data-testid="containers-table"
     >
@@ -109,14 +103,20 @@ export function VirtualizedTable({ table }: VirtualizedTableProps) {
         ))}
       </div>
 
-      {/* Body */}
-      <div role="rowgroup" style={{ position: 'relative', height: virtualizer.getTotalSize() }}>
-        {rows.length === 0 ? (
-          <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-            No containers found
+      {/* Body — empty state lives outside the absolute-positioned wrapper
+          because getTotalSize() is 0 with no rows, which would otherwise
+          collapse the message to height 0. */}
+      {rows.length === 0 ? (
+        <div role="rowgroup">
+          <div role="row">
+            <div role="cell" className="px-4 py-8 text-center text-sm text-muted-foreground">
+              No containers found
+            </div>
           </div>
-        ) : (
-          virtualItems.map((vRow) => {
+        </div>
+      ) : (
+        <div role="rowgroup" style={{ position: 'relative', height: virtualizer.getTotalSize() }}>
+          {virtualItems.map((vRow) => {
             const row = rows[vRow.index]
             if (!row) return null
             return (
@@ -148,9 +148,9 @@ export function VirtualizedTable({ table }: VirtualizedTableProps) {
                 ))}
               </div>
             )
-          })
-        )}
-      </div>
+          })}
+        </div>
+      )}
     </div>
   )
 }

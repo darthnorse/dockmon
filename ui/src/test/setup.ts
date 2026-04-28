@@ -15,6 +15,18 @@ afterEach(() => {
   cleanup()
 })
 
+// jsdom does not implement ResizeObserver; stub it out for components that
+// observe element size (e.g. VirtualizedTable's scroll-margin tracking).
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+Object.defineProperty(globalThis, 'ResizeObserver', {
+  writable: true,
+  value: ResizeObserverStub,
+})
+
 // Mock matchMedia (required for uPlot and other charting libraries)
 Object.defineProperty(window, 'matchMedia', {
   writable: true,

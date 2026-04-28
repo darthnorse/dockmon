@@ -29,7 +29,7 @@ import { debug } from '@/lib/debug'
 import { makeCompositeKey, makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
 import { normalizeContainers } from '@/utils/containerNormalization'
 
-interface StatsContextValue {
+export interface StatsContextValue {
   // Host-level stats (aggregated from containers)
   hostMetrics: Map<string, HostMetrics>
   hostSparklines: Map<string, Sparklines>
@@ -43,7 +43,7 @@ interface StatsContextValue {
   isConnected: boolean
 }
 
-const StatsContext = createContext<StatsContextValue | null>(null)
+export const StatsContext = createContext<StatsContextValue | null>(null)
 
 export function useStatsContext() {
   const context = useContext(StatsContext)

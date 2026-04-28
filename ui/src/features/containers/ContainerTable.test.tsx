@@ -4,8 +4,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { render, screen, fireEvent, waitFor } from '@/test/utils'
 import { ContainerTable } from './ContainerTable'
 import * as apiClient from '@/lib/api/client'
 
@@ -25,18 +24,7 @@ vi.mock('@/lib/api/client', () => ({
 }))
 
 function renderTable() {
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-      mutations: { retry: false },
-    },
-  })
-
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <ContainerTable />
-    </QueryClientProvider>
-  )
+  return render(<ContainerTable />)
 }
 
 const mockContainers = [

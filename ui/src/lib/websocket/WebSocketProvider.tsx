@@ -35,13 +35,13 @@ import { useWebSocket, type WebSocketMessage, type WebSocketStatus } from './use
 
 type MessageHandler = (message: WebSocketMessage) => void
 
-interface WebSocketContextValue {
+export interface WebSocketContextValue {
   status: WebSocketStatus
   send: (data: unknown) => void
   addMessageHandler: (handler: MessageHandler) => () => void
 }
 
-const WebSocketContext = createContext<WebSocketContextValue | null>(null)
+export const WebSocketContext = createContext<WebSocketContextValue | null>(null)
 
 export function useWebSocketContext() {
   const context = useContext(WebSocketContext)

@@ -4,23 +4,19 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen } from '@/test/utils'
 import userEvent from '@testing-library/user-event'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { HostsPage } from './HostsPage'
 import * as useHostsModule from './hooks/useHosts'
 
-// Mock the useHosts hook
 vi.mock('./hooks/useHosts', () => ({
   useHosts: vi.fn(),
 }))
 
-// Mock HostTable component
 vi.mock('./components/HostTable', () => ({
   HostTable: () => <div data-testid="host-table">HostTable Component</div>,
 }))
 
-// Mock HostModal component
 vi.mock('./components/HostModal', () => ({
   HostModal: ({ isOpen, onClose }: any) =>
     isOpen ? (
@@ -29,18 +25,6 @@ vi.mock('./components/HostModal', () => ({
       </div>
     ) : null,
 }))
-
-function createWrapper() {
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-    },
-  })
-
-  return ({ children }: { children: React.ReactNode }) => (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-  )
-}
 
 describe('HostsPage', () => {
   beforeEach(() => {
@@ -56,26 +40,26 @@ describe('HostsPage', () => {
 
   describe('page layout', () => {
     it('should render page header', () => {
-      render(<HostsPage />, { wrapper: createWrapper() })
+      render(<HostsPage />)
 
       expect(screen.getByText('Hosts')).toBeInTheDocument()
       expect(screen.getByText(/manage your docker hosts and connections/i)).toBeInTheDocument()
     })
 
     it('should render search bar', () => {
-      render(<HostsPage />, { wrapper: createWrapper() })
+      render(<HostsPage />)
 
       expect(screen.getByPlaceholderText(/search hosts/i)).toBeInTheDocument()
     })
 
     it('should render add host button', () => {
-      render(<HostsPage />, { wrapper: createWrapper() })
+      render(<HostsPage />)
 
       expect(screen.getByRole('button', { name: /add host/i })).toBeInTheDocument()
     })
 
     it('should render HostTable component', () => {
-      render(<HostsPage />, { wrapper: createWrapper() })
+      render(<HostsPage />)
 
       expect(screen.getByTestId('host-table')).toBeInTheDocument()
     })
@@ -85,7 +69,7 @@ describe('HostsPage', () => {
     it('should open modal when add host button is clicked', async () => {
       const user = userEvent.setup()
 
-      render(<HostsPage />, { wrapper: createWrapper() })
+      render(<HostsPage />)
 
       // Modal should not be visible initially
       expect(screen.queryByTestId('host-modal')).not.toBeInTheDocument()
@@ -101,7 +85,7 @@ describe('HostsPage', () => {
     it('should close modal when onClose is called', async () => {
       const user = userEvent.setup()
 
-      render(<HostsPage />, { wrapper: createWrapper() })
+      render(<HostsPage />)
 
       // Open modal
       const addButton = screen.getByRole('button', { name: /add host/i })
@@ -119,7 +103,7 @@ describe('HostsPage', () => {
     it('should reset selected host when opening add modal', async () => {
       const user = userEvent.setup()
 
-      render(<HostsPage />, { wrapper: createWrapper() })
+      render(<HostsPage />)
 
       // Open modal for adding
       const addButton = screen.getByRole('button', { name: /add host/i })
@@ -141,7 +125,7 @@ describe('HostsPage', () => {
     it('should update search query on input', async () => {
       const user = userEvent.setup()
 
-      render(<HostsPage />, { wrapper: createWrapper() })
+      render(<HostsPage />)
 
       const searchInput = screen.getByPlaceholderText(/search hosts/i)
       await user.type(searchInput, 'production')
@@ -152,7 +136,7 @@ describe('HostsPage', () => {
     it('should allow clearing search input', async () => {
       const user = userEvent.setup()
 
-      render(<HostsPage />, { wrapper: createWrapper() })
+      render(<HostsPage />)
 
       const searchInput = screen.getByPlaceholderText(/search hosts/i)
       await user.type(searchInput, 'production')
@@ -167,7 +151,7 @@ describe('HostsPage', () => {
     it('should maintain modal state correctly', async () => {
       const user = userEvent.setup()
 
-      render(<HostsPage />, { wrapper: createWrapper() })
+      render(<HostsPage />)
 
       // Initially closed
       expect(screen.queryByTestId('host-modal')).not.toBeInTheDocument()
@@ -190,7 +174,7 @@ describe('HostsPage', () => {
 
   describe('page structure', () => {
     it('should have proper container layout', () => {
-      const { container } = render(<HostsPage />, { wrapper: createWrapper() })
+      const { container } = render(<HostsPage />)
 
       // Check that a container with proper classes exists
       const pageContainer = container.querySelector('.container')
@@ -199,7 +183,7 @@ describe('HostsPage', () => {
     })
 
     it('should render all main sections', () => {
-      render(<HostsPage />, { wrapper: createWrapper() })
+      render(<HostsPage />)
 
       // Header section
       expect(screen.getByText('Hosts')).toBeInTheDocument()
@@ -215,14 +199,14 @@ describe('HostsPage', () => {
 
   describe('accessibility', () => {
     it('should have accessible button labels', () => {
-      render(<HostsPage />, { wrapper: createWrapper() })
+      render(<HostsPage />)
 
       const addButton = screen.getByRole('button', { name: /add host/i })
       expect(addButton).toBeInTheDocument()
     })
 
     it('should have accessible search input', () => {
-      render(<HostsPage />, { wrapper: createWrapper() })
+      render(<HostsPage />)
 
       const searchInput = screen.getByPlaceholderText(/search hosts/i)
       expect(searchInput).toHaveAttribute('type', 'text')

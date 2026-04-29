@@ -4,21 +4,13 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { render, screen } from '@/test/utils'
+import { Routes, Route } from 'react-router-dom'
 import { AppLayout } from './AppLayout'
 
 // Mock Sidebar
 vi.mock('./Sidebar', () => ({
   Sidebar: () => <aside data-testid="sidebar">Sidebar Mock</aside>,
-}))
-
-// Mock WebSocket Provider
-vi.mock('@/lib/websocket/WebSocketProvider', () => ({
-  useWebSocketContext: () => ({
-    status: 'connected',
-    send: vi.fn(),
-  }),
 }))
 
 // Mock user preferences hook
@@ -32,13 +24,11 @@ vi.mock('@/lib/hooks/useUserPreferences', () => ({
 
 function renderWithRouter() {
   return render(
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<AppLayout />}>
-          <Route index element={<div>Page Content</div>} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
+    <Routes>
+      <Route path="/" element={<AppLayout />}>
+        <Route index element={<div>Page Content</div>} />
+      </Route>
+    </Routes>
   )
 }
 

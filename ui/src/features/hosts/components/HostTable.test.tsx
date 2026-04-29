@@ -4,13 +4,11 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { render, screen } from '@/test/utils'
 import { HostTable } from './HostTable'
 import * as useHostsModule from '../hooks/useHosts'
 import type { Host } from '../hooks/useHosts'
 
-// Mock the useHosts hook
 vi.mock('../hooks/useHosts', () => ({
   useHosts: vi.fn(),
 }))
@@ -49,18 +47,6 @@ const mockHosts: Host[] = [
   },
 ]
 
-function createWrapper() {
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-    },
-  })
-
-  return ({ children }: { children: React.ReactNode }) => (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-  )
-}
-
 describe('HostTable', () => {
   describe('rendering', () => {
     it('should render table headers even when loading', () => {
@@ -70,7 +56,7 @@ describe('HostTable', () => {
         error: null,
       } as any)
 
-      render(<HostTable />, { wrapper: createWrapper() })
+      render(<HostTable />)
 
       // Loading state shows skeleton loaders, not table
       const skeletons = document.querySelectorAll('.animate-pulse')
@@ -84,7 +70,7 @@ describe('HostTable', () => {
         error: new Error('Failed to fetch hosts'),
       } as any)
 
-      render(<HostTable />, { wrapper: createWrapper() })
+      render(<HostTable />)
 
       // Error state shows error message
       expect(screen.getByText(/Error loading hosts/i)).toBeInTheDocument()
@@ -97,7 +83,7 @@ describe('HostTable', () => {
         error: null,
       } as any)
 
-      render(<HostTable />, { wrapper: createWrapper() })
+      render(<HostTable />)
 
       // Empty state shows message
       expect(screen.getByText('No hosts configured')).toBeInTheDocument()
@@ -111,7 +97,7 @@ describe('HostTable', () => {
         error: null,
       } as any)
 
-      render(<HostTable />, { wrapper: createWrapper() })
+      render(<HostTable />)
 
       // Check all host names are present
       expect(screen.getByText('production-server')).toBeInTheDocument()
@@ -128,7 +114,7 @@ describe('HostTable', () => {
         error: null,
       } as any)
 
-      render(<HostTable />, { wrapper: createWrapper() })
+      render(<HostTable />)
 
       // Column headers
       expect(screen.getByText('Status')).toBeInTheDocument()
@@ -150,7 +136,7 @@ describe('HostTable', () => {
         error: null,
       } as any)
 
-      render(<HostTable />, { wrapper: createWrapper() })
+      render(<HostTable />)
 
       expect(screen.getByText('Online')).toBeInTheDocument()
       expect(screen.getByText('Offline')).toBeInTheDocument()
@@ -164,7 +150,7 @@ describe('HostTable', () => {
         error: null,
       } as any)
 
-      render(<HostTable />, { wrapper: createWrapper() })
+      render(<HostTable />)
 
       // Check container counts are displayed (format: "5 / 5")
       // Use getAllByText since numbers appear in multiple places
@@ -185,7 +171,7 @@ describe('HostTable', () => {
         error: null,
       } as any)
 
-      render(<HostTable />, { wrapper: createWrapper() })
+      render(<HostTable />)
 
       // First host: 2 tags (production, web) - both shown
       expect(screen.getByText('production')).toBeInTheDocument()
@@ -207,7 +193,7 @@ describe('HostTable', () => {
         error: null,
       } as any)
 
-      render(<HostTable />, { wrapper: createWrapper() })
+      render(<HostTable />)
 
       // Check for relative time text (date-fns formatDistanceToNow)
       const uptimeElements = screen.getAllByText(/ago|seconds?|minute?|hour?/i)
@@ -221,7 +207,7 @@ describe('HostTable', () => {
         error: null,
       } as any)
 
-      render(<HostTable />, { wrapper: createWrapper() })
+      render(<HostTable />)
 
       // Each row should have action buttons with titles (they're icon-only buttons)
       const allButtons = screen.getAllByRole('button')
@@ -263,7 +249,7 @@ describe('HostTable', () => {
         error: null,
       } as any)
 
-      render(<HostTable />, { wrapper: createWrapper() })
+      render(<HostTable />)
 
       expect(screen.getByText('minimal-server')).toBeInTheDocument()
       // Should not crash when tags are undefined
@@ -287,7 +273,7 @@ describe('HostTable', () => {
         error: null,
       } as any)
 
-      render(<HostTable />, { wrapper: createWrapper() })
+      render(<HostTable />)
 
       expect(screen.getByText('no-tags-server')).toBeInTheDocument()
     })
@@ -310,7 +296,7 @@ describe('HostTable', () => {
         error: null,
       } as any)
 
-      render(<HostTable />, { wrapper: createWrapper() })
+      render(<HostTable />)
 
       expect(screen.getByText('unknown-server')).toBeInTheDocument()
       // Falls back to Offline status for unknown
@@ -326,7 +312,7 @@ describe('HostTable', () => {
         error: null,
       } as any)
 
-      render(<HostTable />, { wrapper: createWrapper() })
+      render(<HostTable />)
 
       // CPU and Memory columns render but with placeholder content
       expect(screen.getByText('CPU')).toBeInTheDocument()
@@ -340,7 +326,7 @@ describe('HostTable', () => {
         error: null,
       } as any)
 
-      render(<HostTable />, { wrapper: createWrapper() })
+      render(<HostTable />)
 
       // OS/Version shows placeholder for all hosts
       const osPlaceholders = screen.getAllByText(/Ubuntu 24\.04/)
@@ -354,7 +340,7 @@ describe('HostTable', () => {
         error: null,
       } as any)
 
-      render(<HostTable />, { wrapper: createWrapper() })
+      render(<HostTable />)
 
       // Alerts column shows dash until alert system is integrated
       const alertPlaceholders = screen.getAllByText('-')

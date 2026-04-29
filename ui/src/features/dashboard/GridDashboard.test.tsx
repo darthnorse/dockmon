@@ -4,12 +4,10 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { render, screen, fireEvent, waitFor } from '@/test/utils'
 import { GridDashboard } from './GridDashboard'
 import type { ReactNode } from 'react'
 
-// Mock user preferences hook
 const mockDashboardLayout = {
   layout: null as any,
   setLayout: vi.fn(),
@@ -18,16 +16,16 @@ const mockDashboardLayout = {
 
 vi.mock('@/lib/hooks/useUserPreferences', () => ({
   useDashboardLayout: () => mockDashboardLayout,
+  useTimeFormat: () => ({ timeFormat: '24h', setTimeFormat: vi.fn() }),
 }))
 
-// Mock API client for widgets
 vi.mock('@/lib/api/client', () => ({
   apiClient: {
     get: vi.fn().mockResolvedValue([]),
   },
 }))
 
-// Mock react-grid-layout to avoid DOM measurement issues in tests
+// react-grid-layout uses DOM measurement APIs jsdom doesn't provide.
 vi.mock('react-grid-layout', () => ({
   default: ({ children }: { children: ReactNode }) => (
     <div data-testid="grid-layout">{children}</div>
@@ -35,19 +33,7 @@ vi.mock('react-grid-layout', () => ({
   WidthProvider: (Component: React.ComponentType) => Component,
 }))
 
-function renderDashboard() {
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-    },
-  })
-
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <GridDashboard />
-    </QueryClientProvider>
-  )
-}
+const renderDashboard = () => render(<GridDashboard />)
 
 describe('GridDashboard', () => {
   beforeEach(() => {

@@ -3,14 +3,12 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen } from '@/test/utils'
 import userEvent from '@testing-library/user-event'
 import { KpiBar } from './KpiBar'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import { useStatsContext } from '@/lib/stats/StatsProvider'
-import { BrowserRouter } from 'react-router-dom'
 
-// Mock dependencies
 vi.mock('@/features/hosts/hooks/useHosts')
 vi.mock('@/lib/stats/StatsProvider')
 
@@ -28,9 +26,7 @@ describe('KpiBar', () => {
     vi.clearAllMocks()
   })
 
-  const renderWithRouter = (component: React.ReactElement) => {
-    return render(<BrowserRouter>{component}</BrowserRouter>)
-  }
+  const renderWithRouter = (component: React.ReactElement) => render(component)
 
   it('should render all 5 KPI cards', () => {
     vi.mocked(useHosts).mockReturnValue({ data: [], isLoading: false } as any)

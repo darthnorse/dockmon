@@ -4,31 +4,17 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { render, screen, waitFor } from '@/test/utils'
 import { ContainerStatsWidget } from './ContainerStatsWidget'
 import * as apiClient from '@/lib/api/client'
 
-// Mock the API client
 vi.mock('@/lib/api/client', () => ({
   apiClient: {
     get: vi.fn(),
   },
 }))
 
-function renderWidget() {
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-    },
-  })
-
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <ContainerStatsWidget />
-    </QueryClientProvider>
-  )
-}
+const renderWidget = () => render(<ContainerStatsWidget />)
 
 describe('ContainerStatsWidget', () => {
   describe('loading state', () => {

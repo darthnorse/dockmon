@@ -56,13 +56,27 @@ export function VirtualizedTable({ table }: VirtualizedTableProps) {
     scrollMargin,
   })
 
-  // TanStack Virtual caches measured heights by index, not by row identity.
-  // After a sort, index N can be a different Container with a different
-  // height (the tags column wraps), so without measure() the row lays out
-  // at the previous occupant's cached height — visible row overlap.
+  // TanStack Virtual caches measured heights by index, not by row identity,
+  // so after a sort, index N can hold a different Container with a different
+  // height (the tags column wraps) and laying out against the old cached
+  // height causes visible row overlap. Per-row measureElement handles
+  // content-driven height changes within a single row, but it doesn't fire
+  // when an existing keyed element just gets a new data-index — so we have
+  // to invalidate explicitly when ordering changes. Cheap signature catches
+  // length changes (filter add/remove) and first/middle/last id changes
+  // (sort) without paying an O(n) string-join on every WebSocket stats
+  // update (which fires every couple of seconds and otherwise doesn't
+  // change row identity at any index).
+  const orderSignature = rows.length === 0
+    ? ''
+    : `${rows.length}|${rows[0]!.id}|${rows[rows.length >> 1]!.id}|${rows[rows.length - 1]!.id}`
+  const prevOrderSignatureRef = useRef('')
   useEffect(() => {
-    virtualizer.measure()
-  }, [rows, virtualizer])
+    if (prevOrderSignatureRef.current && prevOrderSignatureRef.current !== orderSignature) {
+      virtualizer.measure()
+    }
+    prevOrderSignatureRef.current = orderSignature
+  }, [orderSignature, virtualizer])
 
   // Small columns (≤100px) get fixed widths; larger ones flex with a
   // minimum so the layout never collapses when the viewport is narrow.

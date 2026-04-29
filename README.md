@@ -2,11 +2,11 @@
 
 A comprehensive Docker container monitoring and management platform with real-time monitoring, intelligent auto-restart, multi-channel alerting, and complete event logging.
 
-![DockMon](https://img.shields.io/badge/DockMon-v2.3.3-blue.svg)
+![DockMon](https://img.shields.io/badge/DockMon-v2.4.0-blue.svg)
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
 ![React](https://img.shields.io/badge/React-18.3-61DAFB?logo=react&logoColor=white)
-![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go&logoColor=white)
+![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)
 ![License](https://img.shields.io/badge/license-BSL%201.1-blue.svg)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Support-FFDD00?logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/darthnorse)
 

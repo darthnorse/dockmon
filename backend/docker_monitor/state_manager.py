@@ -87,6 +87,9 @@ class StateManager:
         self.db.set_auto_restart(host_id, container_id, container_name, enabled)
         logger.info(f"Auto-restart {'enabled' if enabled else 'disabled'} for container '{container_name}' on host '{host_name}'")
 
+        if 'discover_containers_for_host' in CACHE_REGISTRY:
+            CACHE_REGISTRY['discover_containers_for_host'].invalidate()
+
     def set_container_desired_state(self, host_id: str, container_id: str, container_name: str, desired_state: str, web_ui_url: str = None) -> None:
         """
         Set desired state for a container.
@@ -105,6 +108,11 @@ class StateManager:
         # Save to database
         self.db.set_desired_state(host_id, container_id, container_name, desired_state, web_ui_url)
         logger.info(f"Desired state set to '{desired_state}' for container '{container_name}' on host '{host_name}'")
+
+        # Invalidate discovery cache so the UI reflects the change without
+        # waiting for the 5s TTL (parity with update_container_tags).
+        if 'discover_containers_for_host' in CACHE_REGISTRY:
+            CACHE_REGISTRY['discover_containers_for_host'].invalidate()
 
     async def update_container_tags(
         self,

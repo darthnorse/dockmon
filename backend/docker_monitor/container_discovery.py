@@ -488,7 +488,6 @@ class ContainerDiscovery:
                         compose_service = labels.get("com.docker.compose.service")
 
                         seen_container_ids.add(container_id)
-                        container_key = make_composite_key(host_id, container_id)
                         custom_tags = host_tags.get(container_id, [])
 
                         # Reattach is idempotent setup; only run on first sight.
@@ -640,7 +639,10 @@ class ContainerDiscovery:
                         continue
 
                 # Rewrite the seen-set so destroyed containers are pruned.
-                self._reattached_container_ids[host_id] = seen_container_ids
+                # Skip if remove_host removed us mid-sweep — otherwise we'd
+                # leak an orphan entry that no future sweep ever prunes.
+                if host_id in self.hosts:
+                    self._reattached_container_ids[host_id] = seen_container_ids
 
                 logger.debug(f"Discovered {len(containers)} containers from agent {agent_id[:8]}... for host {host.name}")
                 return containers
@@ -688,8 +690,9 @@ class ContainerDiscovery:
                     except Exception as e:
                         logger.error(f"Failed to emit host connected event: {e}")
 
-            # Update previous status
-            self.host_previous_status[host_id] = "online"
+            # Update previous status (skip if remove_host raced us)
+            if host_id in self.hosts:
+                self.host_previous_status[host_id] = "online"
 
             # Batch-fetch DB state for the whole host (see agent path).
             host_tags = self.db.get_tags_for_host(host_id)
@@ -743,7 +746,6 @@ class ContainerDiscovery:
                     compose_service = labels.get('com.docker.compose.service')
 
                     seen_container_ids.add(container_id)
-                    container_key = make_composite_key(host_id, container_id)
                     custom_tags = host_tags.get(container_id, [])
 
                     # Reattach is idempotent setup; only run on first sight.
@@ -878,7 +880,8 @@ class ContainerDiscovery:
                     continue
 
             # Prune seen-set to currently-visible containers (see agent path).
-            self._reattached_container_ids[host_id] = seen_container_ids
+            if host_id in self.hosts:
+                self._reattached_container_ids[host_id] = seen_container_ids
 
         except docker.errors.NotFound as e:
             # Container was deleted between list() and attribute access - this is normal during bulk deletions
@@ -947,8 +950,9 @@ class ContainerDiscovery:
                     except Exception as alert_error:
                         logger.error(f"Failed to emit host disconnection event: {alert_error}")
 
-            # Update previous status
-            self.host_previous_status[host_id] = "offline"
+            # Update previous status (skip if remove_host raced us)
+            if host_id in self.hosts:
+                self.host_previous_status[host_id] = "offline"
 
         host.last_checked = datetime.now(timezone.utc)
         return containers

@@ -904,6 +904,12 @@ class DockerMonitor:
             if host_id in self.last_reconnect_attempt:
                 del self.last_reconnect_attempt[host_id]
 
+            # Clean up discovery-side per-host trackers (reconnect_attempts
+            # and last_reconnect_attempt are aliases to monitor's own dicts
+            # already cleaned above).
+            self.discovery._reattached_container_ids.pop(host_id, None)
+            self.discovery.host_previous_status.pop(host_id, None)
+
             # Clean up auto-restart tracking for this host
             async with self._restart_lock:
                 auto_restart_to_remove = [key for key in self.auto_restart_status.keys() if key.startswith(f"{host_id}:")]

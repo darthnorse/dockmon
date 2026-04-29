@@ -13,7 +13,7 @@ import os
 import tempfile
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -89,10 +89,6 @@ def host_id(db_manager):
 
 @pytest.fixture
 def discovery(db_manager, host_id):
-    """
-    ContainerDiscovery wired against the real test DB, with reattach
-    methods replaced by call-counting spies.
-    """
     host = DockerHost(
         id=host_id,
         name="test-host",
@@ -100,34 +96,24 @@ def discovery(db_manager, host_id):
         connection_type="agent",
         status="online",
     )
-    disc = ContainerDiscovery(
+    return ContainerDiscovery(
         db=db_manager,
         settings=None,
         hosts={host_id: host},
         clients={},
     )
-    return disc
 
 
-def _wrap_count(db_manager, method_name: str) -> dict:
-    """
-    Replace one of the db.reattach_*_for_container methods with a
-    counting wrapper. Returns a dict with a "count" key updated each
-    call. The original is restored when the dict is GC'd? — no, the
-    test owns it. Tests should restore manually if they need
-    cross-test isolation, but each test gets a fresh db_manager
-    fixture so it's not necessary.
-    """
-    original = getattr(db_manager, method_name)
-    counter = {"count": 0, "calls_for": []}
+def _spy(monkeypatch, db_manager, method_name: str) -> MagicMock:
+    """Replace db.<method_name> with a Mock that wraps the real method."""
+    spy = MagicMock(wraps=getattr(db_manager, method_name))
+    monkeypatch.setattr(db_manager, method_name, spy)
+    return spy
 
-    def wrapper(*args, **kwargs):
-        counter["count"] += 1
-        counter["calls_for"].append(kwargs.get("container_id") or (args[1] if len(args) > 1 else None))
-        return original(*args, **kwargs)
 
-    setattr(db_manager, method_name, wrapper)
-    return counter
+def _called_for(spy: MagicMock) -> list[str]:
+    """Container IDs the spy was called with, in order."""
+    return [c.kwargs.get("container_id") for c in spy.call_args_list]
 
 
 class _MockExecutor:
@@ -146,17 +132,13 @@ class _MockExecutor:
 
 
 @pytest.fixture
-def mock_executor():
-    return _MockExecutor()
-
-
-@pytest.fixture
-def patch_executor(mock_executor):
+def patch_executor():
+    executor = _MockExecutor()
     with patch(
         "agent.command_executor.get_agent_command_executor",
-        return_value=mock_executor,
+        return_value=executor,
     ):
-        yield mock_executor
+        yield executor
 
 
 @pytest.fixture
@@ -170,11 +152,11 @@ def get_auto_restart():
 
 @pytest.mark.asyncio
 async def test_first_sweep_runs_reattach_for_every_container(
-    db_manager, discovery, host_id, patch_executor, get_auto_restart
+    monkeypatch, db_manager, discovery, host_id, patch_executor, get_auto_restart
 ):
-    update_settings = _wrap_count(db_manager, "reattach_update_settings_for_container")
-    health_check = _wrap_count(db_manager, "reattach_http_health_check_for_container")
-    deployment = _wrap_count(db_manager, "reattach_deployment_metadata_for_container")
+    update_settings = _spy(monkeypatch, db_manager, "reattach_update_settings_for_container")
+    health_check = _spy(monkeypatch, db_manager, "reattach_http_health_check_for_container")
+    deployment = _spy(monkeypatch, db_manager, "reattach_deployment_metadata_for_container")
 
     patch_executor.next_response = [
         _make_dc("aaaaaaaaaaaa", name="a"),
@@ -185,17 +167,17 @@ async def test_first_sweep_runs_reattach_for_every_container(
     containers = await discovery.discover_containers_for_host(host_id, get_auto_restart)
 
     assert len(containers) == 3
-    assert update_settings["count"] == 3
-    assert health_check["count"] == 3
-    assert deployment["count"] == 3
+    assert update_settings.call_count == 3
+    assert health_check.call_count == 3
+    assert deployment.call_count == 3
     assert discovery._reattached_container_ids[host_id] == {"aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc"}
 
 
 @pytest.mark.asyncio
 async def test_second_sweep_skips_reattach_for_unchanged_containers(
-    db_manager, discovery, host_id, patch_executor, get_auto_restart
+    monkeypatch, db_manager, discovery, host_id, patch_executor, get_auto_restart
 ):
-    update_settings = _wrap_count(db_manager, "reattach_update_settings_for_container")
+    update_settings = _spy(monkeypatch, db_manager, "reattach_update_settings_for_container")
 
     patch_executor.next_response = [
         _make_dc("aaaaaaaaaaaa", name="a"),
@@ -204,31 +186,30 @@ async def test_second_sweep_skips_reattach_for_unchanged_containers(
 
     # First sweep: reattach runs for both.
     await discovery.discover_containers_for_host(host_id, get_auto_restart)
-    assert update_settings["count"] == 2
+    assert update_settings.call_count == 2
 
-    # Second sweep with the SAME containers: must invalidate the
-    # @async_ttl_cache so the function actually runs again, then
-    # assert no new reattach calls.
+    # Second sweep with the SAME containers — invalidate the
+    # @async_ttl_cache so the function actually runs again, then assert
+    # no new reattach calls.
     discovery.discover_containers_for_host.invalidate()
     await discovery.discover_containers_for_host(host_id, get_auto_restart)
-    assert update_settings["count"] == 2  # unchanged
+    assert update_settings.call_count == 2
 
 
 @pytest.mark.asyncio
 async def test_new_container_triggers_reattach_only_for_itself(
-    db_manager, discovery, host_id, patch_executor, get_auto_restart
+    monkeypatch, db_manager, discovery, host_id, patch_executor, get_auto_restart
 ):
-    update_settings = _wrap_count(db_manager, "reattach_update_settings_for_container")
+    update_settings = _spy(monkeypatch, db_manager, "reattach_update_settings_for_container")
 
     patch_executor.next_response = [
         _make_dc("aaaaaaaaaaaa", name="a"),
         _make_dc("bbbbbbbbbbbb", name="b"),
     ]
     await discovery.discover_containers_for_host(host_id, get_auto_restart)
-    assert update_settings["count"] == 2
-    update_settings["calls_for"].clear()
+    assert update_settings.call_count == 2
 
-    # Add a new container; existing ones unchanged.
+    update_settings.reset_mock()
     discovery.discover_containers_for_host.invalidate()
     patch_executor.next_response = [
         _make_dc("aaaaaaaaaaaa", name="a"),
@@ -237,8 +218,7 @@ async def test_new_container_triggers_reattach_only_for_itself(
     ]
     await discovery.discover_containers_for_host(host_id, get_auto_restart)
 
-    assert update_settings["count"] == 3  # only the new one ran
-    assert update_settings["calls_for"] == ["dddddddddddd"]
+    assert _called_for(update_settings) == ["dddddddddddd"]
     assert discovery._reattached_container_ids[host_id] == {
         "aaaaaaaaaaaa", "bbbbbbbbbbbb", "dddddddddddd",
     }
@@ -246,10 +226,8 @@ async def test_new_container_triggers_reattach_only_for_itself(
 
 @pytest.mark.asyncio
 async def test_destroyed_container_is_pruned_from_seen_set(
-    db_manager, discovery, host_id, patch_executor, get_auto_restart
+    monkeypatch, db_manager, discovery, host_id, patch_executor, get_auto_restart
 ):
-    update_settings = _wrap_count(db_manager, "reattach_update_settings_for_container")
-
     patch_executor.next_response = [
         _make_dc("aaaaaaaaaaaa", name="a"),
         _make_dc("bbbbbbbbbbbb", name="b"),
@@ -265,11 +243,26 @@ async def test_destroyed_container_is_pruned_from_seen_set(
     # Seen-set is rewritten to currently-visible containers.
     assert discovery._reattached_container_ids[host_id] == {"aaaaaaaaaaaa"}
 
-    # If b reappears (e.g., recreated with the same short id by Docker —
-    # unlikely in practice, but the gate must not have stale state), it
-    # should hit the reattach path again.
-    pre = update_settings["count"]
-    update_settings["calls_for"].clear()
+
+@pytest.mark.asyncio
+async def test_recreated_container_with_same_id_re_runs_reattach(
+    monkeypatch, db_manager, discovery, host_id, patch_executor, get_auto_restart
+):
+    """After a container is destroyed and the same short id reappears,
+    the gate must treat it as new — not skip it because of stale state."""
+    update_settings = _spy(monkeypatch, db_manager, "reattach_update_settings_for_container")
+
+    patch_executor.next_response = [
+        _make_dc("aaaaaaaaaaaa", name="a"),
+        _make_dc("bbbbbbbbbbbb", name="b"),
+    ]
+    await discovery.discover_containers_for_host(host_id, get_auto_restart)
+
+    discovery.discover_containers_for_host.invalidate()
+    patch_executor.next_response = [_make_dc("aaaaaaaaaaaa", name="a")]
+    await discovery.discover_containers_for_host(host_id, get_auto_restart)
+
+    update_settings.reset_mock()
     discovery.discover_containers_for_host.invalidate()
     patch_executor.next_response = [
         _make_dc("aaaaaaaaaaaa", name="a"),
@@ -277,13 +270,12 @@ async def test_destroyed_container_is_pruned_from_seen_set(
     ]
     await discovery.discover_containers_for_host(host_id, get_auto_restart)
 
-    assert update_settings["count"] == pre + 1
-    assert update_settings["calls_for"] == ["bbbbbbbbbbbb"]
+    assert _called_for(update_settings) == ["bbbbbbbbbbbb"]
 
 
 @pytest.mark.asyncio
 async def test_seen_set_is_per_host(
-    db_manager, discovery, host_id, patch_executor, get_auto_restart
+    monkeypatch, db_manager, discovery, host_id, patch_executor, get_auto_restart
 ):
     """A second host's containers must not bleed into the first host's seen-set."""
     other_host_id = str(uuid.uuid4())
@@ -305,7 +297,7 @@ async def test_seen_set_is_per_host(
         connection_type="agent", status="online",
     )
 
-    update_settings = _wrap_count(db_manager, "reattach_update_settings_for_container")
+    update_settings = _spy(monkeypatch, db_manager, "reattach_update_settings_for_container")
 
     patch_executor.next_response = [_make_dc("aaaaaaaaaaaa", name="a")]
     await discovery.discover_containers_for_host(host_id, get_auto_restart)
@@ -316,5 +308,4 @@ async def test_seen_set_is_per_host(
 
     assert discovery._reattached_container_ids[host_id] == {"aaaaaaaaaaaa"}
     assert discovery._reattached_container_ids[other_host_id] == {"bbbbbbbbbbbb"}
-    # Both seen for the first time on their respective hosts.
-    assert update_settings["count"] == 2
+    assert update_settings.call_count == 2

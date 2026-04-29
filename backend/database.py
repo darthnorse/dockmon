@@ -2542,7 +2542,13 @@ class DatabaseManager:
         if not host_id:
             return {}
 
-        prefix = f"{host_id}:"
+        # Half-open range scan instead of LIKE 'prefix%'. SQLite's default
+        # case_sensitive_like=OFF disables the LIKE-to-index optimization,
+        # so a startswith() filter would full-scan tag_assignments. Comparing
+        # against ":" and ";" (next ASCII char) keeps the query on the
+        # composite index over (subject_type, subject_id).
+        lo = f"{host_id}:"
+        hi = f"{host_id};"
         with self.get_session() as session:
             rows = session.query(
                 TagAssignment.subject_id,
@@ -2552,7 +2558,8 @@ class DatabaseManager:
                 TagAssignment.tag_id == Tag.id,
             ).filter(
                 TagAssignment.subject_type == 'container',
-                TagAssignment.subject_id.startswith(prefix),
+                TagAssignment.subject_id >= lo,
+                TagAssignment.subject_id < hi,
             ).order_by(
                 TagAssignment.subject_id,
                 TagAssignment.order_index,
@@ -2560,7 +2567,7 @@ class DatabaseManager:
 
             result: dict[str, list[str]] = {}
             for subject_id, tag_name in rows:
-                container_id = subject_id[len(prefix):]
+                container_id = subject_id[len(lo):]
                 result.setdefault(container_id, []).append(tag_name)
             return result
 

@@ -182,11 +182,8 @@ class ContainerDiscovery:
         self.last_reconnect_attempt: Dict[str, float] = {}  # Track last attempt time per host
         self.host_previous_status: Dict[str, str] = {}  # Track previous host status to detect transitions
 
-        # Container IDs we've already run reattach for, keyed by host. Reattach
-        # is idempotent setup that only matters when a container is new (or
-        # rebuilt with a new ID); skipping it on subsequent sweeps cuts ~5
-        # DB queries per container. Pruned each sweep to currently-visible
-        # containers so destroyed-but-cached entries don't grow forever.
+        # Reattach is idempotent setup; gate it on a per-host seen-set,
+        # rewritten each sweep so destroyed entries are pruned automatically.
         self._reattached_container_ids: Dict[str, set[str]] = {}
 
     async def attempt_reconnection(self, host_id: str) -> bool:
@@ -494,10 +491,7 @@ class ContainerDiscovery:
                         container_key = make_composite_key(host_id, container_id)
                         custom_tags = host_tags.get(container_id, [])
 
-                        # Run reattach only the first time we see a container
-                        # ID; the calls are idempotent setup, not per-sweep
-                        # work. New / rebuilt containers (different ID) miss
-                        # the set and pay the full reattach pass once.
+                        # Reattach is idempotent setup; only run on first sight.
                         if container_id not in prev_reattached:
                             if not custom_tags:
                                 try:
@@ -645,9 +639,7 @@ class ContainerDiscovery:
                         logger.error(f"Error parsing agent container data ({container_info}): {e}\n{traceback.format_exc()}")
                         continue
 
-                # Prune the seen-set to currently-visible containers so
-                # destroyed entries don't accumulate over the process
-                # lifetime.
+                # Rewrite the seen-set so destroyed containers are pruned.
                 self._reattached_container_ids[host_id] = seen_container_ids
 
                 logger.debug(f"Discovered {len(containers)} containers from agent {agent_id[:8]}... for host {host.name}")
@@ -754,8 +746,7 @@ class ContainerDiscovery:
                     container_key = make_composite_key(host_id, container_id)
                     custom_tags = host_tags.get(container_id, [])
 
-                    # Run reattach only the first time we see a container
-                    # ID; subsequent sweeps skip this idempotent setup.
+                    # Reattach is idempotent setup; only run on first sight.
                     if container_id not in prev_reattached:
                         if not custom_tags:
                             try:

@@ -8,7 +8,7 @@ import os
 import time
 import traceback
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import docker
 from docker import DockerClient
@@ -319,10 +319,19 @@ class ContainerDiscovery:
 
             # Test the connection
             await async_client_ping(client)
-            # Connection successful - add to clients
-            self.clients[host_id] = client
 
-            # Reset reconnection attempts on success
+            # If remove_host raced us mid-reconnection, drop the new client
+            # and bail out — otherwise we'd leak the open daemon connection
+            # (remove_host already ran its self.clients cleanup, so it
+            # won't be closed elsewhere).
+            if host_id not in self.hosts:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+                return False
+
+            self.clients[host_id] = client
             self.reconnect_attempts[host_id] = 0
             logger.info(f"Reconnected to offline host: {host.name}")
 
@@ -367,8 +376,9 @@ class ContainerDiscovery:
             return True
 
         except Exception as e:
-            # Increment reconnection attempts on failure
-            self.reconnect_attempts[host_id] = attempts + 1
+            # Increment reconnection attempts on failure (skip if remove_host raced).
+            if host_id in self.hosts:
+                self.reconnect_attempts[host_id] = attempts + 1
 
             # Still offline - update status
             host.status = "offline"

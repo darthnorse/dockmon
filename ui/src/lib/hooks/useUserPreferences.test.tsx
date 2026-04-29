@@ -62,7 +62,13 @@ describe('useUserPreferences', () => {
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     )
 
-    vi.clearAllMocks()
+    // mockReset (not just clearAllMocks) — clearAllMocks leaves
+    // mockResolvedValueOnce queues intact, which leaks unconsumed responses
+    // from one test into the next (e.g. retries that never happen because
+    // retry: false). Reset, then re-establish the default response.
+    vi.mocked(apiClient.get).mockReset()
+    vi.mocked(apiClient.patch).mockReset()
+    vi.mocked(apiClient.delete).mockReset()
 
     // Set up default successful mock (tests can override this)
     vi.mocked(apiClient.get).mockResolvedValue(mockPreferences)
@@ -83,11 +89,10 @@ describe('useUserPreferences', () => {
     })
 
     it('should handle fetch errors gracefully', async () => {
-      // Mock rejection for initial attempt + 1 retry
-      const error = new Error('Network error')
-      vi.mocked(apiClient.get)
-        .mockRejectedValueOnce(error)
-        .mockRejectedValueOnce(error) // For the retry
+      // beforeEach pre-arms apiClient.get with mockResolvedValue(mockPreferences)
+      // so we need to override every call in this test, not just the first one,
+      // otherwise a follow-up resolved call would flip isError back to false.
+      vi.mocked(apiClient.get).mockRejectedValue(new Error('Network error'))
 
       const { result } = renderHook(() => useUserPreferences(), { wrapper })
 
@@ -253,7 +258,7 @@ describe('useUserPreferences', () => {
   })
 
   describe('useSidebarCollapsed', () => {
-    it.skip('should return sidebar collapsed state', async () => {
+    it('should return sidebar collapsed state', async () => {
       const prefs = {
         ...mockPreferences,
         sidebar_collapsed: true,

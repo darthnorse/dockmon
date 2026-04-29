@@ -127,11 +127,22 @@ describe('HostModal', () => {
       expect(mockMutate).not.toHaveBeenCalled()
     })
 
-    // The url field's zod refine accepts an empty string (so 'agent://' hosts
-    // can submit), and the UI's "*" required asterisk has no schema-level
-    // enforcement. There is therefore no "address/endpoint is required" error
-    // to assert on; behavior would belong in a UX/schema fix, not this test.
-    it.skip('should require address/endpoint', async () => {})
+    it('should require address/endpoint', async () => {
+      render(<HostModal isOpen={true} onClose={mockOnClose} host={null} />)
+      const user = await openAddForm()
+
+      const nameInput = screen.getByLabelText(/host name/i)
+      await user.type(nameInput, 'test-server')
+
+      const submitButton = screen.getByRole('button', { name: /add host/i })
+      await user.click(submitButton)
+
+      await waitFor(() => {
+        expect(screen.getByText(/address\/endpoint is required/i)).toBeInTheDocument()
+      })
+
+      expect(mockMutate).not.toHaveBeenCalled()
+    })
 
     it('should validate URL format', async () => {
       render(<HostModal isOpen={true} onClose={mockOnClose} host={null} />)
@@ -199,10 +210,32 @@ describe('HostModal', () => {
       expect(mockMutate).not.toHaveBeenCalled()
     })
 
-    // The schema enforces description.max(1000), but the UI does not render
-    // errors.description, so the validation message never reaches the DOM.
-    // Asserting it would require a UX fix to surface the error.
-    it.skip('should enforce max length for description', async () => {})
+    it('should enforce max length for description', async () => {
+      render(<HostModal isOpen={true} onClose={mockOnClose} host={null} />)
+      const user = await openAddForm()
+
+      const nameInput = screen.getByLabelText(/host name/i)
+      const urlInput = screen.getByLabelText(/address.*endpoint/i)
+      const descriptionInput = screen.getByLabelText(/description/i)
+
+      await user.type(nameInput, 'test-server')
+      await user.type(urlInput, 'tcp://localhost:2376')
+
+      // Generate a 1001-character string
+      const longDescription = 'a'.repeat(1001)
+      await user.type(descriptionInput, longDescription)
+
+      const submitButton = screen.getByRole('button', { name: /add host/i })
+      await user.click(submitButton)
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(/description must be less than 1000 characters/i)
+        ).toBeInTheDocument()
+      })
+
+      expect(mockMutate).not.toHaveBeenCalled()
+    })
   })
 
   describe('mTLS toggle', () => {

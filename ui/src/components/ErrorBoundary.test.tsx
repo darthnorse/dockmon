@@ -71,29 +71,27 @@ describe('ErrorBoundary', () => {
       expect(screen.getByRole('button', { name: /reload page/i })).toBeInTheDocument()
     })
 
-    // Skip: Error boundary state reset is complex to test
-    it.skip('should reset error state when clicking Try Again', () => {
+    it('should reset error state when clicking Try Again', () => {
       const { rerender } = render(
         <ErrorBoundary>
           <ThrowError shouldThrow={true} />
         </ErrorBoundary>
       )
 
-      // Error UI should be visible
       expect(screen.getByText('Something went wrong')).toBeInTheDocument()
 
-      // Click Try Again
-      const tryAgainButton = screen.getByRole('button', { name: /try again/i })
-      fireEvent.click(tryAgainButton)
-
-      // Re-render with non-throwing component
+      // Swap to a non-throwing child BEFORE resetting. Try Again only flips
+      // hasError back to false; if the child is still throwing on the next
+      // render, getDerivedStateFromError will trip the boundary again.
       rerender(
         <ErrorBoundary>
           <ThrowError shouldThrow={false} />
         </ErrorBoundary>
       )
 
-      // Should show normal content
+      const tryAgainButton = screen.getByRole('button', { name: /try again/i })
+      fireEvent.click(tryAgainButton)
+
       expect(screen.getByText('No error')).toBeInTheDocument()
     })
 

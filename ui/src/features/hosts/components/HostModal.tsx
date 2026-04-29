@@ -66,8 +66,9 @@ const hostSchema = z.object({
     .regex(/^[a-zA-Z0-9][a-zA-Z0-9 ._-]*$/, 'Host name contains invalid characters'),
   url: z
     .string()
+    .min(1, 'Address/Endpoint is required')
     .refine(
-      (val) => val === '' || val === 'agent://' || /^(tcp|unix|http|https):\/\/.+/.test(val),
+      (val) => val === 'agent://' || /^(tcp|unix|http|https):\/\/.+/.test(val),
       'URL must start with tcp://, unix://, http://, or https://'
     ),
   enableTls: z.boolean(),
@@ -746,9 +747,15 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
             {...register('description')}
             rows={3}
             placeholder="Optional notes about this host..."
-            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+            className={cn(
+              'w-full rounded-md border bg-background px-3 py-2 text-sm',
+              errors.description ? 'border-destructive' : 'border-input'
+            )}
             data-testid="host-description"
           />
+          {errors.description && (
+            <p className="text-xs text-destructive mt-1">{errors.description.message}</p>
+          )}
         </div>
 
         </fieldset>

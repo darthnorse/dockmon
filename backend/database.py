@@ -2530,6 +2530,61 @@ class DatabaseManager:
 
             return [name[0] for name in tag_names]
 
+    def get_tags_for_host(self, host_id: str) -> dict[str, list[str]]:
+        """
+        Batch fetch container tags for every container on a host in one
+        query. Returns dict mapping short container_id (12 chars) to a
+        list of tag names in user-defined order_index order.
+
+        Used by container discovery to collapse N per-container
+        get_tags_for_subject calls into one.
+        """
+        if not host_id:
+            return {}
+
+        prefix = f"{host_id}:"
+        with self.get_session() as session:
+            rows = session.query(
+                TagAssignment.subject_id,
+                Tag.name,
+            ).join(
+                Tag,
+                TagAssignment.tag_id == Tag.id,
+            ).filter(
+                TagAssignment.subject_type == 'container',
+                TagAssignment.subject_id.startswith(prefix),
+            ).order_by(
+                TagAssignment.subject_id,
+                TagAssignment.order_index,
+            ).all()
+
+            result: dict[str, list[str]] = {}
+            for subject_id, tag_name in rows:
+                container_id = subject_id[len(prefix):]
+                result.setdefault(container_id, []).append(tag_name)
+            return result
+
+    def get_desired_states_for_host(self, host_id: str) -> dict[str, tuple[str, Optional[str]]]:
+        """
+        Batch fetch (desired_state, web_ui_url) for every container on a
+        host in one query. Returns dict mapping short container_id to
+        the tuple. Containers with no row are absent from the dict;
+        callers should default to ('unspecified', None) on miss.
+        """
+        if not host_id:
+            return {}
+
+        with self.get_session() as session:
+            rows = session.query(
+                ContainerDesiredState.container_id,
+                ContainerDesiredState.desired_state,
+                ContainerDesiredState.web_ui_url,
+            ).filter(
+                ContainerDesiredState.host_id == host_id,
+            ).all()
+
+            return {row[0]: (row[1], row[2]) for row in rows}
+
     def get_subjects_with_tag(self, tag_name: str, subject_type: str = None) -> list[dict]:
         """Get all subjects that have a specific tag"""
         with self.get_session() as session:

@@ -342,9 +342,14 @@ function ContainerAlertSeverityCounts({
 
 interface ContainerTableProps {
   hostId?: string // Optional: filter by specific host
+  /**
+   * Element that owns the scroll, or undefined to use window scroll.
+   * Pass for embedded contexts (e.g., modal); omit on full-page routes.
+   */
+  scrollElement?: HTMLElement | null | undefined
 }
 
-export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {}) {
+export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerTableProps = {}) {
   const { hasCapability } = useAuth()
   const canOperate = hasCapability('containers.operate')
   const { data: preferences } = useUserPreferences()
@@ -1832,7 +1837,7 @@ export function ContainerTable({ hostId: propHostId }: ContainerTableProps = {})
         </div>
       </div>
 
-      <VirtualizedTable table={table} />
+      <VirtualizedTable table={table} scrollElement={scrollElement} />
 
 
       {/* Container Drawer */}

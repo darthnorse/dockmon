@@ -3572,7 +3572,7 @@ async def update_settings(
         "editor_theme": getattr(updated, 'editor_theme', 'aura'),
         # Session timeout
         "session_timeout_hours": getattr(updated, 'session_timeout_hours', 24),
-        # Stats persistence (v2.3.4+) — hot-pushed to stats-service above
+        # Stats persistence (v2.4.0+) — hot-pushed to stats-service above
         "stats_persistence_enabled": getattr(updated, 'stats_persistence_enabled', False),
         "stats_retention_days": getattr(updated, 'stats_retention_days', 30),
         "stats_points_per_view": getattr(updated, 'stats_points_per_view', 500),

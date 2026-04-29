@@ -34,7 +34,7 @@ def fresh_db():
         cfg.set_main_option("script_location", str(BACKEND_DIR / "alembic"))
         cfg.set_main_option("sqlalchemy.url", f"sqlite:///{path}")
         command.stamp(cfg, "036_v2_3_1_drop_legacy_api_key_cols")
-        command.upgrade(cfg, "037_v2_3_4_stats_persistence")
+        command.upgrade(cfg, "037_v2_4_0_stats_persistence")
 
         yield engine
     finally:

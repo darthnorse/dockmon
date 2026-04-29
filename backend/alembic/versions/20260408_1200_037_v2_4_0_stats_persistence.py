@@ -1,6 +1,6 @@
-"""v2.3.4 upgrade - Persistent stats history
+"""v2.4.0 upgrade - Persistent stats history
 
-Revision ID: 037_v2_3_4_stats_persistence
+Revision ID: 037_v2_4_0_stats_persistence
 Revises: 036_v2_3_1_drop_legacy_api_key_cols
 Create Date: 2026-04-08
 
@@ -17,7 +17,7 @@ CHANGES:
 from alembic import op
 import sqlalchemy as sa
 
-revision = '037_v2_3_4_stats_persistence'
+revision = '037_v2_4_0_stats_persistence'
 down_revision = '036_v2_3_1_drop_legacy_api_key_cols'
 branch_labels = None
 depends_on = None

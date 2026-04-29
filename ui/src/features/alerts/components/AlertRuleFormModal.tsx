@@ -5,8 +5,9 @@
  */
 
 import { useState, useRef, useEffect } from 'react'
-import { X, Search, Check, Bell, BellRing, Send, MessageSquare, Hash, Smartphone, Mail, Globe, Users } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
+import { X, Search, Check, Bell, BellRing, Send, MessageSquare, Hash, Smartphone, Mail, Globe, Users } from 'lucide-react'
+import { RemoveScroll } from 'react-remove-scroll'
 import { useCreateAlertRule, useUpdateAlertRule } from '../hooks/useAlertRules'
 import { useNotificationChannels } from '../hooks/useNotificationChannels'
 import type { AlertRule, AlertSeverity, AlertScope, AlertRuleRequest } from '@/types/alerts'
@@ -712,7 +713,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
   const submitButtonText = isSaving ? 'Saving...' : (isEditing ? 'Update Rule' : 'Create Rule')
 
   return (
-    <>
+    <RemoveScroll>
       {/* Backdrop */}
       <div
         className="fixed inset-0 bg-black/70 z-50"
@@ -1659,6 +1660,6 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         }}
         hasConfiguredChannels={configuredChannels.length > 0}
       />
-    </>
+    </RemoveScroll>
   )
 }

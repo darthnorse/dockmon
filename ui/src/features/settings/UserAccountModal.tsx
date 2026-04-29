@@ -8,13 +8,14 @@
  */
 
 import { useState, type FormEvent } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { X } from 'lucide-react'
+import { RemoveScroll } from 'react-remove-scroll'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ChangePasswordModal } from '@/features/auth/ChangePasswordModal'
 import { useAuth } from '@/features/auth/AuthContext'
 import { apiClient, ApiError } from '@/lib/api/client'
-import { useQueryClient } from '@tanstack/react-query'
 
 interface UserAccountModalProps {
   isOpen: boolean
@@ -73,7 +74,7 @@ export function UserAccountModal({ isOpen, onClose }: UserAccountModalProps) {
   if (!isOpen) return null
 
   return (
-    <>
+    <RemoveScroll>
       <div
         className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
         onClick={onClose}
@@ -203,6 +204,6 @@ export function UserAccountModal({ isOpen, onClose }: UserAccountModalProps) {
         isRequired={false}
         onClose={() => setShowPasswordModal(false)}
       />
-    </>
+    </RemoveScroll>
   )
 }

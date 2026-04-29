@@ -7,6 +7,7 @@
 
 import { useState } from 'react'
 import { Copy, Check, Code, Terminal, Users } from 'lucide-react'
+import { RemoveScroll } from 'react-remove-scroll'
 import { Button } from '@/components/ui/button'
 import { CreateApiKeyResponse } from '@/types/api-keys'
 
@@ -42,6 +43,7 @@ response = requests.get("${baseUrl}/api/hosts", headers=headers, verify=False)
 print(response.json())`
 
   return (
+    <RemoveScroll>
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
       <div className="bg-gray-900 rounded-lg max-w-2xl w-full mx-4 border border-gray-800 max-h-[90vh] overflow-y-auto">
         {/* Header */}
@@ -172,5 +174,6 @@ print(response.json())`
         </div>
       </div>
     </div>
+    </RemoveScroll>
   )
 }

@@ -7,11 +7,12 @@
 
 import { useState, type FormEvent } from 'react'
 import { X, Eye, EyeOff, Copy, Check } from 'lucide-react'
+import { RemoveScroll } from 'react-remove-scroll'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useUser, useResetUserPassword } from '@/hooks/useUsers'
 import type { ResetPasswordRequest } from '@/types/users'
-import { toast } from 'sonner'
 
 interface ResetPasswordModalProps {
   isOpen: boolean
@@ -93,6 +94,7 @@ export function ResetPasswordModal({ isOpen, onClose, userId }: ResetPasswordMod
   // Show generated password result
   if (generatedPassword) {
     return (
+      <RemoveScroll>
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
         <div className="mx-4 w-full max-w-md rounded-lg border border-gray-800 bg-gray-900">
           {/* Header */}
@@ -148,10 +150,12 @@ export function ResetPasswordModal({ isOpen, onClose, userId }: ResetPasswordMod
           </div>
         </div>
       </div>
+      </RemoveScroll>
     )
   }
 
   return (
+    <RemoveScroll>
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="mx-4 max-h-[90vh] w-full max-w-md overflow-y-auto rounded-lg border border-gray-800 bg-gray-900">
         {/* Header */}
@@ -297,5 +301,6 @@ export function ResetPasswordModal({ isOpen, onClose, userId }: ResetPasswordMod
         </form>
       </div>
     </div>
+    </RemoveScroll>
   )
 }

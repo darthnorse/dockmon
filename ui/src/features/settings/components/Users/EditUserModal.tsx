@@ -7,12 +7,13 @@
 
 import { useState, useEffect, type FormEvent } from 'react'
 import { X, Loader2, Users } from 'lucide-react'
+import { RemoveScroll } from 'react-remove-scroll'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useUser, useUpdateUser } from '@/hooks/useUsers'
 import { useGroups } from '@/hooks/useGroups'
 import type { UpdateUserRequest } from '@/types/users'
-import { toast } from 'sonner'
 
 interface EditUserModalProps {
   isOpen: boolean
@@ -112,6 +113,7 @@ export function EditUserModal({ isOpen, onClose, userId }: EditUserModalProps) {
   }
 
   return (
+    <RemoveScroll>
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="mx-4 max-h-[90vh] w-full max-w-md overflow-y-auto rounded-lg border border-gray-800 bg-gray-900">
         {/* Header */}
@@ -253,5 +255,6 @@ export function EditUserModal({ isOpen, onClose, userId }: EditUserModalProps) {
         )}
       </div>
     </div>
+    </RemoveScroll>
   )
 }

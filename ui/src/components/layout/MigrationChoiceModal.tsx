@@ -8,11 +8,13 @@
  */
 
 import { useState, useEffect } from 'react'
-import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
-import { apiClient } from '@/lib/api/client'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Server, ArrowRight, Loader2 } from 'lucide-react'
+import { RemoveScroll } from 'react-remove-scroll'
 import { toast } from 'sonner'
+import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
+import { apiClient } from '@/lib/api/client'
+
 
 interface MigrationCandidate {
   host_id: string
@@ -84,6 +86,7 @@ export function MigrationChoiceModal() {
   }
 
   return (
+    <RemoveScroll>
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
       {/* Backdrop - no onClick to prevent dismissal */}
       <div className="absolute inset-0 bg-black/60" />
@@ -216,5 +219,6 @@ export function MigrationChoiceModal() {
         </div>
       </div>
     </div>
+    </RemoveScroll>
   )
 }

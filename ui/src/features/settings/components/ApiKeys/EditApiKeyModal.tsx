@@ -8,11 +8,12 @@
 
 import { useState, useEffect, type FormEvent } from 'react'
 import { X, Users } from 'lucide-react'
+import { RemoveScroll } from 'react-remove-scroll'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useApiKeys, useUpdateApiKey } from '@/hooks/useApiKeys'
 import { UpdateApiKeyRequest, type ApiKey } from '@/types/api-keys'
-import { toast } from 'sonner'
 
 interface EditApiKeyModalProps {
   isOpen: boolean
@@ -92,6 +93,7 @@ export function EditApiKeyModal({ isOpen, onClose, keyId }: EditApiKeyModalProps
   }
 
   return (
+    <RemoveScroll>
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
       <div className="bg-gray-900 rounded-lg max-w-md w-full mx-4 border border-gray-800 max-h-[90vh] overflow-y-auto">
         {/* Header */}
@@ -174,5 +176,6 @@ export function EditApiKeyModal({ isOpen, onClose, keyId }: EditApiKeyModalProps
         </form>
       </div>
     </div>
+    </RemoveScroll>
   )
 }

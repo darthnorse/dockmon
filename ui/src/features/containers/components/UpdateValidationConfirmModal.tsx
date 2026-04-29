@@ -8,6 +8,7 @@
  */
 
 import { AlertTriangle, Database, Network, Activity, Shield } from 'lucide-react'
+import { RemoveScroll } from 'react-remove-scroll'
 import { Button } from '@/components/ui/button'
 import type { UpdatePolicyCategory } from '../types/updatePolicy'
 
@@ -82,6 +83,7 @@ export function UpdateValidationConfirmModal({
   }
 
   return (
+    <RemoveScroll>
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       {/* Backdrop - clickable to close */}
       <div
@@ -170,5 +172,6 @@ export function UpdateValidationConfirmModal({
         </div>
       </div>
     </div>
+    </RemoveScroll>
   )
 }

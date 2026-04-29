@@ -7,6 +7,7 @@
 
 import { ReactNode, useId, useEffect, useRef } from 'react'
 import { AlertTriangle, Info, AlertCircle } from 'lucide-react'
+import { RemoveScroll } from 'react-remove-scroll'
 
 type ConfirmVariant = 'danger' | 'warning' | 'info'
 
@@ -100,6 +101,7 @@ export function ConfirmModal({
   }
 
   return (
+    <RemoveScroll>
     <div className="fixed inset-0 z-50 flex items-center justify-center" data-testid="confirm-modal-backdrop">
       <div
         className="absolute inset-0 bg-black/50"
@@ -167,5 +169,6 @@ export function ConfirmModal({
         </div>
       </div>
     </div>
+    </RemoveScroll>
   )
 }

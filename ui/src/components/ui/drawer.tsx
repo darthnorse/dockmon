@@ -12,6 +12,7 @@
 
 import { useEffect, useRef } from 'react'
 import { X } from 'lucide-react'
+import { RemoveScroll } from 'react-remove-scroll'
 import { cn } from '@/lib/utils'
 
 export interface DrawerProps {
@@ -63,24 +64,13 @@ export function Drawer({
   const drawerRef = useRef<HTMLDivElement>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
 
-  // Handle ESC key
   useEffect(() => {
+    if (!open) return
     const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && open) {
-        onClose()
-      }
+      if (e.key === 'Escape') onClose()
     }
-
-    if (open) {
-      document.addEventListener('keydown', handleEscape)
-      // Prevent body scroll when drawer is open
-      document.body.style.overflow = 'hidden'
-    }
-
-    return () => {
-      document.removeEventListener('keydown', handleEscape)
-      document.body.style.overflow = ''
-    }
+    document.addEventListener('keydown', handleEscape)
+    return () => document.removeEventListener('keydown', handleEscape)
   }, [open, onClose])
 
   // Focus trap: focus first focusable element when drawer opens
@@ -100,7 +90,7 @@ export function Drawer({
   if (!open) return null
 
   return (
-    <>
+    <RemoveScroll>
       {/* Overlay */}
       <div
         ref={overlayRef}
@@ -148,7 +138,7 @@ export function Drawer({
           {children}
         </div>
       </div>
-    </>
+    </RemoveScroll>
   )
 }
 

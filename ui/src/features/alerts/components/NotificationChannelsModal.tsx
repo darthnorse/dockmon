@@ -7,6 +7,7 @@
 import { useState } from 'react'
 import { X, Plus, Trash2, Edit, Power, PowerOff, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react'
 import { Smartphone, Send, MessageSquare, Hash, Bell, Mail, Users, BellRing, LucideIcon } from 'lucide-react'
+import { RemoveScroll } from 'react-remove-scroll'
 import {
   useNotificationChannels,
   useCreateChannel,
@@ -132,6 +133,7 @@ export function NotificationChannelsModal({ onClose }: Props) {
   }
 
   return (
+    <RemoveScroll>
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
       <div className="w-full max-w-4xl rounded-lg border border-gray-700 bg-[#0d1117] shadow-2xl max-h-[90vh] overflow-y-auto">
         {/* Header */}
@@ -328,5 +330,6 @@ export function NotificationChannelsModal({ onClose }: Props) {
         </div>
       )}
     </div>
+    </RemoveScroll>
   )
 }

@@ -11,6 +11,7 @@
  */
 
 import { AlertTriangle, CheckCircle, XCircle, Info } from 'lucide-react'
+import { RemoveScroll } from 'react-remove-scroll'
 import { Button } from '@/components/ui/button'
 
 interface ValidationCategory {
@@ -53,6 +54,7 @@ export function BatchUpdateValidationConfirmModal({
   }
 
   return (
+    <RemoveScroll>
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       {/* Backdrop */}
       <div
@@ -239,5 +241,6 @@ export function BatchUpdateValidationConfirmModal({
         </div>
       </div>
     </div>
+    </RemoveScroll>
   )
 }

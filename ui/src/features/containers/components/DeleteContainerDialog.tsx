@@ -10,6 +10,7 @@
 
 import { useState } from 'react'
 import { AlertTriangle, Database, Network, Activity, Shield, Trash2 } from 'lucide-react'
+import { RemoveScroll } from 'react-remove-scroll'
 import { Button } from '@/components/ui/button'
 
 interface DeleteContainerDialogProps {
@@ -124,6 +125,7 @@ export function DeleteContainerDialog({
   // DockMon self-protection warning (should never happen, but defensive UI)
   if (isDockMon) {
     return (
+      <RemoveScroll>
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
         <div
           className="absolute inset-0 bg-black/50 backdrop-blur-sm"
@@ -161,6 +163,7 @@ export function DeleteContainerDialog({
           </div>
         </div>
       </div>
+      </RemoveScroll>
     )
   }
 
@@ -168,6 +171,7 @@ export function DeleteContainerDialog({
   const iconColor = protectionInfo.iconColor
 
   return (
+    <RemoveScroll>
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       data-testid="delete-container-dialog"
@@ -264,5 +268,6 @@ export function DeleteContainerDialog({
         </div>
       </div>
     </div>
+    </RemoveScroll>
   )
 }

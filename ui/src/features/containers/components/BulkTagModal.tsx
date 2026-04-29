@@ -7,6 +7,7 @@
 
 import { useState, KeyboardEvent } from 'react'
 import { X, Plus, AlertCircle } from 'lucide-react'
+import { RemoveScroll } from 'react-remove-scroll'
 import { Button } from '@/components/ui/button'
 
 interface BulkTagModalProps {
@@ -127,7 +128,7 @@ export function BulkTagModal({ isOpen, onClose, mode, selectedContainers, onConf
     : []
 
   return (
-    <>
+    <RemoveScroll>
       {/* Backdrop */}
       <div
         className="fixed inset-0 bg-black/50 z-50"
@@ -276,6 +277,6 @@ export function BulkTagModal({ isOpen, onClose, mode, selectedContainers, onConf
           </div>
         </div>
       </div>
-    </>
+    </RemoveScroll>
   )
 }

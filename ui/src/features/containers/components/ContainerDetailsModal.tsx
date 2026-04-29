@@ -12,6 +12,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useAuth } from '@/features/auth/AuthContext'
 import { X, Play, RotateCw, Circle, Trash2, Skull, PenLine } from 'lucide-react'
+import { RemoveScroll } from 'react-remove-scroll'
 import { Tabs } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { ConfirmModal } from '@/components/shared/ConfirmModal'
@@ -172,27 +173,18 @@ export function ContainerDetailsModal({
     return cleanup
   }, [open, container, addMessageHandler, handleContainerUpdate])
 
-  // Handle ESC key - stop propagation so parent modals don't also close
+  // Capture phase so this child closes before the parent host modal's
+  // ESC listener fires.
   useEffect(() => {
+    if (!open) return
     const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && open) {
-        // Let sub-dialogs handle their own ESC
-        if (showRenameDialog || showKillConfirm) return
-        e.stopImmediatePropagation()
-        onClose()
-      }
+      // Let sub-dialogs handle their own ESC
+      if (e.key !== 'Escape' || showRenameDialog || showKillConfirm) return
+      e.stopImmediatePropagation()
+      onClose()
     }
-
-    if (open) {
-      // Use capture phase to handle before other listeners
-      document.addEventListener('keydown', handleEscape, true)
-      document.body.style.overflow = 'hidden'
-    }
-
-    return () => {
-      document.removeEventListener('keydown', handleEscape, true)
-      document.body.style.overflow = ''
-    }
+    document.addEventListener('keydown', handleEscape, true)
+    return () => document.removeEventListener('keydown', handleEscape, true)
   }, [open, onClose, showRenameDialog, showKillConfirm])
 
   if (!open || !containerId || !container) return null
@@ -334,7 +326,7 @@ export function ContainerDetailsModal({
   ]
 
   return (
-    <>
+    <RemoveScroll>
       {/* Overlay */}
       <div
         className="fixed inset-0 bg-black/70 z-50 transition-opacity duration-200"
@@ -553,6 +545,6 @@ export function ContainerDetailsModal({
           Use this only for unresponsive containers that will not stop gracefully.
         </p>
       </ConfirmModal>
-    </>
+    </RemoveScroll>
   )
 }

@@ -6,6 +6,7 @@
  */
 
 import { AlertTriangle } from 'lucide-react'
+import { RemoveScroll } from 'react-remove-scroll'
 import { Button } from '@/components/ui/button'
 
 interface NoChannelsConfirmModalProps {
@@ -34,6 +35,7 @@ export function NoChannelsConfirmModal({
   }
 
   return (
+    <RemoveScroll>
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       {/* Backdrop - clickable to close */}
       <div
@@ -128,5 +130,6 @@ export function NoChannelsConfirmModal({
         </div>
       </div>
     </div>
+    </RemoveScroll>
   )
 }

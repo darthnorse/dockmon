@@ -15,6 +15,7 @@
 
 import { useState, useEffect } from 'react'
 import { X, ChevronRight } from 'lucide-react'
+import { RemoveScroll } from 'react-remove-scroll'
 import { Tabs } from '@/components/ui/tabs'
 import { useContainerCounts } from '@/lib/stats/StatsProvider'
 import type { Host } from '@/types/api'
@@ -58,24 +59,13 @@ export function HostDetailsModal({
   const [activeTab, setActiveTab] = useState('overview')
   const containerCounts = useContainerCounts(hostId || '')
 
-  // Handle ESC key
   useEffect(() => {
+    if (!open) return
     const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && open) {
-        onClose()
-      }
+      if (e.key === 'Escape') onClose()
     }
-
-    if (open) {
-      document.addEventListener('keydown', handleEscape)
-      // Prevent body scroll when modal is open
-      document.body.style.overflow = 'hidden'
-    }
-
-    return () => {
-      document.removeEventListener('keydown', handleEscape)
-      document.body.style.overflow = ''
-    }
+    document.addEventListener('keydown', handleEscape)
+    return () => document.removeEventListener('keydown', handleEscape)
   }, [open, onClose])
 
   // Reset to Overview tab when modal opens
@@ -125,7 +115,7 @@ export function HostDetailsModal({
   const alertCount = 0 // TODO: Get from actual alerts
 
   return (
-    <>
+    <RemoveScroll>
       {/* Overlay */}
       <div
         className="fixed inset-0 bg-black/70 z-50 transition-opacity duration-200"
@@ -212,6 +202,6 @@ export function HostDetailsModal({
           </div>
         </div>
       </div>
-    </>
+    </RemoveScroll>
   )
 }

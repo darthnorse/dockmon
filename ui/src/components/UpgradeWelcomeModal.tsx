@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { Button } from '@/components/ui/button';
 import { AlertTriangle, CheckCircle2, ExternalLink, X } from 'lucide-react';
+import { RemoveScroll } from 'react-remove-scroll';
+import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api/client';
 import { useAppVersion } from '@/lib/contexts/AppVersionContext';
 
@@ -32,6 +33,7 @@ export function UpgradeWelcomeModal({
   if (!open) return null;
 
   return (
+    <RemoveScroll>
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
       onClick={handleDismiss}
@@ -173,5 +175,6 @@ export function UpgradeWelcomeModal({
         </div>
       </div>
     </div>
+    </RemoveScroll>
   );
 }

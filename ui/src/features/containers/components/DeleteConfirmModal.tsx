@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { useAuth } from '@/features/auth/AuthContext'
 import { AlertTriangle } from 'lucide-react'
+import { RemoveScroll } from 'react-remove-scroll'
+import { useAuth } from '@/features/auth/AuthContext'
 import type { Container } from '../types'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
 
@@ -28,6 +29,7 @@ export function DeleteConfirmModal({
   }
 
   return (
+    <RemoveScroll>
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
@@ -118,5 +120,6 @@ export function DeleteConfirmModal({
         </div>
       </div>
     </div>
+    </RemoveScroll>
   )
 }

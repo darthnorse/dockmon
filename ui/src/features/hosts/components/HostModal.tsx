@@ -27,6 +27,7 @@
 import { useState, useEffect } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
+import { RemoveScroll } from 'react-remove-scroll'
 import { z } from 'zod'
 
 // Type for API errors
@@ -792,6 +793,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   )
 
   return (
+    <RemoveScroll>
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" data-testid="host-modal">
       <div
         className="relative w-full max-w-2xl max-h-[90vh] rounded-2xl border border-border bg-background shadow-lg flex flex-col"
@@ -905,5 +907,6 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
         </div>
       )}
     </div>
+    </RemoveScroll>
   )
 }

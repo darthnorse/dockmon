@@ -14,7 +14,26 @@ vi.mock('@/lib/api/client', () => ({
   },
 }))
 
+vi.mock('@/lib/hooks/useUserPreferences', () => ({
+  useTimeFormat: () => ({ timeFormat: '24h', setTimeFormat: vi.fn() }),
+}))
+
 const renderWidget = () => render(<RecentEventsWidget />)
+
+interface TestEventInput {
+  id: number
+  title: string
+  category?: string
+  container_name?: string | null
+  timestamp: string
+}
+
+const makeEvent = (overrides: Partial<TestEventInput> & Pick<TestEventInput, 'id' | 'title' | 'timestamp'>) => ({
+  event_type: 'container_started',
+  category: 'container',
+  severity: 'info',
+  ...overrides,
+})
 
 describe('RecentEventsWidget', () => {
   describe('loading state', () => {
@@ -47,9 +66,7 @@ describe('RecentEventsWidget', () => {
 
   describe('data rendering', () => {
     it('should display empty state when no events', async () => {
-      vi.mocked(apiClient.apiClient.get).mockResolvedValue({
-        events: [],
-      })
+      vi.mocked(apiClient.apiClient.get).mockResolvedValue({ events: [] })
 
       renderWidget()
 
@@ -58,26 +75,22 @@ describe('RecentEventsWidget', () => {
       })
     })
 
-    it('should display event list', async () => {
-      const mockEvents = [
-        {
-          id: '1',
-          type: 'container',
-          action: 'start',
-          container_name: 'nginx',
-          timestamp: '2025-01-07T10:00:00Z',
-        },
-        {
-          id: '2',
-          type: 'container',
-          action: 'stop',
-          container_name: 'postgres',
-          timestamp: '2025-01-07T09:50:00Z',
-        },
-      ]
-
+    it('should display container name when present', async () => {
       vi.mocked(apiClient.apiClient.get).mockResolvedValue({
-        events: mockEvents,
+        events: [
+          makeEvent({
+            id: 1,
+            title: 'Container started',
+            container_name: 'nginx',
+            timestamp: '2025-01-07T10:00:00Z',
+          }),
+          makeEvent({
+            id: 2,
+            title: 'Container stopped',
+            container_name: 'postgres',
+            timestamp: '2025-01-07T09:50:00Z',
+          }),
+        ],
       })
 
       renderWidget()
@@ -88,75 +101,58 @@ describe('RecentEventsWidget', () => {
       })
     })
 
-    it('should display action types', async () => {
+    it('should fall back to title when container name missing', async () => {
       vi.mocked(apiClient.apiClient.get).mockResolvedValue({
         events: [
-          {
-            id: '1',
-            action: 'start',
-            container_name: 'test',
+          makeEvent({
+            id: 1,
+            title: 'Host went offline',
+            category: 'host',
+            container_name: null,
             timestamp: '2025-01-07T10:00:00Z',
-          },
+          }),
         ],
       })
 
       renderWidget()
 
       await waitFor(() => {
-        expect(screen.getByText(/start/)).toBeInTheDocument()
+        expect(screen.getByText('Host went offline')).toBeInTheDocument()
       })
     })
 
-    it('should handle unknown container names', async () => {
+    it('should render multiple events', async () => {
       vi.mocked(apiClient.apiClient.get).mockResolvedValue({
-        events: [
-          {
-            id: '1',
-            action: 'start',
-            timestamp: '2025-01-07T10:00:00Z',
-          },
-        ],
+        events: Array.from({ length: 5 }, (_, i) =>
+          makeEvent({
+            id: i + 1,
+            title: 'Container started',
+            container_name: `container-${i}`,
+            timestamp: new Date().toISOString(),
+          })
+        ),
       })
 
       renderWidget()
 
       await waitFor(() => {
-        expect(screen.getByText('Unknown container')).toBeInTheDocument()
-      })
-    })
-
-    it('should display timestamps', async () => {
-      const now = new Date()
-      vi.mocked(apiClient.apiClient.get).mockResolvedValue({
-        events: [
-          {
-            id: '1',
-            action: 'start',
-            container_name: 'test',
-            timestamp: now.toISOString(),
-          },
-        ],
-      })
-
-      renderWidget()
-
-      await waitFor(() => {
-        // Should show localized time
-        const timeText = screen.getByText(/start/)
-        expect(timeText).toBeInTheDocument()
+        expect(screen.getByText('container-0')).toBeInTheDocument()
+        expect(screen.getByText('container-4')).toBeInTheDocument()
       })
     })
   })
 
-  describe('scrolling', () => {
+  describe('layout', () => {
     it('should have scrollable content area', async () => {
       vi.mocked(apiClient.apiClient.get).mockResolvedValue({
-        events: Array.from({ length: 10 }, (_, i) => ({
-          id: String(i),
-          action: 'start',
-          container_name: `container-${i}`,
-          timestamp: new Date().toISOString(),
-        })),
+        events: Array.from({ length: 10 }, (_, i) =>
+          makeEvent({
+            id: i + 1,
+            title: 'Container started',
+            container_name: `container-${i}`,
+            timestamp: new Date().toISOString(),
+          })
+        ),
       })
 
       renderWidget()

@@ -7,6 +7,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, waitFor } from '@/test/utils'
 import { AlertSummaryWidget } from './AlertSummaryWidget'
 import * as apiClient from '@/lib/api/client'
+import type { AlertStats } from '@/types/alerts'
 
 vi.mock('@/lib/api/client', () => ({
   apiClient: {
@@ -15,6 +16,13 @@ vi.mock('@/lib/api/client', () => ({
 }))
 
 const renderWidget = () => render(<AlertSummaryWidget />)
+
+const makeStats = (overrides: Partial<AlertStats> = {}): AlertStats => ({
+  total: 0,
+  by_state: { open: 0, snoozed: 0, resolved: 0 },
+  by_severity: { critical: 0, error: 0, warning: 0 },
+  ...overrides,
+})
 
 describe('AlertSummaryWidget', () => {
   describe('loading state', () => {
@@ -47,9 +55,7 @@ describe('AlertSummaryWidget', () => {
 
   describe('data rendering', () => {
     it('should display no alerts state', async () => {
-      vi.mocked(apiClient.apiClient.get).mockResolvedValue({
-        alerts: [],
-      })
+      vi.mocked(apiClient.apiClient.get).mockResolvedValue(makeStats())
 
       renderWidget()
 
@@ -61,13 +67,13 @@ describe('AlertSummaryWidget', () => {
     })
 
     it('should display total alert count', async () => {
-      vi.mocked(apiClient.apiClient.get).mockResolvedValue({
-        alerts: [
-          { id: '1', severity: 'critical', message: 'Test 1', timestamp: '' },
-          { id: '2', severity: 'warning', message: 'Test 2', timestamp: '' },
-          { id: '3', severity: 'info', message: 'Test 3', timestamp: '' },
-        ],
-      })
+      vi.mocked(apiClient.apiClient.get).mockResolvedValue(
+        makeStats({
+          total: 3,
+          by_state: { open: 3, snoozed: 0, resolved: 0 },
+          by_severity: { critical: 1, error: 1, warning: 1 },
+        })
+      )
 
       renderWidget()
 
@@ -78,69 +84,71 @@ describe('AlertSummaryWidget', () => {
     })
 
     it('should display critical alerts count', async () => {
-      vi.mocked(apiClient.apiClient.get).mockResolvedValue({
-        alerts: [
-          { id: '1', severity: 'critical', message: 'Test 1', timestamp: '' },
-          { id: '2', severity: 'critical', message: 'Test 2', timestamp: '' },
-        ],
-      })
+      vi.mocked(apiClient.apiClient.get).mockResolvedValue(
+        makeStats({
+          total: 2,
+          by_state: { open: 2, snoozed: 0, resolved: 0 },
+          by_severity: { critical: 2, error: 0, warning: 0 },
+        })
+      )
 
       renderWidget()
 
       await waitFor(() => {
-        // Should show total count
         expect(screen.getByText('Active alerts')).toBeInTheDocument()
-        // Critical severity should be visible
         expect(screen.getByText('Critical')).toBeInTheDocument()
-      }, { timeout: 3000 })
+      })
     })
 
     it('should display warning alerts count', async () => {
-      vi.mocked(apiClient.apiClient.get).mockResolvedValue({
-        alerts: [
-          { id: '1', severity: 'warning', message: 'Test 1', timestamp: '' },
-        ],
-      })
+      vi.mocked(apiClient.apiClient.get).mockResolvedValue(
+        makeStats({
+          total: 1,
+          by_state: { open: 1, snoozed: 0, resolved: 0 },
+          by_severity: { critical: 0, error: 0, warning: 1 },
+        })
+      )
 
       renderWidget()
 
       await waitFor(() => {
         expect(screen.getByText('Active alerts')).toBeInTheDocument()
         expect(screen.getByText('Warning')).toBeInTheDocument()
-      }, { timeout: 3000 })
+      })
     })
 
-    it('should display info alerts count', async () => {
-      vi.mocked(apiClient.apiClient.get).mockResolvedValue({
-        alerts: [
-          { id: '1', severity: 'info', message: 'Test 1', timestamp: '' },
-        ],
-      })
+    it('should display error alerts count', async () => {
+      vi.mocked(apiClient.apiClient.get).mockResolvedValue(
+        makeStats({
+          total: 1,
+          by_state: { open: 1, snoozed: 0, resolved: 0 },
+          by_severity: { critical: 0, error: 1, warning: 0 },
+        })
+      )
 
       renderWidget()
 
       await waitFor(() => {
         expect(screen.getByText('Active alerts')).toBeInTheDocument()
-        expect(screen.getByText('Info')).toBeInTheDocument()
-      }, { timeout: 3000 })
+        expect(screen.getByText('Error')).toBeInTheDocument()
+      })
     })
 
     it('should display multiple severity types', async () => {
-      vi.mocked(apiClient.apiClient.get).mockResolvedValue({
-        alerts: [
-          { id: '1', severity: 'critical', message: 'Test 1', timestamp: '' },
-          { id: '2', severity: 'warning', message: 'Test 2', timestamp: '' },
-          { id: '3', severity: 'warning', message: 'Test 3', timestamp: '' },
-          { id: '4', severity: 'info', message: 'Test 4', timestamp: '' },
-        ],
-      })
+      vi.mocked(apiClient.apiClient.get).mockResolvedValue(
+        makeStats({
+          total: 4,
+          by_state: { open: 4, snoozed: 0, resolved: 0 },
+          by_severity: { critical: 1, error: 1, warning: 2 },
+        })
+      )
 
       renderWidget()
 
       await waitFor(() => {
         expect(screen.getByText('Critical')).toBeInTheDocument()
+        expect(screen.getByText('Error')).toBeInTheDocument()
         expect(screen.getByText('Warning')).toBeInTheDocument()
-        expect(screen.getByText('Info')).toBeInTheDocument()
       })
     })
   })

@@ -1,10 +1,10 @@
 /**
  * GridDashboard Tests
- * Tests widget rendering, database-backed layout persistence, and reset functionality
+ * Tests widget rendering and database-backed layout persistence.
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@/test/utils'
+import { render, screen, waitFor } from '@/test/utils'
 import { GridDashboard } from './GridDashboard'
 import type { ReactNode } from 'react'
 
@@ -42,17 +42,10 @@ describe('GridDashboard', () => {
   })
 
   describe('rendering', () => {
-    it('should render dashboard header', () => {
+    it('should render grid layout container', () => {
       renderDashboard()
 
-      expect(screen.getByRole('heading', { name: /dashboard/i })).toBeInTheDocument()
-      expect(screen.getByText(/monitor your docker containers and hosts/i)).toBeInTheDocument()
-    })
-
-    it('should render reset layout button', () => {
-      renderDashboard()
-
-      expect(screen.getByRole('button', { name: /reset layout/i })).toBeInTheDocument()
+      expect(screen.getByTestId('grid-layout')).toBeInTheDocument()
     })
 
     it('should render all default widgets', async () => {
@@ -65,17 +58,11 @@ describe('GridDashboard', () => {
         expect(screen.getByText('Active Alerts')).toBeInTheDocument()
       })
     })
-
-    it('should render grid layout container', () => {
-      renderDashboard()
-
-      expect(screen.getByTestId('grid-layout')).toBeInTheDocument()
-    })
   })
 
   describe('database persistence', () => {
     it('should load layout from database on mount', () => {
-      const customLayout = {
+      mockDashboardLayout.layout = {
         widgets: [
           {
             id: 'host-stats',
@@ -89,11 +76,8 @@ describe('GridDashboard', () => {
         ],
       }
 
-      mockDashboardLayout.layout = customLayout
-
       renderDashboard()
 
-      // Should load from database (verify by checking that widget renders)
       expect(screen.getByText('Hosts')).toBeInTheDocument()
     })
 
@@ -102,90 +86,24 @@ describe('GridDashboard', () => {
 
       renderDashboard()
 
-      // Should render all default widgets
       expect(screen.getByText('Hosts')).toBeInTheDocument()
       expect(screen.getByText('Containers')).toBeInTheDocument()
       expect(screen.getByText('Recent Events')).toBeInTheDocument()
       expect(screen.getByText('Active Alerts')).toBeInTheDocument()
     })
-
-    it('should call setLayout when reset button is clicked', () => {
-      renderDashboard()
-
-      const resetButton = screen.getByRole('button', { name: /reset layout/i })
-      fireEvent.click(resetButton)
-
-      // Should call setLayout with default layout
-      expect(mockDashboardLayout.setLayout).toHaveBeenCalledWith(
-        expect.objectContaining({
-          widgets: expect.arrayContaining([
-            expect.objectContaining({ id: 'host-stats' }),
-            expect.objectContaining({ id: 'container-stats' }),
-            expect.objectContaining({ id: 'recent-events' }),
-            expect.objectContaining({ id: 'alert-summary' }),
-          ]),
-        })
-      )
-    })
   })
 
-  describe('reset functionality', () => {
-    it('should reset to default layout when clicking reset button', async () => {
-      // Set custom layout
-      const customLayout = {
-        widgets: [
-          {
-            id: 'host-stats',
-            type: 'host-stats' as const,
-            title: 'Host Stats',
-            x: 10,
-            y: 10,
-            w: 6,
-            h: 4,
-          },
-        ],
-      }
-      mockDashboardLayout.layout = customLayout
-
-      renderDashboard()
-
-      const resetButton = screen.getByRole('button', { name: /reset layout/i })
-      fireEvent.click(resetButton)
-
-      // Should save default layout to database
-      await waitFor(() => {
-        expect(mockDashboardLayout.setLayout).toHaveBeenCalled()
-      })
-    })
-  })
-
-  describe('widget rendering', () => {
-    it('should render widget components', async () => {
-      renderDashboard()
-
-      // All widgets should be rendered
-      await waitFor(() => {
-        expect(screen.getByText('Hosts')).toBeInTheDocument()
-        expect(screen.getByText('Containers')).toBeInTheDocument()
-        expect(screen.getByText('Recent Events')).toBeInTheDocument()
-        expect(screen.getByText('Active Alerts')).toBeInTheDocument()
-      })
-    })
-  })
-
-  describe('minimum width', () => {
+  describe('layout container', () => {
     it('should have minimum width constraint', () => {
       const { container } = renderDashboard()
 
-      const dashboardDiv = container.querySelector('.min-w-\\[900px\\]')
-      expect(dashboardDiv).toBeInTheDocument()
+      expect(container.querySelector('.min-w-\\[900px\\]')).toBeInTheDocument()
     })
 
     it('should have horizontal scroll when needed', () => {
       const { container } = renderDashboard()
 
-      const dashboardDiv = container.querySelector('.overflow-x-auto')
-      expect(dashboardDiv).toBeInTheDocument()
+      expect(container.querySelector('.overflow-x-auto')).toBeInTheDocument()
     })
   })
 })

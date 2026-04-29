@@ -28,7 +28,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.7'
+          go-version: '1.25.9'
           cache-dependency-path: agent/go.sum
 
       - name: Get version info
@@ -288,7 +288,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.7'
+          go-version: '1.25.9'
           cache-dependency-path: agent/go.sum
 
       - name: Get version

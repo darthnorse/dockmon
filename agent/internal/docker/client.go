@@ -29,6 +29,8 @@ import (
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/darthnorse/dockmon-agent/internal/config"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/singleflight"
 )
 
 // Client wraps the Docker client with agent-specific functionality
@@ -41,6 +43,11 @@ type Client struct {
 	podmanMu        sync.Mutex
 	apiVersionCache string // Docker API version
 	apiVersionMu    sync.Mutex
+
+	// startedAt: container ID → last-started timestamp; seeded by the
+	// event watcher so ListContainers can skip per-container inspects.
+	startedAtMu sync.RWMutex
+	startedAt   map[string]string
 }
 
 // NewClient creates a new Docker client using shared package
@@ -66,9 +73,43 @@ func NewClient(cfg *config.Config, log *logrus.Logger) (*Client, error) {
 	}
 
 	return &Client{
-		cli: cli,
-		log: log,
+		cli:       cli,
+		log:       log,
+		startedAt: make(map[string]string),
 	}, nil
+}
+
+// LookupStartedAt returns the cached timestamp, or "", false on miss.
+func (c *Client) LookupStartedAt(id string) (string, bool) {
+	c.startedAtMu.RLock()
+	defer c.startedAtMu.RUnlock()
+	s, ok := c.startedAt[id]
+	return s, ok
+}
+
+// RecordStartedAt caches a container's last-started timestamp.
+func (c *Client) RecordStartedAt(id, startedAt string) {
+	if id == "" || startedAt == "" {
+		return
+	}
+	c.startedAtMu.Lock()
+	c.startedAt[id] = startedAt
+	c.startedAtMu.Unlock()
+}
+
+// EvictContainerCache drops a container's cached state.
+func (c *Client) EvictContainerCache(id string) {
+	c.startedAtMu.Lock()
+	delete(c.startedAt, id)
+	c.startedAtMu.Unlock()
+}
+
+// ResetStartedAtCache clears the cache. Called on (re)connect because
+// Docker streams events from "now"; entries from before the gap may be stale.
+func (c *Client) ResetStartedAtCache() {
+	c.startedAtMu.Lock()
+	c.startedAt = make(map[string]string)
+	c.startedAtMu.Unlock()
 }
 
 // Close closes the Docker client
@@ -358,38 +399,91 @@ type ContainerWithDigest struct {
 	StartedAt   string   `json:"StartedAt,omitempty"`
 }
 
-// ListContainers lists all containers with image digest information
+// ListContainers lists all containers with RepoDigests and StartedAt.
+// On cancellation it returns a partial result with ctx.Err(); unfilled
+// entries are stripped so callers don't see phantom containers.
 func (c *Client) ListContainers(ctx context.Context) ([]ContainerWithDigest, error) {
 	containers, err := c.cli.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list containers: %w", err)
 	}
 
-	// Enhance with RepoDigests and StartedAt from inspection
-	result := make([]ContainerWithDigest, 0, len(containers))
-	for _, ctr := range containers {
-		enhanced := ContainerWithDigest{
-			Container:   ctr,
-			RepoDigests: []string{},
+	// singleflight coalesces concurrent first-miss inspects per image.
+	var imageGroup singleflight.Group
+	var imageCacheMu sync.Mutex
+	imageCache := make(map[string][]string)
+	inspectImage := func(ctx context.Context, imageID string) []string {
+		imageCacheMu.Lock()
+		if cached, ok := imageCache[imageID]; ok {
+			imageCacheMu.Unlock()
+			return cached
 		}
+		imageCacheMu.Unlock()
 
-		// Get image info to extract RepoDigests
-		if ctr.ImageID != "" {
-			imageInfo, _, err := c.cli.ImageInspectWithRaw(ctx, ctr.ImageID)
-			if err == nil && imageInfo.RepoDigests != nil {
-				enhanced.RepoDigests = imageInfo.RepoDigests
+		val, _, _ := imageGroup.Do(imageID, func() (any, error) {
+			var digests []string
+			if info, _, err := c.cli.ImageInspectWithRaw(ctx, imageID); err == nil {
+				digests = info.RepoDigests
 			}
-		}
-
-		// Get container inspect to extract StartedAt for uptime calculation
-		inspect, err := c.cli.ContainerInspect(ctx, ctr.ID)
-		if err == nil && inspect.State != nil {
-			enhanced.StartedAt = inspect.State.StartedAt
-		}
-
-		result = append(result, enhanced)
+			imageCacheMu.Lock()
+			imageCache[imageID] = digests
+			imageCacheMu.Unlock()
+			return digests, nil
+		})
+		digests, _ := val.([]string)
+		return digests
 	}
 
+	// errgroup is used as a bounded worker pool only; workers return nil.
+	const maxConcurrent = 16
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(maxConcurrent)
+	result := make([]ContainerWithDigest, len(containers))
+
+	for i, ctr := range containers {
+		if gctx.Err() != nil {
+			break
+		}
+		g.Go(func() error {
+			if gctx.Err() != nil {
+				return nil
+			}
+			enhanced := ContainerWithDigest{
+				Container:   ctr,
+				RepoDigests: []string{},
+			}
+			if ctr.ImageID != "" {
+				if digests := inspectImage(gctx, ctr.ImageID); digests != nil {
+					enhanced.RepoDigests = digests
+				}
+			}
+			if startedAt, ok := c.LookupStartedAt(ctr.ID); ok {
+				enhanced.StartedAt = startedAt
+			} else if inspect, err := c.cli.ContainerInspect(gctx, ctr.ID); err == nil && inspect.State != nil {
+				// Docker uses "0001-01-01T00:00:00Z" for never-started
+				// containers; don't surface that as a real timestamp.
+				if startedAt := inspect.State.StartedAt; startedAt != "" && !strings.HasPrefix(startedAt, "0001-01-01") {
+					enhanced.StartedAt = startedAt
+					c.RecordStartedAt(ctr.ID, startedAt)
+				}
+			}
+			result[i] = enhanced
+			return nil
+		})
+	}
+	_ = g.Wait()
+
+	// Use ctx.Err() not gctx.Err(): errgroup also cancels gctx when Wait
+	// returns, so gctx.Err() is non-nil even on normal completion.
+	if cerr := ctx.Err(); cerr != nil {
+		filtered := result[:0]
+		for _, entry := range result {
+			if entry.ID != "" {
+				filtered = append(filtered, entry)
+			}
+		}
+		return filtered, cerr
+	}
 	return result, nil
 }
 

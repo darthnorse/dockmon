@@ -1014,6 +1014,10 @@ func (c *WebSocketClient) handleContainerOperation(ctx context.Context, msg *typ
 func (c *WebSocketClient) streamEvents(ctx context.Context) {
 	c.log.Info("Starting event streaming")
 
+	// Events stream from "now"; drop any cached state that may have
+	// gone stale during the disconnect window.
+	c.docker.ResetStartedAtCache()
+
 	eventChan, errChan := c.docker.WatchEvents(ctx)
 
 	for {
@@ -1044,12 +1048,20 @@ func (c *WebSocketClient) streamEvents(ctx context.Context) {
 				Attributes:    event.Actor.Attributes,
 			}
 
-			// Handle stats collection lifecycle based on container events
 			switch action {
-			case "start":
-				// Start stats collection for newly started container
+			case "start", "restart":
+				// Docker emits "restart" standalone in some scenarios.
+				var startedAt string
+				if event.TimeNano != 0 {
+					startedAt = time.Unix(0, event.TimeNano).UTC().Format(time.RFC3339Nano)
+				} else if event.Time != 0 {
+					startedAt = time.Unix(event.Time, 0).UTC().Format(time.RFC3339Nano)
+				} else {
+					c.log.WithField("container", event.Actor.ID).Debug("Container event has no timestamp; cache not updated")
+				}
+				c.docker.RecordStartedAt(event.Actor.ID, startedAt)
+
 				if err := c.statsHandler.StartContainerStats(ctx, event.Actor.ID, event.Actor.Attributes["name"]); err != nil {
-					// Safe slice: use full ID if shorter than 12 chars
 					shortID := event.Actor.ID
 					if len(shortID) > 12 {
 						shortID = shortID[:12]
@@ -1057,8 +1069,10 @@ func (c *WebSocketClient) streamEvents(ctx context.Context) {
 					c.log.WithError(err).Warnf("Failed to start stats for container %s", shortID)
 				}
 			case "die", "stop", "kill":
-				// Stop stats collection for stopped container
+				// Cache retained: last-started is still useful while stopped.
 				c.statsHandler.StopContainerStats(event.Actor.ID)
+			case "destroy":
+				c.docker.EvictContainerCache(event.Actor.ID)
 			}
 
 			// Send event

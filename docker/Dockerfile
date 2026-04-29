@@ -2,7 +2,7 @@
 # Multi-stage build: Go stats service + Python backend + React frontend
 
 # Stage 1: Build Go services (stats-service and compose-service)
-FROM golang:1.25-alpine AS go-builder
+FROM golang:1.25.7-alpine AS go-builder
 
 WORKDIR /build
 

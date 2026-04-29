@@ -33,8 +33,9 @@ import { AppLayout } from '@/components/layout/AppLayout'
 import { LoadingSkeleton } from '@/components/layout/LoadingSkeleton'
 import { useState, useEffect } from 'react'
 
-// Create query client with sensible defaults
-const queryClient = new QueryClient({
+// Module-level so the cache persists across remounts (HMR, route changes,
+// etc.) — exported for tests that need to clear it between cases.
+export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 1000 * 60, // 1 minute

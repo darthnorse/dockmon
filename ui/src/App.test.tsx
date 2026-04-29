@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { screen, waitFor, render } from '@testing-library/react'
-import { App } from './App'
+import { App, queryClient } from './App'
 import { authApi } from '@/features/auth/api'
 
 // Mock the auth API
@@ -23,6 +23,17 @@ describe('App', () => {
     vi.mocked(authApi.login).mockReset()
     vi.mocked(authApi.logout).mockReset()
     vi.mocked(authApi.getCurrentUser).mockReset()
+
+    // App.tsx uses a module-level QueryClient (intentional in prod so the
+    // cache survives remounts), but that means a previous test's resolved
+    // ['auth','currentUser'] data sticks around for the next render and
+    // suppresses the new mock's call entirely. Clear it.
+    queryClient.clear()
+
+    // Reset window.location to root — earlier tests pushState to /login,
+    // /unknown-route, etc. Without this, a later test that wants to assert
+    // "App at /" actually starts at whatever the previous test left behind.
+    window.history.pushState({}, '', '/')
 
     // Set default: getCurrentUser rejects (not authenticated)
     vi.mocked(authApi.getCurrentUser).mockImplementation(() =>
@@ -94,12 +105,28 @@ describe('App', () => {
     })
   })
 
-  // Both tests below pass in isolation (npm test -t "...") but fail when
-  // they run after the routing tests, which mutate global state (window
-  // location pushes, in-flight authApi.getCurrentUser promises whose
-  // resolutions arrive in the next test, the WebSocket connection App
-  // opens at mount). The redirect-when-unauthenticated path is already
-  // covered by `should redirect to login when not authenticated` above,
-  // and the loading-skeleton path is structural rather than behavioral.
-  // Removing the duplicate coverage instead of fighting the isolation.
+  describe('protected routes', () => {
+    it('should protect dashboard route', async () => {
+      // Default mock from beforeEach: getCurrentUser rejects (unauthorized)
+      render(<App />)
+
+      // App starts at "/" (reset by beforeEach) — should redirect to /login
+      expect(await screen.findByLabelText(/username/i)).toBeInTheDocument()
+      expect(await screen.findByRole('button', { name: /log in/i })).toBeInTheDocument()
+    })
+
+    it('should show loading state while checking authentication', async () => {
+      vi.mocked(authApi.getCurrentUser).mockImplementation(
+        () => new Promise(() => {}) // Never resolves
+      )
+
+      const { container } = render(<App />)
+
+      // LoadingSkeleton renders Skeleton elements (.animate-pulse) and a
+      // pulsing Container icon — there is no "loading" text in the DOM.
+      await waitFor(() => {
+        expect(container.querySelector('.animate-pulse')).toBeInTheDocument()
+      })
+    })
+  })
 })

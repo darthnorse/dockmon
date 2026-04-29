@@ -16,7 +16,7 @@
  * - Handles OIDC callback error messages
  */
 
-import { useState, useEffect, type FormEvent } from 'react'
+import { useState, useEffect, useRef, type FormEvent } from 'react'
 import { LogIn, KeyRound } from 'lucide-react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useAuth } from './AuthContext'
@@ -56,6 +56,19 @@ function LocalLoginForm({
   username, setUsername, password, setPassword,
   error, setError, isLoading, onSubmit, submitVariant,
 }: LocalLoginFormProps) {
+  // The username input mounts disabled while the initial auth check is in
+  // flight. React's autoFocus prop only fires on mount; it doesn't re-fire
+  // when the field transitions disabled→enabled, so we focus explicitly the
+  // first time loading clears.
+  const usernameRef = useRef<HTMLInputElement>(null)
+  const hasFocusedRef = useRef(false)
+  useEffect(() => {
+    if (!isLoading && !hasFocusedRef.current && usernameRef.current) {
+      usernameRef.current.focus()
+      hasFocusedRef.current = true
+    }
+  }, [isLoading])
+
   return (
     <form onSubmit={onSubmit} className="space-y-4">
       <div className="space-y-2">
@@ -63,6 +76,7 @@ function LocalLoginForm({
           Username
         </label>
         <Input
+          ref={usernameRef}
           id="username"
           data-testid="login-username"
           type="text"
@@ -73,7 +87,6 @@ function LocalLoginForm({
           }}
           disabled={isLoading}
           autoComplete="username"
-          autoFocus
           placeholder="Enter your username"
         />
       </div>

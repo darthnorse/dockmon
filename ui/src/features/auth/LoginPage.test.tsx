@@ -79,12 +79,7 @@ describe('LoginPage', () => {
       expect(await screen.findByRole('button', { name: /log in/i })).toBeInTheDocument()
     })
 
-    // The input mounts with `disabled` while the auth check is in flight,
-    // and React's autoFocus prop only runs once on mount — it doesn't
-    // re-fire when the field transitions from disabled→enabled. This is a
-    // real UX gap (autoFocus is effectively a no-op here), but asserting
-    // it is testing a UI bug, not behavior we want to lock in.
-    it.skip('should focus username field on mount', async () => {
+    it('should focus username field after auth check completes', async () => {
       renderLoginPage()
 
       const usernameInput = await screen.findByLabelText(/username/i)

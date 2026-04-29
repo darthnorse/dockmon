@@ -20,11 +20,11 @@ from fastapi import HTTPException
 from config.paths import DATABASE_PATH, CERTS_DIR
 from database import DatabaseManager, AutoRestartConfig, GlobalSettings, DockerHostDB, Agent
 from models.docker_models import DockerHost, DockerHostConfig, Container
-from models.settings_models import AlertRule, NotificationSettings
+from models.settings_models import NotificationSettings
 from websocket.connection import ConnectionManager
 from realtime import RealtimeMonitor
 from notifications import NotificationService
-from event_logger import EventLogger, EventSeverity, EventType
+from event_logger import EventLogger
 from event_bus import Event, EventType as BusEventType, get_event_bus
 from stats_client import get_stats_client
 from docker_monitor.stats_manager import StatsManager
@@ -33,7 +33,6 @@ from docker_monitor.container_discovery import ContainerDiscovery
 from docker_monitor.state_manager import StateManager
 from docker_monitor.operations import ContainerOperations
 from docker_monitor.periodic_jobs import PeriodicJobsManager
-from auth.session_manager import session_manager
 from utils.keys import make_composite_key
 from utils.host_ips import get_host_ips_from_fib_trie, filter_docker_network_ips, serialize_host_ips
 
@@ -201,7 +200,6 @@ def parse_container_volumes(mounts: list) -> list[str]:
 
     volumes = []
     for mount in mounts:
-        mount_type = mount.get('Type', '')
         source = mount.get('Source', '')
         destination = mount.get('Destination', '')
 
@@ -1285,8 +1283,9 @@ class DockerMonitor:
         """
         import asyncio
         try:
-            # Try to get running loop (works in async context)
-            loop = asyncio.get_running_loop()
+            # asyncio.get_running_loop raises RuntimeError if no event loop
+            # is running — that's the only thing we use it for here.
+            asyncio.get_running_loop()
             asyncio.create_task(self._broadcast_host_status(host_id, status))
         except RuntimeError:
             # No running loop - skip broadcast (sync context without event loop)
@@ -2294,7 +2293,6 @@ class DockerMonitor:
         failed_count = 0
 
         # Also refresh agent hosts (separate from legacy hosts)
-        from agent.connection_manager import agent_connection_manager
         agent_hosts_refreshed = await self._refresh_agent_hosts_system_info()
         updated_count += agent_hosts_refreshed
 

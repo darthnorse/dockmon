@@ -8,11 +8,9 @@ from typing import Optional, List, Dict, Any
 from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, DateTime, JSON, ForeignKey, Text, UniqueConstraint, CheckConstraint, text, Float, func, Index
 from sqlalchemy.orm import sessionmaker, Session, relationship, declarative_base
 from sqlalchemy.pool import StaticPool
-import json
 import os
 import logging
 import secrets
-import bcrypt
 import uuid
 
 from auth.capabilities import ALL_CAPABILITIES, OPERATOR_CAPABILITIES, READONLY_CAPABILITIES
@@ -1404,7 +1402,7 @@ class DatabaseManager:
         Returns the existing instance if one exists, otherwise creates it.
         Thread-safe using a lock to prevent race conditions.
         """
-        global _database_manager_instance, _database_manager_lock
+        global _database_manager_instance
 
         # Fast path: instance already exists
         if _database_manager_instance is not None:
@@ -1822,7 +1820,7 @@ class DatabaseManager:
     def _schedule_file_permissions(self):
         """Schedule file permission setting for after database file is created"""
         # Create a connection to ensure the file exists
-        with self.engine.connect() as conn:
+        with self.engine.connect():
             pass
 
         # Now set permissions
@@ -3838,7 +3836,6 @@ class DatabaseManager:
             # When filtering by container_id, include events even if host_id is NULL
             # (v2 alerts don't have host_id set)
             if host_id and container_id:
-                from sqlalchemy import or_
                 if isinstance(container_id, list) and container_id:
                     container_filter = EventLog.container_id.in_(container_id)
                 elif isinstance(container_id, str):

@@ -79,16 +79,9 @@ describe('LoginPage', () => {
       expect(await screen.findByRole('button', { name: /log in/i })).toBeInTheDocument()
     })
 
-    it('should show default credentials hint', async () => {
-      renderLoginPage()
-
-      await waitFor(() => {
-        expect(screen.getByText(/default credentials/i)).toBeInTheDocument()
-      })
-
-      expect(screen.getByText(/admin/)).toBeInTheDocument()
-      expect(screen.getByText(/test1234/)).toBeInTheDocument()
-    })
+    // Default-credentials hint was removed from the login page; the hardcoded
+    // admin/test1234 strings no longer ship in the UI.
+    it.skip('should show default credentials hint', async () => {})
 
     // Skip: jsdom doesn't properly handle autoFocus attribute
     it.skip('should focus username field on mount', async () => {

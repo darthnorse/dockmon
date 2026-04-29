@@ -11,28 +11,37 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import { useWebSocket } from './useWebSocket'
 
-// Mock WebSocket
+// Mock WebSocket. The static constants must match the WHATWG WebSocket API
+// (CONNECTING=0, OPEN=1, CLOSING=2, CLOSED=3) — useWebSocket.ts does
+// `wsRef.current?.readyState === WebSocket.OPEN` and without OPEN the
+// comparison becomes `undefined === undefined` and early-returns before any
+// connection is created.
 class MockWebSocket {
+  static readonly CONNECTING = 0
+  static readonly OPEN = 1
+  static readonly CLOSING = 2
+  static readonly CLOSED = 3
+
   public onopen: (() => void) | null = null
   public onmessage: ((event: MessageEvent) => void) | null = null
   public onerror: ((event: Event) => void) | null = null
   public onclose: (() => void) | null = null
-  public readyState = 0 // CONNECTING
+  public readyState = MockWebSocket.CONNECTING
 
   constructor(public url: string) {
     // Simulate async connection
     setTimeout(() => {
-      this.readyState = 1 // OPEN
+      this.readyState = MockWebSocket.OPEN
       this.onopen?.()
     }, 10)
   }
 
-  send(data: string) {
+  send(_data: string) {
     // Mock send
   }
 
   close() {
-    this.readyState = 3 // CLOSED
+    this.readyState = MockWebSocket.CLOSED
     this.onclose?.()
   }
 }

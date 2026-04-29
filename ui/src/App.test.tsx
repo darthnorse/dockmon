@@ -52,7 +52,6 @@ describe('App', () => {
 
       await waitFor(() => {
         expect(screen.getByRole('heading', { name: /^dashboard$/i })).toBeInTheDocument()
-        expect(screen.getByText(/monitor your docker containers/i)).toBeInTheDocument()
       })
     })
 

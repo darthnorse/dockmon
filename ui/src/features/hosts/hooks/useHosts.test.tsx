@@ -126,13 +126,11 @@ describe('useHosts', () => {
     })
 
     it('should handle add error with backend message', async () => {
-      const errorResponse = {
-        response: {
-          data: {
-            detail: 'Host with this name already exists',
-          },
-        },
-      }
+      // ApiClient surfaces error payloads on `error.data` (not axios's
+      // `error.response.data`); the hook reads `apiError.data?.detail`.
+      const errorResponse = Object.assign(new Error('HTTP 409'), {
+        data: { detail: 'Host with this name already exists' },
+      })
 
       vi.mocked(apiClient.post).mockRejectedValue(errorResponse)
 
@@ -205,13 +203,9 @@ describe('useHosts', () => {
     })
 
     it('should handle update error', async () => {
-      const errorResponse = {
-        response: {
-          data: {
-            detail: 'Host not found',
-          },
-        },
-      }
+      const errorResponse = Object.assign(new Error('HTTP 404'), {
+        data: { detail: 'Host not found' },
+      })
 
       vi.mocked(apiClient.put).mockRejectedValue(errorResponse)
 
@@ -249,13 +243,9 @@ describe('useHosts', () => {
     })
 
     it('should handle delete error', async () => {
-      const errorResponse = {
-        response: {
-          data: {
-            detail: 'Cannot delete host with running containers',
-          },
-        },
-      }
+      const errorResponse = Object.assign(new Error('HTTP 409'), {
+        data: { detail: 'Cannot delete host with running containers' },
+      })
 
       vi.mocked(apiClient.delete).mockRejectedValue(errorResponse)
 

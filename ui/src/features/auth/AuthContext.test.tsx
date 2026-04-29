@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { AuthProvider, useAuth } from './AuthContext'
 import { authApi } from './api'
 import type { ReactNode } from 'react'
@@ -38,9 +39,14 @@ describe('AuthContext', () => {
     vi.clearAllMocks()
   })
 
+  // AuthProvider calls useNavigate (e.g. to redirect on logout), so the
+  // wrapper must include a Router. MemoryRouter avoids touching the global
+  // location and keeps each test isolated.
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={queryClient}>
-      <AuthProvider>{children}</AuthProvider>
+      <MemoryRouter>
+        <AuthProvider>{children}</AuthProvider>
+      </MemoryRouter>
     </QueryClientProvider>
   )
 

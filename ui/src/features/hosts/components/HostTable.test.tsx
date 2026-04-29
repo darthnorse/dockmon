@@ -107,7 +107,7 @@ describe('HostTable', () => {
   })
 
   describe('columns', () => {
-    it('should display all 10 columns per UX spec', () => {
+    it('should render expected column headers', () => {
       vi.mocked(useHostsModule.useHosts).mockReturnValue({
         data: mockHosts,
         isLoading: false,
@@ -116,16 +116,15 @@ describe('HostTable', () => {
 
       render(<HostTable />)
 
-      // Column headers
       expect(screen.getByText('Status')).toBeInTheDocument()
       expect(screen.getByText('Hostname')).toBeInTheDocument()
-      expect(screen.getByText('OS / Version')).toBeInTheDocument() // Note the spaces
+      expect(screen.getByText('IP')).toBeInTheDocument()
       expect(screen.getByText('Containers')).toBeInTheDocument()
-      expect(screen.getByText('CPU')).toBeInTheDocument()
-      expect(screen.getByText('Memory')).toBeInTheDocument()
       expect(screen.getByText('Alerts')).toBeInTheDocument()
-      expect(screen.getByText('Updates')).toBeInTheDocument()
       expect(screen.getByText('Uptime')).toBeInTheDocument()
+      expect(screen.getByText('CPU%')).toBeInTheDocument()
+      expect(screen.getByText('RAM%')).toBeInTheDocument()
+      expect(screen.getByText('OS / Version')).toBeInTheDocument()
       expect(screen.getByText('Actions')).toBeInTheDocument()
     })
 
@@ -143,26 +142,11 @@ describe('HostTable', () => {
       expect(screen.getByText('Degraded')).toBeInTheDocument()
     })
 
-    it('should display container counts', () => {
-      vi.mocked(useHostsModule.useHosts).mockReturnValue({
-        data: mockHosts,
-        isLoading: false,
-        error: null,
-      } as any)
-
-      render(<HostTable />)
-
-      // Check container counts are displayed (format: "5 / 5")
-      // Use getAllByText since numbers appear in multiple places
-      const fives = screen.getAllByText(/5/)
-      expect(fives.length).toBeGreaterThan(0)
-
-      const twos = screen.getAllByText(/2/)
-      expect(twos.length).toBeGreaterThan(0)
-
-      const threes = screen.getAllByText(/3/)
-      expect(threes.length).toBeGreaterThan(0)
-    })
+    // Container counts come from ContainerCount, which subscribes to live
+    // stats via useContainerCounts(hostId) — not from the host record's
+    // container_count field. With the empty-stats mock provider those cells
+    // render placeholders, so per-host count assertions belong in a stats-
+    // wired integration test.
 
     it('should display tags with overflow indicator', () => {
       vi.mocked(useHostsModule.useHosts).mockReturnValue({
@@ -186,21 +170,23 @@ describe('HostTable', () => {
       expect(screen.getByText('+1')).toBeInTheDocument() // Overflow indicator
     })
 
-    it('should display relative uptime', () => {
+    it('should display formatted uptime when daemon_started_at is set', () => {
+      const oneHourAgo = new Date(Date.now() - 3600_000).toISOString()
       vi.mocked(useHostsModule.useHosts).mockReturnValue({
-        data: mockHosts,
+        data: [{ ...mockHosts[0], daemon_started_at: oneHourAgo }],
         isLoading: false,
         error: null,
       } as any)
 
       render(<HostTable />)
 
-      // Check for relative time text (date-fns formatDistanceToNow)
-      const uptimeElements = screen.getAllByText(/ago|seconds?|minute?|hour?/i)
-      expect(uptimeElements.length).toBeGreaterThan(0)
+      // formatUptime(...) returns short form like "1h" / "2d 3h"
+      expect(screen.getByText(/^\d+[smhd]/)).toBeInTheDocument()
     })
 
-    it('should display action buttons', () => {
+    it('should display per-row Edit Host buttons', () => {
+      // simplified_workflow preference defaults to true, which hides the
+      // "View full details" maximize button — only Edit Host renders here.
       vi.mocked(useHostsModule.useHosts).mockReturnValue({
         data: mockHosts,
         isLoading: false,
@@ -209,24 +195,11 @@ describe('HostTable', () => {
 
       render(<HostTable />)
 
-      // Each row should have action buttons with titles (they're icon-only buttons)
-      const allButtons = screen.getAllByRole('button')
+      const editButtons = screen
+        .getAllByRole('button')
+        .filter(btn => btn.getAttribute('title') === 'Edit Host')
 
-      // Filter buttons by title attribute
-      const detailsButtons = allButtons.filter(btn =>
-        btn.getAttribute('title')?.includes('View Details')
-      )
-      const restartButtons = allButtons.filter(btn =>
-        btn.getAttribute('title')?.includes('Restart Docker')
-      )
-      const logsButtons = allButtons.filter(btn =>
-        btn.getAttribute('title')?.includes('View Logs')
-      )
-
-      // Each of 3 hosts should have these buttons
-      expect(detailsButtons.length).toBe(3)
-      expect(restartButtons.length).toBe(3)
-      expect(logsButtons.length).toBe(3)
+      expect(editButtons.length).toBe(3)
     })
   })
 
@@ -304,8 +277,8 @@ describe('HostTable', () => {
     })
   })
 
-  describe('placeholder states', () => {
-    it('should display placeholders for CPU/Memory sparklines', () => {
+  describe('empty cells', () => {
+    it('should render dash placeholders for unset metric/uptime cells', () => {
       vi.mocked(useHostsModule.useHosts).mockReturnValue({
         data: mockHosts,
         isLoading: false,
@@ -314,37 +287,9 @@ describe('HostTable', () => {
 
       render(<HostTable />)
 
-      // CPU and Memory columns render but with placeholder content
-      expect(screen.getByText('CPU')).toBeInTheDocument()
-      expect(screen.getByText('Memory')).toBeInTheDocument()
-    })
-
-    it('should display placeholder for OS/Version', () => {
-      vi.mocked(useHostsModule.useHosts).mockReturnValue({
-        data: mockHosts,
-        isLoading: false,
-        error: null,
-      } as any)
-
-      render(<HostTable />)
-
-      // OS/Version shows placeholder for all hosts
-      const osPlaceholders = screen.getAllByText(/Ubuntu 24\.04/)
-      expect(osPlaceholders.length).toBe(3) // One for each host
-    })
-
-    it('should display placeholder for Alerts', () => {
-      vi.mocked(useHostsModule.useHosts).mockReturnValue({
-        data: mockHosts,
-        isLoading: false,
-        error: null,
-      } as any)
-
-      render(<HostTable />)
-
-      // Alerts column shows dash until alert system is integrated
-      const alertPlaceholders = screen.getAllByText('-')
-      expect(alertPlaceholders.length).toBeGreaterThan(0)
+      // Uptime/CPU%/RAM% cells fall back to '-' when daemon_started_at and
+      // live host metrics are absent (mock host fixtures + empty stats provider).
+      expect(screen.getAllByText('-').length).toBeGreaterThan(0)
     })
   })
 })

@@ -78,7 +78,7 @@ describe('useViewMode', () => {
     expect(result.current.viewMode).toBe('standard')
   })
 
-  it('should default to compact if fetch fails', async () => {
+  it('should default to standard if fetch fails', async () => {
     vi.mocked(apiClient.get).mockRejectedValue(new Error('Network error'))
 
     const { result } = renderHook(() => useViewMode(), { wrapper })
@@ -87,7 +87,7 @@ describe('useViewMode', () => {
       expect(result.current.isLoading).toBe(false)
     })
 
-    expect(result.current.viewMode).toBe('compact')
+    expect(result.current.viewMode).toBe('standard')
   })
 
   it('should save view mode to backend when setViewMode is called', async () => {

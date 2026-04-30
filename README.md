@@ -20,6 +20,7 @@ A comprehensive Docker container monitoring and management platform with real-ti
 - **Agent-Based Remote Monitoring** - Lightweight Go agent for secure remote Docker monitoring without exposing Docker ports. Runs as a container or systemd service
 - **Real-Time Dashboard** - Drag-and-drop customizable widgets with WebSocket updates
 - **Real-Time Statistics** - Live CPU, memory, network metrics
+- **Historical Stats** - Optional time-series persistence for CPU, memory, and network metrics with retention up to 90 days. Browse historical charts in host and container modals via a time-range selector (5m / 1h / 24h / 7d / 30d / 60d / 90d). Disabled by default (privacy); opt in from Settings → System
 - **Real-Time Container Logs** - View logs from multiple containers simultaneously with live updates
 - **Event Viewer** - Comprehensive audit trail with filtering, search, and real-time updates
 - **Intelligent Auto-Restart** - Per-container auto-restart with configurable retry logic

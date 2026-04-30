@@ -9,7 +9,7 @@ These models provide:
 """
 import ipaddress
 import re
-from typing import Optional, Dict, List
+from typing import Literal, Optional, Dict, List
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 
@@ -37,6 +37,22 @@ class AgentRegistrationRequest(BaseModel):
 
     # Optional host identification
     hostname: Optional[str] = Field(None, max_length=255, description="System hostname")
+    hostname_source: Optional[Literal['agent_name', 'daemon', 'os', 'engine_id']] = Field(
+        None,
+        description=(
+            "Which precedence tier the agent picked the hostname from. "
+            "Constrained to a fixed set so the backend audit log can be trusted: "
+            "'agent_name' (operator AGENT_NAME override), 'daemon' (Docker daemon "
+            "hostname), 'os' (os.Hostname()), or 'engine_id' (fallback)."
+        ),
+    )
+    force_unique_registration: Optional[bool] = Field(
+        False,
+        description=(
+            "Opt-in flag from cloned-VM agents: tells the backend to skip "
+            "its engine_id uniqueness check. Requires hostname to be set."
+        ),
+    )
 
     # System information fields (collected from Docker daemon)
     os_type: Optional[str] = Field(None, max_length=50, description="OS type (linux, windows, etc.)")

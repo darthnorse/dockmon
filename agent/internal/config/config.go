@@ -25,6 +25,11 @@ type Config struct {
 	// Agent identity
 	AgentVersion     string
 	ProtoVersion     string
+	AgentName        string
+	// ForceUniqueRegistration tells the backend to skip its engine_id
+	// uniqueness check, which lets cloned VMs (sharing /var/lib/docker/engine-id)
+	// register as distinct hosts. Requires AGENT_NAME to also be set.
+	ForceUniqueRegistration bool
 
 	// Reconnection settings
 	ReconnectInitial time.Duration
@@ -65,6 +70,15 @@ func LoadFromEnv() (*Config, error) {
 		// Python's in-memory buffer only — live sparklines still work but no history.
 		ProtoVersion:     getEnvOrDefault("PROTO_VERSION", "1.1"),
 
+		// Optional display-name override sent during registration. If empty, agent
+		// falls back to Docker daemon hostname -> OS hostname -> engine_id.
+		AgentName:        strings.TrimSpace(os.Getenv("AGENT_NAME")),
+
+		// Opt-in for cloned-VM scenarios: tells the backend to skip the engine_id
+		// uniqueness check so two clones (which share engine_id) can both register
+		// as distinct hosts. Has no effect unless AGENT_NAME is also set.
+		ForceUniqueRegistration: getEnvBool("FORCE_UNIQUE_REGISTRATION", false),
+
 		// Reconnection (exponential backoff: 1s → 60s)
 		ReconnectInitial: getEnvDuration("RECONNECT_INITIAL", 1*time.Second),
 		ReconnectMax:     getEnvDuration("RECONNECT_MAX", 60*time.Second),
@@ -88,6 +102,19 @@ func LoadFromEnv() (*Config, error) {
 	// Validation
 	if cfg.DockMonURL == "" {
 		return nil, fmt.Errorf("DOCKMON_URL is required")
+	}
+
+	// Backend caps host name at 255 chars; reject early with a clear error
+	// instead of letting registration fail silently in the reconnect loop.
+	if len(cfg.AgentName) > 255 {
+		return nil, fmt.Errorf("AGENT_NAME exceeds 255 characters (got %d)", len(cfg.AgentName))
+	}
+
+	// FORCE_UNIQUE_REGISTRATION requires AGENT_NAME to also be set — backend
+	// will reject otherwise; surface the misconfiguration at agent startup
+	// instead of letting it loop forever in the reconnect path.
+	if cfg.ForceUniqueRegistration && cfg.AgentName == "" {
+		return nil, fmt.Errorf("FORCE_UNIQUE_REGISTRATION=true requires AGENT_NAME to also be set")
 	}
 
 	// Try to load permanent token from persisted file

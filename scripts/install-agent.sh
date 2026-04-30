@@ -13,6 +13,8 @@
 #   AGENT_VERSION        - Optional. Agent version to install (default: latest agent-v* release)
 #   TZ                   - Optional. Timezone (default: UTC)
 #   INSECURE_SKIP_VERIFY - Optional. Skip TLS verification (default: false)
+#   AGENT_NAME           - Optional. Display name shown in DockMon panel (defaults to OS hostname)
+#   FORCE_UNIQUE_REGISTRATION - Optional. Set to "true" for cloned VMs (shared engine_id) to register as a distinct host. Requires AGENT_NAME.
 #   DATA_PATH            - Optional. Data directory (default: /var/lib/dockmon-agent)
 #   AGENT_STACKS_DIR     - Optional. Stack storage directory (default: $DATA_PATH/stacks)
 #
@@ -142,6 +144,42 @@ Environment=\"TZ=${TZ}\""
 if [ -n "$INSECURE_SKIP_VERIFY" ] && [ "$INSECURE_SKIP_VERIFY" = "true" ]; then
     ENV_LINES="${ENV_LINES}
 Environment=\"INSECURE_SKIP_VERIFY=true\""
+fi
+
+if [ -n "$AGENT_NAME" ]; then
+    # Reject characters that could break out of the systemd Environment="..." quoting
+    # and inject extra unit directives: control chars (newlines/tabs/CR), double
+    # quotes, and backslashes. Display names with spaces, dashes, dots, etc. are fine.
+    case "$AGENT_NAME" in
+        *[[:cntrl:]]*|*'"'*|*'\'*)
+            log_error "AGENT_NAME contains forbidden characters (newlines, tabs, double quotes, or backslashes). Use printable characters only."
+            exit 1
+            ;;
+    esac
+    ENV_LINES="${ENV_LINES}
+Environment=\"AGENT_NAME=${AGENT_NAME}\""
+fi
+
+if [ -n "$FORCE_UNIQUE_REGISTRATION" ]; then
+    # Match the truthy values Go's strconv.ParseBool accepts so the installer
+    # behavior aligns with what the agent binary will actually honour.
+    case "$FORCE_UNIQUE_REGISTRATION" in
+        true|TRUE|True|t|T|1)
+            if [ -z "$AGENT_NAME" ]; then
+                log_error "FORCE_UNIQUE_REGISTRATION=${FORCE_UNIQUE_REGISTRATION} requires AGENT_NAME to also be set"
+                exit 1
+            fi
+            ENV_LINES="${ENV_LINES}
+Environment=\"FORCE_UNIQUE_REGISTRATION=true\""
+            ;;
+        false|FALSE|False|f|F|0)
+            # Explicit false — accept silently, matches strconv.ParseBool semantics.
+            ;;
+        *)
+            log_error "FORCE_UNIQUE_REGISTRATION must be a boolean (true/false, 1/0, t/f) — got: '${FORCE_UNIQUE_REGISTRATION}'"
+            exit 1
+            ;;
+    esac
 fi
 
 # Create systemd service file

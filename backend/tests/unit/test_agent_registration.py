@@ -13,6 +13,7 @@ from unittest.mock import patch, MagicMock
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from agent.manager import AgentManager
 from database import Base, RegistrationToken, Agent, DockerHostDB
 
 
@@ -62,7 +63,6 @@ class TestRegistrationTokenGeneration:
 
     def test_generate_registration_token(self, db_session, mock_db_manager):
         """Should generate a valid registration token"""
-        from agent.manager import AgentManager
 
         with patch.object(AgentManager, '__init__', lambda self: setattr(self, 'db_manager', mock_db_manager)):
             manager = AgentManager()
@@ -81,7 +81,6 @@ class TestRegistrationTokenGeneration:
 
     def test_token_expires_after_15_minutes(self, db_session, mock_db_manager):
         """Token should expire after 15 minutes"""
-        from agent.manager import AgentManager
 
         with patch.object(AgentManager, '__init__', lambda self: setattr(self, 'db_manager', mock_db_manager)):
             manager = AgentManager()
@@ -94,7 +93,6 @@ class TestRegistrationTokenGeneration:
 
     def test_multiple_tokens_can_exist(self, db_session, mock_db_manager):
         """Multiple unused tokens can exist for a user"""
-        from agent.manager import AgentManager
 
         with patch.object(AgentManager, '__init__', lambda self: setattr(self, 'db_manager', mock_db_manager)):
             manager = AgentManager()
@@ -115,7 +113,6 @@ class TestTokenValidation:
 
     def test_validate_valid_token(self, db_session, mock_db_manager):
         """Should validate a valid, unused, non-expired token"""
-        from agent.manager import AgentManager
 
         with patch.object(AgentManager, '__init__', lambda self: setattr(self, 'db_manager', mock_db_manager)):
             manager = AgentManager()
@@ -127,7 +124,6 @@ class TestTokenValidation:
 
     def test_validate_expired_token(self, db_session, mock_db_manager):
         """Should reject expired token"""
-        from agent.manager import AgentManager
 
         # Create token that expired 1 minute ago
         expired_token = RegistrationToken(
@@ -150,7 +146,6 @@ class TestTokenValidation:
 
     def test_validate_exhausted_token(self, db_session, mock_db_manager):
         """Should reject token that has reached max uses"""
-        from agent.manager import AgentManager
 
         # Create exhausted token (use_count >= max_uses)
         exhausted_token = RegistrationToken(
@@ -174,7 +169,6 @@ class TestTokenValidation:
 
     def test_validate_nonexistent_token(self, db_session, mock_db_manager):
         """Should reject token that doesn't exist"""
-        from agent.manager import AgentManager
 
         with patch.object(AgentManager, '__init__', lambda self: setattr(self, 'db_manager', mock_db_manager)):
             manager = AgentManager()
@@ -189,7 +183,6 @@ class TestAgentRegistration:
 
     def test_register_agent_with_valid_token(self, db_session, mock_db_manager):
         """Should register agent with valid token and create host"""
-        from agent.manager import AgentManager
 
         with patch.object(AgentManager, '__init__', create_mock_init(mock_db_manager)):
             manager = AgentManager()
@@ -233,7 +226,6 @@ class TestAgentRegistration:
 
     def test_register_agent_with_expired_token(self, db_session, mock_db_manager):
         """Should reject registration with expired token"""
-        from agent.manager import AgentManager
 
         # Create expired token
         expired_token = RegistrationToken(
@@ -266,7 +258,6 @@ class TestAgentRegistration:
 
     def test_register_agent_with_duplicate_engine_id(self, db_session, mock_db_manager):
         """Should reject registration if engine_id already registered"""
-        from agent.manager import AgentManager
 
         with patch.object(AgentManager, '__init__', create_mock_init(mock_db_manager)):
             manager = AgentManager()
@@ -375,3 +366,151 @@ class TestEngineIdValidation:
                 proto_version="1.0",
                 capabilities={}
             )
+
+
+class TestForceUniqueRegistration:
+    """Tests for the FORCE_UNIQUE_REGISTRATION opt-in path (cloned VMs)."""
+
+    def test_force_unique_skips_engine_id_check(self, db_session, mock_db_manager):
+        """Two agents with identical engine_id can both register when force_unique=True and unique hostnames."""
+
+        with patch.object(AgentManager, '__init__', create_mock_init(mock_db_manager)):
+            manager = AgentManager()
+            engine_id = "sha256:cloned-vm-engine-id-shared"
+
+            # First agent registers normally (sets up the collision target).
+            token1 = manager.generate_registration_token(user_id=1)
+            first = manager.register_agent({
+                "token": token1.token,
+                "engine_id": engine_id,
+                "hostname": "clone-01",
+                "version": "1.0.0",
+                "proto_version": "1.1",
+                "capabilities": {},
+                "force_unique_registration": False,
+            })
+            assert first["success"], f"first registration unexpectedly failed: {first}"
+
+            # Second agent uses force_unique=True with a distinct hostname.
+            # hostname_source="agent_name" is required to prove AGENT_NAME was set.
+            token2 = manager.generate_registration_token(user_id=1)
+            second = manager.register_agent({
+                "token": token2.token,
+                "engine_id": engine_id,
+                "hostname": "clone-02",
+                "hostname_source": "agent_name",
+                "version": "1.0.0",
+                "proto_version": "1.1",
+                "capabilities": {},
+                "force_unique_registration": True,
+            })
+            assert second["success"], f"second registration unexpectedly failed: {second}"
+            assert second["host_id"] != first["host_id"], "expected distinct host_ids for cloned VMs"
+            assert second["agent_id"] != first["agent_id"], "expected distinct agent_ids for cloned VMs"
+
+    def test_force_unique_requires_agent_name(self, db_session, mock_db_manager):
+        """force_unique=True without hostname (AGENT_NAME) is rejected with a friendly error."""
+
+        with patch.object(AgentManager, '__init__', create_mock_init(mock_db_manager)):
+            manager = AgentManager()
+            token = manager.generate_registration_token(user_id=1)
+
+            result = manager.register_agent({
+                "token": token.token,
+                "engine_id": "sha256:cloned-without-name",
+                "hostname": None,
+                "version": "1.0.0",
+                "proto_version": "1.1",
+                "capabilities": {},
+                "force_unique_registration": True,
+            })
+            assert result["success"] is False
+            assert "AGENT_NAME" in result["error"]
+            assert "FORCE_UNIQUE" in result["error"]
+
+    def test_force_unique_rejects_non_agent_name_source(self, db_session, mock_db_manager):
+        """force_unique=True with a non-empty hostname but hostname_source!='agent_name'
+        is rejected — prevents agents from using daemon/OS hostname fallbacks to
+        bypass the AGENT_NAME requirement when opting out of engine_id uniqueness."""
+
+        with patch.object(AgentManager, '__init__', create_mock_init(mock_db_manager)):
+            manager = AgentManager()
+            token = manager.generate_registration_token(user_id=1)
+
+            result = manager.register_agent({
+                "token": token.token,
+                "engine_id": "sha256:cloned-with-daemon-source",
+                "hostname": "auto-detected-host",  # would pass `if not hostname:` check
+                "hostname_source": "daemon",       # but source is NOT agent_name
+                "version": "1.0.0",
+                "proto_version": "1.1",
+                "capabilities": {},
+                "force_unique_registration": True,
+            })
+            assert result["success"] is False
+            assert "AGENT_NAME" in result["error"]
+            assert "FORCE_UNIQUE" in result["error"]
+            assert "daemon" in result["error"]  # error explains the actual source it received
+
+    def test_force_unique_still_rejects_local_host_collision(self, db_session, mock_db_manager):
+        """Even with force_unique=True, an engine_id matching a local-socket host is rejected."""
+
+        engine_id = "sha256:local-host-engine-id"
+        db_session.add(DockerHostDB(
+            id="local-host-uuid",
+            name="My Local Docker",
+            url="unix:///var/run/docker.sock",
+            connection_type="local",
+            engine_id=engine_id,
+            is_active=True,
+        ))
+        db_session.commit()
+
+        with patch.object(AgentManager, '__init__', create_mock_init(mock_db_manager)):
+            manager = AgentManager()
+            token = manager.generate_registration_token(user_id=1)
+
+            result = manager.register_agent({
+                "token": token.token,
+                "engine_id": engine_id,
+                "hostname": "would-be-clone",
+                "version": "1.0.0",
+                "proto_version": "1.1",
+                "capabilities": {},
+                "force_unique_registration": True,
+            })
+            assert result["success"] is False
+            assert "Migration not supported for local Docker connections" in result["error"]
+
+    def test_default_rejection_message_mentions_force_unique(self, db_session, mock_db_manager):
+        """When force_unique=False (default) and engine_id collides, the error suggests FORCE_UNIQUE_REGISTRATION."""
+
+        with patch.object(AgentManager, '__init__', create_mock_init(mock_db_manager)):
+            manager = AgentManager()
+            engine_id = "sha256:default-path-collision"
+
+            token1 = manager.generate_registration_token(user_id=1)
+            first = manager.register_agent({
+                "token": token1.token,
+                "engine_id": engine_id,
+                "hostname": "first",
+                "version": "1.0.0",
+                "proto_version": "1.1",
+                "capabilities": {},
+                "force_unique_registration": False,
+            })
+            assert first["success"], f"first registration unexpectedly failed: {first}"
+
+            token2 = manager.generate_registration_token(user_id=1)
+            result = manager.register_agent({
+                "token": token2.token,
+                "engine_id": engine_id,
+                "hostname": "second",
+                "version": "1.0.0",
+                "proto_version": "1.1",
+                "capabilities": {},
+                "force_unique_registration": False,
+            })
+            assert result["success"] is False
+            assert "FORCE_UNIQUE_REGISTRATION" in result["error"]
+            assert "/var/lib/docker/engine-id" in result["error"]

@@ -309,21 +309,20 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 		c.log.Warn("GetSystemInfo returned nil without error")
 	}
 
-	// Determine hostname: prefer Docker host's hostname from systemInfo
-	hostname := ""
-	if systemInfo != nil && systemInfo.Hostname != "" {
-		hostname = systemInfo.Hostname
-	} else {
-		// Fallback to container hostname (will be container ID)
-		hostname, err = os.Hostname()
-		if err != nil {
-			c.log.WithError(err).Warn("Failed to get hostname, using engine ID")
-			// Safe slice: use full ID if shorter than 12 chars
-			hostname = c.engineID
-			if len(hostname) > 12 {
-				hostname = hostname[:12]
-			}
-		}
+	// Resolve registration hostname using the precedence:
+	// AGENT_NAME (operator override) -> Docker daemon hostname -> OS hostname -> engine ID.
+	systemHost := ""
+	if systemInfo != nil {
+		systemHost = systemInfo.Hostname
+	}
+	osHost, osErr := os.Hostname()
+	if osErr != nil {
+		c.log.WithError(osErr).Debug("os.Hostname failed; will fall through to engine ID if needed")
+		osHost = ""
+	}
+	hostname := selectHostname(c.cfg.AgentName, systemHost, osHost, c.engineID)
+	if c.cfg.AgentName != "" {
+		c.log.WithField("agent_name", c.cfg.AgentName).Info("Using AGENT_NAME override for registration hostname")
 	}
 
 	// Build registration request as flat JSON (backend expects flat format)

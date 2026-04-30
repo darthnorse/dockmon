@@ -77,7 +77,11 @@ function WindowScrollVirtualizedTable({ table }: { table: ReactTable<Container> 
   // stays attached to its identity. Without this, sorting reshuffles indices
   // and the virtualizer applies stale per-index heights to whichever row
   // landed at that index, producing the visible row-overlap bug.
-  const getItemKey = useCallback((index: number) => rows[index]?.id ?? index, [rows])
+  // Out-of-bounds fallback returns a string sentinel rather than the numeric
+  // index — the index would silently re-introduce the same bug if the
+  // virtualizer ever queries a slot that's no longer in `rows` (e.g., a
+  // brief mismatch during rapid filter/sort).
+  const getItemKey = useCallback((index: number) => rows[index]?.id ?? `__missing-row-${index}`, [rows])
 
   const virtualizer = useWindowVirtualizer({
     count: rows.length,
@@ -125,8 +129,9 @@ function ElementScrollVirtualizedTable({
   // picked up automatically. Wrapping this in `useCallback([], )` would
   // freeze it at the initial null value and the virtualizer would never
   // attach scroll listeners.
-  // getItemKey: see WindowScrollVirtualizedTable for rationale.
-  const getItemKey = useCallback((index: number) => rows[index]?.id ?? index, [rows])
+  // getItemKey: see WindowScrollVirtualizedTable for rationale; the
+  // sentinel-string fallback is intentional, not the numeric index.
+  const getItemKey = useCallback((index: number) => rows[index]?.id ?? `__missing-row-${index}`, [rows])
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -153,18 +158,8 @@ function VirtualizedTableShell({
 }) {
   const rows = table.getRowModel().rows
 
-  // Row heights are kept in sync with content via:
-  //  - `ref={virtualizer.measureElement}` on each row (ResizeObserver-driven
-  //    measurement of actual rendered height — handles tag chips wrapping,
-  //    multi-line names, font-load reflows, etc.)
-  //  - `getItemKey: (i) => rows[i].id` on the virtualizer (set in the parent
-  //    components above), which keys the measurement cache by row identity
-  //    so sort/filter doesn't apply a stale index's height to a different
-  //    row at that index.
-  // Together these handle dynamic content sizes without manual cache
-  // invalidation. Earlier versions tried to invalidate on order change via
-  // `virtualizer.measure()`; that was working around the index-keyed cache
-  // rather than fixing it.
+  // Row heights: ResizeObserver via `ref={virtualizer.measureElement}` and
+  // identity-keyed cache via getItemKey on the parent virtualizer.
 
   // min-w-0 on each cell lets long content shrink below intrinsic width.
   const gridTemplate = table.getVisibleLeafColumns()

@@ -25,7 +25,7 @@ type Config struct {
 	// Agent identity
 	AgentVersion     string
 	ProtoVersion     string
-	AgentName        string  // Optional display name override; takes priority over OS hostname during registration.
+	AgentName        string
 
 	// Reconnection settings
 	ReconnectInitial time.Duration
@@ -60,15 +60,15 @@ func LoadFromEnv() (*Config, error) {
 		DockerCertPath:   os.Getenv("DOCKER_CERT_PATH"),
 		DockerTLSVerify:  getEnvBool("DOCKER_TLS_VERIFY", false),
 
-		// Optional display-name override sent during registration. If empty, agent
-		// falls back to Docker daemon hostname -> OS hostname -> engine_id.
-		AgentName:        strings.TrimSpace(os.Getenv("AGENT_NAME")),
-
 		// Protocol
 		// 1.1: agent dual-sends container_stats to stats-service /api/stats/ws/ingest
 		// for historical persistence (spec §10). Older agents (1.0) continue to feed
 		// Python's in-memory buffer only — live sparklines still work but no history.
 		ProtoVersion:     getEnvOrDefault("PROTO_VERSION", "1.1"),
+
+		// Optional display-name override sent during registration. If empty, agent
+		// falls back to Docker daemon hostname -> OS hostname -> engine_id.
+		AgentName:        strings.TrimSpace(os.Getenv("AGENT_NAME")),
 
 		// Reconnection (exponential backoff: 1s → 60s)
 		ReconnectInitial: getEnvDuration("RECONNECT_INITIAL", 1*time.Second),
@@ -93,6 +93,12 @@ func LoadFromEnv() (*Config, error) {
 	// Validation
 	if cfg.DockMonURL == "" {
 		return nil, fmt.Errorf("DOCKMON_URL is required")
+	}
+
+	// Backend caps host name at 255 chars; reject early with a clear error
+	// instead of letting registration fail silently in the reconnect loop.
+	if len(cfg.AgentName) > 255 {
+		return nil, fmt.Errorf("AGENT_NAME exceeds 255 characters (got %d)", len(cfg.AgentName))
 	}
 
 	// Try to load permanent token from persisted file

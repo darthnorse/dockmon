@@ -160,13 +160,26 @@ if [ -n "$AGENT_NAME" ]; then
 Environment=\"AGENT_NAME=${AGENT_NAME}\""
 fi
 
-if [ -n "$FORCE_UNIQUE_REGISTRATION" ] && [ "$FORCE_UNIQUE_REGISTRATION" = "true" ]; then
-    if [ -z "$AGENT_NAME" ]; then
-        log_error "FORCE_UNIQUE_REGISTRATION=true requires AGENT_NAME to also be set"
-        exit 1
-    fi
-    ENV_LINES="${ENV_LINES}
+if [ -n "$FORCE_UNIQUE_REGISTRATION" ]; then
+    # Match the truthy values Go's strconv.ParseBool accepts so the installer
+    # behavior aligns with what the agent binary will actually honour.
+    case "$FORCE_UNIQUE_REGISTRATION" in
+        true|TRUE|True|t|T|1)
+            if [ -z "$AGENT_NAME" ]; then
+                log_error "FORCE_UNIQUE_REGISTRATION=${FORCE_UNIQUE_REGISTRATION} requires AGENT_NAME to also be set"
+                exit 1
+            fi
+            ENV_LINES="${ENV_LINES}
 Environment=\"FORCE_UNIQUE_REGISTRATION=true\""
+            ;;
+        false|FALSE|False|f|F|0)
+            # Explicit false — accept silently, matches strconv.ParseBool semantics.
+            ;;
+        *)
+            log_error "FORCE_UNIQUE_REGISTRATION must be a boolean (true/false, 1/0, t/f) — got: '${FORCE_UNIQUE_REGISTRATION}'"
+            exit 1
+            ;;
+    esac
 fi
 
 # Create systemd service file

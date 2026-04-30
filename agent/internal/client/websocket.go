@@ -334,12 +334,12 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 
 	// Build registration request as flat JSON (backend expects flat format)
 	regMsg := map[string]interface{}{
-		"type":            "register",
-		"token":           token,
-		"engine_id":       c.engineID,
-		"hostname":        hostname,
+		"type": "register",
+		"token": token,
+		"engine_id": c.engineID,
+		"hostname": hostname,
 		"hostname_source": hostnameSource,
-		"version":         c.cfg.AgentVersion,
+		"version": c.cfg.AgentVersion,
 		"proto_version": c.cfg.ProtoVersion,
 		"force_unique_registration": c.cfg.ForceUniqueRegistration,
 		"capabilities": map[string]bool{

@@ -26,6 +26,10 @@ type Config struct {
 	AgentVersion     string
 	ProtoVersion     string
 	AgentName        string
+	// ForceUniqueRegistration tells the backend to skip its engine_id
+	// uniqueness check, which lets cloned VMs (sharing /var/lib/docker/engine-id)
+	// register as distinct hosts. Requires AGENT_NAME to also be set.
+	ForceUniqueRegistration bool
 
 	// Reconnection settings
 	ReconnectInitial time.Duration
@@ -69,6 +73,11 @@ func LoadFromEnv() (*Config, error) {
 		// Optional display-name override sent during registration. If empty, agent
 		// falls back to Docker daemon hostname -> OS hostname -> engine_id.
 		AgentName:        strings.TrimSpace(os.Getenv("AGENT_NAME")),
+
+		// Opt-in for cloned-VM scenarios: tells the backend to skip the engine_id
+		// uniqueness check so two clones (which share engine_id) can both register
+		// as distinct hosts. Has no effect unless AGENT_NAME is also set.
+		ForceUniqueRegistration: getEnvBool("FORCE_UNIQUE_REGISTRATION", false),
 
 		// Reconnection (exponential backoff: 1s → 60s)
 		ReconnectInitial: getEnvDuration("RECONNECT_INITIAL", 1*time.Second),

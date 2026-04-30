@@ -75,3 +75,31 @@ func TestLoadFromEnv_AgentName_AtLimit(t *testing.T) {
 		t.Errorf("AgentName length = %d, want 255", len(cfg.AgentName))
 	}
 }
+
+func TestLoadFromEnv_ForceUniqueRegistration_Default(t *testing.T) {
+	t.Setenv("DOCKMON_URL", "wss://example.com")
+	t.Setenv("REGISTRATION_TOKEN", "test-token")
+	t.Setenv("FORCE_UNIQUE_REGISTRATION", "")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv returned error: %v", err)
+	}
+	if cfg.ForceUniqueRegistration != false {
+		t.Errorf("ForceUniqueRegistration = %v, want false when env var unset", cfg.ForceUniqueRegistration)
+	}
+}
+
+func TestLoadFromEnv_ForceUniqueRegistration_True(t *testing.T) {
+	t.Setenv("DOCKMON_URL", "wss://example.com")
+	t.Setenv("REGISTRATION_TOKEN", "test-token")
+	t.Setenv("FORCE_UNIQUE_REGISTRATION", "true")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv returned error: %v", err)
+	}
+	if cfg.ForceUniqueRegistration != true {
+		t.Errorf("ForceUniqueRegistration = %v, want true", cfg.ForceUniqueRegistration)
+	}
+}

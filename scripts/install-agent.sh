@@ -146,6 +146,15 @@ Environment=\"INSECURE_SKIP_VERIFY=true\""
 fi
 
 if [ -n "$AGENT_NAME" ]; then
+    # Reject characters that could break out of the systemd Environment="..." quoting
+    # and inject extra unit directives: control chars (newlines/tabs/CR), double
+    # quotes, and backslashes. Display names with spaces, dashes, dots, etc. are fine.
+    case "$AGENT_NAME" in
+        *[[:cntrl:]]*|*'"'*|*'\'*)
+            log_error "AGENT_NAME contains forbidden characters (newlines, tabs, double quotes, or backslashes). Use printable characters only."
+            exit 1
+            ;;
+    esac
     ENV_LINES="${ENV_LINES}
 Environment=\"AGENT_NAME=${AGENT_NAME}\""
 fi

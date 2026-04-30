@@ -13,6 +13,7 @@
 #   AGENT_VERSION        - Optional. Agent version to install (default: latest agent-v* release)
 #   TZ                   - Optional. Timezone (default: UTC)
 #   INSECURE_SKIP_VERIFY - Optional. Skip TLS verification (default: false)
+#   AGENT_NAME           - Optional. Display name shown in DockMon panel (defaults to OS hostname)
 #   DATA_PATH            - Optional. Data directory (default: /var/lib/dockmon-agent)
 #   AGENT_STACKS_DIR     - Optional. Stack storage directory (default: $DATA_PATH/stacks)
 #
@@ -142,6 +143,11 @@ Environment=\"TZ=${TZ}\""
 if [ -n "$INSECURE_SKIP_VERIFY" ] && [ "$INSECURE_SKIP_VERIFY" = "true" ]; then
     ENV_LINES="${ENV_LINES}
 Environment=\"INSECURE_SKIP_VERIFY=true\""
+fi
+
+if [ -n "$AGENT_NAME" ]; then
+    ENV_LINES="${ENV_LINES}
+Environment=\"AGENT_NAME=${AGENT_NAME}\""
 fi
 
 # Create systemd service file

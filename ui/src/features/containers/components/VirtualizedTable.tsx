@@ -14,7 +14,7 @@
  * leaves the body of the list unreachable.
  */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flexRender, Column, Table as ReactTable } from '@tanstack/react-table'
 import { useVirtualizer, useWindowVirtualizer, Virtualizer } from '@tanstack/react-virtual'
 
@@ -73,11 +73,18 @@ function WindowScrollVirtualizedTable({ table }: { table: ReactTable<Container> 
     }
   }, [])
 
+  // Key measurements by row.id (not array index) so a row's measured height
+  // stays attached to its identity. Without this, sorting reshuffles indices
+  // and the virtualizer applies stale per-index heights to whichever row
+  // landed at that index, producing the visible row-overlap bug.
+  const getItemKey = useCallback((index: number) => rows[index]?.id ?? index, [rows])
+
   const virtualizer = useWindowVirtualizer({
     count: rows.length,
     estimateSize: () => ESTIMATED_ROW_HEIGHT_PX,
     overscan: 8,
     scrollMargin,
+    getItemKey,
   })
 
   return <VirtualizedTableShell table={table} virtualizer={virtualizer} containerRef={containerRef} />
@@ -118,12 +125,16 @@ function ElementScrollVirtualizedTable({
   // picked up automatically. Wrapping this in `useCallback([], )` would
   // freeze it at the initial null value and the virtualizer would never
   // attach scroll listeners.
+  // getItemKey: see WindowScrollVirtualizedTable for rationale.
+  const getItemKey = useCallback((index: number) => rows[index]?.id ?? index, [rows])
+
   const virtualizer = useVirtualizer({
     count: rows.length,
     estimateSize: () => ESTIMATED_ROW_HEIGHT_PX,
     overscan: 8,
     getScrollElement: () => scrollElement,
     scrollMargin,
+    getItemKey,
   })
 
   return <VirtualizedTableShell table={table} virtualizer={virtualizer} containerRef={containerRef} />
@@ -142,27 +153,18 @@ function VirtualizedTableShell({
 }) {
   const rows = table.getRowModel().rows
 
-  // TanStack Virtual caches measured heights by index, not by row identity,
-  // so after a sort, index N can hold a different Container with a different
-  // height (the tags column wraps) and laying out against the old cached
-  // height causes visible row overlap. Per-row measureElement handles
-  // content-driven height changes within a single row, but it doesn't fire
-  // when an existing keyed element just gets a new data-index — so we have
-  // to invalidate explicitly when ordering changes. Cheap signature catches
-  // length changes (filter add/remove) and first/middle/last id changes
-  // (sort) without paying an O(n) string-join on every WebSocket stats
-  // update (which fires every couple of seconds and otherwise doesn't
-  // change row identity at any index).
-  const orderSignature = rows.length === 0
-    ? ''
-    : `${rows.length}|${rows[0]!.id}|${rows[rows.length >> 1]!.id}|${rows[rows.length - 1]!.id}`
-  const prevOrderSignatureRef = useRef('')
-  useEffect(() => {
-    if (prevOrderSignatureRef.current && prevOrderSignatureRef.current !== orderSignature) {
-      virtualizer.measure()
-    }
-    prevOrderSignatureRef.current = orderSignature
-  }, [orderSignature, virtualizer])
+  // Row heights are kept in sync with content via:
+  //  - `ref={virtualizer.measureElement}` on each row (ResizeObserver-driven
+  //    measurement of actual rendered height — handles tag chips wrapping,
+  //    multi-line names, font-load reflows, etc.)
+  //  - `getItemKey: (i) => rows[i].id` on the virtualizer (set in the parent
+  //    components above), which keys the measurement cache by row identity
+  //    so sort/filter doesn't apply a stale index's height to a different
+  //    row at that index.
+  // Together these handle dynamic content sizes without manual cache
+  // invalidation. Earlier versions tried to invalidate on order change via
+  // `virtualizer.measure()`; that was working around the index-keyed cache
+  // rather than fixing it.
 
   // min-w-0 on each cell lets long content shrink below intrinsic width.
   const gridTemplate = table.getVisibleLeafColumns()

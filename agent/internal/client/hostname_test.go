@@ -44,6 +44,14 @@ func TestSelectHostname(t *testing.T) {
 			want:           "abcdef123456",
 		},
 		{
+			name:           "engine id exactly 12 chars returned as-is",
+			agentName:      "",
+			systemHostname: "",
+			osHostname:     "",
+			engineID:       "abcdef123456",
+			want:           "abcdef123456",
+		},
+		{
 			name:           "short engine id returned as-is",
 			agentName:      "",
 			systemHostname: "",

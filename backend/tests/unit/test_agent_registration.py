@@ -402,11 +402,13 @@ class TestForceUniqueRegistration:
             assert first["success"], f"first registration unexpectedly failed: {first}"
 
             # Second agent uses force_unique=True with a distinct hostname.
+            # hostname_source="agent_name" is required to prove AGENT_NAME was set.
             token2 = manager.generate_registration_token(user_id=1)
             second = manager.register_agent({
                 "token": token2.token,
                 "engine_id": engine_id,
                 "hostname": "clone-02",
+                "hostname_source": "agent_name",
                 "version": "1.0.0",
                 "proto_version": "1.1",
                 "capabilities": {},
@@ -436,6 +438,31 @@ class TestForceUniqueRegistration:
             assert result["success"] is False
             assert "AGENT_NAME" in result["error"]
             assert "FORCE_UNIQUE" in result["error"]
+
+    def test_force_unique_rejects_non_agent_name_source(self, db_session, mock_db_manager):
+        """force_unique=True with a non-empty hostname but hostname_source!='agent_name'
+        is rejected — prevents agents from using daemon/OS hostname fallbacks to
+        bypass the AGENT_NAME requirement when opting out of engine_id uniqueness."""
+        from agent.manager import AgentManager
+
+        with patch.object(AgentManager, '__init__', create_mock_init(mock_db_manager)):
+            manager = AgentManager()
+            token = manager.generate_registration_token(user_id=1)
+
+            result = manager.register_agent({
+                "token": token.token,
+                "engine_id": "sha256:cloned-with-daemon-source",
+                "hostname": "auto-detected-host",  # would pass `if not hostname:` check
+                "hostname_source": "daemon",       # but source is NOT agent_name
+                "version": "1.0.0",
+                "proto_version": "1.1",
+                "capabilities": {},
+                "force_unique_registration": True,
+            })
+            assert result["success"] is False
+            assert "AGENT_NAME" in result["error"]
+            assert "FORCE_UNIQUE" in result["error"]
+            assert "daemon" in result["error"]  # error explains the actual source it received
 
     def test_force_unique_still_rejects_local_host_collision(self, db_session, mock_db_manager):
         """Even with force_unique=True, an engine_id matching a local-socket host is rejected."""

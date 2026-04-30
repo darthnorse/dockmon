@@ -177,6 +177,12 @@ class AgentManager:
         """
         token = registration_data.get("token")
         engine_id = registration_data.get("engine_id")
+        # Defensive: engine_id is required by the Pydantic model, but the
+        # raw-dict path used by tests and the websocket handler can theoretically
+        # receive a malformed payload. Reject early with a clear error rather
+        # than crashing on `engine_id[:12]` further down.
+        if not engine_id:
+            return {"success": False, "error": "engine_id is required"}
         hostname = registration_data.get("hostname")
         # Trust-boundary cap: backend stores hostname as DockerHostDB.name (UNIQUE,
         # no length limit at the column level). A rogue or misconfigured agent
@@ -184,17 +190,15 @@ class AgentManager:
         # AGENT_NAME cap and the Pydantic max_length on validated registration models.
         if hostname:
             hostname = hostname.strip()[:255]
+        hostname_source = registration_data.get("hostname_source")
         version = registration_data.get("version")
         proto_version = registration_data.get("proto_version")
         capabilities = registration_data.get("capabilities", {})
 
-        # Log what we received for debugging
+        # Pre-token-validation log: only the keys the agent sent. Hostname and
+        # engine_id are NOT logged here to avoid letting unauthenticated clients
+        # pollute the audit trail with arbitrary strings.
         logger.info(f"Registration data keys: {list(registration_data.keys())}")
-        hostname_source = registration_data.get("hostname_source")
-        source_suffix = f" (source: {hostname_source})" if hostname_source else ""
-        logger.info(f"Hostname: {hostname}{source_suffix}, Engine ID: {engine_id[:12]}...")
-        if hostname_source == "agent_name":
-            logger.info(f"AGENT_NAME override in effect: agent supplied hostname={hostname!r} via env var")
 
         # Check if token is a permanent token (agent_id for reconnection)
         is_permanent_token = self.validate_permanent_token(token)
@@ -215,6 +219,11 @@ class AgentManager:
                     return {"success": False, "error": "Invalid registration token"}
                 else:
                     return {"success": False, "error": "Invalid registration token"}
+
+        # Token validated — now safe to log audit details (hostname/source/engine_id)
+        # without letting unauthenticated clients pollute the audit trail.
+        source_suffix = f" (source: {hostname_source})" if hostname_source else ""
+        logger.info(f"Hostname: {hostname}{source_suffix}, Engine ID: {engine_id[:12]}...")
 
         # If using permanent token, find existing agent
         if is_permanent_token:
@@ -298,14 +307,14 @@ class AgentManager:
                 else:
                     return {"success": False, "error": "Permanent token does not match engine_id"}
 
-        # Read the new opt-out flag (default False — preserves existing behavior).
-        # Defensive coercion: accept JSON boolean true OR the string "true"
-        # (case-insensitive). Reject everything else as falsy. Avoids the
-        # bool("false") == True trap if the value arrives as a string somehow.
-        raw_force_unique = registration_data.get("force_unique_registration", False)
-        force_unique = raw_force_unique is True or (
-            isinstance(raw_force_unique, str) and raw_force_unique.lower() == "true"
-        )
+        # Read the opt-in flag for cloned-VM scenarios (default False — preserves
+        # existing engine_id uniqueness enforcement). Pydantic validates this as
+        # Optional[bool] before we get here, so a plain bool() cast is safe.
+        force_unique = bool(registration_data.get("force_unique_registration", False))
+
+        # Hoisted out of the with-block so the lifecycle is unconditional and a
+        # future refactor can't accidentally introduce a NameError.
+        migration_candidates = []
 
         with self.db_manager.get_session() as session:
             # The "agents are only for remote hosts" policy is enforced regardless
@@ -326,19 +335,23 @@ class AgentManager:
 
             if force_unique:
                 # Cloned-VM path: skip engine_id uniqueness check and skip migration
-                # auto-detection. Require AGENT_NAME (hostname) since name UNIQUE is
-                # the only remaining distinguisher between cloned hosts.
-                if not hostname:
-                    logger.warning(f"Registration rejected: FORCE_UNIQUE_REGISTRATION set but AGENT_NAME missing "
-                                  f"(engine_id={engine_id[:12]}...)")
+                # auto-detection. Require AGENT_NAME — verified via hostname_source
+                # rather than just a non-empty hostname, because the agent's
+                # selectHostname will fall through to the daemon/OS/engine_id
+                # tiers if AGENT_NAME isn't set, producing a hostname that
+                # *looks* set but isn't operator-supplied.
+                if hostname_source != "agent_name":
+                    logger.warning(f"Registration rejected: FORCE_UNIQUE_REGISTRATION set but AGENT_NAME not in effect "
+                                  f"(hostname_source={hostname_source!r}, engine_id={engine_id[:12]}...)")
                     return {
                         "success": False,
-                        "error": "FORCE_UNIQUE_REGISTRATION=true requires AGENT_NAME to also be set, "
-                                "so each cloned host has a unique display name in DockMon."
+                        "error": "FORCE_UNIQUE_REGISTRATION=true requires AGENT_NAME to be set on the agent. "
+                                "The agent reported its hostname source as "
+                                f"{hostname_source!r}; cloned-VM registration needs AGENT_NAME so "
+                                "each clone has a unique display name in DockMon."
                     }
                 logger.info(f"Registering cloned-VM agent (engine_id={engine_id[:12]}... shared with existing hosts; "
                            f"FORCE_UNIQUE_REGISTRATION skipping uniqueness check)")
-                migration_candidates = []
             else:
                 # Default path: enforce engine_id uniqueness and run migration auto-detection.
                 existing_agent = session.query(Agent).filter_by(engine_id=engine_id).first()
@@ -367,7 +380,6 @@ class AgentManager:
                 remote_hosts = [h for h in matching_hosts if h.connection_type == 'remote' and h.replaced_by_host_id is None]
                 already_migrated = [h for h in matching_hosts if h.connection_type == 'remote' and h.replaced_by_host_id is not None]
 
-                migration_candidates = []
                 if len(remote_hosts) > 1:
                     logger.info(f"Multiple remote hosts ({len(remote_hosts)}) share engine_id {engine_id[:12]}... - "
                                "registration will proceed but migration requires user choice")

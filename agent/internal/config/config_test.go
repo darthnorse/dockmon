@@ -94,6 +94,8 @@ func TestLoadFromEnv_ForceUniqueRegistration_True(t *testing.T) {
 	t.Setenv("DOCKMON_URL", "wss://example.com")
 	t.Setenv("REGISTRATION_TOKEN", "test-token")
 	t.Setenv("FORCE_UNIQUE_REGISTRATION", "true")
+	// AGENT_NAME is required when FORCE_UNIQUE_REGISTRATION=true (validated below).
+	t.Setenv("AGENT_NAME", "clone-01")
 
 	cfg, err := LoadFromEnv()
 	if err != nil {
@@ -101,5 +103,21 @@ func TestLoadFromEnv_ForceUniqueRegistration_True(t *testing.T) {
 	}
 	if cfg.ForceUniqueRegistration != true {
 		t.Errorf("ForceUniqueRegistration = %v, want true", cfg.ForceUniqueRegistration)
+	}
+}
+
+func TestLoadFromEnv_ForceUniqueRegistration_RequiresAgentName(t *testing.T) {
+	t.Setenv("DOCKMON_URL", "wss://example.com")
+	t.Setenv("REGISTRATION_TOKEN", "test-token")
+	t.Setenv("FORCE_UNIQUE_REGISTRATION", "true")
+	// AGENT_NAME deliberately unset — should fail validation at startup.
+	t.Setenv("AGENT_NAME", "")
+
+	_, err := LoadFromEnv()
+	if err == nil {
+		t.Fatal("expected error when FORCE_UNIQUE_REGISTRATION=true without AGENT_NAME, got nil")
+	}
+	if !strings.Contains(err.Error(), "AGENT_NAME") {
+		t.Errorf("error message = %q, want it to mention AGENT_NAME", err.Error())
 	}
 }

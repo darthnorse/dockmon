@@ -110,6 +110,13 @@ func LoadFromEnv() (*Config, error) {
 		return nil, fmt.Errorf("AGENT_NAME exceeds 255 characters (got %d)", len(cfg.AgentName))
 	}
 
+	// FORCE_UNIQUE_REGISTRATION requires AGENT_NAME to also be set — backend
+	// will reject otherwise; surface the misconfiguration at agent startup
+	// instead of letting it loop forever in the reconnect path.
+	if cfg.ForceUniqueRegistration && cfg.AgentName == "" {
+		return nil, fmt.Errorf("FORCE_UNIQUE_REGISTRATION=true requires AGENT_NAME to also be set")
+	}
+
 	// Try to load permanent token from persisted file
 	if cfg.PermanentToken == "" {
 		tokenPath := filepath.Join(cfg.DataPath, "permanent_token")

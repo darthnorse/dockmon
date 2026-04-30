@@ -294,31 +294,15 @@ class AgentManager:
                 else:
                     return {"success": False, "error": "Permanent token does not match engine_id"}
 
-        # Track migration candidates for multi-host scenarios (user must choose)
-        migration_candidates = None
+        # Read the new opt-out flag (default False — preserves existing behavior).
+        force_unique = bool(registration_data.get("force_unique_registration", False))
 
-        # Check if engine_id already registered as agent
         with self.db_manager.get_session() as session:
-            existing_agent = session.query(Agent).filter_by(engine_id=engine_id).first()
-            if existing_agent:
-                logger.warning(f"Agent registration rejected: engine_id {engine_id[:12]}... already registered. "
-                              "This may be a cloned VM with duplicate Docker engine ID. "
-                              "Fix: delete /var/lib/docker/engine-id (or /etc/docker/key.json on older systems) and restart Docker to generate a unique engine ID, then reinstall the agent.")
-                return {
-                    "success": False,
-                    "error": "Agent with this engine_id is already registered. "
-                            "If this is a cloned VM, delete /var/lib/docker/engine-id (or /etc/docker/key.json on older systems) and restart Docker to generate a unique engine ID, then reinstall the agent."
-                }
-
-            # Check for migration: find ALL hosts with matching engine_id
-            matching_hosts = session.query(DockerHostDB).filter_by(engine_id=engine_id).all()
-
-            # Separate by connection type
-            local_hosts = [h for h in matching_hosts if h.connection_type == 'local']
-            remote_hosts = [h for h in matching_hosts if h.connection_type == 'remote' and h.replaced_by_host_id is None]
-            already_migrated = [h for h in matching_hosts if h.connection_type == 'remote' and h.replaced_by_host_id is not None]
-
-            # REJECT if any local host matches - local Docker socket is the only way to manage localhost
+            # The "agents are only for remote hosts" policy is enforced regardless
+            # of force_unique — agents must not collide with a local-socket host.
+            local_hosts = session.query(DockerHostDB).filter_by(
+                engine_id=engine_id, connection_type='local'
+            ).all()
             if local_hosts:
                 host = local_hosts[0]
                 logger.warning(f"Migration rejected: Cannot migrate local Docker socket connection to agent. "
@@ -330,37 +314,75 @@ class AgentManager:
                             "Local Docker monitoring via socket is the preferred method for localhost."
                 }
 
-            # If multiple remote hosts match, don't auto-migrate - user must choose
-            if len(remote_hosts) > 1:
-                logger.info(f"Multiple remote hosts ({len(remote_hosts)}) share engine_id {engine_id[:12]}... - "
-                           "registration will proceed but migration requires user choice")
-                # Build candidate list for frontend (extract data while session is open)
-                migration_candidates = [
-                    {"host_id": h.id, "host_name": h.name}
-                    for h in remote_hosts
-                ]
-                # Don't auto-migrate, continue to register the agent
-                # The frontend will show a modal for user to choose which host to migrate from
+            if force_unique:
+                # Cloned-VM path: skip engine_id uniqueness check and skip migration
+                # auto-detection. Require AGENT_NAME (hostname) since name UNIQUE is
+                # the only remaining distinguisher between cloned hosts.
+                if not hostname:
+                    logger.warning(f"Registration rejected: FORCE_UNIQUE_REGISTRATION set but AGENT_NAME missing "
+                                  f"(engine_id={engine_id[:12]}...)")
+                    return {
+                        "success": False,
+                        "error": "FORCE_UNIQUE_REGISTRATION=true requires AGENT_NAME to also be set, "
+                                "so each cloned host has a unique display name in DockMon."
+                    }
+                logger.info(f"Registering cloned-VM agent (engine_id={engine_id[:12]}... shared with existing hosts; "
+                           f"FORCE_UNIQUE_REGISTRATION skipping uniqueness check)")
+                migration_candidates = []
+            else:
+                # Default path: enforce engine_id uniqueness and run migration auto-detection.
+                existing_agent = session.query(Agent).filter_by(engine_id=engine_id).first()
+                if existing_agent:
+                    logger.warning(f"Agent registration rejected: engine_id {engine_id[:12]}... already registered. "
+                                  "This may be a cloned VM with duplicate Docker engine ID. "
+                                  "Fix: delete /var/lib/docker/engine-id (or /etc/docker/key.json on older systems) "
+                                  "and restart Docker to generate a unique engine ID, then reinstall the agent. "
+                                  "Alternatively, set FORCE_UNIQUE_REGISTRATION=true (with AGENT_NAME) on the agent "
+                                  "to register it as a distinct host without regenerating the engine_id.")
+                    return {
+                        "success": False,
+                        "error": "Agent with this engine_id is already registered. "
+                                "If this is a cloned VM, either: "
+                                "(a) delete /var/lib/docker/engine-id (or /etc/docker/key.json on older systems) "
+                                "and restart Docker to generate a unique engine ID, then reinstall the agent; or "
+                                "(b) set FORCE_UNIQUE_REGISTRATION=true and AGENT_NAME=<unique-name> on the agent."
+                    }
 
-            # If exactly one remote host matches, auto-migrate
-            elif len(remote_hosts) == 1:
-                existing_host = remote_hosts[0]
-                logger.info(f"Migration allowed: remote host {existing_host.name} → agent")
-                migration_result = self._migrate_host_to_agent(
-                    existing_host=existing_host,
-                    engine_id=engine_id,
-                    hostname=hostname,
-                    version=version,
-                    proto_version=proto_version,
-                    capabilities=capabilities,
-                    registration_data=registration_data,
-                    token=token
-                )
-                return migration_result
+                # Migration detection: find all DockerHostDB rows with matching engine_id
+                # (excluding the local hosts already handled above).
+                matching_hosts = session.query(DockerHostDB).filter(
+                    DockerHostDB.engine_id == engine_id,
+                    DockerHostDB.connection_type != 'local',
+                ).all()
+                remote_hosts = [h for h in matching_hosts if h.connection_type == 'remote' and h.replaced_by_host_id is None]
+                already_migrated = [h for h in matching_hosts if h.connection_type == 'remote' and h.replaced_by_host_id is not None]
 
-            # Log if we found already-migrated hosts
-            if already_migrated:
-                logger.debug(f"Found {len(already_migrated)} already-migrated host(s) with engine_id {engine_id[:12]}...")
+                migration_candidates = []
+                if len(remote_hosts) > 1:
+                    logger.info(f"Multiple remote hosts ({len(remote_hosts)}) share engine_id {engine_id[:12]}... - "
+                               "registration will proceed but migration requires user choice")
+                    migration_candidates = [
+                        {"host_id": h.id, "host_name": h.name}
+                        for h in remote_hosts
+                    ]
+
+                elif len(remote_hosts) == 1:
+                    existing_host = remote_hosts[0]
+                    logger.info(f"Migration allowed: remote host {existing_host.name} → agent")
+                    migration_result = self._migrate_host_to_agent(
+                        existing_host=existing_host,
+                        engine_id=engine_id,
+                        hostname=hostname,
+                        version=version,
+                        proto_version=proto_version,
+                        capabilities=capabilities,
+                        registration_data=registration_data,
+                        token=token
+                    )
+                    return migration_result
+
+                if already_migrated:
+                    logger.debug(f"Found {len(already_migrated)} already-migrated host(s) with engine_id {engine_id[:12]}...")
 
         # Generate IDs
         agent_id = str(uuid.uuid4())

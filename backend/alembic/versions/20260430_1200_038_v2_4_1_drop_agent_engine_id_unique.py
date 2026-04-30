@@ -53,18 +53,27 @@ def _find_engine_id_unique_index_name() -> str | None:
 
 
 def upgrade():
-    # Try the named-constraint path first (works on Postgres and named SQLite constraints)
     constraint_name = _find_engine_id_unique_constraint_name()
-    if constraint_name:
-        with op.batch_alter_table('agents') as batch_op:
-            batch_op.drop_constraint(constraint_name, type_='unique')
-
-    # SQLite often expresses the implicit UNIQUE as an auto-named unique INDEX
-    # rather than a named constraint, so also drop any unique index on engine_id
-    # (excluding the explicit idx_agent_engine_id which we want to keep).
     index_name = _find_engine_id_unique_index_name()
-    if index_name:
-        with op.batch_alter_table('agents') as batch_op:
+
+    if not constraint_name and not index_name:
+        # Idempotent: re-running on an already-migrated DB, or applying to a
+        # fresh DB created directly from current models, has nothing to drop.
+        import logging
+        logging.getLogger('alembic.runtime.migration').info(
+            "agents.engine_id has no unique constraint or unique index to drop "
+            "(already removed, or DB created from current models). Migration is a no-op."
+        )
+        return
+
+    with op.batch_alter_table('agents') as batch_op:
+        # Try named-constraint path first (Postgres; named SQLite constraints).
+        if constraint_name:
+            batch_op.drop_constraint(constraint_name, type_='unique')
+        # SQLite often expresses the implicit UNIQUE as an auto-named unique
+        # INDEX rather than a named constraint, so also drop any unique index
+        # on engine_id (excluding the explicit idx_agent_engine_id we keep).
+        if index_name:
             batch_op.drop_index(index_name)
 
 

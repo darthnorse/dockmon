@@ -23,6 +23,8 @@ Note on dialects:
   (e.g., `agents_engine_id_key`). The same `naming_convention` produces
   a deterministic name for the drop.
 """
+import logging
+
 from alembic import op
 import sqlalchemy as sa
 
@@ -62,7 +64,6 @@ def upgrade():
     if not _has_engine_id_unique():
         # Idempotent: re-running on an already-migrated DB, or applying to a
         # fresh DB created directly from current models, has nothing to drop.
-        import logging
         logging.getLogger('alembic.runtime.migration').info(
             "agents.engine_id has no unique constraint or unique index to drop "
             "(already removed, or DB created from current models). Migration is a no-op."

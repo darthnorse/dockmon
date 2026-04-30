@@ -457,7 +457,10 @@ class AgentManager:
                     registered_at=now,
                     # Agent runtime info (for binary downloads)
                     agent_os=registration_data.get("agent_os"),
-                    agent_arch=registration_data.get("agent_arch")
+                    agent_arch=registration_data.get("agent_arch"),
+                    # Persisted so the partial unique index on engine_id can
+                    # use it as a predicate (cloned-VM rows are exempt).
+                    force_unique=force_unique,
                 )
                 reg_session.add(agent)
                 logger.info(f"Created agent record: {agent_id[:8]}... (os={registration_data.get('agent_os')}, arch={registration_data.get('agent_arch')})")
@@ -504,9 +507,26 @@ class AgentManager:
 
             except IntegrityError as e:
                 reg_session.rollback()
-                # Detect name UNIQUE violation across SQLite/Postgres dialects without
+                # Detect UNIQUE violations across SQLite/Postgres dialects without
                 # leaking schema details to the agent (or, transitively, the UI).
                 err_str = str(e).lower()
+                # The partial unique index `idx_agent_engine_id_strict` enforces
+                # engine_id uniqueness for non-force_unique rows. A violation
+                # here means a concurrent registration won the race between
+                # the application-level check and the INSERT.
+                if "engine_id" in err_str and ("unique" in err_str or "duplicate" in err_str):
+                    logger.warning(
+                        f"Registration rejected: engine_id {engine_id[:12]}... "
+                        f"already registered (lost race with concurrent registration): {e}"
+                    )
+                    return {
+                        "success": False,
+                        "error": "Agent with this engine_id is already registered. "
+                                "If this is a cloned VM, either: "
+                                "(a) delete /var/lib/docker/engine-id (or /etc/docker/key.json on older systems) "
+                                "and restart Docker to generate a unique engine ID, then reinstall the agent; or "
+                                "(b) set FORCE_UNIQUE_REGISTRATION=true and AGENT_NAME=<unique-name> on the agent.",
+                    }
                 if "name" in err_str and ("unique" in err_str or "duplicate" in err_str):
                     logger.warning(
                         f"Registration rejected: duplicate host name {hostname!r} "

@@ -322,7 +322,7 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 		c.log.WithError(osErr).Debug("os.Hostname failed; will fall through to engine ID if needed")
 	}
 	hostname := selectHostname(c.cfg.AgentName, systemHost, osHost, c.engineID)
-	if c.cfg.AgentName != "" {
+	if c.cfg.AgentName != "" && hostname == c.cfg.AgentName {
 		c.log.WithFields(logrus.Fields{
 			"agent_name": c.cfg.AgentName,
 			"hostname":   hostname,

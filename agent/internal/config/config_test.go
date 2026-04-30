@@ -8,6 +8,13 @@ import (
 func TestLoadFromEnv_AgentName_Unset(t *testing.T) {
 	t.Setenv("DOCKMON_URL", "wss://example.com")
 	t.Setenv("REGISTRATION_TOKEN", "test-token")
+	// Capture and restore any ambient AGENT_NAME so this test is hermetic
+	// even when t.Cleanup-style restoration isn't provided by os.Unsetenv.
+	if prev, ok := os.LookupEnv("AGENT_NAME"); ok {
+		t.Cleanup(func() { os.Setenv("AGENT_NAME", prev) })
+	} else {
+		t.Cleanup(func() { os.Unsetenv("AGENT_NAME") })
+	}
 	os.Unsetenv("AGENT_NAME")
 
 	cfg, err := LoadFromEnv()

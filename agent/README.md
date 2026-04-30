@@ -56,6 +56,7 @@ Configuration is done via environment variables:
 
 ### Optional
 
+- `AGENT_NAME` - Display name shown in the DockMon UI. Overrides the auto-detected hostname during registration and on every reconnect. Useful when multiple hosts share an OS hostname (e.g., cloned VMs or LXC templates) and you don't want to rename the underlying server. Falls back to the Docker daemon hostname → OS hostname → engine ID when unset.
 - `DOCKER_HOST` - Docker socket path (default: `unix:///var/run/docker.sock`)
 - `DOCKER_CERT_PATH` - Path to Docker TLS certificates (if using TLS)
 - `DOCKER_TLS_VERIFY` - Enable Docker TLS verification (default: `false`)

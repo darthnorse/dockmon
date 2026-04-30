@@ -76,18 +76,38 @@ def _get_cors_origin_parts() -> tuple[str, str] | None:
 
 
 def get_request_scheme(request: Request) -> str:
-    """Get the effective request scheme, respecting reverse proxy headers."""
+    """Get the effective request scheme, respecting reverse proxy headers.
+
+    Precedence (when REVERSE_PROXY_MODE is on):
+      1. DOCKMON_CORS_ORIGINS scheme — the operator's explicit declaration
+         of the public-facing URL. Most authoritative because it's set
+         deliberately by the operator, not by a proxy.
+      2. X-Forwarded-Proto header — used when CORS_ORIGINS isn't set or
+         doesn't include an explicit scheme.
+      3. request.url.scheme — last-resort fallback (reflects the local TCP
+         scheme between the proxy and DockMon, which is the wrong scheme
+         when the proxy terminates TLS).
+
+    The CORS-first ordering fixes #208's follow-up: some reverse-proxy
+    setups send X-Forwarded-Proto=http even when the inbound to the proxy
+    was https (e.g., Caddy's behavior in certain configurations), which
+    caused OIDC redirect_uri to be constructed with the wrong scheme.
+    Trusting the operator's explicit declaration is more reliable than
+    a header that proxies sometimes get wrong.
+    """
     if AppConfig.REVERSE_PROXY_MODE:
-        proto = request.headers.get("x-forwarded-proto")
-        if proto:
-            return proto.split(",")[0].strip().lower()
         parts = _get_cors_origin_parts()
         if parts:
-            logger.debug("No X-Forwarded-Proto header; using scheme from DOCKMON_CORS_ORIGINS")
             return parts[0]
+        proto = request.headers.get("x-forwarded-proto")
+        if proto:
+            logger.debug("DOCKMON_CORS_ORIGINS not set; using scheme from X-Forwarded-Proto")
+            return proto.split(",")[0].strip().lower()
         logger.warning(
-            "REVERSE_PROXY_MODE enabled but no X-Forwarded-Proto header found "
-            "and DOCKMON_CORS_ORIGINS not set. Falling back to request.url.scheme."
+            "REVERSE_PROXY_MODE enabled but neither DOCKMON_CORS_ORIGINS nor "
+            "X-Forwarded-Proto is set. Falling back to request.url.scheme, which "
+            "reflects the local TCP scheme and may be wrong if the proxy "
+            "terminates TLS."
         )
     return request.url.scheme
 

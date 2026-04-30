@@ -91,6 +91,26 @@ class TestGetRequestScheme:
             mock_config.CORS_ORIGINS = "https://dockmon.lokal"
             assert get_request_scheme(request) == "https"
 
+    def test_cors_origins_takes_precedence_over_forwarded_proto(self):
+        """DOCKMON_CORS_ORIGINS is the operator's explicit public-URL
+        declaration; trust it over X-Forwarded-Proto, which some
+        reverse-proxy setups send with the wrong value (#208 follow-up:
+        Caddy sending http when inbound to it was https)."""
+        request = _make_request(headers={"x-forwarded-proto": "http"})
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "https://dockmon.lokal"
+            assert get_request_scheme(request) == "https"
+
+    def test_forwarded_proto_used_when_cors_origins_missing_scheme(self):
+        """If CORS_ORIGINS is set but doesn't parse to scheme+host (e.g., a
+        bare hostname), fall through to X-Forwarded-Proto."""
+        request = _make_request(headers={"x-forwarded-proto": "https"})
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "dockmon.lokal"
+            assert get_request_scheme(request) == "https"
+
     def test_falls_back_to_request_scheme_when_nothing_available(self):
         request = _make_request(scheme="http")
         with patch("utils.client_ip.AppConfig") as mock_config:

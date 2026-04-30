@@ -25,6 +25,7 @@ type Config struct {
 	// Agent identity
 	AgentVersion     string
 	ProtoVersion     string
+	AgentName        string  // Optional display name override; takes priority over OS hostname during registration.
 
 	// Reconnection settings
 	ReconnectInitial time.Duration
@@ -58,6 +59,10 @@ func LoadFromEnv() (*Config, error) {
 		DockerHost:       getEnvOrDefault("DOCKER_HOST", detectContainerSocket()),
 		DockerCertPath:   os.Getenv("DOCKER_CERT_PATH"),
 		DockerTLSVerify:  getEnvBool("DOCKER_TLS_VERIFY", false),
+
+		// Optional display-name override sent during registration. If empty, agent
+		// falls back to Docker daemon hostname -> OS hostname -> engine_id.
+		AgentName:        strings.TrimSpace(os.Getenv("AGENT_NAME")),
 
 		// Protocol
 		// 1.1: agent dual-sends container_stats to stats-service /api/stats/ws/ingest

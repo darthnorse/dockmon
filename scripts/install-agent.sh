@@ -14,6 +14,7 @@
 #   TZ                   - Optional. Timezone (default: UTC)
 #   INSECURE_SKIP_VERIFY - Optional. Skip TLS verification (default: false)
 #   AGENT_NAME           - Optional. Display name shown in DockMon panel (defaults to OS hostname)
+#   FORCE_UNIQUE_REGISTRATION - Optional. Set to "true" for cloned VMs (shared engine_id) to register as a distinct host. Requires AGENT_NAME.
 #   DATA_PATH            - Optional. Data directory (default: /var/lib/dockmon-agent)
 #   AGENT_STACKS_DIR     - Optional. Stack storage directory (default: $DATA_PATH/stacks)
 #
@@ -157,6 +158,15 @@ if [ -n "$AGENT_NAME" ]; then
     esac
     ENV_LINES="${ENV_LINES}
 Environment=\"AGENT_NAME=${AGENT_NAME}\""
+fi
+
+if [ -n "$FORCE_UNIQUE_REGISTRATION" ] && [ "$FORCE_UNIQUE_REGISTRATION" = "true" ]; then
+    if [ -z "$AGENT_NAME" ]; then
+        log_error "FORCE_UNIQUE_REGISTRATION=true requires AGENT_NAME to also be set"
+        exit 1
+    fi
+    ENV_LINES="${ENV_LINES}
+Environment=\"FORCE_UNIQUE_REGISTRATION=true\""
 fi
 
 # Create systemd service file

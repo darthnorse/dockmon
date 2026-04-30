@@ -317,12 +317,16 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 	}
 	osHost, osErr := os.Hostname()
 	if osErr != nil {
+		// On error os.Hostname returns "", so no reassignment needed; selectHostname
+		// will fall through to the engine ID.
 		c.log.WithError(osErr).Debug("os.Hostname failed; will fall through to engine ID if needed")
-		osHost = ""
 	}
 	hostname := selectHostname(c.cfg.AgentName, systemHost, osHost, c.engineID)
 	if c.cfg.AgentName != "" {
-		c.log.WithField("agent_name", c.cfg.AgentName).Info("Using AGENT_NAME override for registration hostname")
+		c.log.WithFields(logrus.Fields{
+			"agent_name": c.cfg.AgentName,
+			"hostname":   hostname,
+		}).Info("Using AGENT_NAME override for registration hostname")
 	}
 
 	// Build registration request as flat JSON (backend expects flat format)

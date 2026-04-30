@@ -295,7 +295,13 @@ class AgentManager:
                     return {"success": False, "error": "Permanent token does not match engine_id"}
 
         # Read the new opt-out flag (default False — preserves existing behavior).
-        force_unique = bool(registration_data.get("force_unique_registration", False))
+        # Defensive coercion: accept JSON boolean true OR the string "true"
+        # (case-insensitive). Reject everything else as falsy. Avoids the
+        # bool("false") == True trap if the value arrives as a string somehow.
+        raw_force_unique = registration_data.get("force_unique_registration", False)
+        force_unique = raw_force_unique is True or (
+            isinstance(raw_force_unique, str) and raw_force_unique.lower() == "true"
+        )
 
         with self.db_manager.get_session() as session:
             # The "agents are only for remote hosts" policy is enforced regardless
@@ -305,7 +311,7 @@ class AgentManager:
             ).all()
             if local_hosts:
                 host = local_hosts[0]
-                logger.warning(f"Migration rejected: Cannot migrate local Docker socket connection to agent. "
+                logger.warning(f"Agent registration rejected: engine_id matches local Docker socket host. "
                               f"Host '{host.name}' uses local socket - agents are only for remote hosts.")
                 return {
                     "success": False,

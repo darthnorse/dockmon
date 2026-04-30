@@ -375,3 +375,129 @@ class TestEngineIdValidation:
                 proto_version="1.0",
                 capabilities={}
             )
+
+
+class TestForceUniqueRegistration:
+    """Tests for the FORCE_UNIQUE_REGISTRATION opt-in path (cloned VMs)."""
+
+    def test_force_unique_skips_engine_id_check(self, db_session, mock_db_manager):
+        """Two agents with identical engine_id can both register when force_unique=True and unique hostnames."""
+        from agent.manager import AgentManager
+
+        with patch.object(AgentManager, '__init__', create_mock_init(mock_db_manager)):
+            manager = AgentManager()
+            engine_id = "sha256:cloned-vm-engine-id-shared"
+
+            # First agent registers normally (sets up the collision target).
+            token1 = manager.generate_registration_token(user_id=1)
+            first = manager.register_agent({
+                "token": token1.token,
+                "engine_id": engine_id,
+                "hostname": "clone-01",
+                "version": "1.0.0",
+                "proto_version": "1.1",
+                "capabilities": {},
+                "force_unique_registration": False,
+            })
+            assert first["success"], f"first registration unexpectedly failed: {first}"
+
+            # Second agent uses force_unique=True with a distinct hostname.
+            token2 = manager.generate_registration_token(user_id=1)
+            second = manager.register_agent({
+                "token": token2.token,
+                "engine_id": engine_id,
+                "hostname": "clone-02",
+                "version": "1.0.0",
+                "proto_version": "1.1",
+                "capabilities": {},
+                "force_unique_registration": True,
+            })
+            assert second["success"], f"second registration unexpectedly failed: {second}"
+            assert second["host_id"] != first["host_id"], "expected distinct host_ids for cloned VMs"
+            assert second["agent_id"] != first["agent_id"], "expected distinct agent_ids for cloned VMs"
+
+    def test_force_unique_requires_agent_name(self, db_session, mock_db_manager):
+        """force_unique=True without hostname (AGENT_NAME) is rejected with a friendly error."""
+        from agent.manager import AgentManager
+
+        with patch.object(AgentManager, '__init__', create_mock_init(mock_db_manager)):
+            manager = AgentManager()
+            token = manager.generate_registration_token(user_id=1)
+
+            result = manager.register_agent({
+                "token": token.token,
+                "engine_id": "sha256:cloned-without-name",
+                "hostname": None,
+                "version": "1.0.0",
+                "proto_version": "1.1",
+                "capabilities": {},
+                "force_unique_registration": True,
+            })
+            assert result["success"] is False
+            assert "AGENT_NAME" in result["error"]
+            assert "FORCE_UNIQUE" in result["error"]
+
+    def test_force_unique_still_rejects_local_host_collision(self, db_session, mock_db_manager):
+        """Even with force_unique=True, an engine_id matching a local-socket host is rejected."""
+        from agent.manager import AgentManager
+
+        engine_id = "sha256:local-host-engine-id"
+        db_session.add(DockerHostDB(
+            id="local-host-uuid",
+            name="My Local Docker",
+            url="unix:///var/run/docker.sock",
+            connection_type="local",
+            engine_id=engine_id,
+            is_active=True,
+        ))
+        db_session.commit()
+
+        with patch.object(AgentManager, '__init__', create_mock_init(mock_db_manager)):
+            manager = AgentManager()
+            token = manager.generate_registration_token(user_id=1)
+
+            result = manager.register_agent({
+                "token": token.token,
+                "engine_id": engine_id,
+                "hostname": "would-be-clone",
+                "version": "1.0.0",
+                "proto_version": "1.1",
+                "capabilities": {},
+                "force_unique_registration": True,
+            })
+            assert result["success"] is False
+            assert "Migration not supported for local Docker connections" in result["error"]
+
+    def test_default_rejection_message_mentions_force_unique(self, db_session, mock_db_manager):
+        """When force_unique=False (default) and engine_id collides, the error suggests FORCE_UNIQUE_REGISTRATION."""
+        from agent.manager import AgentManager
+
+        with patch.object(AgentManager, '__init__', create_mock_init(mock_db_manager)):
+            manager = AgentManager()
+            engine_id = "sha256:default-path-collision"
+
+            token1 = manager.generate_registration_token(user_id=1)
+            first = manager.register_agent({
+                "token": token1.token,
+                "engine_id": engine_id,
+                "hostname": "first",
+                "version": "1.0.0",
+                "proto_version": "1.1",
+                "capabilities": {},
+                "force_unique_registration": False,
+            })
+            assert first["success"], f"first registration unexpectedly failed: {first}"
+
+            token2 = manager.generate_registration_token(user_id=1)
+            result = manager.register_agent({
+                "token": token2.token,
+                "engine_id": engine_id,
+                "hostname": "second",
+                "version": "1.0.0",
+                "proto_version": "1.1",
+                "capabilities": {},
+                "force_unique_registration": False,
+            })
+            assert result["success"] is False
+            assert "FORCE_UNIQUE_REGISTRATION" in result["error"]
+            assert "/var/lib/docker/engine-id" in result["error"]

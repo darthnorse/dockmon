@@ -37,6 +37,15 @@ class AgentRegistrationRequest(BaseModel):
 
     # Optional host identification
     hostname: Optional[str] = Field(None, max_length=255, description="System hostname")
+    hostname_source: Optional[str] = Field(
+        None,
+        max_length=32,
+        description=(
+            "Which precedence tier the agent picked the hostname from: "
+            "'agent_name' (operator AGENT_NAME override), 'daemon' (Docker "
+            "daemon hostname), 'os' (os.Hostname()), or 'engine_id' (fallback)."
+        ),
+    )
     force_unique_registration: Optional[bool] = Field(
         False,
         description=(
@@ -62,7 +71,7 @@ class AgentRegistrationRequest(BaseModel):
     host_ip: Optional[str] = Field(None, max_length=45, description="Host IP address (IPv4 or IPv6)")
     host_ips: Optional[List[str]] = Field(None, max_length=50, description="All host IP addresses (max 50 items)")
 
-    @field_validator('hostname', 'os_version', 'kernel_version', 'docker_version', 'os_type', 'agent_os', 'agent_arch', 'host_ip')
+    @field_validator('hostname', 'hostname_source', 'os_version', 'kernel_version', 'docker_version', 'os_type', 'agent_os', 'agent_arch', 'host_ip')
     @classmethod
     def sanitize_html(cls, v: Optional[str]) -> Optional[str]:
         """

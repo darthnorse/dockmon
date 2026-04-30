@@ -321,7 +321,7 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 		// will fall through to the engine ID.
 		c.log.WithError(osErr).Debug("os.Hostname failed; will fall through to engine ID if needed")
 	}
-	hostname := selectHostname(c.cfg.AgentName, systemHost, osHost, c.engineID)
+	hostname, hostnameSource := selectHostname(c.cfg.AgentName, systemHost, osHost, c.engineID)
 	if c.cfg.AgentName != "" && hostname == c.cfg.AgentName {
 		c.log.WithFields(logrus.Fields{
 			"agent_name": c.cfg.AgentName,
@@ -334,11 +334,12 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 
 	// Build registration request as flat JSON (backend expects flat format)
 	regMsg := map[string]interface{}{
-		"type":          "register",
-		"token":         token,
-		"engine_id":     c.engineID,
-		"hostname":      hostname,
-		"version":       c.cfg.AgentVersion,
+		"type":            "register",
+		"token":           token,
+		"engine_id":       c.engineID,
+		"hostname":        hostname,
+		"hostname_source": hostnameSource,
+		"version":         c.cfg.AgentVersion,
 		"proto_version": c.cfg.ProtoVersion,
 		"force_unique_registration": c.cfg.ForceUniqueRegistration,
 		"capabilities": map[string]bool{

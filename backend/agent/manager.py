@@ -190,7 +190,11 @@ class AgentManager:
 
         # Log what we received for debugging
         logger.info(f"Registration data keys: {list(registration_data.keys())}")
-        logger.info(f"Hostname: {hostname}, Engine ID: {engine_id[:12]}...")
+        hostname_source = registration_data.get("hostname_source")
+        source_suffix = f" (source: {hostname_source})" if hostname_source else ""
+        logger.info(f"Hostname: {hostname}{source_suffix}, Engine ID: {engine_id[:12]}...")
+        if hostname_source == "agent_name":
+            logger.info(f"AGENT_NAME override in effect: agent supplied hostname={hostname!r} via env var")
 
         # Check if token is a permanent token (agent_id for reconnection)
         is_permanent_token = self.validate_permanent_token(token)

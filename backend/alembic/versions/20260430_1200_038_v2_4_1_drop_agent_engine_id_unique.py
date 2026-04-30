@@ -14,11 +14,14 @@ CHANGES:
   is opted into.
 
 Note on dialects:
-- SQLite: implicit UNIQUE comes from the column declaration; we use
-  alembic's batch_alter_table to recreate the table without it.
+- SQLite: the `unique=True` shorthand produces an unnamed UNIQUE clause
+  in the table definition. SQLAlchemy's inspector reflects it with
+  `name: None`, so we use a `naming_convention` to give it a stable name
+  inside `batch_alter_table` and then drop it. The batch operation
+  recreates the table without the constraint.
 - Postgres: the implicit UNIQUE has an auto-generated constraint name
-  (typically `agents_engine_id_key`); we look it up via inspection
-  rather than guessing.
+  (e.g., `agents_engine_id_key`). The same `naming_convention` produces
+  a deterministic name for the drop.
 """
 from alembic import op
 import sqlalchemy as sa
@@ -30,33 +33,33 @@ branch_labels = None
 depends_on = None
 
 
-def _find_engine_id_unique_constraint_name() -> str | None:
-    """Locate the engine_id unique constraint via inspection (cross-dialect)."""
+# Naming convention so reflected anonymous unique constraints become
+# `uq_<table>_<column>` inside batch_alter_table — required for SQLite,
+# harmless for Postgres.
+NAMING_CONVENTION = {
+    "uq": "uq_%(table_name)s_%(column_0_name)s",
+}
+
+
+def _has_engine_id_unique() -> bool:
+    """Return True iff agents.engine_id currently has a unique constraint
+    or a separate unique index (excluding the explicit idx_agent_engine_id)."""
     inspector = sa.inspect(op.get_bind())
     for c in inspector.get_unique_constraints('agents'):
         if c.get('column_names') == ['engine_id']:
-            return c.get('name')
-    return None
-
-
-def _find_engine_id_unique_index_name() -> str | None:
-    """Locate a unique index on engine_id that is NOT idx_agent_engine_id."""
-    inspector = sa.inspect(op.get_bind())
+            return True
     for idx in inspector.get_indexes('agents'):
         if (
             idx.get('column_names') == ['engine_id']
             and idx.get('unique')
             and idx.get('name') != 'idx_agent_engine_id'
         ):
-            return idx.get('name')
-    return None
+            return True
+    return False
 
 
 def upgrade():
-    constraint_name = _find_engine_id_unique_constraint_name()
-    index_name = _find_engine_id_unique_index_name()
-
-    if not constraint_name and not index_name:
+    if not _has_engine_id_unique():
         # Idempotent: re-running on an already-migrated DB, or applying to a
         # fresh DB created directly from current models, has nothing to drop.
         import logging
@@ -66,20 +69,16 @@ def upgrade():
         )
         return
 
-    with op.batch_alter_table('agents') as batch_op:
-        # Try named-constraint path first (Postgres; named SQLite constraints).
-        if constraint_name:
-            batch_op.drop_constraint(constraint_name, type_='unique')
-        # SQLite often expresses the implicit UNIQUE as an auto-named unique
-        # INDEX rather than a named constraint, so also drop any unique index
-        # on engine_id (excluding the explicit idx_agent_engine_id we keep).
-        if index_name:
-            batch_op.drop_index(index_name)
+    with op.batch_alter_table('agents', naming_convention=NAMING_CONVENTION) as batch_op:
+        # The naming_convention reflects the unnamed UNIQUE on engine_id as
+        # `uq_agents_engine_id`, which we can then drop. host_id's UNIQUE
+        # constraint is reflected as `uq_agents_host_id` and preserved.
+        batch_op.drop_constraint('uq_agents_engine_id', type_='unique')
 
 
 def downgrade():
     # Recreate the unique constraint. This will fail if duplicate engine_ids
     # exist (i.e., users are actively using FORCE_UNIQUE_REGISTRATION); they
     # must clean those rows up before downgrading.
-    with op.batch_alter_table('agents') as batch_op:
-        batch_op.create_unique_constraint('agents_engine_id_key', ['engine_id'])
+    with op.batch_alter_table('agents', naming_convention=NAMING_CONVENTION) as batch_op:
+        batch_op.create_unique_constraint('uq_agents_engine_id', ['engine_id'])

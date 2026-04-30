@@ -328,6 +328,9 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 			"hostname":   hostname,
 		}).Info("Using AGENT_NAME override for registration hostname")
 	}
+	if c.cfg.ForceUniqueRegistration {
+		c.log.Info("FORCE_UNIQUE_REGISTRATION is set — backend will be asked to skip engine_id uniqueness check")
+	}
 
 	// Build registration request as flat JSON (backend expects flat format)
 	regMsg := map[string]interface{}{
@@ -337,6 +340,7 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 		"hostname":      hostname,
 		"version":       c.cfg.AgentVersion,
 		"proto_version": c.cfg.ProtoVersion,
+		"force_unique_registration": c.cfg.ForceUniqueRegistration,
 		"capabilities": map[string]bool{
 			"container_operations": true,
 			"container_updates":    true,

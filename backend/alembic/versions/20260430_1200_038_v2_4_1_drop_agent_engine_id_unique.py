@@ -43,25 +43,45 @@ NAMING_CONVENTION = {
 }
 
 
-def _has_engine_id_unique() -> bool:
-    """Return True iff agents.engine_id currently has a unique constraint
-    or a separate unique index (excluding the explicit idx_agent_engine_id)."""
+def _find_engine_id_unique() -> tuple:
+    """Inspect the agents table and return (constraint_name, index_name) for the
+    unique-on-engine_id artifact, if any. Both can be None (no constraint and
+    no extra unique index) or one of them set depending on the dialect.
+
+    - SQLite: the implicit UNIQUE from `unique=True` reflects as a unique
+      *constraint* with name=None; we substitute the convention-supplied
+      `uq_agents_engine_id` so batch_alter_table can address it.
+    - Postgres: the implicit UNIQUE typically reflects as a *constraint* with
+      an auto-generated name like `agents_engine_id_key`. Some versions of
+      SQLAlchemy reflect it as a unique *index* of the same name instead;
+      we handle both forms.
+    The non-unique `idx_agent_engine_id` (created explicitly in v2.2.0) is
+    retained — it is excluded from the index path here.
+    """
     inspector = sa.inspect(op.get_bind())
+    constraint_name = None
     for c in inspector.get_unique_constraints('agents'):
         if c.get('column_names') == ['engine_id']:
-            return True
+            # name may be None (SQLite anonymous constraint) — substitute the
+            # convention-supplied name; for Postgres we use the actual name.
+            constraint_name = c.get('name') or 'uq_agents_engine_id'
+            break
+    index_name = None
     for idx in inspector.get_indexes('agents'):
         if (
             idx.get('column_names') == ['engine_id']
             and idx.get('unique')
             and idx.get('name') != 'idx_agent_engine_id'
         ):
-            return True
-    return False
+            index_name = idx.get('name')
+            break
+    return constraint_name, index_name
 
 
 def upgrade():
-    if not _has_engine_id_unique():
+    constraint_name, index_name = _find_engine_id_unique()
+
+    if not constraint_name and not index_name:
         # Idempotent: re-running on an already-migrated DB, or applying to a
         # fresh DB created directly from current models, has nothing to drop.
         logging.getLogger('alembic.runtime.migration').info(
@@ -71,10 +91,10 @@ def upgrade():
         return
 
     with op.batch_alter_table('agents', naming_convention=NAMING_CONVENTION) as batch_op:
-        # The naming_convention reflects the unnamed UNIQUE on engine_id as
-        # `uq_agents_engine_id`, which we can then drop. host_id's UNIQUE
-        # constraint is reflected as `uq_agents_host_id` and preserved.
-        batch_op.drop_constraint('uq_agents_engine_id', type_='unique')
+        if constraint_name:
+            batch_op.drop_constraint(constraint_name, type_='unique')
+        if index_name:
+            batch_op.drop_index(index_name)
 
 
 def downgrade():

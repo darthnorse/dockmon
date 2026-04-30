@@ -37,6 +37,13 @@ class AgentRegistrationRequest(BaseModel):
 
     # Optional host identification
     hostname: Optional[str] = Field(None, max_length=255, description="System hostname")
+    force_unique_registration: Optional[bool] = Field(
+        False,
+        description=(
+            "Opt-in flag from cloned-VM agents: tells the backend to skip "
+            "its engine_id uniqueness check. Requires hostname to be set."
+        ),
+    )
 
     # System information fields (collected from Docker daemon)
     os_type: Optional[str] = Field(None, max_length=50, description="OS type (linux, windows, etc.)")

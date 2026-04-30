@@ -178,6 +178,12 @@ class AgentManager:
         token = registration_data.get("token")
         engine_id = registration_data.get("engine_id")
         hostname = registration_data.get("hostname")
+        # Trust-boundary cap: backend stores hostname as DockerHostDB.name (UNIQUE,
+        # no length limit at the column level). A rogue or misconfigured agent
+        # could send an arbitrarily long string. 255 chars matches the agent-side
+        # AGENT_NAME cap and the Pydantic max_length on validated registration models.
+        if hostname:
+            hostname = hostname.strip()[:255]
         version = registration_data.get("version")
         proto_version = registration_data.get("proto_version")
         capabilities = registration_data.get("capabilities", {})
@@ -227,9 +233,23 @@ class AgentManager:
                     host = session.query(DockerHostDB).filter_by(id=existing_agent.host_id).first()
                     if host:
                         host.updated_at = datetime.now(timezone.utc)
-                        # Update hostname if provided (agent may have been updated)
-                        if hostname:
-                            host.name = hostname
+                        # Update hostname if provided (agent may have been updated).
+                        # Pre-check for collision so we surface a friendly warning
+                        # instead of letting session.commit() fail with IntegrityError
+                        # if the operator set the same AGENT_NAME on multiple hosts.
+                        if hostname and hostname != host.name:
+                            collision = session.query(DockerHostDB).filter(
+                                DockerHostDB.name == hostname,
+                                DockerHostDB.id != host.id,
+                            ).first()
+                            if collision:
+                                logger.warning(
+                                    f"Cannot rename host {host.id[:8]}... to {hostname!r}: "
+                                    f"name already used by host {collision.id[:8]}... — "
+                                    f"keeping existing name {host.name!r}"
+                                )
+                            else:
+                                host.name = hostname
                         # Update system information (keep data fresh on reconnection)
                         if registration_data.get("os_type"):
                             host.os_type = registration_data.get("os_type")
@@ -440,10 +460,33 @@ class AgentManager:
 
             except IntegrityError as e:
                 reg_session.rollback()
-                return {"success": False, "error": f"Database integrity error: {str(e)}"}
+                # Detect name UNIQUE violation across SQLite/Postgres dialects without
+                # leaking schema details to the agent (or, transitively, the UI).
+                err_str = str(e).lower()
+                if "name" in err_str and ("unique" in err_str or "duplicate" in err_str):
+                    logger.warning(
+                        f"Registration rejected: duplicate host name {hostname!r} "
+                        f"(engine_id={engine_id[:12]}...): {e}"
+                    )
+                    return {
+                        "success": False,
+                        "error": (
+                            f"A host named {hostname!r} already exists in DockMon. "
+                            "Set AGENT_NAME to a unique value and retry."
+                        ),
+                    }
+                logger.error(f"Registration database integrity error: {e}", exc_info=True)
+                return {
+                    "success": False,
+                    "error": "Registration failed due to a database conflict. Check server logs for details.",
+                }
             except Exception as e:
                 reg_session.rollback()
-                return {"success": False, "error": f"Registration failed: {str(e)}"}
+                logger.error(f"Registration failed: {e}", exc_info=True)
+                return {
+                    "success": False,
+                    "error": "Registration failed due to an internal error. Check server logs for details.",
+                }
 
     def get_agent_for_host(self, host_id: str) -> str:
         """

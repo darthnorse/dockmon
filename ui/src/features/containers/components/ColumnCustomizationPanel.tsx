@@ -47,7 +47,9 @@ function SortableColumnItem({
   isVisible: boolean
   onToggleVisibility: () => void
   canHide: boolean
-  onRemove?: () => void
+  // Note: typed as union with undefined (not `?:`) so callers can pass
+  // `onRemove={cond ? fn : undefined}` cleanly under exactOptionalPropertyTypes.
+  onRemove: (() => void) | undefined
 }) {
   const {
     attributes,
@@ -256,9 +258,9 @@ export function ColumnCustomizationPanel<TData>({ table }: ColumnCustomizationPa
                       isVisible={column.getIsVisible()}
                       onToggleVisibility={() => handleToggleVisibility(column.id)}
                       canHide={canHide}
-                      {...(isCustomColumnId(column.id)
-                        ? { onRemove: () => handleRemoveCustomColumn(column.id) }
-                        : {})}
+                      onRemove={isCustomColumnId(column.id)
+                        ? () => handleRemoveCustomColumn(column.id)
+                        : undefined}
                     />
                   )
                 })}

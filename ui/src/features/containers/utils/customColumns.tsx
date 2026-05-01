@@ -2,29 +2,33 @@
  * Custom column ID convention for the container table (Issue #207).
  *
  * Built-in columns: bare IDs ("name", "state", "cpu", ...).
- * Custom columns:   "env:<varname>" or "label:<labelname>".
+ * Custom columns:   "env:<varname>" or "label:<labelname>" with a non-empty
+ *                    name part. Names are validated at the AddCustomColumnDialog
+ *                    boundary to forbid colons, whitespace, and control chars,
+ *                    so the prefix-based dispatch here can stay simple.
  *
  * The column ID is the source of truth — TanStack Table uses it as the
  * column key, user prefs store visibility/order keyed on it, and the cell
  * renderer uses parseColumnId to dispatch on kind.
  */
+import type { ColumnDef } from '@tanstack/react-table'
 
 export type ColumnIdParsed =
   | { kind: 'env' | 'label'; name: string }
   | { kind: 'builtin'; name: string }
 
 export function parseColumnId(id: string): ColumnIdParsed {
-  if (id.startsWith('env:')) {
+  if (id.startsWith('env:') && id.length > 4) {
     return { kind: 'env', name: id.slice(4) }
   }
-  if (id.startsWith('label:')) {
+  if (id.startsWith('label:') && id.length > 6) {
     return { kind: 'label', name: id.slice(6) }
   }
   return { kind: 'builtin', name: id }
 }
 
 export function isCustomColumnId(id: string): boolean {
-  return id.startsWith('env:') || id.startsWith('label:')
+  return parseColumnId(id).kind !== 'builtin'
 }
 
 export function getColumnLabel(id: string): string {
@@ -52,4 +56,24 @@ export function extractColumnValue(
   if (parsed.kind === 'builtin') return null
   const source = parsed.kind === 'env' ? container.env : container.labels
   return source?.[parsed.name] ?? ''
+}
+
+/**
+ * Build a TanStack column def for a custom env/label column.
+ * Pure function — safe to call from useMemo without dep tracking.
+ */
+export function buildCustomColumnDef<T extends ContainerLike>(
+  columnId: string,
+): ColumnDef<T> {
+  return {
+    id: columnId,
+    header: getColumnLabel(columnId),
+    accessorFn: (row) => extractColumnValue(row, columnId) ?? '',
+    cell: (info) => {
+      const value = info.getValue() as string
+      return value || <span className="text-muted-foreground">—</span>
+    },
+    enableSorting: true,
+    meta: { align: 'left' },
+  }
 }

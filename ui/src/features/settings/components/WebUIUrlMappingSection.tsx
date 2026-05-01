@@ -132,10 +132,17 @@ export function WebUIUrlMappingSection() {
 
   const [rows, setRowsState] = useState<Row[] | null>(null)
   const rowsRef = useRef<Row[] | null>(null)
-  // Monotonic id for in-flight persists. Used by the failure path to avoid
-  // reverting to a snapshot that's older than a newer mutation already in
-  // flight (which would clobber the newer state).
-  const persistSeqRef = useRef(0)
+  // Currently in-flight persist (if any). New persists await this before
+  // starting their own mutation, which serializes writes to the server and
+  // prevents an out-of-order completion from leaving the server at a stale
+  // payload.
+  const inFlightRef = useRef<Promise<void> | null>(null)
+  // Last payload we successfully sent to the server. Used by persist's no-op
+  // check INSTEAD of the React Query settings cache, because the cache lags
+  // behind in-flight mutations — comparing to it can silently drop a user
+  // edit that "looks like" the cached server value but is actually different
+  // from what an in-flight mutation will set.
+  const lastSentPayloadRef = useRef<string[] | null>(null)
 
   // Single setter that keeps state and ref in sync. The ref is updated
   // SYNCHRONOUSLY here (not inside the queued setRowsState updater), so any
@@ -158,6 +165,9 @@ export function WebUIUrlMappingSection() {
     if (rowsRef.current === null && settings) {
       const seeded = (settings.webui_url_mapping_chain ?? []).map(makeRow)
       rowsRef.current = seeded
+      // Seed the no-op baseline so the first edit-equal-to-server doesn't
+      // round-trip the server unnecessarily.
+      lastSentPayloadRef.current = settings.webui_url_mapping_chain ?? []
       setRowsState(seeded)
     }
   }, [settings])
@@ -169,27 +179,49 @@ export function WebUIUrlMappingSection() {
         .map((r) => r.value.trim())
         .filter((v) => v.length > 0)
 
-      // No-op if payload matches what's already on the server.
-      const serverChain = settings?.webui_url_mapping_chain ?? []
-      if (rowsEqual(payload, serverChain)) return
+      // Wait for any in-flight persist to settle BEFORE the no-op check, so
+      // we compare against `lastSentPayloadRef` after it reflects the latest
+      // completed mutation rather than skipping based on a stale comparison.
+      const inFlight = inFlightRef.current
+      if (inFlight) {
+        await inFlight.catch(() => {})
+      }
 
-      // Tag this request and snapshot rows BEFORE the mutation so we know what
-      // to revert to. We only revert if no newer persist has started — otherwise
-      // a newer mutation has superseded us and reverting would clobber its state.
-      const seq = ++persistSeqRef.current
+      // No-op if this payload matches what we last successfully sent. Comparing
+      // to lastSentPayloadRef (not React Query's settings cache) handles the
+      // case where the user reverts to the cached server value while a write
+      // for a different value was in flight.
+      const baseline = lastSentPayloadRef.current ?? []
+      if (rowsEqual(payload, baseline)) return
+
       const snapshot = rowsRef.current
 
+      const op = (async () => {
+        try {
+          await updateSettings.mutateAsync({ webui_url_mapping_chain: payload })
+          lastSentPayloadRef.current = payload
+        } catch {
+          toast.error('Failed to update WebUI URL mapping')
+          if (snapshot) {
+            rowsRef.current = snapshot
+            setRowsState(snapshot)
+          }
+        }
+      })()
+
+      inFlightRef.current = op
       try {
-        await updateSettings.mutateAsync({ webui_url_mapping_chain: payload })
-      } catch {
-        toast.error('Failed to update WebUI URL mapping')
-        if (seq === persistSeqRef.current && snapshot) {
-          rowsRef.current = snapshot
-          setRowsState(snapshot)
+        await op
+      } finally {
+        // Only clear if we're still the latest in-flight; otherwise a newer
+        // persist has already taken over the slot and will manage its own
+        // lifecycle.
+        if (inFlightRef.current === op) {
+          inFlightRef.current = null
         }
       }
     },
-    [settings, updateSettings],
+    [updateSettings],
   )
 
   const handleAdd = useCallback(() => {

@@ -198,6 +198,9 @@ class GlobalSettingsUpdate(BaseModel):
     # Event suppression (v2.2.0+)
     event_suppression_patterns: Optional[List[str]] = Field(None, description="Glob patterns for container names to suppress from event log")
 
+    # WebUI URL mapping chain (Issue #207)
+    webui_url_mapping_chain: Optional[List[str]] = Field(None, description="Ordered list of URL templates (env/label placeholders) for auto-deriving WebUI URLs")
+
     # Notification settings
     enable_notifications: Optional[bool] = None
     alert_template: Optional[str] = Field(None, max_length=5000)

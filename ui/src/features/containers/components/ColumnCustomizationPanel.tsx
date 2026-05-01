@@ -22,9 +22,11 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useDndSensors } from '@/features/dashboard/hooks/useDndSensors'
-import { Settings, GripVertical, Eye, EyeOff, RotateCcw } from 'lucide-react'
+import { Settings, GripVertical, Eye, EyeOff, RotateCcw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu } from '@/components/ui/dropdown-menu'
+import { isCustomColumnId, getColumnLabel as getCustomColumnLabel } from '../utils/customColumns'
+import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 
 interface ColumnCustomizationPanelProps<TData> {
   table: Table<TData>
@@ -36,12 +38,14 @@ function SortableColumnItem({
   isVisible,
   onToggleVisibility,
   canHide,
+  onRemove,
 }: {
   id: string
   label: string
   isVisible: boolean
   onToggleVisibility: () => void
   canHide: boolean
+  onRemove?: () => void
 }) {
   const {
     attributes,
@@ -87,6 +91,16 @@ function SortableColumnItem({
       >
         {isVisible ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
       </button>
+
+      {onRemove && (
+        <button
+          onClick={onRemove}
+          className="text-muted-foreground hover:text-destructive"
+          title="Remove custom column"
+        >
+          <Trash2 className="h-4 w-4" />
+        </button>
+      )}
     </div>
   )
 }
@@ -126,6 +140,21 @@ export function ColumnCustomizationPanel<TData>({ table }: ColumnCustomizationPa
     : allColumns
 
   const sensors = useDndSensors()
+
+  const { data: preferences } = useUserPreferences()
+  const updatePreferences = useUpdatePreferences()
+
+  const handleRemoveCustomColumn = (columnId: string) => {
+    const newOrder = (preferences?.container_table_column_order ?? []).filter(
+      (id: string) => id !== columnId
+    )
+    const visibility = { ...(preferences?.container_table_column_visibility ?? {}) }
+    delete visibility[columnId]
+    updatePreferences.mutate({
+      container_table_column_order: newOrder,
+      container_table_column_visibility: visibility,
+    })
+  }
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event
@@ -199,10 +228,12 @@ export function ColumnCustomizationPanel<TData>({ table }: ColumnCustomizationPa
                 {orderedColumns.map((column) => {
                   const canHide = visibleCount > 1 || !column.getIsVisible()
 
-                  const label = COLUMN_LABELS[column.id] ||
-                    (typeof column.columnDef.header === 'string'
-                      ? column.columnDef.header
-                      : column.id.charAt(0).toUpperCase() + column.id.slice(1))
+                  const label = isCustomColumnId(column.id)
+                    ? getCustomColumnLabel(column.id)
+                    : (COLUMN_LABELS[column.id] ??
+                        (typeof column.columnDef.header === 'string'
+                          ? column.columnDef.header
+                          : column.id))
 
                   return (
                     <SortableColumnItem
@@ -212,6 +243,9 @@ export function ColumnCustomizationPanel<TData>({ table }: ColumnCustomizationPa
                       isVisible={column.getIsVisible()}
                       onToggleVisibility={() => handleToggleVisibility(column.id)}
                       canHide={canHide}
+                      {...(isCustomColumnId(column.id)
+                        ? { onRemove: () => handleRemoveCustomColumn(column.id) }
+                        : {})}
                     />
                   )
                 })}

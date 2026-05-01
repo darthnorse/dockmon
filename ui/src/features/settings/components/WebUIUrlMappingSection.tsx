@@ -132,28 +132,34 @@ export function WebUIUrlMappingSection() {
 
   const [rows, setRowsState] = useState<Row[] | null>(null)
   const rowsRef = useRef<Row[] | null>(null)
-  // Currently in-flight persist (if any). New persists await this before
-  // starting their own mutation, which serializes writes to the server and
-  // prevents an out-of-order completion from leaving the server at a stale
-  // payload.
-  const inFlightRef = useRef<Promise<void> | null>(null)
-  // Last payload we successfully sent to the server. Used by persist's no-op
-  // check INSTEAD of the React Query settings cache, because the cache lags
-  // behind in-flight mutations — comparing to it can silently drop a user
-  // edit that "looks like" the cached server value but is actually different
-  // from what an in-flight mutation will set.
+  // Promise-chain queue. Each persist chains its body onto this tail
+  // SYNCHRONOUSLY before yielding control, so even N concurrent enqueues run
+  // strictly in submission order. The tail is `.catch(()=>{})`-wrapped so a
+  // single rejection can never poison the chain.
+  const inFlightTailRef = useRef<Promise<unknown>>(Promise.resolve())
+  // Last payload we successfully sent to the server. The no-op check inside
+  // the queued section compares against this rather than the React Query
+  // settings cache, so a payload that "looks like" the cached server value
+  // but is actually different from the most-recent successful write is not
+  // silently dropped.
   const lastSentPayloadRef = useRef<string[] | null>(null)
+  // Monotonic edit clock — bumped on every local row change. The revert-on-
+  // failure path captures this at mutation start and only restores the
+  // snapshot if no local edits happened during the mutation. Without this,
+  // a failed older mutation would clobber newer local state the user has
+  // since typed/dragged into.
+  const editSeqRef = useRef(0)
 
   // Single setter that keeps state and ref in sync. The ref is updated
   // SYNCHRONOUSLY here (not inside the queued setRowsState updater), so any
   // caller that synchronously reads rowsRef.current after setRows(next) sees
-  // the new value. Callers that pass a functional updater MUST read rowsRef
-  // after the call returns — but functional updaters are still preferred for
-  // intent, since they make the prev->next derivation explicit.
+  // the new value. Bumps editSeqRef so the persist failure path can detect
+  // intervening user edits.
   const setRows = useCallback((next: Row[] | ((prev: Row[]) => Row[])) => {
     const prevRows = rowsRef.current ?? []
     const resolved = typeof next === 'function' ? next(prevRows) : next
     rowsRef.current = resolved
+    editSeqRef.current++
     setRowsState(resolved)
   }, [])
 
@@ -173,53 +179,46 @@ export function WebUIUrlMappingSection() {
   }, [settings])
 
   const persist = useCallback(
-    async (nextRows: Row[]) => {
-      // Filter empties/whitespace — Pydantic rejects them with 422.
+    (nextRows: Row[], revertTo?: Row[]): Promise<void> => {
+      // Capture the payload synchronously — must reflect the rows passed in,
+      // not whatever rowsRef holds when the queued body eventually runs.
       const payload = nextRows
         .map((r) => r.value.trim())
         .filter((v) => v.length > 0)
 
-      // Wait for any in-flight persist to settle BEFORE the no-op check, so
-      // we compare against `lastSentPayloadRef` after it reflects the latest
-      // completed mutation rather than skipping based on a stale comparison.
-      const inFlight = inFlightRef.current
-      if (inFlight) {
-        await inFlight.catch(() => {})
-      }
+      // Chain SYNCHRONOUSLY onto the queue tail before any await. This is the
+      // critical invariant — if we yielded control before assigning, a
+      // synchronously-following persist could capture the same prev tail and
+      // run concurrently. By chaining first and assigning synchronously, the
+      // next persist sees `op` as the new tail and chains behind it.
+      const prev = inFlightTailRef.current
+      const op = prev.then(async () => {
+        // Now serialized: only one body runs at a time, in submission order.
+        // Compare against the most-recent successful write (not the React
+        // Query cache, which lags in-flight mutations).
+        if (rowsEqual(payload, lastSentPayloadRef.current ?? [])) return
 
-      // No-op if this payload matches what we last successfully sent. Comparing
-      // to lastSentPayloadRef (not React Query's settings cache) handles the
-      // case where the user reverts to the cached server value while a write
-      // for a different value was in flight.
-      const baseline = lastSentPayloadRef.current ?? []
-      if (rowsEqual(payload, baseline)) return
+        const editSeqAtStart = editSeqRef.current
 
-      const snapshot = rowsRef.current
-
-      const op = (async () => {
         try {
           await updateSettings.mutateAsync({ webui_url_mapping_chain: payload })
           lastSentPayloadRef.current = payload
         } catch {
           toast.error('Failed to update WebUI URL mapping')
-          if (snapshot) {
-            rowsRef.current = snapshot
-            setRowsState(snapshot)
+          // Only revert if (a) the caller gave us a meaningful pre-op snapshot
+          // (handlers that mutate local state pass it; blur/typing doesn't),
+          // and (b) no local edits happened since this persist started — if
+          // editSeq moved on, the user has newer state we'd clobber.
+          if (revertTo && editSeqRef.current === editSeqAtStart) {
+            rowsRef.current = revertTo
+            setRowsState(revertTo)
           }
         }
-      })()
+      })
 
-      inFlightRef.current = op
-      try {
-        await op
-      } finally {
-        // Only clear if we're still the latest in-flight; otherwise a newer
-        // persist has already taken over the slot and will manage its own
-        // lifecycle.
-        if (inFlightRef.current === op) {
-          inFlightRef.current = null
-        }
-      }
+      // Tail must NEVER reject — chained persists would all skip their bodies.
+      inFlightTailRef.current = op.catch(() => {})
+      return op
     },
     [updateSettings],
   )
@@ -240,19 +239,21 @@ export function WebUIUrlMappingSection() {
   const handleBlur = useCallback(() => {
     // persist() no-ops when the trimmed payload already matches the server,
     // so an unconditional call here is safe and clearer than per-row diffing.
+    // We deliberately don't pass a revertTo — typed-then-failed-on-blur leaves
+    // the user's text in the input (with a toast) so they can fix and retry,
+    // rather than losing their typing to a network blip.
     void persist(rowsRef.current ?? [])
   }, [persist])
 
   const handleRemove = useCallback(
     (id: string) => {
-      // Compute next synchronously and pass to BOTH setRows and persist —
-      // mirroring handleDragEnd. setRows updates rowsRef synchronously now,
-      // but passing `next` explicitly is clearer than relying on that and
-      // matches the pattern used elsewhere in this file.
+      // Capture pre-op state so persist can restore it on failure. Without
+      // this, the optimistic setRows below changes rowsRef and the catch
+      // path's "revert to current state" would be a no-op.
       const current = rowsRef.current ?? []
       const next = current.filter((r) => r.id !== id)
       setRows(next)
-      void persist(next)
+      void persist(next, current)
     },
     [persist, setRows],
   )
@@ -267,7 +268,7 @@ export function WebUIUrlMappingSection() {
       if (oldIndex < 0 || newIndex < 0) return
       const next = arrayMove(current, oldIndex, newIndex)
       setRows(next)
-      void persist(next)
+      void persist(next, current)
     },
     [persist, setRows],
   )

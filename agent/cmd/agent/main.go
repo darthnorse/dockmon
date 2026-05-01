@@ -16,7 +16,11 @@ import (
 )
 
 var (
-	version = "1.0.8"
+	// version is overridden by CI via -X main.version=<release-tag> at build
+	// time. The "dev" fallback applies only to local `go build` / `go run`
+	// invocations. Do NOT bump this per release — the tag is the single
+	// source of truth.
+	version = "dev"
 	commit  = "dev"
 )
 

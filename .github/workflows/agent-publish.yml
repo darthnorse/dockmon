@@ -173,6 +173,8 @@ jobs:
           tags: |
             type=raw,value=${{ steps.version.outputs.version }},suffix=-${{ steps.platform.outputs.suffix }}
             type=raw,value=${{ steps.version.outputs.branch_tag }},suffix=-${{ steps.platform.outputs.suffix }},enable=${{ steps.version.outputs.branch_tag != '' }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
 
       - name: Build and push Docker image
         id: build

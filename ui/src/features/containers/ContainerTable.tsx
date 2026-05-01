@@ -928,24 +928,42 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
           const remainingCount = tags.length - visibleTags.length
           const isExpanded = expandedTagsContainerId === row.original.id
 
+          const safeWebUiHref = row.original.web_ui_url
+            ? sanitizeHref(row.original.web_ui_url)
+            : undefined
+
           return (
             <div className="flex flex-col gap-1">
-              <button
-                className="font-medium text-foreground hover:text-primary transition-colors text-left"
-                onClick={() => {
-                  const compositeKey = makeCompositeKey(row.original)
-                  if (simplifiedWorkflow) {
-                    // Open global modal directly
-                    openModal(compositeKey, 'info')
-                  } else {
-                    // Open drawer (keeps local state for drawer)
-                    setSelectedContainerId(compositeKey)
-                    setDrawerOpen(true)
-                  }
-                }}
-              >
-                {row.original.name || 'Unknown'}
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  className="font-medium text-foreground hover:text-primary transition-colors text-left"
+                  onClick={() => {
+                    const compositeKey = makeCompositeKey(row.original)
+                    if (simplifiedWorkflow) {
+                      // Open global modal directly
+                      openModal(compositeKey, 'info')
+                    } else {
+                      // Open drawer (keeps local state for drawer)
+                      setSelectedContainerId(compositeKey)
+                      setDrawerOpen(true)
+                    }
+                  }}
+                >
+                  {row.original.name || 'Unknown'}
+                </button>
+                {safeWebUiHref && (
+                  <a
+                    href={safeWebUiHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-muted-foreground hover:text-primary transition-colors"
+                    title="Open WebUI"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </a>
+                )}
+              </div>
               {tags.length > 0 && (
                 <div className="flex flex-wrap gap-1 items-center">
                   {visibleTags.map((tag) => (
@@ -1392,20 +1410,9 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
                   openModal(makeCompositeKey(container), 'updates')
                 }}
               />
-
-              {/* WebUI link - shows if web_ui_url is defined and safe */}
-              {container.web_ui_url && sanitizeHref(container.web_ui_url) && (
-                <a
-                  href={sanitizeHref(container.web_ui_url)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center justify-center h-8 w-8 rounded hover:bg-surface-2 text-muted-foreground hover:text-primary transition-colors"
-                  title="Open WebUI"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <ExternalLink className="h-4 w-4" />
-                </a>
-              )}
+              {/* WebUI link is rendered inline next to the container name (Name column),
+                  not here — placement next to the name makes "open the app" the discoverable
+                  primary action and avoids burying it in the action cluster on the right. */}
             </div>
           )
         },

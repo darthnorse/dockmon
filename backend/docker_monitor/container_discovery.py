@@ -415,10 +415,19 @@ class ContainerDiscovery:
             return containers
 
         # Issue #207: WebUI URL mapping chain. Used as fallback when a container
-        # has no manually-set web_ui_url. Read from the in-memory settings cache
-        # that the settings-update endpoint refreshes on every change — avoids a
-        # per-host-per-cycle DB read.
-        webui_url_chain = getattr(self.settings, 'webui_url_mapping_chain', None) or []
+        # has no manually-set web_ui_url. Read from the DB once per discovery
+        # cycle so live edits via /api/settings take effect on the next sweep
+        # — `self.settings` is a snapshot from monitor construction and is NOT
+        # refreshed when monitor.settings is reassigned by the settings POST
+        # handler.
+        try:
+            current_settings = self.db.get_settings()
+            webui_url_chain = (
+                getattr(current_settings, 'webui_url_mapping_chain', None) or []
+            )
+        except Exception as e:
+            logger.warning(f"Could not load webui_url_mapping_chain: {e}")
+            webui_url_chain = []
 
         # Agent-based hosts - get container data from agent via WebSocket
         if host.connection_type == "agent":

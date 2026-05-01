@@ -38,8 +38,21 @@ import { useDndSensors } from '@/features/dashboard/hooks/useDndSensors'
 
 type Row = { id: string; value: string }
 
+// Synthetic id for React keys + dnd-kit sortable id. Not security-sensitive.
+// crypto.randomUUID() requires a Secure Context (HTTPS or localhost); plain-http
+// deployments behind reverse proxies (REVERSE_PROXY_MODE / Issue #25) have no
+// crypto.randomUUID and would crash this component on render.
+let _rowIdCounter = 0
+function makeRowId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  _rowIdCounter += 1
+  return `r-${Date.now()}-${_rowIdCounter}-${Math.random().toString(36).slice(2)}`
+}
+
 function makeRow(value: string): Row {
-  return { id: crypto.randomUUID(), value }
+  return { id: makeRowId(), value }
 }
 
 function rowsEqual(a: readonly string[], b: readonly string[]): boolean {
@@ -119,17 +132,22 @@ export function WebUIUrlMappingSection() {
 
   const [rows, setRowsState] = useState<Row[] | null>(null)
   const rowsRef = useRef<Row[] | null>(null)
+  // Monotonic id for in-flight persists. Used by the failure path to avoid
+  // reverting to a snapshot that's older than a newer mutation already in
+  // flight (which would clobber the newer state).
+  const persistSeqRef = useRef(0)
 
-  // Single setter that keeps state and ref in sync. Accepts either a value or
-  // a functional updater. Using a ref means async handlers (persist, drag-end)
-  // always read the latest rows without closing over a render snapshot.
+  // Single setter that keeps state and ref in sync. The ref is updated
+  // SYNCHRONOUSLY here (not inside the queued setRowsState updater), so any
+  // caller that synchronously reads rowsRef.current after setRows(next) sees
+  // the new value. Callers that pass a functional updater MUST read rowsRef
+  // after the call returns — but functional updaters are still preferred for
+  // intent, since they make the prev->next derivation explicit.
   const setRows = useCallback((next: Row[] | ((prev: Row[]) => Row[])) => {
-    setRowsState((prev) => {
-      const prevRows = prev ?? []
-      const resolved = typeof next === 'function' ? next(prevRows) : next
-      rowsRef.current = resolved
-      return resolved
-    })
+    const prevRows = rowsRef.current ?? []
+    const resolved = typeof next === 'function' ? next(prevRows) : next
+    rowsRef.current = resolved
+    setRowsState(resolved)
   }, [])
 
   // Initial seed from server. We intentionally only seed once (rows === null)
@@ -146,7 +164,6 @@ export function WebUIUrlMappingSection() {
 
   const persist = useCallback(
     async (nextRows: Row[]) => {
-      const snapshot = rowsRef.current
       // Filter empties/whitespace — Pydantic rejects them with 422.
       const payload = nextRows
         .map((r) => r.value.trim())
@@ -156,12 +173,17 @@ export function WebUIUrlMappingSection() {
       const serverChain = settings?.webui_url_mapping_chain ?? []
       if (rowsEqual(payload, serverChain)) return
 
+      // Tag this request and snapshot rows BEFORE the mutation so we know what
+      // to revert to. We only revert if no newer persist has started — otherwise
+      // a newer mutation has superseded us and reverting would clobber its state.
+      const seq = ++persistSeqRef.current
+      const snapshot = rowsRef.current
+
       try {
         await updateSettings.mutateAsync({ webui_url_mapping_chain: payload })
       } catch {
         toast.error('Failed to update WebUI URL mapping')
-        // Revert local state to the snapshot taken before the mutation.
-        if (snapshot) {
+        if (seq === persistSeqRef.current && snapshot) {
           rowsRef.current = snapshot
           setRowsState(snapshot)
         }
@@ -183,24 +205,22 @@ export function WebUIUrlMappingSection() {
     [setRows],
   )
 
-  const handleBlur = useCallback(
-    (id: string) => {
-      const current = rowsRef.current ?? []
-      const row = current.find((r) => r.id === id)
-      if (!row) return
-      // Persist only if this row's trimmed value differs from what's on the
-      // server at its current (post-filter) position. Easiest correct check:
-      // run the same filter and compare to server. persist() already no-ops
-      // when payload matches server, so just call it.
-      void persist(current)
-    },
-    [persist],
-  )
+  const handleBlur = useCallback(() => {
+    // persist() no-ops when the trimmed payload already matches the server,
+    // so an unconditional call here is safe and clearer than per-row diffing.
+    void persist(rowsRef.current ?? [])
+  }, [persist])
 
   const handleRemove = useCallback(
     (id: string) => {
-      setRows((prev) => prev.filter((r) => r.id !== id))
-      void persist(rowsRef.current ?? [])
+      // Compute next synchronously and pass to BOTH setRows and persist —
+      // mirroring handleDragEnd. setRows updates rowsRef synchronously now,
+      // but passing `next` explicitly is clearer than relying on that and
+      // matches the pattern used elsewhere in this file.
+      const current = rowsRef.current ?? []
+      const next = current.filter((r) => r.id !== id)
+      setRows(next)
+      void persist(next)
     },
     [persist, setRows],
   )
@@ -266,7 +286,7 @@ export function WebUIUrlMappingSection() {
                 index={index}
                 value={row.value}
                 onChange={(next) => handleChange(row.id, next)}
-                onBlur={() => handleBlur(row.id)}
+                onBlur={handleBlur}
                 onRemove={() => handleRemove(row.id)}
               />
             ))}

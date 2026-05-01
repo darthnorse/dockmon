@@ -176,3 +176,41 @@ class TestResolverHardening:
             labels={"com.acme.url": "https://app.example.com\n"},
         )
         assert result is None
+
+    def test_value_with_unicode_nel_returns_none(self):
+        # U+0085 NEXT LINE — treated as line terminator by some parsers.
+        result = resolve_url_template(
+            "https://${env:VIRTUAL_HOST}",
+            env={"VIRTUAL_HOST": "app.example.comattacker.com"},
+            labels={},
+        )
+        assert result is None
+
+    def test_value_with_unicode_line_separator_returns_none(self):
+        # U+2028 LINE SEPARATOR
+        result = resolve_url_template(
+            "https://${env:VIRTUAL_HOST}",
+            env={"VIRTUAL_HOST": "app.example.com attacker.com"},
+            labels={},
+        )
+        assert result is None
+
+    def test_value_with_unicode_paragraph_separator_returns_none(self):
+        # U+2029 PARAGRAPH SEPARATOR
+        result = resolve_url_template(
+            "https://${env:VIRTUAL_HOST}",
+            env={"VIRTUAL_HOST": "app.example.com attacker.com"},
+            labels={},
+        )
+        assert result is None
+
+    def test_value_with_space_passes(self):
+        # Plain ASCII space is fine — not a line terminator. Resolution still
+        # succeeds; the URL may be malformed downstream but that's not our
+        # concern (we don't percent-encode here).
+        result = resolve_url_template(
+            "https://${env:HOST}",
+            env={"HOST": "example.com/path with space"},
+            labels={},
+        )
+        assert result == "https://example.com/path with space"

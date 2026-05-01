@@ -14,9 +14,12 @@ import re
 from typing import Optional
 
 _PLACEHOLDER_RE = re.compile(r"\$\{(env|label):([^}]+)\}")
-# Reject any ASCII control char (0x00-0x1F, 0x7F) in placeholder values.
-# Whitespace is fine inside a path segment but newlines/CR break URL parsing.
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+# Reject all ASCII control chars (0x00-0x1F including tab/LF/CR, plus DEL 0x7F)
+# AND Unicode line/paragraph separators (NEL U+0085, LS U+2028, PS U+2029) in
+# placeholder values. Container env/labels are arbitrary UTF-8 from container
+# authors; control chars in resolved URLs enable response-splitting / log-injection
+# and break URL parsing. Only space (0x20) and printable chars are accepted.
+_CONTROL_CHARS_RE = re.compile("[\x00-\x1f\x7f\u0085\u2028\u2029]")
 # Cap resolved URL length. Most browsers tolerate ~2000-2048 chars; longer
 # values are almost certainly malformed env data, not legitimate URLs.
 MAX_RESOLVED_URL_LENGTH = 2048

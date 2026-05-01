@@ -10,9 +10,13 @@ import (
 )
 
 // newCacheClient returns a Client with just the fields needed to exercise the
-// startedAt cache — no Docker socket, no logger. The other fields stay zero.
+// inspect caches (startedAt + env) — no Docker socket, no logger. The other
+// fields stay zero. Both maps must be initialized; writing to a nil map panics.
 func newCacheClient() *Client {
-	return &Client{startedAt: make(map[string]string)}
+	return &Client{
+		startedAt: make(map[string]string),
+		env:       make(map[string]map[string]string),
+	}
 }
 
 func TestStartedAtCache_RecordLookupEvict(t *testing.T) {

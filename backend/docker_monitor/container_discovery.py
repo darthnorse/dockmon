@@ -584,7 +584,7 @@ class ContainerDiscovery:
 
                         desired_state, web_ui_url = host_desired_states.get(container_id, ('unspecified', None))
 
-                        # Env from agent (v1.0.10+). Older agents omit this field and
+                        # Env from agent (v1.1.0+). Older agents omit this field and
                         # env-based templates won't resolve for those hosts — upgrade
                         # the agent if you want env: placeholders to work everywhere.
                         env = dc_data.get("Env") or {}

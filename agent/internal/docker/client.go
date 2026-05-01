@@ -139,9 +139,11 @@ func (c *Client) LookupEnv(id string) (map[string]string, bool) {
 	return e, ok
 }
 
-// RecordEnv caches a container's parsed env vars. Empty maps are recorded
-// as well — that's a meaningful "container has no env" result and avoids
-// re-inspecting on every list.
+// RecordEnv caches a container's parsed env vars. Nil maps are ignored;
+// callers should pass an empty (non-nil) map to record a "no env vars"
+// result, which is meaningful and prevents re-inspecting on every list.
+// (parseEnvList always returns a non-nil map, so this is a guard against
+// future callers, not the current one.)
 func (c *Client) RecordEnv(id string, env map[string]string) {
 	if id == "" || env == nil {
 		return

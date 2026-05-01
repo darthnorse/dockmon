@@ -47,6 +47,13 @@ jobs:
           SUFFIX="${PLATFORM#linux/}"
           echo "suffix=$SUFFIX" >> $GITHUB_OUTPUT
 
+      - name: Extract clean version
+        id: version
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
       - name: Extract metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@v5
@@ -56,6 +63,8 @@ jobs:
             ghcr.io/${{ secrets.GHCR_USERNAME }}/dockmon
           tags: |
             type=semver,pattern={{version}},suffix=-${{ steps.platform.outputs.suffix }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5

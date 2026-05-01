@@ -193,13 +193,17 @@ function VirtualizedTableShell({
       data-testid="containers-table"
     >
       {/*
-        min-w-max grows the header AND body rowgroups to the full grid-content
-        width, not the viewport width. Without this, when total column widths
-        exceed the viewport, the rowgroup divs stay at viewport width while
-        grid rows inside overflow horizontally — and the border-b / border-t
-        applied to those rowgroups gets cut off at the viewport edge.
+        min-w-max on a SHARED wrapper grows both rowgroups to one common width
+        (the max of all rows' content widths). Putting min-w-max on each
+        rowgroup independently would let the header and body groups each
+        compute their own max-content — which differ when header text width
+        and cell content width disagree per column — causing cells to shift
+        relative to their headers. Sharing a parent forces a single column
+        width for both. Also extends the border-b / border-t to the full
+        scrollable width when content exceeds the viewport.
       */}
-      <div className="bg-muted/50 sticky top-0 z-10 border-b border-border min-w-max" role="rowgroup">
+      <div className="min-w-max">
+      <div className="bg-muted/50 sticky top-0 z-10 border-b border-border" role="rowgroup">
         {table.getHeaderGroups().map((headerGroup) => (
           <div
             key={headerGroup.id}
@@ -236,7 +240,6 @@ function VirtualizedTableShell({
       ) : (
         <div
           role="rowgroup"
-          className="min-w-max"
           style={{ position: 'relative', height: virtualizer.getTotalSize() }}
         >
           {virtualItems.map((vRow) => {
@@ -268,6 +271,7 @@ function VirtualizedTableShell({
           })}
         </div>
       )}
+      </div>
     </div>
   )
 }

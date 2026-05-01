@@ -61,6 +61,10 @@ export function extractColumnValue(
 /**
  * Build a TanStack column def for a custom env/label column.
  * Pure function — safe to call from useMemo without dep tracking.
+ *
+ * Cell rendering truncates with ellipsis on overflow (env values are
+ * frequently long URLs that would otherwise bleed into the next column)
+ * and exposes the full value on hover via the title attribute.
  */
 export function buildCustomColumnDef<T extends ContainerLike>(
   columnId: string,
@@ -71,7 +75,12 @@ export function buildCustomColumnDef<T extends ContainerLike>(
     accessorFn: (row) => extractColumnValue(row, columnId) ?? '',
     cell: (info) => {
       const value = info.getValue() as string
-      return value || <span className="text-muted-foreground">—</span>
+      if (!value) return <span className="text-muted-foreground">—</span>
+      return (
+        <span className="block truncate" title={value}>
+          {value}
+        </span>
+      )
     },
     enableSorting: true,
     meta: { align: 'left' },

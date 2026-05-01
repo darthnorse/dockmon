@@ -932,11 +932,14 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
             ? sanitizeHref(row.original.web_ui_url)
             : undefined
 
+          const containerName = row.original.name || 'Unknown'
+
           return (
-            <div className="flex flex-col gap-1">
-              <div className="flex items-center gap-1.5">
+            <div className="flex flex-col gap-1 min-w-0">
+              <div className="flex items-center gap-1.5 min-w-0">
                 <button
-                  className="font-medium text-foreground hover:text-primary transition-colors text-left"
+                  className="font-medium text-foreground hover:text-primary transition-colors text-left truncate min-w-0"
+                  title={containerName}
                   onClick={() => {
                     const compositeKey = makeCompositeKey(row.original)
                     if (simplifiedWorkflow) {
@@ -949,14 +952,14 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
                     }
                   }}
                 >
-                  {row.original.name || 'Unknown'}
+                  {containerName}
                 </button>
                 {safeWebUiHref && (
                   <a
                     href={safeWebUiHref}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-muted-foreground hover:text-primary transition-colors"
+                    className="text-muted-foreground hover:text-primary transition-colors flex-shrink-0"
                     title="Open WebUI"
                     onClick={(e) => e.stopPropagation()}
                   >

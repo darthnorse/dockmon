@@ -192,7 +192,14 @@ function VirtualizedTableShell({
       className="rounded-lg border border-border overflow-x-auto"
       data-testid="containers-table"
     >
-      <div className="bg-muted/50 sticky top-0 z-10 border-b border-border" role="rowgroup">
+      {/*
+        min-w-max grows the header AND body rowgroups to the full grid-content
+        width, not the viewport width. Without this, when total column widths
+        exceed the viewport, the rowgroup divs stay at viewport width while
+        grid rows inside overflow horizontally — and the border-b / border-t
+        applied to those rowgroups gets cut off at the viewport edge.
+      */}
+      <div className="bg-muted/50 sticky top-0 z-10 border-b border-border min-w-max" role="rowgroup">
         {table.getHeaderGroups().map((headerGroup) => (
           <div
             key={headerGroup.id}
@@ -227,7 +234,11 @@ function VirtualizedTableShell({
           </div>
         </div>
       ) : (
-        <div role="rowgroup" style={{ position: 'relative', height: virtualizer.getTotalSize() }}>
+        <div
+          role="rowgroup"
+          className="min-w-max"
+          style={{ position: 'relative', height: virtualizer.getTotalSize() }}
+        >
           {virtualItems.map((vRow) => {
             const row = rows[vRow.index]
             if (!row) return null

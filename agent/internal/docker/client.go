@@ -795,20 +795,6 @@ func (c *Client) ListAllContainers(ctx context.Context) ([]types.Container, erro
 	return c.cli.ContainerList(ctx, container.ListOptions{All: true})
 }
 
-// GetImageLabels returns the labels defined in an image.
-func (c *Client) GetImageLabels(ctx context.Context, imageRef string) (map[string]string, error) {
-	img, _, err := c.cli.ImageInspectWithRaw(ctx, imageRef)
-	if err != nil {
-		return nil, fmt.Errorf("failed to inspect image: %w", err)
-	}
-
-	if img.Config == nil || img.Config.Labels == nil {
-		return make(map[string]string), nil
-	}
-
-	return img.Config.Labels, nil
-}
-
 // CreateContainerWithNetwork creates a new container with full network configuration.
 // networkConfig can be nil for containers using default bridge networking.
 func (c *Client) CreateContainerWithNetwork(

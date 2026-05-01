@@ -142,12 +142,18 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 
 	// Step 3: Inspect old image to get its labels (used to filter inherited
 	// labels off the new container so new image's labels take effect).
-	// Best-effort: if this fails we fall through to nil and skip filtering.
-	oldImageLabels, err := h.dockerClient.GetImageLabels(ctx, oldContainer.Config.Image)
-	if err != nil {
-		h.log.WithError(err).WithField("old_image", oldContainer.Config.Image).
+	// Use the immutable image ID (oldContainer.Image, a sha256 digest), NOT
+	// oldContainer.Config.Image — Step 1's PullImage may have retargeted a
+	// shared tag (":latest", or a republished version tag) at the new image,
+	// in which case the tag would resolve to new-image labels and the diff
+	// would treat every old inherited label as a "user override". The image
+	// ID is set at container create time and is stable.
+	// Best-effort: if inspection fails, oldImageLabels stays nil and
+	// cloneContainerConfig skips filtering (cosmetic-only impact).
+	oldImageLabels, imgErr := update.GetImageLabels(ctx, h.dockerClient.RawClient(), oldContainer.Image)
+	if imgErr != nil {
+		h.log.WithError(imgErr).WithField("old_image_id", oldContainer.Image).
 			Warn("Failed to inspect old image labels; new container will keep inherited labels (cosmetic-only impact)")
-		oldImageLabels = nil
 	}
 
 	// Step 4: Create new container with same config but new image

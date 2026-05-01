@@ -8,6 +8,7 @@
  * Integrates with TanStack Table v8 and user preferences API
  */
 
+import { useState } from 'react'
 import type { Table } from '@tanstack/react-table'
 import {
   DndContext,
@@ -22,11 +23,12 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useDndSensors } from '@/features/dashboard/hooks/useDndSensors'
-import { Settings, GripVertical, Eye, EyeOff, RotateCcw, Trash2 } from 'lucide-react'
+import { Settings, GripVertical, Eye, EyeOff, RotateCcw, Trash2, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu } from '@/components/ui/dropdown-menu'
 import { isCustomColumnId, getColumnLabel as getCustomColumnLabel } from '../utils/customColumns'
 import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
+import { AddCustomColumnDialog } from './AddCustomColumnDialog'
 
 interface ColumnCustomizationPanelProps<TData> {
   table: Table<TData>
@@ -144,6 +146,17 @@ export function ColumnCustomizationPanel<TData>({ table }: ColumnCustomizationPa
   const { data: preferences } = useUserPreferences()
   const updatePreferences = useUpdatePreferences()
 
+  const [addDialogOpen, setAddDialogOpen] = useState(false)
+
+  const handleAddCustomColumn = (columnId: string) => {
+    const currentOrder = preferences?.container_table_column_order ?? []
+    const currentVisibility = preferences?.container_table_column_visibility ?? {}
+    updatePreferences.mutate({
+      container_table_column_order: [...currentOrder, columnId],
+      container_table_column_visibility: { ...currentVisibility, [columnId]: true },
+    })
+  }
+
   const handleRemoveCustomColumn = (columnId: string) => {
     const newOrder = (preferences?.container_table_column_order ?? []).filter(
       (id: string) => id !== columnId
@@ -253,6 +266,25 @@ export function ColumnCustomizationPanel<TData>({ table }: ColumnCustomizationPa
             </SortableContext>
           </DndContext>
         </div>
+
+        <div className="px-3 py-2 border-t border-border">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setAddDialogOpen(true)}
+            className="w-full justify-start text-sm"
+          >
+            <Plus className="h-3.5 w-3.5 mr-2" />
+            Add custom column…
+          </Button>
+        </div>
+
+        <AddCustomColumnDialog
+          open={addDialogOpen}
+          existingColumnIds={allColumns.map(c => c.id)}
+          onOpenChange={setAddDialogOpen}
+          onAdd={handleAddCustomColumn}
+        />
 
         <div className="px-3 py-2 border-t border-border bg-muted/30">
           <p className="text-xs text-muted-foreground">

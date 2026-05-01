@@ -201,99 +201,106 @@ export function ColumnCustomizationPanel<TData>({ table }: ColumnCustomizationPa
   const visibleCount = allColumns.filter((col) => col.getIsVisible()).length
 
   return (
-    <DropdownMenu
-      trigger={
-        <Button variant="outline" size="sm" className="h-9">
-          <Settings className="h-3.5 w-3.5 mr-2" />
-          Columns
-        </Button>
-      }
-      align="end"
-    >
-      <div className="min-w-[280px] max-w-[320px]" onClick={(e) => e.stopPropagation()}>
-        <div className="px-3 py-2 border-b border-border">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium">Customize Columns</span>
+    <>
+      <DropdownMenu
+        trigger={
+          <Button variant="outline" size="sm" className="h-9">
+            <Settings className="h-3.5 w-3.5 mr-2" />
+            Columns
+          </Button>
+        }
+        align="end"
+      >
+        <div className="min-w-[280px] max-w-[320px]" onClick={(e) => e.stopPropagation()}>
+          <div className="px-3 py-2 border-b border-border">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium">Customize Columns</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleResetColumns}
+                className="h-7 text-xs"
+              >
+                <RotateCcw className="h-3 w-3 mr-1" />
+                Reset
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {visibleCount} of {allColumns.length} visible
+            </p>
+          </div>
+
+          <div className="px-3 py-3 max-h-[400px] overflow-y-auto">
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handleDragEnd}
+            >
+              <SortableContext
+                items={orderedColumns.map((col) => col.id)}
+                strategy={verticalListSortingStrategy}
+              >
+                <div className="space-y-1.5">
+                  {orderedColumns.map((column) => {
+                    const canHide = visibleCount > 1 || !column.getIsVisible()
+
+                    const label = isCustomColumnId(column.id)
+                      ? getCustomColumnLabel(column.id)
+                      : (COLUMN_LABELS[column.id] ??
+                          (typeof column.columnDef.header === 'string'
+                            ? column.columnDef.header
+                            : column.id))
+
+                    return (
+                      <SortableColumnItem
+                        key={column.id}
+                        id={column.id}
+                        label={label}
+                        isVisible={column.getIsVisible()}
+                        onToggleVisibility={() => handleToggleVisibility(column.id)}
+                        canHide={canHide}
+                        onRemove={isCustomColumnId(column.id)
+                          ? () => handleRemoveCustomColumn(column.id)
+                          : undefined}
+                      />
+                    )
+                  })}
+                </div>
+              </SortableContext>
+            </DndContext>
+          </div>
+
+          <div className="px-3 py-2 border-t border-border">
             <Button
               variant="ghost"
               size="sm"
-              onClick={handleResetColumns}
-              className="h-7 text-xs"
+              onClick={() => setAddDialogOpen(true)}
+              className="w-full justify-start text-sm"
             >
-              <RotateCcw className="h-3 w-3 mr-1" />
-              Reset
+              <Plus className="h-3.5 w-3.5 mr-2" />
+              Add custom column…
             </Button>
           </div>
-          <p className="text-xs text-muted-foreground mt-1">
-            {visibleCount} of {allColumns.length} visible
-          </p>
+
+          <div className="px-3 py-2 border-t border-border bg-muted/30">
+            <p className="text-xs text-muted-foreground">
+              Drag rows to reorder columns. Click the eye icon to show/hide.
+            </p>
+          </div>
         </div>
+      </DropdownMenu>
 
-        <div className="px-3 py-3 max-h-[400px] overflow-y-auto">
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCenter}
-            onDragEnd={handleDragEnd}
-          >
-            <SortableContext
-              items={orderedColumns.map((col) => col.id)}
-              strategy={verticalListSortingStrategy}
-            >
-              <div className="space-y-1.5">
-                {orderedColumns.map((column) => {
-                  const canHide = visibleCount > 1 || !column.getIsVisible()
-
-                  const label = isCustomColumnId(column.id)
-                    ? getCustomColumnLabel(column.id)
-                    : (COLUMN_LABELS[column.id] ??
-                        (typeof column.columnDef.header === 'string'
-                          ? column.columnDef.header
-                          : column.id))
-
-                  return (
-                    <SortableColumnItem
-                      key={column.id}
-                      id={column.id}
-                      label={label}
-                      isVisible={column.getIsVisible()}
-                      onToggleVisibility={() => handleToggleVisibility(column.id)}
-                      canHide={canHide}
-                      onRemove={isCustomColumnId(column.id)
-                        ? () => handleRemoveCustomColumn(column.id)
-                        : undefined}
-                    />
-                  )
-                })}
-              </div>
-            </SortableContext>
-          </DndContext>
-        </div>
-
-        <div className="px-3 py-2 border-t border-border">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setAddDialogOpen(true)}
-            className="w-full justify-start text-sm"
-          >
-            <Plus className="h-3.5 w-3.5 mr-2" />
-            Add custom column…
-          </Button>
-        </div>
-
-        <AddCustomColumnDialog
-          open={addDialogOpen}
-          existingColumnIds={allColumns.map(c => c.id)}
-          onOpenChange={setAddDialogOpen}
-          onAdd={handleAddCustomColumn}
-        />
-
-        <div className="px-3 py-2 border-t border-border bg-muted/30">
-          <p className="text-xs text-muted-foreground">
-            Drag rows to reorder columns. Click the eye icon to show/hide.
-          </p>
-        </div>
-      </div>
-    </DropdownMenu>
+      {/* Dialog must be a SIBLING of DropdownMenu (not a child). The dialog
+          renders into a portal, so clicks inside it register as "outside the
+          dropdown" and would close the dropdown — which would then unmount
+          the dialog along with all its other children. Hoisting it here keeps
+          its lifetime independent of the dropdown's open/closed state. */}
+      <AddCustomColumnDialog
+        open={addDialogOpen}
+        existingColumnIds={allColumns.map(c => c.id)}
+        onOpenChange={setAddDialogOpen}
+        onAdd={handleAddCustomColumn}
+      />
+    </>
   )
 }

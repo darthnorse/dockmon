@@ -414,14 +414,11 @@ class ContainerDiscovery:
         if not host:
             return containers
 
-        # Issue #207: load WebUI URL mapping chain once per discovery cycle.
-        # Used as fallback when a container has no manually-set web_ui_url.
-        try:
-            settings = self.db.get_settings()
-            webui_url_chain = (settings.webui_url_mapping_chain if settings else None) or []
-        except Exception as e:
-            logger.warning(f"Could not load webui_url_mapping_chain: {e}")
-            webui_url_chain = []
+        # Issue #207: WebUI URL mapping chain. Used as fallback when a container
+        # has no manually-set web_ui_url. Read from the in-memory settings cache
+        # that the settings-update endpoint refreshes on every change — avoids a
+        # per-host-per-cycle DB read.
+        webui_url_chain = getattr(self.settings, 'webui_url_mapping_chain', None) or []
 
         # Agent-based hosts - get container data from agent via WebSocket
         if host.connection_type == "agent":

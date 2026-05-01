@@ -198,8 +198,14 @@ class GlobalSettingsUpdate(BaseModel):
     # Event suppression (v2.2.0+)
     event_suppression_patterns: Optional[List[str]] = Field(None, description="Glob patterns for container names to suppress from event log")
 
-    # WebUI URL mapping chain (Issue #207)
-    webui_url_mapping_chain: Optional[List[str]] = Field(None, description="Ordered list of URL templates (env/label placeholders) for auto-deriving WebUI URLs")
+    # WebUI URL mapping chain (Issue #207).
+    # Capped at 20 templates × 2048 chars to prevent admin-triggered DOS via
+    # the resolver loop running on every container per discovery cycle.
+    webui_url_mapping_chain: Optional[List[str]] = Field(
+        None,
+        max_length=20,
+        description="Ordered list of URL templates (env/label placeholders) for auto-deriving WebUI URLs",
+    )
 
     # Notification settings
     enable_notifications: Optional[bool] = None
@@ -243,6 +249,26 @@ class GlobalSettingsUpdate(BaseModel):
     stats_points_per_view: Optional[int] = Field(None, ge=100, le=2000, description="Stats points per view/tier (100-2000)")
 
     model_config = ConfigDict(extra="forbid")  # Reject unknown keys (typos, attacks)
+
+    @field_validator('webui_url_mapping_chain')
+    @classmethod
+    def validate_webui_url_mapping_chain(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        """Reject empty templates and cap individual template length (Issue #207)."""
+        if v is None:
+            return v
+        cleaned: List[str] = []
+        for i, template in enumerate(v):
+            if not isinstance(template, str):
+                raise ValueError(f"webui_url_mapping_chain[{i}] must be a string")
+            stripped = template.strip()
+            if not stripped:
+                raise ValueError(f"webui_url_mapping_chain[{i}] is empty")
+            if len(stripped) > 2048:
+                raise ValueError(
+                    f"webui_url_mapping_chain[{i}] exceeds 2048 characters"
+                )
+            cleaned.append(stripped)
+        return cleaned
 
     @field_validator('update_check_time')
     @classmethod

@@ -5,9 +5,10 @@ Revises: 039_v2_4_1_add_force_unique_partial_index
 Create Date: 2026-05-01
 
 CHANGES:
-- Add `global_settings.webui_url_mapping_chain` JSON column (nullable). Stores
-  the chain of URL path mappings for customizable container column display in
-  WebUI reverse proxy mode.
+- Add `global_settings.webui_url_mapping_chain` JSON column (nullable). Ordered
+  list of URL templates with `${env:NAME}` / `${label:NAME}` placeholders.
+  Used to auto-derive a container's WebUI URL when no manual web_ui_url is
+  set (Issue #207).
 """
 from alembic import op
 import sqlalchemy as sa

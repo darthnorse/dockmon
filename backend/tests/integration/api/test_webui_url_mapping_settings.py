@@ -4,7 +4,10 @@ Note: GET /api/settings currently requires session-style auth (it reads
 `current_user.get('username')` and 401s when None). API-key auth does not
 populate `username`, so we exercise the read path through the POST response
 (which is built from the same updated row) and via direct DB inspection.
-Fixing GET to accept API-key auth is out of scope for this task.
+
+The GET-vs-API-key asymmetry is a real product gap, tracked as a follow-up
+to Issue #207 (see TODO at backend/main.py get_settings handler). Fixing it
+is out of scope for this task.
 """
 from datetime import datetime, timezone
 
@@ -98,6 +101,36 @@ class TestWebUIUrlMappingSettings:
         resp = client.post(
             "/api/settings",
             json={"totally_made_up_setting": "x"},
+            headers={"Authorization": f"Bearer {test_api_key_write}"},
+        )
+        assert resp.status_code == 422
+
+    def test_post_rejects_empty_template(
+        self, client, test_api_key_write, seed_global_settings
+    ):
+        resp = client.post(
+            "/api/settings",
+            json={"webui_url_mapping_chain": ["https://${env:X}", ""]},
+            headers={"Authorization": f"Bearer {test_api_key_write}"},
+        )
+        assert resp.status_code == 422
+
+    def test_post_rejects_overlong_template(
+        self, client, test_api_key_write, seed_global_settings
+    ):
+        resp = client.post(
+            "/api/settings",
+            json={"webui_url_mapping_chain": ["https://" + "a" * 2100]},
+            headers={"Authorization": f"Bearer {test_api_key_write}"},
+        )
+        assert resp.status_code == 422
+
+    def test_post_rejects_overlong_chain(
+        self, client, test_api_key_write, seed_global_settings
+    ):
+        resp = client.post(
+            "/api/settings",
+            json={"webui_url_mapping_chain": [f"https://${{env:VAR{i}}}" for i in range(25)]},
             headers={"Authorization": f"Bearer {test_api_key_write}"},
         )
         assert resp.status_code == 422

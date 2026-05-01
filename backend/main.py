@@ -3331,6 +3331,11 @@ async def get_security_audit_stats(current_user: dict = Depends(get_current_user
 async def get_settings(current_user: dict = Depends(get_current_user)):
     """Get global settings + user-specific settings"""
     # Validate username exists in session
+    # TODO(#207-followup): API-key auth populates `api_key_name` / `created_by_user_id`
+    # but no `username`, so this 401s for valid bearer tokens. POST /api/settings works
+    # under API-key auth via require_capability. The asymmetry should be resolved either
+    # by accepting api_key_name as a fallback identity here, or by switching to
+    # require_capability("settings.view"). Tracked separately from Issue #207.
     username = current_user.get('username')
     if not username:
         raise HTTPException(status_code=401, detail="Username not found in session")

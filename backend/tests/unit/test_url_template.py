@@ -1,5 +1,9 @@
 """Tests for URL template resolver (Issue #207 — webui_url_mapping_chain)."""
-from utils.url_template import resolve_url_template, resolve_chain
+from utils.url_template import (
+    MAX_RESOLVED_URL_LENGTH,
+    resolve_chain,
+    resolve_url_template,
+)
 
 
 class TestResolveTemplate:
@@ -108,3 +112,67 @@ class TestResolveChain:
 
     def test_none_chain_returns_none(self):
         assert resolve_chain(None, env={"A": "x"}, labels={}) is None
+
+
+class TestResolverHardening:
+    """Defensive checks on attacker-controlled placeholder values (Issue #207)."""
+
+    def test_value_with_newline_returns_none(self):
+        result = resolve_url_template(
+            "https://${env:VIRTUAL_HOST}",
+            env={"VIRTUAL_HOST": "app.example.com\nattacker.com"},
+            labels={},
+        )
+        assert result is None
+
+    def test_value_with_carriage_return_returns_none(self):
+        result = resolve_url_template(
+            "https://${env:VIRTUAL_HOST}",
+            env={"VIRTUAL_HOST": "app.example.com\rattacker.com"},
+            labels={},
+        )
+        assert result is None
+
+    def test_value_with_tab_returns_none(self):
+        result = resolve_url_template(
+            "https://${env:VIRTUAL_HOST}",
+            env={"VIRTUAL_HOST": "app\texample.com"},
+            labels={},
+        )
+        assert result is None
+
+    def test_value_with_null_byte_returns_none(self):
+        result = resolve_url_template(
+            "https://${env:VIRTUAL_HOST}",
+            env={"VIRTUAL_HOST": "app.example.com\x00"},
+            labels={},
+        )
+        assert result is None
+
+    def test_resolved_length_at_cap_passes(self):
+        # Build a value that resolves to exactly MAX_RESOLVED_URL_LENGTH chars.
+        prefix = "https://"
+        value_len = MAX_RESOLVED_URL_LENGTH - len(prefix)
+        result = resolve_url_template(
+            "https://${env:HOST}",
+            env={"HOST": "a" * value_len},
+            labels={},
+        )
+        assert result is not None
+        assert len(result) == MAX_RESOLVED_URL_LENGTH
+
+    def test_resolved_length_over_cap_returns_none(self):
+        result = resolve_url_template(
+            "https://${env:HOST}",
+            env={"HOST": "a" * (MAX_RESOLVED_URL_LENGTH + 1)},
+            labels={},
+        )
+        assert result is None
+
+    def test_label_with_control_char_returns_none(self):
+        result = resolve_url_template(
+            "${label:com.acme.url}",
+            env={},
+            labels={"com.acme.url": "https://app.example.com\n"},
+        )
+        assert result is None

@@ -3507,7 +3507,7 @@ class DatabaseManager:
                     'event_suppression_patterns', 'alert_retention_days', 'unused_tag_retention_days',
                     'enable_notifications', 'alert_template', 'alert_template_metric',
                     'alert_template_state_change', 'alert_template_health', 'alert_template_update',
-                    'blackout_windows', 'timezone_offset', 'show_host_stats',
+                    'blackout_windows', 'webui_url_mapping_chain', 'timezone_offset', 'show_host_stats',
                     'show_container_stats', 'show_container_alerts_on_hosts',
                     'auto_update_enabled_default', 'update_check_interval_hours',
                     'update_check_time', 'skip_compose_containers', 'health_check_timeout_seconds',

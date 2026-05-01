@@ -685,6 +685,11 @@ class GlobalSettings(Base):
     alert_template_health = Column(Text, nullable=True)  # Health check alert template
     alert_template_update = Column(Text, nullable=True)  # Container update alert template
     blackout_windows = Column(JSON, nullable=True)  # Array of blackout time windows
+    # WebUI URL mapping chain (Issue #207). Ordered list of template strings.
+    # First template that resolves to a non-empty value wins. Templates support
+    # ${env:VARNAME} and ${label:LABELNAME} placeholders. Used only when a
+    # container has no manually-set web_ui_url.
+    webui_url_mapping_chain = Column(JSON, nullable=True)
     first_run_complete = Column(Boolean, default=False)  # Track if first run setup is complete
     polling_interval_migrated = Column(Boolean, default=False)  # Track if polling interval has been migrated to 2s
     timezone_offset = Column(Integer, default=0)  # Timezone offset in minutes from UTC

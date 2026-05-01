@@ -49,9 +49,10 @@ jobs:
 
       - name: Extract clean version
         id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          VERSION="${{ github.ref_name }}"
-          VERSION="${VERSION#v}"
+          VERSION="${REF_NAME#v}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Extract metadata (tags, labels)

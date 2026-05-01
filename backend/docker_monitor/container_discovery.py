@@ -584,12 +584,15 @@ class ContainerDiscovery:
 
                         desired_state, web_ui_url = host_desired_states.get(container_id, ('unspecified', None))
 
+                        # Env from agent (v1.0.10+). Older agents omit this field and
+                        # env-based templates won't resolve for those hosts — upgrade
+                        # the agent if you want env: placeholders to work everywhere.
+                        env = dc_data.get("Env") or {}
+
                         # Issue #207: derive web_ui_url from mapping chain when no manual URL.
-                        # Manual URL always wins; chain is the fallback. Note: agent
-                        # list response does not include env vars, so only label-based
-                        # templates resolve here.
+                        # Manual URL always wins; chain is the fallback.
                         if not web_ui_url:
-                            web_ui_url = resolve_chain(webui_url_chain, env=None, labels=labels)
+                            web_ui_url = resolve_chain(webui_url_chain, env=env, labels=labels)
 
                         ports_data = dc_data.get("Ports") or []
                         ports_set: set[str] = set()
@@ -657,7 +660,7 @@ class ContainerDiscovery:
                             compose_project=compose_project,
                             compose_service=compose_service,
                             tags=tags,
-                            environment={},  # Not available in list response
+                            env=env,  # From agent v1.0.10+ (cached forever per container ID)
                             repo_digests=repo_digests,  # Image digests for update checking
                             docker_ip=docker_ip,
                             docker_ips=docker_ips

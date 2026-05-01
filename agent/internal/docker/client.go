@@ -48,6 +48,14 @@ type Client struct {
 	// event watcher so ListContainers can skip per-container inspects.
 	startedAtMu sync.RWMutex
 	startedAt   map[string]string
+
+	// env: container ID → parsed env vars. Env is immutable for a container ID's
+	// lifetime (set at create time; recreate yields a new ID), so we inspect
+	// once per first-sight and cache forever — same model as startedAt above.
+	// Used by the WebUI URL mapping chain feature so env-based templates
+	// resolve on agent-monitored hosts (DockMon Issue #207).
+	envMu sync.RWMutex
+	env   map[string]map[string]string
 }
 
 // NewClient creates a new Docker client using shared package
@@ -76,6 +84,7 @@ func NewClient(cfg *config.Config, log *logrus.Logger) (*Client, error) {
 		cli:       cli,
 		log:       log,
 		startedAt: make(map[string]string),
+		env:       make(map[string]map[string]string),
 	}, nil
 }
 
@@ -102,14 +111,59 @@ func (c *Client) EvictContainerCache(id string) {
 	c.startedAtMu.Lock()
 	delete(c.startedAt, id)
 	c.startedAtMu.Unlock()
+	c.envMu.Lock()
+	delete(c.env, id)
+	c.envMu.Unlock()
 }
 
 // ResetStartedAtCache clears the cache. Called on (re)connect because
 // Docker streams events from "now"; entries from before the gap may be stale.
+// Also clears the env cache; env is immutable per container ID but a missed
+// destroy event during disconnect could leave stale entries for IDs that no
+// longer exist, so we re-derive on reconnect alongside startedAt.
 func (c *Client) ResetStartedAtCache() {
 	c.startedAtMu.Lock()
 	c.startedAt = make(map[string]string)
 	c.startedAtMu.Unlock()
+	c.envMu.Lock()
+	c.env = make(map[string]map[string]string)
+	c.envMu.Unlock()
+}
+
+// LookupEnv returns the cached env map for a container, or nil/false on miss.
+// Env is immutable for a container ID's lifetime (set at create time).
+func (c *Client) LookupEnv(id string) (map[string]string, bool) {
+	c.envMu.RLock()
+	defer c.envMu.RUnlock()
+	e, ok := c.env[id]
+	return e, ok
+}
+
+// RecordEnv caches a container's parsed env vars. Empty maps are recorded
+// as well — that's a meaningful "container has no env" result and avoids
+// re-inspecting on every list.
+func (c *Client) RecordEnv(id string, env map[string]string) {
+	if id == "" || env == nil {
+		return
+	}
+	c.envMu.Lock()
+	c.env[id] = env
+	c.envMu.Unlock()
+}
+
+// parseEnvList converts Docker's "KEY=VALUE" env array into a map.
+// Lines without '=' are skipped (Docker's format always includes '=' for
+// real env vars; anomalies indicate malformed input).
+func parseEnvList(envList []string) map[string]string {
+	env := make(map[string]string, len(envList))
+	for _, line := range envList {
+		idx := strings.IndexByte(line, '=')
+		if idx <= 0 {
+			continue
+		}
+		env[line[:idx]] = line[idx+1:]
+	}
+	return env
 }
 
 // Close closes the Docker client
@@ -393,10 +447,13 @@ func (c *Client) GetMyContainerID(ctx context.Context) (string, error) {
 }
 
 // ContainerWithDigest extends types.Container with additional inspect data
+// (Docker's container LIST endpoint omits these — the agent inspects once
+// per first-sight and caches forever, so steady-state cycles pay no extra cost).
 type ContainerWithDigest struct {
 	types.Container
-	RepoDigests []string `json:"RepoDigests"`
-	StartedAt   string   `json:"StartedAt,omitempty"`
+	RepoDigests []string          `json:"RepoDigests"`
+	StartedAt   string            `json:"StartedAt,omitempty"`
+	Env         map[string]string `json:"Env,omitempty"`
 }
 
 // ListContainers lists all containers with RepoDigests and StartedAt.
@@ -457,14 +514,33 @@ func (c *Client) ListContainers(ctx context.Context) ([]ContainerWithDigest, err
 					enhanced.RepoDigests = digests
 				}
 			}
-			if startedAt, ok := c.LookupStartedAt(ctr.ID); ok {
-				enhanced.StartedAt = startedAt
-			} else if inspect, err := c.cli.ContainerInspect(gctx, ctr.ID); err == nil && inspect.State != nil {
-				// Docker uses "0001-01-01T00:00:00Z" for never-started
-				// containers; don't surface that as a real timestamp.
-				if startedAt := inspect.State.StartedAt; startedAt != "" && !strings.HasPrefix(startedAt, "0001-01-01") {
-					enhanced.StartedAt = startedAt
-					c.RecordStartedAt(ctr.ID, startedAt)
+			// Read both caches up front — we want to skip the inspect call
+			// only when BOTH startedAt and env are already cached.
+			startedAtCached, hasStartedAt := c.LookupStartedAt(ctr.ID)
+			envCached, hasEnv := c.LookupEnv(ctr.ID)
+
+			if hasStartedAt {
+				enhanced.StartedAt = startedAtCached
+			}
+			if hasEnv {
+				enhanced.Env = envCached
+			}
+
+			if !hasStartedAt || !hasEnv {
+				if inspect, err := c.cli.ContainerInspect(gctx, ctr.ID); err == nil {
+					if !hasStartedAt && inspect.State != nil {
+						// Docker uses "0001-01-01T00:00:00Z" for never-started
+						// containers; don't surface that as a real timestamp.
+						if startedAt := inspect.State.StartedAt; startedAt != "" && !strings.HasPrefix(startedAt, "0001-01-01") {
+							enhanced.StartedAt = startedAt
+							c.RecordStartedAt(ctr.ID, startedAt)
+						}
+					}
+					if !hasEnv && inspect.Config != nil {
+						env := parseEnvList(inspect.Config.Env)
+						enhanced.Env = env
+						c.RecordEnv(ctr.ID, env)
+					}
 				}
 			}
 			result[i] = enhanced

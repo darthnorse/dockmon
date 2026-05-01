@@ -308,11 +308,6 @@ export function WebUIUrlMappingSection() {
           <code className="text-gray-300">{'${label:NAME}'}</code> for Docker labels. Example:{' '}
           <code className="text-gray-300">{'https://${env:VIRTUAL_HOST}'}</code>
         </p>
-        <p className="text-xs text-gray-500 mt-2">
-          Note: <code className="text-gray-300">env:</code> placeholders only resolve for hosts
-          using local/mTLS connections; use <code className="text-gray-300">label:</code> for
-          agent hosts.
-        </p>
       </div>
 
       {displayRows.length === 0 && (

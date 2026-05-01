@@ -56,6 +56,8 @@ Configuration is done via environment variables:
 
 ### Optional
 
+- `AGENT_NAME` - Display name shown in the DockMon UI. Overrides the auto-detected hostname during registration and on every reconnect. Useful when multiple hosts share an OS hostname (e.g., cloned VMs or LXC templates) and you don't want to rename the underlying server. Falls back to the Docker daemon hostname → OS hostname → engine ID when unset.
+- `FORCE_UNIQUE_REGISTRATION` - Set to a truthy value (`true`, `1`, `t`, `T`, `TRUE`, `True` — any value Go's `strconv.ParseBool` accepts) to register this agent as a distinct host even if its Docker `engine_id` matches an already-registered host. Designed for cloned VMs / LXC templates that share `/var/lib/docker/engine-id`. **Requires `AGENT_NAME` to be set** (enforced by the agent at startup, the systemd installer at install time, and the DockMon backend at registration). Skips DockMon's auto-migration from existing remote-mTLS hosts. Defaults to `false`.
 - `DOCKER_HOST` - Docker socket path (default: `unix:///var/run/docker.sock`)
 - `DOCKER_CERT_PATH` - Path to Docker TLS certificates (if using TLS)
 - `DOCKER_TLS_VERIFY` - Enable Docker TLS verification (default: `false`)

@@ -84,11 +84,54 @@ class TestGetRequestScheme:
             mock_config.CORS_ORIGINS = None
             assert get_request_scheme(request) == "https"
 
-    def test_falls_back_to_cors_origins_when_no_header(self):
+    def test_uses_cors_origins_https_as_canonical_scheme(self):
+        """Operator's explicit DOCKMON_CORS_ORIGINS=https://... is the
+        canonical scheme even with no proxy headers present."""
         request = _make_request()
         with patch("utils.client_ip.AppConfig") as mock_config:
             mock_config.REVERSE_PROXY_MODE = True
             mock_config.CORS_ORIGINS = "https://dockmon.lokal"
+            assert get_request_scheme(request) == "https"
+
+    def test_cors_origins_https_takes_precedence_over_forwarded_proto(self):
+        """When CORS_ORIGINS declares https, trust it over X-Forwarded-Proto.
+        Fixes #208 follow-up where Caddy sent X-Forwarded-Proto=http even
+        when the inbound was https; trusting the operator's declaration
+        avoids that failure mode."""
+        request = _make_request(headers={"x-forwarded-proto": "http"})
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "https://dockmon.lokal"
+            assert get_request_scheme(request) == "https"
+
+    def test_cors_origins_http_does_not_downgrade_when_forwarded_proto_https(self):
+        """If CORS_ORIGINS declares http but X-Forwarded-Proto says https,
+        honor the upgrade. CORS=http is treated as the operator's lower
+        bound, not an authoritative downgrade — a TLS-terminating proxy
+        signaling https should never be silently overridden into http
+        (cookies would lose Secure flag, OIDC redirect would fail)."""
+        request = _make_request(headers={"x-forwarded-proto": "https"})
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "http://internal.example"
+            assert get_request_scheme(request) == "https"
+
+    def test_cors_origins_http_used_when_no_forwarded_proto(self):
+        """If CORS_ORIGINS=http and no X-Forwarded-Proto, honor the
+        operator's explicit http declaration."""
+        request = _make_request()
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "http://internal.example"
+            assert get_request_scheme(request) == "http"
+
+    def test_forwarded_proto_used_when_cors_origins_missing_scheme(self):
+        """If CORS_ORIGINS is set but doesn't parse to scheme+host (e.g., a
+        bare hostname), fall through to X-Forwarded-Proto."""
+        request = _make_request(headers={"x-forwarded-proto": "https"})
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "dockmon.lokal"
             assert get_request_scheme(request) == "https"
 
     def test_falls_back_to_request_scheme_when_nothing_available(self):

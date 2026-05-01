@@ -76,24 +76,75 @@ def _get_cors_origin_parts() -> tuple[str, str] | None:
 
 
 def get_request_scheme(request: Request) -> str:
-    """Get the effective request scheme, respecting reverse proxy headers."""
+    """Get the effective request scheme, respecting reverse proxy headers.
+
+    Precedence (when REVERSE_PROXY_MODE is on):
+      1. DOCKMON_CORS_ORIGINS scheme — but ONLY when it's "https". The
+         operator's explicit declaration of an HTTPS public URL is treated
+         as authoritative because some proxies (notably Caddy in certain
+         configurations) send X-Forwarded-Proto=http even when the inbound
+         was https, which would otherwise downgrade OIDC redirect_uri and
+         the cookie Secure flag.
+      2. X-Forwarded-Proto header — used when CORS_ORIGINS doesn't declare
+         https. This is the right place to trust the proxy: if the proxy
+         says https, that's an upgrade signal we should honor even if CORS
+         says http (e.g., misconfigured CORS with TLS-terminating proxy).
+      3. DOCKMON_CORS_ORIGINS scheme when it's http — the operator did
+         declare http and no header overrode that.
+      4. request.url.scheme — last-resort fallback (the local TCP scheme
+         between the proxy and DockMon, often wrong when TLS is
+         terminated by the proxy).
+
+    The "CORS=https wins, CORS=http defers to header" asymmetry is the
+    upgrade-only trust pattern: trust the operator when they say https,
+    but never use a CORS http to silently downgrade a real HTTPS request.
+
+    Note on intentional asymmetry with get_request_host: host genuinely
+    differs per request in multi-domain setups, so X-Forwarded-Host stays
+    primary there. Scheme is canonical for a deployment, so the operator's
+    declared scheme is trusted ahead of headers when it's the more secure
+    option. See get_request_host's docstring for the host-side rationale.
+    """
     if AppConfig.REVERSE_PROXY_MODE:
+        parts = _get_cors_origin_parts()
+        # Trust CORS_ORIGINS only when it declares https — never silently
+        # downgrade a real HTTPS request because of a misconfigured CORS http.
+        if parts and parts[0] == 'https':
+            logger.debug("Using scheme from DOCKMON_CORS_ORIGINS (https)")
+            return 'https'
         proto = request.headers.get("x-forwarded-proto")
         if proto:
+            logger.debug("Using scheme from X-Forwarded-Proto")
             return proto.split(",")[0].strip().lower()
-        parts = _get_cors_origin_parts()
         if parts:
-            logger.debug("No X-Forwarded-Proto header; using scheme from DOCKMON_CORS_ORIGINS")
+            # CORS declared http and no overriding header — honor it.
+            logger.debug("Using scheme from DOCKMON_CORS_ORIGINS (http)")
             return parts[0]
         logger.warning(
-            "REVERSE_PROXY_MODE enabled but no X-Forwarded-Proto header found "
-            "and DOCKMON_CORS_ORIGINS not set. Falling back to request.url.scheme."
+            "REVERSE_PROXY_MODE enabled but neither DOCKMON_CORS_ORIGINS nor "
+            "X-Forwarded-Proto is set. Falling back to request.url.scheme, which "
+            "reflects the local TCP scheme and may be wrong if the proxy "
+            "terminates TLS."
         )
     return request.url.scheme
 
 
 def get_request_host(request: Request) -> str:
-    """Get the effective request host, respecting reverse proxy headers."""
+    """Get the effective request host, respecting reverse proxy headers.
+
+    Precedence (when REVERSE_PROXY_MODE is on):
+      1. X-Forwarded-Host header — the actual host from the request.
+      2. DOCKMON_CORS_ORIGINS host — fallback when no header is present.
+      3. Host header / request.url.netloc — last-resort fallback.
+
+    Note on intentional asymmetry with get_request_scheme: host genuinely
+    differs per request in multi-domain setups (one DockMon serving
+    multiple hostnames via a reverse proxy), so the request-specific
+    X-Forwarded-Host is primary. Scheme, by contrast, is canonical for a
+    deployment, so the operator's declared CORS_ORIGINS scheme is trusted
+    over the header (when it declares https) to avoid downgrade attacks
+    from misconfigured proxies. See get_request_scheme's docstring.
+    """
     if AppConfig.REVERSE_PROXY_MODE:
         forwarded_host = request.headers.get("x-forwarded-host")
         if forwarded_host:

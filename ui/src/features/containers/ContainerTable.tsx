@@ -71,6 +71,7 @@ import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from 
 import { useContainerUpdateStatus, useUpdatesSummary, useAllAutoUpdateConfigs, useAllHealthCheckConfigs } from './hooks/useContainerUpdates'
 import { useContainerActions } from './hooks/useContainerActions'
 import { useContainerHealthCheck } from './hooks/useContainerHealthCheck'
+import { isCustomColumnId, getColumnLabel, extractColumnValue } from './utils/customColumns'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
 import { sanitizeHref } from '@/lib/utils/urlSanitize'
 import { formatBytes } from '@/lib/utils/formatting'
@@ -845,9 +846,23 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
     })
   }, [data, filters, updatesSummary, allAutoUpdateConfigs, allHealthCheckConfigs])
 
+  // Issue #207: build a TanStack column def for a custom env:/label: column.
+  const buildCustomColumnDef = (columnId: string): ColumnDef<Container> => ({
+    id: columnId,
+    header: getColumnLabel(columnId),
+    accessorFn: (row) => extractColumnValue(row, columnId) ?? '',
+    cell: (info) => {
+      const value = info.getValue() as string
+      return value || <span className="text-muted-foreground">—</span>
+    },
+    enableSorting: true,
+    meta: { align: 'left' },
+  })
+
   // Table columns
   const columns = useMemo<ColumnDef<Container>[]>(
-    () => [
+    () => {
+      const builtIn: ColumnDef<Container>[] = [
       // 0. Selection checkbox — uses TanStack Table's built-in row selection
       // so column identity is stable across selection changes.
       {
@@ -1401,8 +1416,17 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
           )
         },
       },
-    ],
-    [executeAction, isContainerPending, alertCounts, allAutoUpdateConfigs, allHealthCheckConfigs, canOperate]
+      ]
+
+      // Issue #207: append user-defined custom env/label columns from preferences.
+      const customIds = (preferences?.container_table_column_order ?? []).filter(
+        isCustomColumnId,
+      )
+      const customColumns = customIds.map(buildCustomColumnDef)
+
+      return [...builtIn, ...customColumns]
+    },
+    [executeAction, isContainerPending, alertCounts, allAutoUpdateConfigs, allHealthCheckConfigs, canOperate, preferences?.container_table_column_order]
   )
 
   const table = useReactTable({
@@ -1461,6 +1485,17 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
           ip.toLowerCase().includes(searchValue)
         )
         if (ipMatches) {
+          return true
+        }
+      }
+
+      // Issue #207: search also matches custom column values (env/labels selected as columns).
+      const customIds = (preferences?.container_table_column_order ?? []).filter(
+        isCustomColumnId,
+      )
+      for (const id of customIds) {
+        const value = extractColumnValue(container, id)
+        if (value && value.toLowerCase().includes(searchValue)) {
           return true
         }
       }

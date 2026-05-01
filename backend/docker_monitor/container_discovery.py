@@ -578,6 +578,13 @@ class ContainerDiscovery:
 
                         desired_state, web_ui_url = host_desired_states.get(container_id, ('unspecified', None))
 
+                        # Issue #207: derive web_ui_url from mapping chain when no manual URL.
+                        # Manual URL always wins; chain is the fallback. Note: agent
+                        # list response does not include env vars, so only label-based
+                        # templates resolve here.
+                        if not web_ui_url:
+                            web_ui_url = resolve_chain(webui_url_chain, env=None, labels=labels)
+
                         ports_data = dc_data.get("Ports") or []
                         ports_set: set[str] = set()
                         for port in ports_data:

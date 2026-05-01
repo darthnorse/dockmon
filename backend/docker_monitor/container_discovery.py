@@ -22,6 +22,7 @@ from utils.async_docker import async_docker_call, async_client_ping
 from utils.keys import make_composite_key
 from utils.ip_extraction import extract_container_ips
 from utils.cache import async_ttl_cache
+from utils.url_template import resolve_chain
 
 logger = logging.getLogger(__name__)
 
@@ -412,6 +413,15 @@ class ContainerDiscovery:
         host = self.hosts.get(host_id)
         if not host:
             return containers
+
+        # Issue #207: load WebUI URL mapping chain once per discovery cycle.
+        # Used as fallback when a container has no manually-set web_ui_url.
+        try:
+            settings = self.db.get_settings()
+            webui_url_chain = (settings.webui_url_mapping_chain if settings else None) or []
+        except Exception as e:
+            logger.warning(f"Could not load webui_url_mapping_chain: {e}")
+            webui_url_chain = []
 
         # Agent-based hosts - get container data from agent via WebSocket
         if host.connection_type == "agent":
@@ -858,6 +868,11 @@ class ContainerDiscovery:
 
                     env_list = dc.attrs.get('Config', {}).get('Env', [])
                     env = parse_container_env(env_list)
+
+                    # Issue #207: derive web_ui_url from mapping chain when no manual URL.
+                    # Manual URL always wins; chain is the fallback.
+                    if not web_ui_url:
+                        web_ui_url = resolve_chain(webui_url_chain, env=env, labels=labels)
 
                     container = Container(
                         id=container_id,  # Short 12-char ID (per CLAUDE.md spec)

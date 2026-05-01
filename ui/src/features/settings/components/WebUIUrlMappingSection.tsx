@@ -143,12 +143,23 @@ export function WebUIUrlMappingSection() {
   // but is actually different from the most-recent successful write is not
   // silently dropped.
   const lastSentPayloadRef = useRef<string[] | null>(null)
-  // Monotonic edit clock — bumped on every local row change. The revert-on-
-  // failure path captures this at mutation start and only restores the
-  // snapshot if no local edits happened during the mutation. Without this,
-  // a failed older mutation would clobber newer local state the user has
-  // since typed/dragged into.
+  // Monotonic edit clock — bumped on every local row change. Each persist
+  // captures this SYNCHRONOUSLY at enqueue time (not when its queued body
+  // runs); the revert-on-failure path only restores the snapshot if editSeq
+  // hasn't advanced since enqueue. Capturing at enqueue (vs body start)
+  // matters when persists queue behind a slow predecessor and the user
+  // makes more local edits while waiting — body-start capture would see
+  // the post-edit clock and incorrectly think nothing had changed.
   const editSeqRef = useRef(0)
+  // Track mount state so the catch path doesn't toast/setState after the
+  // user has navigated away while a persist was still in flight.
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   // Single setter that keeps state and ref in sync. The ref is updated
   // SYNCHRONOUSLY here (not inside the queued setRowsState updater), so any
@@ -186,6 +197,13 @@ export function WebUIUrlMappingSection() {
         .map((r) => r.value.trim())
         .filter((v) => v.length > 0)
 
+      // Capture editSeq AT ENQUEUE TIME (not at body-start). If we captured
+      // inside the queued body, a persist waiting behind a slow predecessor
+      // would see the editSeq value AFTER any user edits made while waiting
+      // — and incorrectly conclude "nothing changed" on failure, reverting
+      // past those newer edits.
+      const editSeqAtEnqueue = editSeqRef.current
+
       // Chain SYNCHRONOUSLY onto the queue tail before any await. This is the
       // critical invariant — if we yielded control before assigning, a
       // synchronously-following persist could capture the same prev tail and
@@ -198,18 +216,18 @@ export function WebUIUrlMappingSection() {
         // Query cache, which lags in-flight mutations).
         if (rowsEqual(payload, lastSentPayloadRef.current ?? [])) return
 
-        const editSeqAtStart = editSeqRef.current
-
         try {
           await updateSettings.mutateAsync({ webui_url_mapping_chain: payload })
           lastSentPayloadRef.current = payload
         } catch {
+          // Skip side effects if we've unmounted (user navigated away mid-flight).
+          if (!mountedRef.current) return
           toast.error('Failed to update WebUI URL mapping')
           // Only revert if (a) the caller gave us a meaningful pre-op snapshot
           // (handlers that mutate local state pass it; blur/typing doesn't),
-          // and (b) no local edits happened since this persist started — if
-          // editSeq moved on, the user has newer state we'd clobber.
-          if (revertTo && editSeqRef.current === editSeqAtStart) {
+          // and (b) no local edits happened since this persist was enqueued —
+          // if editSeq moved on, the user has newer state we'd clobber.
+          if (revertTo && editSeqRef.current === editSeqAtEnqueue) {
             rowsRef.current = revertTo
             setRowsState(revertTo)
           }

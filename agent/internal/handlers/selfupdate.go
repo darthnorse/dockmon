@@ -95,14 +95,10 @@ func (h *SelfUpdateHandler) PerformSelfUpdate(ctx context.Context, req SelfUpdat
 	return h.performNativeSelfUpdate(ctx, req)
 }
 
-// performContainerSelfUpdate updates the agent's own container
-// Flow:
-// 1. Pull new image
-// 2. Inspect own container to get config
-// 3. Create new container with same config but new image
-// 4. Start new container
-// 5. Wait for it to be healthy
-// 6. Stop ourselves (old container)
+// performContainerSelfUpdate updates the agent's own container by pulling
+// the new image, inspecting the running container and its image, creating
+// a replacement container with filtered labels, waiting for it to become
+// healthy, then signaling graceful shutdown so Docker switches over.
 func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req SelfUpdateRequest) error {
 	if req.Image == "" {
 		return fmt.Errorf("image is required for container self-update")
@@ -117,14 +113,14 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 		"new_image":    req.Image,
 	}).Info("Performing container-based self-update")
 
-	// Step 1: Pull new image
+	// Pull new image
 	h.sendProgress("pull", fmt.Sprintf("Pulling image %s", req.Image))
 	if err := h.dockerClient.PullImage(ctx, req.Image); err != nil {
 		h.sendProgressError("pull", err)
 		return fmt.Errorf("failed to pull image: %w", err)
 	}
 
-	// Step 2: Inspect own container to get configuration
+	// Inspect own container to get configuration
 	h.sendProgress("inspect", "Inspecting current container")
 	oldContainer, err := h.dockerClient.InspectContainer(ctx, h.myContainerID)
 	if err != nil {
@@ -140,14 +136,14 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 
 	h.log.WithField("original_name", originalName).Debug("Got container configuration")
 
-	// Step 3: Inspect old image to get its labels (used to filter inherited
-	// labels off the new container so new image's labels take effect).
+	// Inspect old image to get its labels, used to filter inherited labels
+	// off the new container so the new image's labels take effect.
 	// Use the immutable image ID (oldContainer.Image, a sha256 digest), NOT
-	// oldContainer.Config.Image — Step 1's PullImage may have retargeted a
-	// shared tag (":latest", or a republished version tag) at the new image,
-	// in which case the tag would resolve to new-image labels and the diff
-	// would treat every old inherited label as a "user override". The image
-	// ID is set at container create time and is stable.
+	// oldContainer.Config.Image - the earlier PullImage may have retargeted
+	// a shared tag (":latest", or a republished version tag) at the new
+	// image, in which case the tag would resolve to new-image labels and
+	// the diff would treat every old inherited label as a "user override".
+	// The image ID is set at container create time and is stable.
 	// Best-effort: if inspection fails, oldImageLabels stays nil and
 	// cloneContainerConfig skips filtering (cosmetic-only impact).
 	oldImageLabels, imgErr := update.GetImageLabels(ctx, h.dockerClient.RawClient(), oldContainer.Image)
@@ -156,7 +152,7 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 			Warn("Failed to inspect old image labels; new container will keep inherited labels (cosmetic-only impact)")
 	}
 
-	// Step 4: Create new container with same config but new image
+	// Create new container with same config but new image
 	h.sendProgress("create", "Creating new container")
 	newConfig := h.cloneContainerConfig(&oldContainer, req.Image, oldImageLabels)
 	newHostConfig := h.cloneHostConfig(oldContainer.HostConfig)
@@ -172,8 +168,8 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 
 	h.log.WithField("new_container_id", safeShortID(newContainerID)).Info("Created new container")
 
-	// Step 5: Write cleanup file BEFORE starting new container
-	// This ensures the new agent finds it on startup (race condition fix)
+	// Write cleanup file BEFORE starting new container.
+	// This ensures the new agent finds it on startup (race condition fix).
 	cleanupFile := filepath.Join(h.dataDir, "cleanup.json")
 	cleanupData := map[string]string{
 		"old_container_id":   h.myContainerID,
@@ -189,7 +185,7 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 		}
 	}
 
-	// Step 6: Start new container
+	// Start new container
 	h.sendProgress("start", "Starting new container")
 	if err := h.dockerClient.StartContainer(ctx, newContainerID); err != nil {
 		// Cleanup: remove the failed container and cleanup file
@@ -203,7 +199,7 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 		return fmt.Errorf("failed to start new container: %w", err)
 	}
 
-	// Step 7: Wait for new container to be healthy
+	// Wait for new container to be healthy
 	h.sendProgress("health", "Waiting for new container to be healthy")
 	if err := h.waitForHealthy(ctx, newContainerID, 60); err != nil {
 		h.log.WithError(err).Warn("New container failed health check, rolling back")
@@ -223,7 +219,7 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 
 	h.log.Info("New container is healthy")
 
-	// Step 8: Signal completion and stop ourselves
+	// Signal completion and stop ourselves
 	h.sendProgress("complete", "Self-update complete, stopping old container")
 
 	h.log.Info("Self-update successful, stopping old container")
@@ -505,7 +501,7 @@ func (h *SelfUpdateHandler) performContainerCleanup(cleanupFilePath string) erro
 // oldImageLabels is the Labels map of the OLD image (the one the existing
 // container was created from). It's used to filter out image-inherited
 // labels so the NEW image's labels take effect on inspection. Pass nil
-// to skip filtering (degrades to pre-fix behavior — preserves all labels).
+// to skip filtering (degrades to pre-fix behavior - preserves all labels).
 func (h *SelfUpdateHandler) cloneContainerConfig(
 	inspect *dockerTypes.ContainerJSON,
 	newImage string,

@@ -8,8 +8,13 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// newTestSelfUpdateHandler builds a minimal handler suitable for unit-testing
-// pure-function methods (no Docker daemon, no WebSocket).
+// newTestSelfUpdateHandler builds a minimal handler for unit-testing methods
+// that only read pure-function inputs - no Docker daemon, no WebSocket.
+//
+// Only h.log is populated. If a test exercises a method that reaches into
+// h.dockerClient, h.sendEvent, h.stopSignal, h.myContainerID, or h.dataDir,
+// it will nil-deref. Tests in this file may only call methods that read
+// h.log; anything else needs a fuller fixture (or a mocked dependency).
 func newTestSelfUpdateHandler() *SelfUpdateHandler {
 	log := logrus.New()
 	log.SetLevel(logrus.PanicLevel) // silence test output
@@ -38,10 +43,10 @@ func TestCloneContainerConfig_StripsInheritedImageLabels(t *testing.T) {
 		Config: &container.Config{
 			Image: "ghcr.io/darthnorse/dockmon-agent:1.0.4",
 			Labels: map[string]string{
-				// Inherited from old image — should be stripped:
+				// Inherited from old image - should be stripped:
 				"org.opencontainers.image.version": "1.0.4-amd64",
 				"org.opencontainers.image.title":   "DockMon Agent",
-				// User-added — should be preserved:
+				// User-added - should be preserved:
 				"com.example.deployed-by": "ansible",
 			},
 		},

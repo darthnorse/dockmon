@@ -173,6 +173,8 @@ jobs:
           tags: |
             type=raw,value=${{ steps.version.outputs.version }},suffix=-${{ steps.platform.outputs.suffix }}
             type=raw,value=${{ steps.version.outputs.branch_tag }},suffix=-${{ steps.platform.outputs.suffix }},enable=${{ steps.version.outputs.branch_tag != '' }}
+          # Override metadata-action's auto-derived org.opencontainers.image.version
+          # so it doesn't pick up the platform suffix from the first tag value.
           labels: |
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
 

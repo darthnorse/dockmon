@@ -9,6 +9,7 @@ import { toast } from 'sonner'
 import { ToggleSwitch } from './ToggleSwitch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useAuth } from '@/features/auth/AuthContext'
+import { WebUIUrlMappingSection } from './WebUIUrlMappingSection'
 
 const SESSION_TIMEOUT_OPTIONS = [
   { value: '24', label: '24 hours' },
@@ -228,6 +229,9 @@ export function SystemSettings() {
           </div>
         </div>
       </div>
+
+      {/* WebUI URL auto-mapping */}
+      <WebUIUrlMappingSection />
 
       {/* Security */}
       <div>

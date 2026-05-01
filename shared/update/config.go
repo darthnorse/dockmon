@@ -64,7 +64,7 @@ func ExtractConfig(
 	}
 
 	// Extract user-added labels (filter out old image labels)
-	userLabels := extractUserLabels(log, newConfig.Labels, oldImageLabels)
+	userLabels := ExtractUserLabels(log, newConfig.Labels, oldImageLabels)
 	newConfig.Labels = userLabels
 
 	// Extract network configuration
@@ -126,9 +126,10 @@ func resolveNetworkMode(
 	return nil
 }
 
-// extractUserLabels filters container labels to preserve only user-added labels.
+// ExtractUserLabels filters container labels to preserve only user-added labels.
 // Removes labels that came from the OLD image so new image labels can take effect.
-func extractUserLabels(
+// Exported so the agent self-update path can reuse the same filtering logic.
+func ExtractUserLabels(
 	log *logrus.Logger,
 	containerLabels map[string]string,
 	oldImageLabels map[string]string,

@@ -10,7 +10,7 @@ import (
 )
 
 // =============================================================================
-// Test extractUserLabels() - Label Filtering (from test_label_merge.py)
+// Test ExtractUserLabels() - Label Filtering (from test_label_merge.py)
 // =============================================================================
 
 func TestExtractUserLabels_RemovesImageLabels(t *testing.T) {
@@ -24,7 +24,7 @@ func TestExtractUserLabels_RemovesImageLabels(t *testing.T) {
 		"org.opencontainers.image.version": "1.0.0",
 	}
 
-	result := extractUserLabels(log, containerLabels, oldImageLabels)
+	result := ExtractUserLabels(log, containerLabels, oldImageLabels)
 
 	// Image label removed - Docker will merge from new image
 	if len(result) != 0 {
@@ -44,7 +44,7 @@ func TestExtractUserLabels_PreservesComposeLabels(t *testing.T) {
 		"org.opencontainers.image.version": "1.0.0",
 	}
 
-	result := extractUserLabels(log, containerLabels, oldImageLabels)
+	result := ExtractUserLabels(log, containerLabels, oldImageLabels)
 
 	// Compose label preserved, image label removed
 	if len(result) != 1 {
@@ -68,7 +68,7 @@ func TestExtractUserLabels_PreservesDockmonLabels(t *testing.T) {
 		"org.opencontainers.image.version": "1.0.0",
 	}
 
-	result := extractUserLabels(log, containerLabels, oldImageLabels)
+	result := ExtractUserLabels(log, containerLabels, oldImageLabels)
 
 	// DockMon labels preserved, image label removed
 	if len(result) != 2 {
@@ -92,7 +92,7 @@ func TestExtractUserLabels_PreservesCustomLabels(t *testing.T) {
 	}
 	oldImageLabels := map[string]string{}
 
-	result := extractUserLabels(log, containerLabels, oldImageLabels)
+	result := ExtractUserLabels(log, containerLabels, oldImageLabels)
 
 	// All custom labels preserved (no image labels to remove)
 	if len(result) != 2 {
@@ -115,7 +115,7 @@ func TestExtractUserLabels_EmptyContainerLabels(t *testing.T) {
 		"org.opencontainers.image.version": "2.0.0",
 	}
 
-	result := extractUserLabels(log, containerLabels, oldImageLabels)
+	result := ExtractUserLabels(log, containerLabels, oldImageLabels)
 
 	// No container labels = no user labels
 	if len(result) != 0 {
@@ -132,7 +132,7 @@ func TestExtractUserLabels_EmptyImageLabels(t *testing.T) {
 	}
 	oldImageLabels := map[string]string{}
 
-	result := extractUserLabels(log, containerLabels, oldImageLabels)
+	result := ExtractUserLabels(log, containerLabels, oldImageLabels)
 
 	// No image labels to subtract = all container labels preserved
 	if len(result) != 1 {
@@ -147,7 +147,7 @@ func TestExtractUserLabels_BothEmpty(t *testing.T) {
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
 
-	result := extractUserLabels(log, map[string]string{}, map[string]string{})
+	result := ExtractUserLabels(log, map[string]string{}, map[string]string{})
 
 	if len(result) != 0 {
 		t.Errorf("Expected empty labels, got %v", result)
@@ -158,7 +158,7 @@ func TestExtractUserLabels_NilContainerLabels(t *testing.T) {
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
 
-	result := extractUserLabels(log, nil, map[string]string{"key": "value"})
+	result := ExtractUserLabels(log, nil, map[string]string{"key": "value"})
 
 	// Defensive handling of nil
 	if result == nil {
@@ -182,7 +182,7 @@ func TestExtractUserLabels_ResolvesConflictsInFavorOfImage(t *testing.T) {
 		"org.opencontainers.image.version": "1.0.0",
 	}
 
-	result := extractUserLabels(log, containerLabels, oldImageLabels)
+	result := ExtractUserLabels(log, containerLabels, oldImageLabels)
 
 	// Both labels matched old image = both removed
 	if len(result) != 0 {

@@ -203,74 +203,74 @@ function VirtualizedTableShell({
         scrollable width when content exceeds the viewport.
       */}
       <div className="min-w-max">
-      <div className="bg-muted/50 sticky top-0 z-10 border-b border-border" role="rowgroup">
-        {table.getHeaderGroups().map((headerGroup) => (
-          <div
-            key={headerGroup.id}
-            role="row"
-            className="grid"
-            style={{ gridTemplateColumns: gridTemplate }}
-          >
-            {headerGroup.headers.map((header) => (
-              <div
-                key={header.id}
-                role="columnheader"
-                className={`px-4 py-3 text-sm font-medium min-w-0 ${alignClass(header.column, 'text-left')}`}
-              >
-                {header.isPlaceholder
-                  ? null
-                  : flexRender(header.column.columnDef.header, header.getContext())}
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
+        <div className="bg-muted/50 sticky top-0 z-10 border-b border-border" role="rowgroup">
+          {table.getHeaderGroups().map((headerGroup) => (
+            <div
+              key={headerGroup.id}
+              role="row"
+              className="grid"
+              style={{ gridTemplateColumns: gridTemplate }}
+            >
+              {headerGroup.headers.map((header) => (
+                <div
+                  key={header.id}
+                  role="columnheader"
+                  className={`px-4 py-3 text-sm font-medium min-w-0 ${alignClass(header.column, 'text-left')}`}
+                >
+                  {header.isPlaceholder
+                    ? null
+                    : flexRender(header.column.columnDef.header, header.getContext())}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
 
-      {/* Body — empty state lives outside the absolute-positioned wrapper
-          because getTotalSize() is 0 with no rows, which would otherwise
-          collapse the message to height 0. */}
-      {rows.length === 0 ? (
-        <div role="rowgroup">
-          <div role="row">
-            <div role="cell" className="px-4 py-8 text-center text-sm text-muted-foreground">
-              No containers found
+        {/* Body — empty state lives outside the absolute-positioned wrapper
+            because getTotalSize() is 0 with no rows, which would otherwise
+            collapse the message to height 0. */}
+        {rows.length === 0 ? (
+          <div role="rowgroup">
+            <div role="row">
+              <div role="cell" className="px-4 py-8 text-center text-sm text-muted-foreground">
+                No containers found
+              </div>
             </div>
           </div>
-        </div>
-      ) : (
-        <div
-          role="rowgroup"
-          style={{ position: 'relative', height: virtualizer.getTotalSize() }}
-        >
-          {virtualItems.map((vRow) => {
-            const row = rows[vRow.index]
-            if (!row) return null
-            return (
-              <div
-                key={row.id}
-                role="row"
-                data-index={vRow.index}
-                ref={virtualizer.measureElement}
-                className="grid border-t hover:bg-[#151827] transition-colors"
-                style={{
-                  ...rowBaseStyle,
-                  transform: `translateY(${vRow.start - scrollMargin}px)`,
-                }}
-              >
-                {row.getVisibleCells().map((cell) => (
-                  <div
-                    key={cell.id}
-                    role="cell"
-                    className={`px-4 py-3 min-w-0 ${alignClass(cell.column)}`}
-                  >
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </div>
-                ))}
-              </div>
-            )
-          })}
-        </div>
-      )}
+        ) : (
+          <div
+            role="rowgroup"
+            style={{ position: 'relative', height: virtualizer.getTotalSize() }}
+          >
+            {virtualItems.map((vRow) => {
+              const row = rows[vRow.index]
+              if (!row) return null
+              return (
+                <div
+                  key={row.id}
+                  role="row"
+                  data-index={vRow.index}
+                  ref={virtualizer.measureElement}
+                  className="grid border-t hover:bg-[#151827] transition-colors"
+                  style={{
+                    ...rowBaseStyle,
+                    transform: `translateY(${vRow.start - scrollMargin}px)`,
+                  }}
+                >
+                  {row.getVisibleCells().map((cell) => (
+                    <div
+                      key={cell.id}
+                      role="cell"
+                      className={`px-4 py-3 min-w-0 ${alignClass(cell.column)}`}
+                    >
+                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    </div>
+                  ))}
+                </div>
+              )
+            })}
+          </div>
+        )}
       </div>
     </div>
   )

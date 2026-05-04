@@ -4,8 +4,13 @@
  * Lets the user add an env-var or label as a column in the containers table.
  * Form: kind (env/label) + name (free text). Validates non-empty and
  * deduplicates against existing column IDs.
+ *
+ * The "Environment variable" option is only offered when the current user
+ * holds the containers.view_env capability — without it, env values would
+ * render as `—` anyway (the backend strips env from the WS payload), so
+ * offering the choice would be misleading. Label columns remain available.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Dialog,
   DialogContent,
@@ -20,6 +25,7 @@ import { Input } from '@/components/ui/input'
 interface AddCustomColumnDialogProps {
   open: boolean
   existingColumnIds: string[]
+  canAddEnv: boolean
   onOpenChange: (open: boolean) => void
   onAdd: (columnId: string) => void
 }
@@ -27,12 +33,22 @@ interface AddCustomColumnDialogProps {
 export function AddCustomColumnDialog({
   open,
   existingColumnIds,
+  canAddEnv,
   onOpenChange,
   onAdd,
 }: AddCustomColumnDialogProps) {
-  const [kind, setKind] = useState<'env' | 'label'>('env')
+  // Default to env if allowed (most common case); fall back to label otherwise.
+  const [kind, setKind] = useState<'env' | 'label'>(canAddEnv ? 'env' : 'label')
   const [name, setName] = useState('')
   const [error, setError] = useState<string | null>(null)
+
+  // If the user's capability changes mid-session (rare but possible), or if
+  // the dialog mounts with kind='env' but env isn't allowed, snap back.
+  useEffect(() => {
+    if (!canAddEnv && kind === 'env') {
+      setKind('label')
+    }
+  }, [canAddEnv, kind])
 
   const handleSubmit = () => {
     const trimmed = name.trim()
@@ -65,32 +81,36 @@ export function AddCustomColumnDialog({
         <DialogHeader>
           <DialogTitle>Add Custom Column</DialogTitle>
           <DialogDescription>
-            Show a Docker environment variable or label as a column in the table.
+            {canAddEnv
+              ? 'Show a Docker environment variable or label as a column in the table.'
+              : 'Show a Docker label as a column in the table.'}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 py-2">
-          <div>
-            <label className="block text-sm font-medium mb-2">Source</label>
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                variant={kind === 'env' ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => setKind('env')}
-              >
-                Environment variable
-              </Button>
-              <Button
-                type="button"
-                variant={kind === 'label' ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => setKind('label')}
-              >
-                Docker label
-              </Button>
+          {canAddEnv && (
+            <div>
+              <label className="block text-sm font-medium mb-2">Source</label>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant={kind === 'env' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setKind('env')}
+                >
+                  Environment variable
+                </Button>
+                <Button
+                  type="button"
+                  variant={kind === 'label' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setKind('label')}
+                >
+                  Docker label
+                </Button>
+              </div>
             </div>
-          </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium mb-2">

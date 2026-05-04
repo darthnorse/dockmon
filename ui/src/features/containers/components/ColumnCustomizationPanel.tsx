@@ -29,6 +29,7 @@ import { DropdownMenu } from '@/components/ui/dropdown-menu'
 import { isCustomColumnId, getColumnLabel as getCustomColumnLabel } from '../utils/customColumns'
 import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import { AddCustomColumnDialog } from './AddCustomColumnDialog'
+import { useAuth } from '@/features/auth/AuthContext'
 
 interface ColumnCustomizationPanelProps<TData> {
   table: Table<TData>
@@ -147,6 +148,13 @@ export function ColumnCustomizationPanel<TData>({ table }: ColumnCustomizationPa
 
   const { data: preferences } = useUserPreferences()
   const updatePreferences = useUpdatePreferences()
+  const { hasCapability } = useAuth()
+  // Adding env columns requires the same capability that gates whether env
+  // values are delivered to the user at all (containers.view_env). Without
+  // it, env columns would render only "—" — so we hide that option from the
+  // Add dialog rather than offering a misleading choice. Label columns are
+  // always available since labels aren't gated.
+  const canAddEnvColumns = hasCapability('containers.view_env')
 
   const [addDialogOpen, setAddDialogOpen] = useState(false)
 
@@ -298,6 +306,7 @@ export function ColumnCustomizationPanel<TData>({ table }: ColumnCustomizationPa
       <AddCustomColumnDialog
         open={addDialogOpen}
         existingColumnIds={allColumns.map(c => c.id)}
+        canAddEnv={canAddEnvColumns}
         onOpenChange={setAddDialogOpen}
         onAdd={handleAddCustomColumn}
       />

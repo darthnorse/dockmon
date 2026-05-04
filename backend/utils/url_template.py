@@ -1,14 +1,13 @@
-"""URL template resolver for the webui_url_mapping_chain feature (Issue #207).
+"""URL template resolver for the webui_url_mapping_chain setting.
 
 Templates support two placeholder kinds:
     ${env:NAME}     -> looked up in container.env
     ${label:NAME}   -> looked up in container.labels
 
-If any placeholder cannot be resolved (key missing, value empty, or input dict is None),
-the whole template returns None so the chain can fall through to the next template.
-A placeholder value containing control characters (newline, CR, tab, etc.) is also
-treated as a failed resolution — the value is attacker-controlled (env vars and labels
-come from container authors) and would corrupt the resulting URL.
+If any placeholder cannot be resolved (key missing, value empty, or input dict
+is None), the whole template returns None so the chain can fall through. Values
+containing control chars are also treated as failed resolutions — env/labels
+are container-author-controlled and could otherwise corrupt the resulting URL.
 """
 import re
 from typing import Optional

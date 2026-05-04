@@ -414,12 +414,9 @@ class ContainerDiscovery:
         if not host:
             return containers
 
-        # Issue #207: WebUI URL mapping chain. Used as fallback when a container
-        # has no manually-set web_ui_url. Read from the DB once per discovery
-        # cycle so live edits via /api/settings take effect on the next sweep
-        # — `self.settings` is a snapshot from monitor construction and is NOT
-        # refreshed when monitor.settings is reassigned by the settings POST
-        # handler.
+        # WebUI URL mapping chain — fallback for containers with no manual URL.
+        # Read fresh per cycle: `self.settings` is a startup snapshot and is
+        # NOT refreshed when monitor.settings is reassigned by /api/settings.
         try:
             current_settings = self.db.get_settings()
             webui_url_chain = (
@@ -589,8 +586,7 @@ class ContainerDiscovery:
                         # the agent if you want env: placeholders to work everywhere.
                         env = dc_data.get("Env") or {}
 
-                        # Issue #207: derive web_ui_url from mapping chain when no manual URL.
-                        # Manual URL always wins; chain is the fallback.
+                        # Fall back to the mapping chain only when no manual URL.
                         if not web_ui_url:
                             web_ui_url = resolve_chain(webui_url_chain, env=env, labels=labels)
 
@@ -885,7 +881,7 @@ class ContainerDiscovery:
                     env_list = dc.attrs.get('Config', {}).get('Env', [])
                     env = parse_container_env(env_list)
 
-                    # Issue #207: derive web_ui_url from mapping chain when no manual URL.
+                    # Fall back to the mapping chain only when no manual URL.
                     # Manual URL always wins; chain is the fallback.
                     if not web_ui_url:
                         web_ui_url = resolve_chain(webui_url_chain, env=env, labels=labels)

@@ -846,8 +846,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
     })
   }, [data, filters, updatesSummary, allAutoUpdateConfigs, allHealthCheckConfigs])
 
-  // Issue #207: collect user-defined custom column IDs from preferences.
-  // Used by both the columns memo and the global filter — single source.
+  // Single source for both the columns memo and the global filter.
   const customColumnIds = useMemo<string[]>(
     () => (preferences?.container_table_column_order ?? []).filter(isCustomColumnId),
     [preferences?.container_table_column_order],
@@ -961,9 +960,10 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
                     rel="noopener noreferrer"
                     className="text-muted-foreground hover:text-primary transition-colors flex-shrink-0"
                     title="Open WebUI"
+                    aria-label="Open WebUI"
                     onClick={(e) => e.stopPropagation()}
                   >
-                    <ExternalLink className="h-3.5 w-3.5" />
+                    <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
                   </a>
                 )}
               </div>
@@ -1413,16 +1413,12 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
                   openModal(makeCompositeKey(container), 'updates')
                 }}
               />
-              {/* WebUI link is rendered inline next to the container name (Name column),
-                  not here — placement next to the name makes "open the app" the discoverable
-                  primary action and avoids burying it in the action cluster on the right. */}
             </div>
           )
         },
       },
       ]
 
-      // Issue #207: append user-defined custom env/label columns from preferences.
       return [...builtIn, ...customColumnIds.map((id) => buildCustomColumnDef<Container>(id))]
     },
     [executeAction, isContainerPending, alertCounts, allAutoUpdateConfigs, allHealthCheckConfigs, canOperate, customColumnIds]
@@ -1488,7 +1484,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
         }
       }
 
-      // Issue #207: search also matches custom column values (env/labels selected as columns).
+      // Custom env/label columns are searchable too.
       for (const id of customColumnIds) {
         const value = extractColumnValue(container, id)
         if (value && value.toLowerCase().includes(searchValue)) {

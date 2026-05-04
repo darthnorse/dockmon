@@ -1,15 +1,11 @@
 /**
- * Custom column ID convention for the container table (Issue #207).
+ * Custom column ID convention for the container table.
  *
- * Built-in columns: bare IDs ("name", "state", "cpu", ...).
- * Custom columns:   "env:<varname>" or "label:<labelname>" with a non-empty
- *                    name part. Names are validated at the AddCustomColumnDialog
- *                    boundary to forbid colons, whitespace, and control chars,
- *                    so the prefix-based dispatch here can stay simple.
- *
- * The column ID is the source of truth — TanStack Table uses it as the
+ * Built-in columns use bare IDs ("name", "state", "cpu", ...).
+ * Custom columns use "env:<varname>" or "label:<labelname>" with a non-empty
+ * name part. The ID is the source of truth — TanStack Table uses it as the
  * column key, user prefs store visibility/order keyed on it, and the cell
- * renderer uses parseColumnId to dispatch on kind.
+ * renderer dispatches on kind via parseColumnId.
  */
 import type { ColumnDef } from '@tanstack/react-table'
 

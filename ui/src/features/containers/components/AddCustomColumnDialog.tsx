@@ -1,16 +1,12 @@
 /**
- * Add Custom Column Dialog (Issue #207).
+ * Modal for adding a custom env/label column to the containers table.
  *
- * Lets the user add an env-var or label as a column in the containers table.
- * Form: kind (env/label) + name (free text). Validates non-empty and
- * deduplicates against existing column IDs.
- *
- * The "Environment variable" option is only offered when the current user
- * holds the containers.view_env capability — without it, env values would
- * render as `—` anyway (the backend strips env from the WS payload), so
- * offering the choice would be misleading. Label columns remain available.
+ * The "Environment variable" option is offered only when the user holds
+ * containers.view_env. This is a UX-only gate — the actual env enforcement
+ * is server-side in filter_ws_container_message / filter_container_env.
+ * Don't relax those trusting this UI.
  */
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import {
   Dialog,
   DialogContent,
@@ -37,18 +33,13 @@ export function AddCustomColumnDialog({
   onOpenChange,
   onAdd,
 }: AddCustomColumnDialogProps) {
-  // Default to env if allowed (most common case); fall back to label otherwise.
-  const [kind, setKind] = useState<'env' | 'label'>(canAddEnv ? 'env' : 'label')
+  const [kind, setKind] = useState<'env' | 'label'>('env')
   const [name, setName] = useState('')
   const [error, setError] = useState<string | null>(null)
 
-  // If the user's capability changes mid-session (rare but possible), or if
-  // the dialog mounts with kind='env' but env isn't allowed, snap back.
-  useEffect(() => {
-    if (!canAddEnv && kind === 'env') {
-      setKind('label')
-    }
-  }, [canAddEnv, kind])
+  // Derived so prop changes (e.g. capability flips, dialog reopens) always win
+  // over stale local state — no useEffect snap-back needed.
+  const effectiveKind: 'env' | 'label' = canAddEnv ? kind : 'label'
 
   const handleSubmit = () => {
     const trimmed = name.trim()
@@ -56,7 +47,7 @@ export function AddCustomColumnDialog({
       setError('Name is required')
       return
     }
-    const id = `${kind}:${trimmed}`
+    const id = `${effectiveKind}:${trimmed}`
     if (existingColumnIds.includes(id)) {
       setError('This column already exists')
       return
@@ -94,7 +85,7 @@ export function AddCustomColumnDialog({
               <div className="flex gap-2">
                 <Button
                   type="button"
-                  variant={kind === 'env' ? 'default' : 'outline'}
+                  variant={effectiveKind === 'env' ? 'default' : 'outline'}
                   size="sm"
                   onClick={() => setKind('env')}
                 >
@@ -102,7 +93,7 @@ export function AddCustomColumnDialog({
                 </Button>
                 <Button
                   type="button"
-                  variant={kind === 'label' ? 'default' : 'outline'}
+                  variant={effectiveKind === 'label' ? 'default' : 'outline'}
                   size="sm"
                   onClick={() => setKind('label')}
                 >
@@ -114,7 +105,7 @@ export function AddCustomColumnDialog({
 
           <div>
             <label className="block text-sm font-medium mb-2">
-              {kind === 'env' ? 'Variable name' : 'Label name'}
+              {effectiveKind === 'env' ? 'Variable name' : 'Label name'}
             </label>
             <Input
               value={name}
@@ -122,7 +113,7 @@ export function AddCustomColumnDialog({
                 setName(e.target.value)
                 setError(null)
               }}
-              placeholder={kind === 'env' ? 'VIRTUAL_HOST' : 'com.acme.url'}
+              placeholder={effectiveKind === 'env' ? 'VIRTUAL_HOST' : 'com.acme.url'}
               onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
               autoFocus
             />

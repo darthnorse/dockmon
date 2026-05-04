@@ -49,11 +49,9 @@ type Client struct {
 	startedAtMu sync.RWMutex
 	startedAt   map[string]string
 
-	// env: container ID → parsed env vars. Env is immutable for a container ID's
-	// lifetime (set at create time; recreate yields a new ID), so we inspect
-	// once per first-sight and cache forever — same model as startedAt above.
-	// Used by the WebUI URL mapping chain feature so env-based templates
-	// resolve on agent-monitored hosts (DockMon Issue #207).
+	// env: container ID → parsed env vars. Env is immutable for a container
+	// ID's lifetime (recreate yields a new ID), so we inspect once per
+	// first-sight and cache forever — same model as startedAt above.
 	envMu sync.RWMutex
 	env   map[string]map[string]string
 }
@@ -139,11 +137,10 @@ func (c *Client) LookupEnv(id string) (map[string]string, bool) {
 	return e, ok
 }
 
-// RecordEnv caches a container's parsed env vars. Nil maps are ignored;
-// callers should pass an empty (non-nil) map to record a "no env vars"
-// result, which is meaningful and prevents re-inspecting on every list.
-// (parseEnvList always returns a non-nil map, so this is a guard against
-// future callers, not the current one.)
+// RecordEnv caches a container's parsed env vars. Callers must pass a
+// non-nil map; nil is treated as "no record made". An empty (non-nil) map
+// is recorded as "container has no env vars" and prevents re-inspecting
+// on every list.
 func (c *Client) RecordEnv(id string, env map[string]string) {
 	if id == "" || env == nil {
 		return

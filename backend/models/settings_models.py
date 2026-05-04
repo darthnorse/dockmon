@@ -198,9 +198,8 @@ class GlobalSettingsUpdate(BaseModel):
     # Event suppression (v2.2.0+)
     event_suppression_patterns: Optional[List[str]] = Field(None, description="Glob patterns for container names to suppress from event log")
 
-    # WebUI URL mapping chain (Issue #207).
-    # Capped at 20 templates × 2048 chars to prevent admin-triggered DOS via
-    # the resolver loop running on every container per discovery cycle.
+    # WebUI URL mapping chain. Capped at 20 templates × 2048 chars to prevent
+    # admin-triggered DOS via the resolver loop running per container per cycle.
     webui_url_mapping_chain: Optional[List[str]] = Field(
         None,
         max_length=20,
@@ -253,7 +252,7 @@ class GlobalSettingsUpdate(BaseModel):
     @field_validator('webui_url_mapping_chain')
     @classmethod
     def validate_webui_url_mapping_chain(cls, v: Optional[List[str]]) -> Optional[List[str]]:
-        """Reject empty templates and cap individual template length (Issue #207)."""
+        """Reject empty templates and cap individual template length."""
         if v is None:
             return v
         cleaned: List[str] = []

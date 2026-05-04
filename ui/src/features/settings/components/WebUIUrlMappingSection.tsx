@@ -1,22 +1,17 @@
 /**
- * WebUI URL Mapping Section (Issue #207).
+ * Admin editor for the global webui_url_mapping_chain. Templates support
+ * ${env:NAME} and ${label:NAME} placeholders; first non-empty resolution wins.
  *
- * Admin-only editor for the global webui_url_mapping_chain. Users can add,
- * remove, and reorder template strings. The first template that resolves to
- * a non-empty value (when evaluated against a container's env and labels)
- * wins. Templates support ${env:NAME} and ${label:NAME} placeholders.
+ * State model: rows live locally as { id, value }[] keyed by synthetic UUIDs
+ * so reorder/remove during mid-edit don't lose focus. All updates flow
+ * through setRows (which keeps rowsRef in sync synchronously). Persists are
+ * serialized via a promise-chain queue (inFlightTailRef) so concurrent edits
+ * land on the server in submission order; failures revert via a snapshot
+ * passed by the caller, gated by editSeqRef so newer local edits aren't
+ * clobbered by an older failure.
  *
- * State model: server is canonical; local rows mirror it as
- * `{ id, value }[]` keyed by a synthetic UUID so reorder/remove during
- * mid-edit doesn't lose focus. All updates use functional setRows and a
- * mirror ref so async handlers never close over stale render snapshots.
- * Persist filters out empty/whitespace rows to satisfy the Pydantic
- * validator (which rejects empties), and snapshots/reverts on error so the
- * UI never silently diverges from the server.
- *
- * The parent SystemSettings component wraps everything in a fieldset that
- * disables the form for users without the settings.manage capability, so
- * we don't need to handle disabled state here.
+ * Permission gating (settings.manage) is handled by the parent SystemSettings
+ * fieldset — no checks needed here.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {

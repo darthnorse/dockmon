@@ -404,3 +404,26 @@ async def test_dispatcher_fires_and_sets_resolve_notified_at(db):
     with db.get_session() as session:
         refreshed = session.query(AlertV2).filter(AlertV2.id == "a5").first()
         assert refreshed.resolve_notified_at is not None
+
+
+@pytest.mark.asyncio
+async def test_resolve_notification_loop_drains_engine_queue(db):
+    """Background loop drains engine._recently_resolved and dispatches notifications."""
+    engine = AlertEngine(db)
+    engine._recently_resolved = ["alert-1", "alert-2"]
+
+    service = AlertEvaluationService(db=db, notification_service=MagicMock())
+
+    sent = []
+
+    async def fake_dispatch(alert_id):
+        sent.append(alert_id)
+
+    service._send_resolve_notification = fake_dispatch
+    service.engine = engine  # Override the auto-created engine with our seeded one
+
+    # Run a single iteration of the loop body
+    await service._drain_and_dispatch_resolves()
+
+    assert sent == ["alert-1", "alert-2"]
+    assert engine.drain_recently_resolved() == []  # already drained

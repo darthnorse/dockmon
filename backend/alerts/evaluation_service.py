@@ -114,6 +114,7 @@ class AlertEvaluationService:
         self._snooze_task: Optional[asyncio.Task] = None
         self._blackout_task: Optional[asyncio.Task] = None
         self._pending_event_alerts_task: Optional[asyncio.Task] = None
+        self._resolve_loop_task: Optional[asyncio.Task] = None
 
         # Track blackout state for transition detection
         self._last_blackout_state = False
@@ -130,6 +131,7 @@ class AlertEvaluationService:
         self._snooze_task = asyncio.create_task(self._snooze_expiry_loop())
         self._blackout_task = asyncio.create_task(self._blackout_transition_loop())
         self._pending_event_alerts_task = asyncio.create_task(self._pending_event_alerts_loop())
+        self._resolve_loop_task = asyncio.create_task(self._resolve_notification_loop())
         logger.info(f"Alert evaluation service started (interval: {self.evaluation_interval}s)")
 
     async def stop(self):
@@ -168,6 +170,13 @@ class AlertEvaluationService:
             self._pending_event_alerts_task.cancel()
             try:
                 await self._pending_event_alerts_task
+            except asyncio.CancelledError:
+                pass
+
+        if self._resolve_loop_task:
+            self._resolve_loop_task.cancel()
+            try:
+                await self._resolve_loop_task
             except asyncio.CancelledError:
                 pass
 
@@ -802,6 +811,30 @@ class AlertEvaluationService:
 
         except Exception as e:
             logger.error(f"Error in _send_resolve_notification for alert {alert_id}: {e}", exc_info=True)
+
+    async def _drain_and_dispatch_resolves(self) -> None:
+        """Drain engine's resolve queue and dispatch notifications."""
+        ids = self.engine.drain_recently_resolved()
+        for alert_id in ids:
+            await self._send_resolve_notification(alert_id)
+
+    async def _resolve_notification_loop(self) -> None:
+        """Background task: poll the engine's resolve queue every 2s.
+
+        2s polling is acceptable for resolve notifications -- they are not
+        time-critical (the alert is already gone), and decoupling avoids
+        having to make _resolve_alert event-loop-aware in sync contexts.
+        """
+        check_interval = 2.0
+        while self._running:
+            try:
+                await self._drain_and_dispatch_resolves()
+                await asyncio.sleep(check_interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in resolve notification loop: {e}", exc_info=True)
+                await asyncio.sleep(check_interval)
 
     async def _evaluate_all_rules(self):
         """Evaluate all enabled metric-driven rules"""

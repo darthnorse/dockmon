@@ -427,3 +427,32 @@ async def test_resolve_notification_loop_drains_engine_queue(db):
 
     assert sent == ["alert-1", "alert-2"]
     assert engine.drain_recently_resolved() == []  # already drained
+
+
+def test_engine_resolve_alert_with_notify_false_param(db):
+    """Sanity: notify=False doesn't queue. Verifies the API silent-resolve contract."""
+    engine = AlertEngine(db)
+
+    with db.get_session() as session:
+        rule = AlertRuleV2(
+            id="r-manual", name="Test", scope="container", kind="container_stopped",
+            severity="warning", enabled=True, notify_on_resolve=True,
+        )
+        session.add(rule)
+        alert = AlertV2(
+            id="a-manual", dedup_key="k", scope_type="container", scope_id="h:c",
+            kind="container_stopped", severity="warning", state="open",
+            title="X", message="Y",
+            first_seen=datetime.now(timezone.utc), last_seen=datetime.now(timezone.utc),
+            occurrences=1, rule_id="r-manual",
+            notified_at=datetime.now(timezone.utc),
+        )
+        session.add(alert)
+        session.commit()
+        session.refresh(alert)
+
+    # Simulate API path
+    engine._resolve_alert(alert, "Manually resolved by user", notify=False)
+
+    # Queue must remain empty even though rule.notify_on_resolve=True
+    assert engine.drain_recently_resolved() == []

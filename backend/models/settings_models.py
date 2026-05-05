@@ -122,8 +122,6 @@ class AlertRuleV2Create(BaseModel):
     auto_resolve: Optional[bool] = False  # Resolve immediately after notification (notification-only mode)
     auto_resolve_on_clear: Optional[bool] = False  # Clear when condition resolves (e.g., container restarts)
     suppress_during_updates: Optional[bool] = False  # Suppress alert during container updates
-
-    # Resolve notifications (issue #189)
     notify_on_resolve: Optional[bool] = False  # Send notification when alert resolves
 
     # Selectors (JSON strings)
@@ -164,8 +162,6 @@ class AlertRuleV2Update(BaseModel):
     auto_resolve: Optional[bool] = None  # Resolve immediately after notification (notification-only mode)
     auto_resolve_on_clear: Optional[bool] = None  # Clear when condition resolves (e.g., container restarts)
     suppress_during_updates: Optional[bool] = None  # Suppress alert during container updates
-
-    # Resolve notifications (issue #189)
     notify_on_resolve: Optional[bool] = None  # Send notification when alert resolves
 
     host_selector_json: Optional[str] = None

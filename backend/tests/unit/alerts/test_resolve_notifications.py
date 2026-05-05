@@ -429,8 +429,14 @@ async def test_resolve_notification_loop_drains_engine_queue(db):
     assert engine.drain_recently_resolved() == []  # already drained
 
 
-def test_engine_resolve_alert_with_notify_false_param(db):
-    """Sanity: notify=False doesn't queue. Verifies the API silent-resolve contract."""
+def test_engine_respects_notify_false_even_when_rule_enables_resolve_notifications(db):
+    """notify=False overrides rule.notify_on_resolve=True (no queue entry).
+
+    The API manual-resolve endpoint relies on this contract -- but a regression
+    where api.py stops passing notify=False would NOT be caught here; this test
+    only verifies the engine side. Manual resolve via the HTTP endpoint is
+    covered by the round-trip integration tests.
+    """
     engine = AlertEngine(db)
 
     with db.get_session() as session:

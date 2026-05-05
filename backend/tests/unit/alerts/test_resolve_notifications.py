@@ -1,6 +1,5 @@
 """Tests for resolve/recovery notifications (issue #189)."""
 
-import os
 import pytest
 from sqlalchemy import inspect
 

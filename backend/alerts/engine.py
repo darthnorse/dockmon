@@ -90,6 +90,10 @@ class AlertEngine:
         # Track pending alert clears waiting for clear delay to pass
         # Key: alert_id, Value: PendingAlertClear
         self._pending_alert_clears: Dict[str, PendingAlertClear] = {}
+        # Resolve notification queue (issue #189)
+        # _resolve_alert(notify=True) appends alert ids here; the EvaluationService
+        # background loop drains them and dispatches resolve notifications.
+        self._recently_resolved: list[str] = []
 
     # ==================== Deduplication ====================
 
@@ -243,9 +247,18 @@ class AlertEngine:
     def _resolve_alert(
         self,
         alert: AlertV2,
-        reason: str = "Clear condition met"
+        reason: str = "Clear condition met",
+        notify: bool = True,
     ) -> AlertV2:
-        """Mark alert as resolved"""
+        """Mark alert as resolved.
+
+        Args:
+            alert: The alert to resolve.
+            reason: Human-readable resolution reason.
+            notify: If True (default), queue alert id for resolve notification dispatch.
+                    Pass notify=False for silent paths (e.g., manual user-initiated resolve
+                    via the API -- see issue #189).
+        """
         with self.db.get_session() as session:
             alert = session.merge(alert)
             alert.state = "resolved"
@@ -256,7 +269,17 @@ class AlertEngine:
             session.refresh(alert)
 
             logger.info(f"Resolved alert {alert.id}: {reason}")
+
+            if notify:
+                self._recently_resolved.append(alert.id)
+
             return alert
+
+    def drain_recently_resolved(self) -> list[str]:
+        """Return and clear the queue of alert ids resolved with notify=True (issue #189)."""
+        ids = list(self._recently_resolved)
+        self._recently_resolved.clear()
+        return ids
 
     def _check_cooldown(self, alert: AlertV2, cooldown_seconds: int) -> bool:
         """

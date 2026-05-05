@@ -7,7 +7,8 @@ import pytest
 from sqlalchemy import inspect
 
 import database as database_module
-from database import DatabaseManager
+from alerts.engine import AlertEngine
+from database import AlertRuleV2, AlertV2, DatabaseManager
 from models.settings_models import AlertRuleV2Create, AlertRuleV2Update
 from notifications import NotificationService
 
@@ -188,3 +189,56 @@ async def test_send_resolve_v2_skips_during_blackout():
 
     result = await service.send_resolve_v2(alert, rule)
     assert result is False
+
+
+def test_engine_resolve_alert_appends_to_queue_when_notify_true(db):
+    """_resolve_alert(notify=True) records alert id in resolve queue."""
+    engine = AlertEngine(db)
+
+    with db.get_session() as session:
+        rule = AlertRuleV2(
+            id="r1", name="Test", scope="container", kind="container_stopped",
+            severity="warning", enabled=True, notify_on_resolve=True,
+        )
+        session.add(rule)
+        alert = AlertV2(
+            id="a1", dedup_key="container_stopped|container:host-a:c1",
+            scope_type="container", scope_id="host-a:c1", kind="container_stopped",
+            severity="warning", state="open", title="X", message="Y",
+            first_seen=datetime.now(timezone.utc), last_seen=datetime.now(timezone.utc),
+            occurrences=1, rule_id="r1",
+        )
+        session.add(alert)
+        session.commit()
+        session.refresh(alert)
+
+    engine._resolve_alert(alert, "test reason", notify=True)
+
+    drained = engine.drain_recently_resolved()
+    assert "a1" in drained
+    assert engine.drain_recently_resolved() == []  # second drain is empty
+
+
+def test_engine_resolve_alert_silent_when_notify_false(db):
+    """_resolve_alert(notify=False) does NOT record alert id."""
+    engine = AlertEngine(db)
+
+    with db.get_session() as session:
+        rule = AlertRuleV2(
+            id="r2", name="Test", scope="container", kind="container_stopped",
+            severity="warning", enabled=True, notify_on_resolve=True,
+        )
+        session.add(rule)
+        alert = AlertV2(
+            id="a2", dedup_key="k", scope_type="container", scope_id="h:c",
+            kind="container_stopped", severity="warning", state="open",
+            title="X", message="Y",
+            first_seen=datetime.now(timezone.utc), last_seen=datetime.now(timezone.utc),
+            occurrences=1, rule_id="r2",
+        )
+        session.add(alert)
+        session.commit()
+        session.refresh(alert)
+
+    engine._resolve_alert(alert, "manual", notify=False)
+    assert engine.drain_recently_resolved() == []

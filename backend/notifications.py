@@ -1310,6 +1310,18 @@ class NotificationService:
                 elif channel.type == "gotify":
                     if await self._send_gotify(channel.config, message, title=f"Recovered: {alert.title}"):
                         success_count += 1
+                elif channel.type == "ntfy":
+                    if await self._send_ntfy(channel.config, message, title=f"Recovered: {alert.title}"):
+                        success_count += 1
+                elif channel.type == "smtp":
+                    if await self._send_smtp(channel.config, message, title=f"Recovered: {alert.title}"):
+                        success_count += 1
+                elif channel.type == "webhook":
+                    if await self._send_webhook(channel.config, message, event=alert, title=f"Recovered: {alert.title}"):
+                        success_count += 1
+                elif channel.type == "teams":
+                    if await self._send_teams(channel.config, message):
+                        success_count += 1
                 else:
                     logger.warning(f"Resolve notification: unsupported channel type {channel.type}")
             except Exception as e:
@@ -1417,10 +1429,17 @@ class NotificationService:
 **Rule:** {RULE_NAME}"""
 
     def _format_resolve_message_v2(self, alert, rule) -> str:
-        """Format resolve notification message (issue #189).
+        """Render the resolve notification message with variable substitution.
 
-        Reuses host/container variable extraction from _format_message_v2;
-        adds {RESOLVED_REASON}, {RESOLVED_AT}, {ALERT_DURATION}.
+        Substitutes {KIND}, {CONTAINER_NAME}, {HOST_NAME}, {RESOLVED_REASON},
+        {RESOLVED_AT}, {ALERT_DURATION}, {RULE_NAME}, {TITLE}, {SEVERITY}.
+        Computes ALERT_DURATION from first_seen->resolved_at and respects
+        settings.timezone_offset for RESOLVED_AT.
+
+        Note: this is intentionally simpler than _format_message_v2 because the
+        built-in resolve template uses a small subset of variables. If per-rule
+        custom resolve templates are added later, this should share a helper
+        with _format_message_v2 to keep the variable surface aligned.
         """
         settings = self.db.get_settings()
         tz_offset_minutes = settings.timezone_offset if settings else 0

@@ -1,11 +1,15 @@
 """Tests for resolve/recovery notifications (issue #189)."""
 
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 from sqlalchemy import inspect
 
 import database as database_module
 from database import DatabaseManager
 from models.settings_models import AlertRuleV2Create, AlertRuleV2Update
+from notifications import NotificationService
 
 
 @pytest.fixture
@@ -79,10 +83,6 @@ def test_alert_rule_v2_update_accepts_notify_on_resolve():
     assert rule.notify_on_resolve is True
 
 
-from datetime import datetime, timezone, timedelta
-from unittest.mock import MagicMock
-
-
 def _make_resolved_alert():
     """Build an AlertV2-like mock representing a resolved alert."""
     alert = MagicMock()
@@ -120,8 +120,6 @@ def _make_rule(notify_on_resolve=True, channels='[1]'):
 
 def test_format_resolve_message_v2_renders_default_template():
     """Default resolve template substitutes core variables."""
-    from notifications import NotificationService
-
     db = MagicMock()
     db.get_settings.return_value = MagicMock(timezone_offset=0)
     service = NotificationService(db)
@@ -138,14 +136,9 @@ def test_format_resolve_message_v2_renders_default_template():
     assert "Container Stopped Alert" in msg
 
 
-import asyncio
-
-
 @pytest.mark.asyncio
 async def test_send_resolve_v2_sends_to_configured_channels():
     """send_resolve_v2 dispatches to channels listed in rule.notify_channels_json."""
-    from notifications import NotificationService
-
     db = MagicMock()
     db.get_settings.return_value = MagicMock(timezone_offset=0)
     discord_channel = MagicMock(id=1, type="discord", config={"webhook_url": "x"}, enabled=True)
@@ -154,7 +147,7 @@ async def test_send_resolve_v2_sends_to_configured_channels():
     service = NotificationService(db)
     service.blackout_manager = MagicMock()
     service.blackout_manager.is_in_blackout_window.return_value = (False, None)
-    service._send_discord = MagicMock(return_value=asyncio.sleep(0, result=True))
+    service._send_discord = AsyncMock(return_value=True)
     service._is_rate_limited = MagicMock(return_value=False)
 
     alert = _make_resolved_alert()
@@ -169,8 +162,6 @@ async def test_send_resolve_v2_sends_to_configured_channels():
 @pytest.mark.asyncio
 async def test_send_resolve_v2_skips_when_no_channels():
     """send_resolve_v2 returns False when rule has no channels configured."""
-    from notifications import NotificationService
-
     db = MagicMock()
     service = NotificationService(db)
     service.blackout_manager = MagicMock()
@@ -185,8 +176,6 @@ async def test_send_resolve_v2_skips_when_no_channels():
 @pytest.mark.asyncio
 async def test_send_resolve_v2_skips_during_blackout():
     """send_resolve_v2 returns False when in blackout window."""
-    from notifications import NotificationService
-
     db = MagicMock()
     db.get_settings.return_value = MagicMock(timezone_offset=0)
     db.get_notification_channels.return_value = []

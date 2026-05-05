@@ -8,6 +8,7 @@ from sqlalchemy import inspect
 
 import database as database_module
 from alerts.engine import AlertEngine
+from alerts.evaluation_service import AlertEvaluationService
 from database import AlertRuleV2, AlertV2, DatabaseManager
 from models.settings_models import AlertRuleV2Create, AlertRuleV2Update
 from notifications import NotificationService
@@ -242,3 +243,161 @@ def test_engine_resolve_alert_silent_when_notify_false(db):
 
     engine._resolve_alert(alert, "manual", notify=False)
     assert engine.drain_recently_resolved() == []
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_skips_when_notify_on_resolve_false(db):
+    """Dispatcher does NOT call send_resolve_v2 if rule.notify_on_resolve=False."""
+    with db.get_session() as session:
+        rule = AlertRuleV2(
+            id="r1", name="Test", scope="container", kind="container_stopped",
+            severity="warning", enabled=True, notify_on_resolve=False,
+        )
+        session.add(rule)
+        alert = AlertV2(
+            id="a1", dedup_key="k", scope_type="container", scope_id="h:c",
+            kind="container_stopped", severity="warning", state="resolved",
+            title="X", message="Y",
+            first_seen=datetime.now(timezone.utc), last_seen=datetime.now(timezone.utc),
+            resolved_at=datetime.now(timezone.utc),
+            occurrences=1, rule_id="r1",
+            notified_at=datetime.now(timezone.utc),
+            resolve_notified_at=None,
+        )
+        session.add(alert)
+        session.commit()
+
+    notification_service = MagicMock()
+    notification_service.send_resolve_v2 = AsyncMock(return_value=True)
+
+    service = AlertEvaluationService(db=db, notification_service=notification_service)
+    await service._send_resolve_notification("a1")
+
+    notification_service.send_resolve_v2.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_skips_when_alert_was_never_notified(db):
+    """Dispatcher does NOT fire if alert.notified_at is None."""
+    with db.get_session() as session:
+        rule = AlertRuleV2(
+            id="r2", name="Test", scope="container", kind="container_stopped",
+            severity="warning", enabled=True, notify_on_resolve=True,
+        )
+        session.add(rule)
+        alert = AlertV2(
+            id="a2", dedup_key="k2", scope_type="container", scope_id="h:c",
+            kind="container_stopped", severity="warning", state="resolved",
+            title="X", message="Y",
+            first_seen=datetime.now(timezone.utc), last_seen=datetime.now(timezone.utc),
+            resolved_at=datetime.now(timezone.utc),
+            occurrences=1, rule_id="r2",
+            notified_at=None,
+        )
+        session.add(alert)
+        session.commit()
+
+    notification_service = MagicMock()
+    notification_service.send_resolve_v2 = AsyncMock(return_value=True)
+
+    service = AlertEvaluationService(db=db, notification_service=notification_service)
+    await service._send_resolve_notification("a2")
+
+    notification_service.send_resolve_v2.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_skips_when_auto_resolve_true(db):
+    """Dispatcher skips for notification-only rules (auto_resolve=True)."""
+    with db.get_session() as session:
+        rule = AlertRuleV2(
+            id="r3", name="Test", scope="container", kind="update_completed",
+            severity="info", enabled=True, notify_on_resolve=True,
+            auto_resolve=True,
+        )
+        session.add(rule)
+        alert = AlertV2(
+            id="a3", dedup_key="k3", scope_type="container", scope_id="h:c",
+            kind="update_completed", severity="info", state="resolved",
+            title="X", message="Y",
+            first_seen=datetime.now(timezone.utc), last_seen=datetime.now(timezone.utc),
+            resolved_at=datetime.now(timezone.utc),
+            occurrences=1, rule_id="r3",
+            notified_at=datetime.now(timezone.utc),
+        )
+        session.add(alert)
+        session.commit()
+
+    notification_service = MagicMock()
+    notification_service.send_resolve_v2 = AsyncMock(return_value=True)
+
+    service = AlertEvaluationService(db=db, notification_service=notification_service)
+    await service._send_resolve_notification("a3")
+
+    notification_service.send_resolve_v2.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_skips_when_already_resolve_notified(db):
+    """Idempotency: dispatcher skips if resolve_notified_at is already set."""
+    with db.get_session() as session:
+        rule = AlertRuleV2(
+            id="r4", name="Test", scope="container", kind="container_stopped",
+            severity="warning", enabled=True, notify_on_resolve=True,
+        )
+        session.add(rule)
+        alert = AlertV2(
+            id="a4", dedup_key="k4", scope_type="container", scope_id="h:c",
+            kind="container_stopped", severity="warning", state="resolved",
+            title="X", message="Y",
+            first_seen=datetime.now(timezone.utc), last_seen=datetime.now(timezone.utc),
+            resolved_at=datetime.now(timezone.utc),
+            occurrences=1, rule_id="r4",
+            notified_at=datetime.now(timezone.utc),
+            resolve_notified_at=datetime.now(timezone.utc),
+        )
+        session.add(alert)
+        session.commit()
+
+    notification_service = MagicMock()
+    notification_service.send_resolve_v2 = AsyncMock(return_value=True)
+
+    service = AlertEvaluationService(db=db, notification_service=notification_service)
+    await service._send_resolve_notification("a4")
+
+    notification_service.send_resolve_v2.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_fires_and_sets_resolve_notified_at(db):
+    """Happy path: all skip rules pass -> notification sent + resolve_notified_at set."""
+    with db.get_session() as session:
+        rule = AlertRuleV2(
+            id="r5", name="Test", scope="container", kind="container_stopped",
+            severity="warning", enabled=True, notify_on_resolve=True,
+        )
+        session.add(rule)
+        alert = AlertV2(
+            id="a5", dedup_key="k5", scope_type="container", scope_id="h:c",
+            kind="container_stopped", severity="warning", state="resolved",
+            title="X", message="Y",
+            first_seen=datetime.now(timezone.utc), last_seen=datetime.now(timezone.utc),
+            resolved_at=datetime.now(timezone.utc),
+            occurrences=1, rule_id="r5",
+            notified_at=datetime.now(timezone.utc),
+            resolve_notified_at=None,
+        )
+        session.add(alert)
+        session.commit()
+
+    notification_service = MagicMock()
+    notification_service.send_resolve_v2 = AsyncMock(return_value=True)
+
+    service = AlertEvaluationService(db=db, notification_service=notification_service)
+    await service._send_resolve_notification("a5")
+
+    notification_service.send_resolve_v2.assert_called_once()
+
+    with db.get_session() as session:
+        refreshed = session.query(AlertV2).filter(AlertV2.id == "a5").first()
+        assert refreshed.resolve_notified_at is not None

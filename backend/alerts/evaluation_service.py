@@ -738,6 +738,75 @@ class AlertEvaluationService:
         except Exception as e:
             logger.error(f"Error in _send_notification: {e}", exc_info=True)
 
+    async def _send_resolve_notification(self, alert_id: str) -> None:
+        """
+        Send resolve/recovery notification for a resolved alert (issue #189).
+
+        Skip rules:
+        1. alert.resolve_notified_at IS NOT NULL (idempotency)
+        2. alert.notified_at IS NULL (we never told the user about it)
+        3. rule.notify_on_resolve == False
+        4. rule.auto_resolve == True (notification-only mode)
+        5. blackout window -- handled inside notification_service.send_resolve_v2
+
+        On success: set alert.resolve_notified_at to now.
+        """
+        try:
+            with self.db.get_session() as session:
+                alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
+                if not alert:
+                    logger.warning(f"Resolve notification: alert {alert_id} not found")
+                    return
+
+                if alert.resolve_notified_at is not None:
+                    logger.debug(f"Resolve notification: alert {alert_id} already notified - skipping")
+                    return
+
+                if alert.notified_at is None:
+                    logger.debug(f"Resolve notification: alert {alert_id} was never notified - skipping resolve")
+                    return
+
+                rule_id = alert.rule_id
+                session.expunge(alert)
+
+            rule = self.db.get_alert_rule_v2(rule_id) if rule_id else None
+            if not rule:
+                logger.warning(f"Resolve notification: rule for alert {alert_id} not found")
+                return
+
+            if not rule.notify_on_resolve:
+                logger.debug(f"Resolve notification: rule '{rule.name}' has notify_on_resolve=False")
+                return
+
+            if rule.auto_resolve:
+                logger.debug(
+                    f"Resolve notification: rule '{rule.name}' uses auto_resolve - skipping resolve notification"
+                )
+                return
+
+            if not self.notification_service:
+                logger.warning(f"Resolve notification: no notification_service available for alert {alert_id}")
+                return
+
+            with self.db.get_session() as session:
+                alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
+                if not alert:
+                    return
+                session.expunge(alert)
+
+            success = await self.notification_service.send_resolve_v2(alert, rule)
+
+            if success:
+                with self.db.get_session() as session:
+                    alert_to_update = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
+                    if alert_to_update:
+                        alert_to_update.resolve_notified_at = datetime.now(timezone.utc)
+                        session.commit()
+                        logger.info(f"Resolve notification sent for alert {alert_id}")
+
+        except Exception as e:
+            logger.error(f"Error in _send_resolve_notification for alert {alert_id}: {e}", exc_info=True)
+
     async def _evaluate_all_rules(self):
         """Evaluate all enabled metric-driven rules"""
         try:

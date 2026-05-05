@@ -47,3 +47,38 @@ def test_alerts_v2_has_resolve_notified_at_column(db):
         inspector = inspect(session.connection())
         cols = {c["name"] for c in inspector.get_columns("alerts_v2")}
         assert "resolve_notified_at" in cols
+
+
+def test_alert_rule_v2_create_accepts_notify_on_resolve():
+    """AlertRuleV2Create model accepts notify_on_resolve field."""
+    from models.settings_models import AlertRuleV2Create
+
+    rule = AlertRuleV2Create(
+        name="test",
+        scope="container",
+        kind="container_stopped",
+        severity="warning",
+        notify_on_resolve=True,
+    )
+    assert rule.notify_on_resolve is True
+
+
+def test_alert_rule_v2_create_defaults_notify_on_resolve_false():
+    """notify_on_resolve defaults to False when not provided."""
+    from models.settings_models import AlertRuleV2Create
+
+    rule = AlertRuleV2Create(
+        name="test",
+        scope="container",
+        kind="container_stopped",
+        severity="warning",
+    )
+    assert rule.notify_on_resolve is False
+
+
+def test_alert_rule_v2_update_accepts_notify_on_resolve():
+    """AlertRuleV2Update model accepts notify_on_resolve field."""
+    from models.settings_models import AlertRuleV2Update
+
+    rule = AlertRuleV2Update(notify_on_resolve=True)
+    assert rule.notify_on_resolve is True

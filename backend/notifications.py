@@ -1417,8 +1417,8 @@ class NotificationService:
 **Time:** {TIMESTAMP}
 **Rule:** {RULE_NAME}"""
 
-    def _get_default_resolve_template_v2(self, kind: Optional[str] = None) -> str:
-        """Built-in default template for resolve/recovery notifications (issue #189)."""
+    def _get_default_resolve_template_v2(self) -> str:
+        """Built-in default template for resolve/recovery notifications."""
         return """✅ **Recovered: {KIND}**
 
 **Container:** {CONTAINER_NAME}
@@ -1428,57 +1428,62 @@ class NotificationService:
 **Resolved at:** {RESOLVED_AT}
 **Rule:** {RULE_NAME}"""
 
+    def _get_local_tz(self) -> timezone:
+        """Build the local timezone object from settings.timezone_offset (minutes)."""
+        settings = self.db.get_settings()
+        offset_minutes = settings.timezone_offset if settings else 0
+        return timezone(timedelta(minutes=offset_minutes))
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        """Format a duration as 'Xs', 'Xm Ys', or 'Xh Ym'."""
+        if seconds < 60:
+            return f"{int(seconds)}s"
+        if seconds < 3600:
+            return f"{int(seconds // 60)}m {int(seconds % 60)}s"
+        return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m"
+
     def _format_resolve_message_v2(self, alert, rule) -> str:
         """Render the resolve notification message with variable substitution.
 
         Substitutes {KIND}, {CONTAINER_NAME}, {HOST_NAME}, {RESOLVED_REASON},
         {RESOLVED_AT}, {ALERT_DURATION}, {RULE_NAME}, {TITLE}, {SEVERITY}.
         Computes ALERT_DURATION from first_seen->resolved_at and respects
-        settings.timezone_offset for RESOLVED_AT.
+        settings.timezone_offset for RESOLVED_AT (which includes the offset
+        suffix so external receivers can disambiguate).
 
-        Note: this is intentionally simpler than _format_message_v2 because the
-        built-in resolve template uses a small subset of variables. If per-rule
-        custom resolve templates are added later, this should share a helper
-        with _format_message_v2 to keep the variable surface aligned.
+        Intentionally simpler than _format_message_v2 because the built-in
+        resolve template uses a small subset of variables. If per-rule custom
+        resolve templates are added later, this should share a substitution
+        helper with _format_message_v2.
         """
-        settings = self.db.get_settings()
-        tz_offset_minutes = settings.timezone_offset if settings else 0
-        local_tz = timezone(timedelta(minutes=tz_offset_minutes))
+        local_tz = self._get_local_tz()
 
         resolved_at = alert.resolved_at or datetime.now(timezone.utc)
         if resolved_at.tzinfo is None:
             resolved_at = resolved_at.replace(tzinfo=timezone.utc)
         resolved_local = resolved_at.astimezone(local_tz)
 
-        # Duration: first_seen to resolved_at
         duration_str = "unknown"
         if alert.first_seen:
-            first_seen = alert.first_seen if alert.first_seen.tzinfo else alert.first_seen.replace(tzinfo=timezone.utc)
-            duration_seconds = (resolved_at - first_seen).total_seconds()
-            if duration_seconds < 60:
-                duration_str = f"{int(duration_seconds)}s"
-            elif duration_seconds < 3600:
-                duration_str = f"{int(duration_seconds // 60)}m {int(duration_seconds % 60)}s"
-            else:
-                hours = int(duration_seconds // 3600)
-                minutes = int((duration_seconds % 3600) // 60)
-                duration_str = f"{hours}h {minutes}m"
-
-        template = self._get_default_resolve_template_v2(rule.kind)
+            first_seen = alert.first_seen
+            if first_seen.tzinfo is None:
+                first_seen = first_seen.replace(tzinfo=timezone.utc)
+            duration_str = self._format_duration((resolved_at - first_seen).total_seconds())
 
         substitutions = {
             "{KIND}": alert.kind or "",
             "{CONTAINER_NAME}": alert.container_name or "N/A",
             "{HOST_NAME}": alert.host_name or "N/A",
             "{RESOLVED_REASON}": alert.resolved_reason or "Clear condition met",
-            "{RESOLVED_AT}": resolved_local.strftime("%Y-%m-%d %H:%M:%S"),
+            "{RESOLVED_AT}": resolved_local.strftime("%Y-%m-%d %H:%M:%S %z"),
             "{ALERT_DURATION}": duration_str,
             "{RULE_NAME}": rule.name or "",
             "{TITLE}": alert.title or "",
             "{SEVERITY}": (alert.severity or "").upper(),
         }
 
-        message = template
+        message = self._get_default_resolve_template_v2()
         for key, val in substitutions.items():
             message = message.replace(key, str(val))
         return message
@@ -1530,12 +1535,7 @@ class NotificationService:
             template: Message template string
             action_url: Optional URL for one-click action (e.g., update container)
         """
-        # Get timezone offset from settings
-        settings = self.db.get_settings()
-        tz_offset_minutes = settings.timezone_offset if settings else 0
-
-        # Create timezone object from offset
-        local_tz = timezone(timedelta(minutes=tz_offset_minutes))
+        local_tz = self._get_local_tz()
 
         # Convert UTC timestamps to local time
         first_seen_local = alert.first_seen.replace(tzinfo=timezone.utc).astimezone(local_tz) if alert.first_seen else datetime.now(timezone.utc)

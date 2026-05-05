@@ -739,15 +739,17 @@ class AlertEvaluationService:
             logger.error(f"Error in _send_notification: {e}", exc_info=True)
 
     async def _send_resolve_notification(self, alert_id: str) -> None:
-        """
-        Send resolve/recovery notification for a resolved alert (issue #189).
+        """Send resolve/recovery notification for a resolved alert.
 
         Skip rules:
         1. alert.resolve_notified_at IS NOT NULL (idempotency)
         2. alert.notified_at IS NULL (we never told the user about it)
         3. rule.notify_on_resolve == False
         4. rule.auto_resolve == True (notification-only mode)
-        5. blackout window -- handled inside notification_service.send_resolve_v2
+
+        Note: blackout suppression is enforced inside notification_service.send_resolve_v2;
+        on blackout the call returns False and resolve_notified_at stays NULL, allowing
+        a future retry once the window ends.
 
         On success: set alert.resolve_notified_at to now.
         """
@@ -787,12 +789,6 @@ class AlertEvaluationService:
             if not self.notification_service:
                 logger.warning(f"Resolve notification: no notification_service available for alert {alert_id}")
                 return
-
-            with self.db.get_session() as session:
-                alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
-                if not alert:
-                    return
-                session.expunge(alert)
 
             success = await self.notification_service.send_resolve_v2(alert, rule)
 

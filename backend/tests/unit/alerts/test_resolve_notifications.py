@@ -397,6 +397,9 @@ async def test_dispatcher_fires_and_sets_resolve_notified_at(db):
     await service._send_resolve_notification("a5")
 
     notification_service.send_resolve_v2.assert_called_once()
+    sent_alert, sent_rule = notification_service.send_resolve_v2.call_args.args
+    assert sent_alert.id == "a5"
+    assert sent_rule.id == "r5"
 
     with db.get_session() as session:
         refreshed = session.query(AlertV2).filter(AlertV2.id == "a5").first()

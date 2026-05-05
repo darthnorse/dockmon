@@ -90,10 +90,9 @@ class AlertEngine:
         # Track pending alert clears waiting for clear delay to pass
         # Key: alert_id, Value: PendingAlertClear
         self._pending_alert_clears: Dict[str, PendingAlertClear] = {}
-        # Resolve notification queue (issue #189)
         # _resolve_alert(notify=True) appends alert ids here; the EvaluationService
         # background loop drains them and dispatches resolve notifications.
-        self._recently_resolved: list[str] = []
+        self._recently_resolved: List[str] = []
 
     # ==================== Deduplication ====================
 
@@ -257,7 +256,7 @@ class AlertEngine:
             reason: Human-readable resolution reason.
             notify: If True (default), queue alert id for resolve notification dispatch.
                     Pass notify=False for silent paths (e.g., manual user-initiated resolve
-                    via the API -- see issue #189).
+                    via the API).
         """
         with self.db.get_session() as session:
             alert = session.merge(alert)
@@ -275,8 +274,12 @@ class AlertEngine:
 
             return alert
 
-    def drain_recently_resolved(self) -> list[str]:
-        """Return and clear the queue of alert ids resolved with notify=True (issue #189)."""
+    def drain_recently_resolved(self) -> List[str]:
+        """Return the queued resolved-alert ids and clear the queue.
+
+        Called by the EvaluationService background loop to dispatch resolve
+        notifications for alerts resolved with notify=True.
+        """
         ids = list(self._recently_resolved)
         self._recently_resolved.clear()
         return ids

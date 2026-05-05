@@ -77,3 +77,125 @@ def test_alert_rule_v2_update_accepts_notify_on_resolve():
     """AlertRuleV2Update model accepts notify_on_resolve field."""
     rule = AlertRuleV2Update(notify_on_resolve=True)
     assert rule.notify_on_resolve is True
+
+
+from datetime import datetime, timezone, timedelta
+from unittest.mock import MagicMock
+
+
+def _make_resolved_alert():
+    """Build an AlertV2-like mock representing a resolved alert."""
+    alert = MagicMock()
+    alert.id = "alert-123"
+    alert.title = "Container Stopped: nginx"
+    alert.message = "Container nginx on host-a stopped"
+    alert.scope_type = "container"
+    alert.scope_id = "host-uuid-abc:67c5d2141338"
+    alert.kind = "container_stopped"
+    alert.severity = "warning"
+    alert.host_name = "host-a"
+    alert.container_name = "nginx"
+    alert.first_seen = datetime(2026, 5, 4, 10, 0, 0, tzinfo=timezone.utc)
+    alert.last_seen = datetime(2026, 5, 4, 10, 5, 0, tzinfo=timezone.utc)
+    alert.resolved_at = datetime(2026, 5, 4, 10, 5, 0, tzinfo=timezone.utc)
+    alert.resolved_reason = "Clear condition met"
+    alert.event_context_json = None
+    alert.labels_json = None
+    return alert
+
+
+def _make_rule(notify_on_resolve=True, channels='[1]'):
+    """Build an AlertRuleV2-like mock."""
+    rule = MagicMock()
+    rule.id = "rule-1"
+    rule.name = "Container Stopped Alert"
+    rule.kind = "container_stopped"
+    rule.metric = None
+    rule.notify_on_resolve = notify_on_resolve
+    rule.notify_channels_json = channels
+    rule.custom_template = None
+    rule.auto_resolve = False
+    return rule
+
+
+def test_format_resolve_message_v2_renders_default_template():
+    """Default resolve template substitutes core variables."""
+    from notifications import NotificationService
+
+    db = MagicMock()
+    db.get_settings.return_value = MagicMock(timezone_offset=0)
+    service = NotificationService(db)
+
+    alert = _make_resolved_alert()
+    rule = _make_rule()
+
+    msg = service._format_resolve_message_v2(alert, rule)
+
+    assert "Recovered" in msg
+    assert "nginx" in msg
+    assert "host-a" in msg
+    assert "Clear condition met" in msg
+    assert "Container Stopped Alert" in msg
+
+
+import asyncio
+
+
+@pytest.mark.asyncio
+async def test_send_resolve_v2_sends_to_configured_channels():
+    """send_resolve_v2 dispatches to channels listed in rule.notify_channels_json."""
+    from notifications import NotificationService
+
+    db = MagicMock()
+    db.get_settings.return_value = MagicMock(timezone_offset=0)
+    discord_channel = MagicMock(id=1, type="discord", config={"webhook_url": "x"}, enabled=True)
+    db.get_notification_channels.return_value = [discord_channel]
+
+    service = NotificationService(db)
+    service.blackout_manager = MagicMock()
+    service.blackout_manager.is_in_blackout_window.return_value = (False, None)
+    service._send_discord = MagicMock(return_value=asyncio.sleep(0, result=True))
+    service._is_rate_limited = MagicMock(return_value=False)
+
+    alert = _make_resolved_alert()
+    rule = _make_rule(channels='[1]')
+
+    result = await service.send_resolve_v2(alert, rule)
+
+    assert result is True
+    service._send_discord.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_send_resolve_v2_skips_when_no_channels():
+    """send_resolve_v2 returns False when rule has no channels configured."""
+    from notifications import NotificationService
+
+    db = MagicMock()
+    service = NotificationService(db)
+    service.blackout_manager = MagicMock()
+
+    alert = _make_resolved_alert()
+    rule = _make_rule(channels=None)
+
+    result = await service.send_resolve_v2(alert, rule)
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_send_resolve_v2_skips_during_blackout():
+    """send_resolve_v2 returns False when in blackout window."""
+    from notifications import NotificationService
+
+    db = MagicMock()
+    db.get_settings.return_value = MagicMock(timezone_offset=0)
+    db.get_notification_channels.return_value = []
+    service = NotificationService(db)
+    service.blackout_manager = MagicMock()
+    service.blackout_manager.is_in_blackout_window.return_value = (True, "Maintenance Window")
+
+    alert = _make_resolved_alert()
+    rule = _make_rule()
+
+    result = await service.send_resolve_v2(alert, rule)
+    assert result is False

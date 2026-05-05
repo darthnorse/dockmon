@@ -1240,6 +1240,84 @@ class NotificationService:
                 logger.error(f"Error sending alert v2 notification: {e}", exc_info=True)
                 return False
 
+    async def send_resolve_v2(self, alert, rule) -> bool:
+        """
+        Send resolve/recovery notification for Alert System v2 (issue #189).
+
+        Skip conditions (caller should check rule.notify_on_resolve before calling;
+        this method enforces channel/blackout checks):
+        - No channels configured -> return False
+        - Blackout window active -> return False
+        - Channel rate-limited -> skip channel, continue with others
+
+        Returns True if notification dispatched to at least one channel.
+        """
+        logger.info(f"send_resolve_v2 START: alert.id={alert.id}, rule={rule.name if rule else 'None'}")
+
+        if not rule:
+            logger.warning(f"No rule for resolve notification of alert {alert.id}")
+            return False
+
+        try:
+            channel_ids = json.loads(rule.notify_channels_json) if rule.notify_channels_json else []
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(f"Invalid notify_channels_json for rule {rule.id}")
+            return False
+
+        if not channel_ids:
+            logger.info(f"No channels configured for rule {rule.name} - resolve notification skipped")
+            return False
+
+        is_blackout, window_name = self.blackout_manager.is_in_blackout_window()
+        if is_blackout:
+            logger.info(f"Suppressed resolve notification for alert {alert.id} during blackout '{window_name}'")
+            return False
+
+        channels = self.db.get_notification_channels(enabled_only=True)
+        channel_map_by_id = {ch.id: ch for ch in channels}
+        channel_map_by_type = {ch.type: ch for ch in channels}
+
+        message = self._format_resolve_message_v2(alert, rule)
+        success_count = 0
+
+        for channel_id in channel_ids:
+            channel = None
+            if isinstance(channel_id, int) and channel_id in channel_map_by_id:
+                channel = channel_map_by_id[channel_id]
+            elif isinstance(channel_id, str) and channel_id in channel_map_by_type:
+                channel = channel_map_by_type[channel_id]
+            else:
+                logger.warning(f"Resolve notification: channel '{channel_id}' not found / disabled")
+                continue
+
+            if self._is_rate_limited(channel.type):
+                logger.warning(f"Resolve notification: skipping rate-limited {channel.type}")
+                continue
+
+            try:
+                if channel.type == "telegram":
+                    if await self._send_telegram(channel.config, message):
+                        success_count += 1
+                elif channel.type == "discord":
+                    if await self._send_discord(channel.config, message):
+                        success_count += 1
+                elif channel.type == "slack":
+                    if await self._send_slack(channel.config, message):
+                        success_count += 1
+                elif channel.type == "pushover":
+                    if await self._send_pushover(channel.config, message, f"Recovered: {alert.title}"):
+                        success_count += 1
+                elif channel.type == "gotify":
+                    if await self._send_gotify(channel.config, message, title=f"Recovered: {alert.title}"):
+                        success_count += 1
+                else:
+                    logger.warning(f"Resolve notification: unsupported channel type {channel.type}")
+            except Exception as e:
+                logger.error(f"Resolve notification: failed to send to {channel.type}: {e}", exc_info=True)
+
+        logger.info(f"send_resolve_v2 done: alert {alert.id}, {success_count}/{len(channel_ids)} channels succeeded")
+        return success_count > 0
+
     def _get_template_for_alert_v2(self, alert, rule):
         """Get the appropriate template for v2 alert based on priority"""
         # Priority 1: Custom template on the rule
@@ -1326,6 +1404,65 @@ class NotificationService:
 **Current Value:** {CURRENT_VALUE} (threshold: {THRESHOLD})
 **Time:** {TIMESTAMP}
 **Rule:** {RULE_NAME}"""
+
+    def _get_default_resolve_template_v2(self, kind: Optional[str] = None) -> str:
+        """Built-in default template for resolve/recovery notifications (issue #189)."""
+        return """✅ **Recovered: {KIND}**
+
+**Container:** {CONTAINER_NAME}
+**Host:** {HOST_NAME}
+**Resolution:** {RESOLVED_REASON}
+**Was active for:** {ALERT_DURATION}
+**Resolved at:** {RESOLVED_AT}
+**Rule:** {RULE_NAME}"""
+
+    def _format_resolve_message_v2(self, alert, rule) -> str:
+        """Format resolve notification message (issue #189).
+
+        Reuses host/container variable extraction from _format_message_v2;
+        adds {RESOLVED_REASON}, {RESOLVED_AT}, {ALERT_DURATION}.
+        """
+        settings = self.db.get_settings()
+        tz_offset_minutes = settings.timezone_offset if settings else 0
+        local_tz = timezone(timedelta(minutes=tz_offset_minutes))
+
+        resolved_at = alert.resolved_at or datetime.now(timezone.utc)
+        if resolved_at.tzinfo is None:
+            resolved_at = resolved_at.replace(tzinfo=timezone.utc)
+        resolved_local = resolved_at.astimezone(local_tz)
+
+        # Duration: first_seen to resolved_at
+        duration_str = "unknown"
+        if alert.first_seen:
+            first_seen = alert.first_seen if alert.first_seen.tzinfo else alert.first_seen.replace(tzinfo=timezone.utc)
+            duration_seconds = (resolved_at - first_seen).total_seconds()
+            if duration_seconds < 60:
+                duration_str = f"{int(duration_seconds)}s"
+            elif duration_seconds < 3600:
+                duration_str = f"{int(duration_seconds // 60)}m {int(duration_seconds % 60)}s"
+            else:
+                hours = int(duration_seconds // 3600)
+                minutes = int((duration_seconds % 3600) // 60)
+                duration_str = f"{hours}h {minutes}m"
+
+        template = self._get_default_resolve_template_v2(rule.kind)
+
+        substitutions = {
+            "{KIND}": alert.kind or "",
+            "{CONTAINER_NAME}": alert.container_name or "N/A",
+            "{HOST_NAME}": alert.host_name or "N/A",
+            "{RESOLVED_REASON}": alert.resolved_reason or "Clear condition met",
+            "{RESOLVED_AT}": resolved_local.strftime("%Y-%m-%d %H:%M:%S"),
+            "{ALERT_DURATION}": duration_str,
+            "{RULE_NAME}": rule.name or "",
+            "{TITLE}": alert.title or "",
+            "{SEVERITY}": (alert.severity or "").upper(),
+        }
+
+        message = template
+        for key, val in substitutions.items():
+            message = message.replace(key, str(val))
+        return message
 
     def _get_update_status(self, kind: str) -> str:
         """Map alert kind to human-readable update status"""

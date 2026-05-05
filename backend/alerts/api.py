@@ -215,10 +215,7 @@ async def resolve_alert(
         if alert.state == "resolved":
             raise HTTPException(status_code=400, detail="Alert already resolved")
 
-        # Resolve the alert.
-        # Manual resolves are SILENT for now -- the user clicked it, they already know.
-        # When the broader "suppress notifications for user-initiated actions" feature
-        # lands (separate issue), this will be controlled by a per-user preference.
+        # Manual resolves are silent: the user who clicked already knows.
         alert = engine._resolve_alert(alert, request.reason, notify=False)
 
         security_audit(

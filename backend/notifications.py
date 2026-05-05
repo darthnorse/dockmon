@@ -1025,6 +1025,60 @@ class NotificationService:
             logger.error(f"Failed to send message to channel {channel_id}: {e}")
             return False
 
+    @staticmethod
+    def _resolve_channel(channel_id, by_id_map, by_type_map, *, context: str):
+        """Resolve a channel by integer id or string type. Returns None and logs if unmapped."""
+        if isinstance(channel_id, int) and channel_id in by_id_map:
+            return by_id_map[channel_id]
+        if isinstance(channel_id, str) and channel_id in by_type_map:
+            return by_type_map[channel_id]
+        logger.warning(f"{context}: channel '{channel_id}' not found / disabled")
+        return None
+
+    async def _dispatch_to_channel(
+        self,
+        channel,
+        message: str,
+        *,
+        alert,
+        title: str,
+        action_url: str = '',
+        context: str,
+    ) -> bool:
+        """Send one rendered message to one channel.
+
+        Applies the rate-limit check and the per-channel-type send dispatch.
+        Returns True if the underlying _send_* method reported success.
+        """
+        if self._is_rate_limited(channel.type):
+            logger.warning(f"{context}: skipping rate-limited {channel.type}")
+            return False
+
+        try:
+            if channel.type == "telegram":
+                return await self._send_telegram(channel.config, message, action_url=action_url)
+            if channel.type == "discord":
+                return await self._send_discord(channel.config, message, action_url=action_url)
+            if channel.type == "slack":
+                return await self._send_slack(channel.config, message, action_url=action_url)
+            if channel.type == "pushover":
+                return await self._send_pushover(channel.config, message, title, action_url=action_url)
+            if channel.type == "gotify":
+                return await self._send_gotify(channel.config, message, title=title, action_url=action_url)
+            if channel.type == "ntfy":
+                return await self._send_ntfy(channel.config, message, title=title, action_url=action_url)
+            if channel.type == "smtp":
+                return await self._send_smtp(channel.config, message, title=title, action_url=action_url)
+            if channel.type == "webhook":
+                return await self._send_webhook(channel.config, message, event=alert, title=title, action_url=action_url)
+            if channel.type == "teams":
+                return await self._send_teams(channel.config, message, action_url=action_url)
+            logger.warning(f"{context}: unknown channel type '{channel.type}'")
+            return False
+        except Exception as e:
+            logger.error(f"{context}: failed to send to {channel.type}: {e}", exc_info=True)
+            return False
+
     async def send_alert_v2(self, alert, rule=None) -> bool:
         """
         Send notifications for Alert System v2
@@ -1153,54 +1207,15 @@ class NotificationService:
 
             # Send to each configured channel
             for channel_id in channel_ids:
-                # Try to find channel by ID first (integer), then by type (string)
-                channel = None
-                if isinstance(channel_id, int) and channel_id in channel_map_by_id:
-                    channel = channel_map_by_id[channel_id]
-                elif isinstance(channel_id, str) and channel_id in channel_map_by_type:
-                    channel = channel_map_by_type[channel_id]
-                else:
-                    logger.warning(f"Notification channel '{channel_id}' not found or not enabled")
+                channel = self._resolve_channel(channel_id, channel_map_by_id, channel_map_by_type, context="Notification")
+                if channel is None:
                     continue
-
-                if channel:
-                    # Check if channel is rate-limited
-                    if self._is_rate_limited(channel.type):
-                        logger.warning(f"Skipping {channel.type} - currently rate limited")
-                        continue
-
-                    try:
-                        if channel.type == "telegram":
-                            if await self._send_telegram(channel.config, message, action_url=action_url):
-                                success_count += 1
-                        elif channel.type == "discord":
-                            if await self._send_discord(channel.config, message, action_url=action_url):
-                                success_count += 1
-                        elif channel.type == "slack":
-                            if await self._send_slack(channel.config, message, action_url=action_url):
-                                success_count += 1
-                        elif channel.type == "pushover":
-                            if await self._send_pushover(channel.config, message, alert.title, action_url=action_url):
-                                success_count += 1
-                        elif channel.type == "gotify":
-                            if await self._send_gotify(channel.config, message, title=alert.title, action_url=action_url):
-                                success_count += 1
-                        elif channel.type == "ntfy":
-                            if await self._send_ntfy(channel.config, message, title=alert.title, action_url=action_url):
-                                success_count += 1
-                        elif channel.type == "smtp":
-                            if await self._send_smtp(channel.config, message, title=alert.title, action_url=action_url):
-                                success_count += 1
-                        elif channel.type == "webhook":
-                            if await self._send_webhook(channel.config, message, event=alert, title=alert.title, action_url=action_url):
-                                success_count += 1
-                        elif channel.type == "teams":
-                            if await self._send_teams(channel.config, message, action_url=action_url):
-                                success_count += 1
-                        else:
-                            logger.warning(f"Unknown channel type '{channel.type}' for channel {channel.name}")
-                    except Exception as e:
-                        logger.error(f"Failed to send alert to channel {channel.name}: {e}")
+                if await self._dispatch_to_channel(
+                    channel, message,
+                    alert=alert, title=alert.title, action_url=action_url,
+                    context=f"Alert {alert.id}",
+                ):
+                    success_count += 1
 
             # Mark operation as committed if any notification succeeded
             if success_count > 0:
@@ -1278,54 +1293,19 @@ class NotificationService:
         channel_map_by_type = {ch.type: ch for ch in channels}
 
         message = self._format_resolve_message_v2(alert, rule)
+        title = f"Recovered: {alert.title}"
         success_count = 0
 
         for channel_id in channel_ids:
-            channel = None
-            if isinstance(channel_id, int) and channel_id in channel_map_by_id:
-                channel = channel_map_by_id[channel_id]
-            elif isinstance(channel_id, str) and channel_id in channel_map_by_type:
-                channel = channel_map_by_type[channel_id]
-            else:
-                logger.warning(f"Resolve notification: channel '{channel_id}' not found / disabled")
+            channel = self._resolve_channel(channel_id, channel_map_by_id, channel_map_by_type, context="Resolve notification")
+            if channel is None:
                 continue
-
-            if self._is_rate_limited(channel.type):
-                logger.warning(f"Resolve notification: skipping rate-limited {channel.type}")
-                continue
-
-            try:
-                if channel.type == "telegram":
-                    if await self._send_telegram(channel.config, message):
-                        success_count += 1
-                elif channel.type == "discord":
-                    if await self._send_discord(channel.config, message):
-                        success_count += 1
-                elif channel.type == "slack":
-                    if await self._send_slack(channel.config, message):
-                        success_count += 1
-                elif channel.type == "pushover":
-                    if await self._send_pushover(channel.config, message, f"Recovered: {alert.title}"):
-                        success_count += 1
-                elif channel.type == "gotify":
-                    if await self._send_gotify(channel.config, message, title=f"Recovered: {alert.title}"):
-                        success_count += 1
-                elif channel.type == "ntfy":
-                    if await self._send_ntfy(channel.config, message, title=f"Recovered: {alert.title}"):
-                        success_count += 1
-                elif channel.type == "smtp":
-                    if await self._send_smtp(channel.config, message, title=f"Recovered: {alert.title}"):
-                        success_count += 1
-                elif channel.type == "webhook":
-                    if await self._send_webhook(channel.config, message, event=alert, title=f"Recovered: {alert.title}"):
-                        success_count += 1
-                elif channel.type == "teams":
-                    if await self._send_teams(channel.config, message):
-                        success_count += 1
-                else:
-                    logger.warning(f"Resolve notification: unsupported channel type {channel.type}")
-            except Exception as e:
-                logger.error(f"Resolve notification: failed to send to {channel.type}: {e}", exc_info=True)
+            if await self._dispatch_to_channel(
+                channel, message,
+                alert=alert, title=title,
+                context=f"Resolve {alert.id}",
+            ):
+                success_count += 1
 
         logger.info(f"send_resolve_v2 done: alert {alert.id}, {success_count}/{len(channel_ids)} channels succeeded")
         return success_count > 0

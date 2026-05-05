@@ -966,8 +966,7 @@ class AlertRuleV2(Base):
     # Notifications
     notify_channels_json = Column(Text, nullable=True)  # JSON: ["slack", "telegram"]
     custom_template = Column(Text, nullable=True)  # Custom message template for this rule
-    # Resolve/recovery notifications (issue #189)
-    notify_on_resolve = Column(Boolean, default=False, nullable=False)
+    notify_on_resolve = Column(Boolean, default=False, server_default=text("0"), nullable=False)
 
     # Lifecycle
     created_at = Column(DateTime, default=utcnow, nullable=False)
@@ -1022,8 +1021,7 @@ class AlertV2(Base):
     last_notification_attempt_at = Column(DateTime, nullable=True)  # First notification attempt (for 24h timeout)
     next_retry_at = Column(DateTime, nullable=True)  # When to retry next (exponential backoff)
     suppressed_by_blackout = Column(Boolean, default=False, nullable=False)  # Alert suppressed during blackout window
-    # Resolve notification tracking (issue #189) — idempotency for resolve notifications
-    resolve_notified_at = Column(DateTime, nullable=True)
+    resolve_notified_at = Column(DateTime, nullable=True)  # Set once resolve dispatch is decided (sent or deliberately skipped)
 
     # Relationships
     rule = relationship("AlertRuleV2", foreign_keys=[rule_id])
@@ -1677,29 +1675,29 @@ class DatabaseManager:
                         settings.polling_interval_migrated = True
                         session.commit()
 
-                # Migration: Add custom_template column to alert_rules_v2 table
-                alert_rules_inspector = session.connection().engine.dialect.get_columns(session.connection(), 'alert_rules_v2')
-                alert_rules_column_names = [col['name'] for col in alert_rules_inspector]
+                def _table_columns(table_name):
+                    return {
+                        col['name']
+                        for col in session.connection().engine.dialect.get_columns(
+                            session.connection(), table_name
+                        )
+                    }
 
-                if 'custom_template' not in alert_rules_column_names:
+                alert_rules_v2_cols = _table_columns('alert_rules_v2')
+
+                if 'custom_template' not in alert_rules_v2_cols:
                     session.execute(text("ALTER TABLE alert_rules_v2 ADD COLUMN custom_template TEXT"))
                     session.commit()
                     logger.info("Added custom_template column to alert_rules_v2 table")
 
-                # Migration: Add notify_on_resolve column to alert_rules_v2 (issue #189)
-                if 'notify_on_resolve' not in alert_rules_column_names:
+                if 'notify_on_resolve' not in alert_rules_v2_cols:
                     session.execute(text(
                         "ALTER TABLE alert_rules_v2 ADD COLUMN notify_on_resolve BOOLEAN NOT NULL DEFAULT 0"
                     ))
                     session.commit()
                     logger.info("Added notify_on_resolve column to alert_rules_v2 table")
 
-                # Migration: Add resolve_notified_at column to alerts_v2 (issue #189)
-                alerts_v2_inspector = session.connection().engine.dialect.get_columns(
-                    session.connection(), 'alerts_v2'
-                )
-                alerts_v2_column_names = [col['name'] for col in alerts_v2_inspector]
-                if 'resolve_notified_at' not in alerts_v2_column_names:
+                if 'resolve_notified_at' not in _table_columns('alerts_v2'):
                     session.execute(text(
                         "ALTER TABLE alerts_v2 ADD COLUMN resolve_notified_at DATETIME"
                     ))

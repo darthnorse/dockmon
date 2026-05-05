@@ -1704,6 +1704,23 @@ class DatabaseManager:
                     session.commit()
                     logger.info("Added resolve_notified_at column to alerts_v2 table")
 
+                # One-time backfill: stamp resolve_notified_at for pre-existing resolved
+                # alerts so the new dispatcher loop doesn't replay them when a user later
+                # enables notify_on_resolve on a rule with historical resolved alerts.
+                if 'resolve_notification_backfill_done' not in _table_columns('global_settings'):
+                    session.execute(text(
+                        "ALTER TABLE global_settings ADD COLUMN resolve_notification_backfill_done BOOLEAN NOT NULL DEFAULT 0"
+                    ))
+                    session.execute(text(
+                        "UPDATE alerts_v2 SET resolve_notified_at = resolved_at "
+                        "WHERE state = 'resolved' AND resolved_at IS NOT NULL AND resolve_notified_at IS NULL"
+                    ))
+                    session.execute(text(
+                        "UPDATE global_settings SET resolve_notification_backfill_done = 1"
+                    ))
+                    session.commit()
+                    logger.info("Backfilled resolve_notified_at for pre-existing resolved alerts")
+
                 # Migration: Clear old tag data (starting fresh with normalized schema)
                 # The new tag system uses 'tags' and 'tag_assignments' tables
                 table_names = session.connection().engine.dialect.get_table_names(session.connection())

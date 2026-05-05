@@ -747,84 +747,89 @@ class AlertEvaluationService:
         except Exception as e:
             logger.error(f"Error in _send_notification: {e}", exc_info=True)
 
+    def _stamp_resolve_notified_at(self, alert_id: str) -> None:
+        """Atomic UPDATE to set resolve_notified_at, marking dispatch decided."""
+        with self.db.get_session() as session:
+            session.query(AlertV2).filter(AlertV2.id == alert_id).update(
+                {"resolve_notified_at": datetime.now(timezone.utc)}
+            )
+            session.commit()
+
     async def _send_resolve_notification(self, alert_id: str) -> None:
         """Send resolve/recovery notification for a resolved alert.
 
-        Skip rules:
-        1. alert.resolve_notified_at IS NOT NULL (idempotency)
-        2. alert.notified_at IS NULL (we never told the user about it)
-        3. rule.notify_on_resolve == False
-        4. rule.auto_resolve == True (notification-only mode)
+        The pending-resolve query in _drain_and_dispatch_resolves filters most
+        ineligible alerts out at query time. The defensive checks below catch any
+        race where state changed between query and dispatch.
 
-        Note: blackout suppression is enforced inside notification_service.send_resolve_v2;
-        on blackout the call returns False and resolve_notified_at stays NULL, allowing
-        a future retry once the window ends.
-
-        On success: set alert.resolve_notified_at to now.
+        Outcomes:
+        - Success: stamp resolve_notified_at (mark dispatch done).
+        - Terminal skip (alert vanished, rule deleted, rule changed to opt out):
+          stamp resolve_notified_at so the alert is not re-queried.
+        - Temporary failure (blackout active, all channels rate-limited, send error):
+          leave resolve_notified_at NULL so the next loop tick retries.
         """
         try:
             with self.db.get_session() as session:
                 alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
                 if not alert:
-                    logger.warning(f"Resolve notification: alert {alert_id} not found")
-                    return
+                    return  # vanished — nothing to stamp
 
                 if alert.resolve_notified_at is not None:
-                    logger.debug(f"Resolve notification: alert {alert_id} already notified - skipping")
-                    return
+                    return  # race: already done
 
                 if alert.notified_at is None:
-                    logger.debug(f"Resolve notification: alert {alert_id} was never notified - skipping resolve")
-                    return
+                    self._stamp_resolve_notified_at(alert_id)
+                    return  # terminal: never notified
 
                 rule_id = alert.rule_id
                 session.expunge(alert)
 
             rule = self.db.get_alert_rule_v2(rule_id) if rule_id else None
-            if not rule:
-                logger.warning(f"Resolve notification: rule for alert {alert_id} not found")
-                return
-
-            if not rule.notify_on_resolve:
-                logger.debug(f"Resolve notification: rule '{rule.name}' has notify_on_resolve=False")
-                return
-
-            if rule.auto_resolve:
-                logger.debug(
-                    f"Resolve notification: rule '{rule.name}' uses auto_resolve - skipping resolve notification"
-                )
-                return
+            if not rule or not rule.notify_on_resolve or rule.auto_resolve:
+                self._stamp_resolve_notified_at(alert_id)
+                return  # terminal: rule no longer eligible
 
             if not self.notification_service:
-                logger.warning(f"Resolve notification: no notification_service available for alert {alert_id}")
-                return
+                logger.warning(f"Resolve notification: no notification_service for alert {alert_id}")
+                return  # temporary: no service wired
 
-            success = await self.notification_service.send_resolve_v2(alert, rule)
-
-            if success:
-                with self.db.get_session() as session:
-                    alert_to_update = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
-                    if alert_to_update:
-                        alert_to_update.resolve_notified_at = datetime.now(timezone.utc)
-                        session.commit()
-                        logger.info(f"Resolve notification sent for alert {alert_id}")
+            if await self.notification_service.send_resolve_v2(alert, rule):
+                self._stamp_resolve_notified_at(alert_id)
+                logger.info(f"Resolve notification sent for alert {alert_id}")
+            # else: temporary failure (blackout / rate-limited / send error) — retry next tick
 
         except Exception as e:
             logger.error(f"Error in _send_resolve_notification for alert {alert_id}: {e}", exc_info=True)
 
     async def _drain_and_dispatch_resolves(self) -> None:
-        """Drain engine's resolve queue and dispatch notifications."""
-        ids = self.engine.drain_recently_resolved()
-        for alert_id in ids:
+        """Find pending resolve-notification dispatches via DB query and process them.
+
+        DB-backed (rather than in-memory queue) so dispatches survive process restarts,
+        cancelled drains, and transient send failures. The query filters at SQL level for
+        eligibility; defensive checks remain in _send_resolve_notification for race safety.
+        """
+        with self.db.get_session() as session:
+            rows = (
+                session.query(AlertV2.id)
+                .join(AlertRuleV2, AlertV2.rule_id == AlertRuleV2.id)
+                .filter(
+                    AlertV2.state == "resolved",
+                    AlertV2.notified_at.is_not(None),
+                    AlertV2.resolve_notified_at.is_(None),
+                    AlertRuleV2.notify_on_resolve.is_(True),
+                    AlertRuleV2.auto_resolve.is_(False),
+                )
+                .limit(50)  # bound work per tick
+                .all()
+            )
+            alert_ids = [row[0] for row in rows]
+
+        for alert_id in alert_ids:
             await self._send_resolve_notification(alert_id)
 
     async def _resolve_notification_loop(self) -> None:
-        """Background task: poll the engine's resolve queue every 2s.
-
-        2s polling is acceptable for resolve notifications -- they are not
-        time-critical (the alert is already gone), and decoupling avoids
-        having to make _resolve_alert event-loop-aware in sync contexts.
-        """
+        """Background task: scan for pending resolve dispatches every 2s."""
         check_interval = 2.0
         while self._running:
             try:

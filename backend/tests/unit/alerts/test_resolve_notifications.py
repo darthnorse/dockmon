@@ -192,8 +192,9 @@ async def test_send_resolve_v2_skips_during_blackout():
     assert result is False
 
 
-def test_engine_resolve_alert_appends_to_queue_when_notify_true(db):
-    """_resolve_alert(notify=True) records alert id in resolve queue."""
+def test_engine_resolve_alert_default_leaves_resolve_notified_at_null(db):
+    """_resolve_alert() (notify=True default) does NOT pre-stamp resolve_notified_at,
+    so the dispatcher's DB query will find the alert and decide whether to send."""
     engine = AlertEngine(db)
 
     with db.get_session() as session:
@@ -213,15 +214,17 @@ def test_engine_resolve_alert_appends_to_queue_when_notify_true(db):
         session.commit()
         session.refresh(alert)
 
-    engine._resolve_alert(alert, "test reason", notify=True)
+    engine._resolve_alert(alert, "test reason")
 
-    drained = engine.drain_recently_resolved()
-    assert "a1" in drained
-    assert engine.drain_recently_resolved() == []  # second drain is empty
+    with db.get_session() as session:
+        refreshed = session.query(AlertV2).filter(AlertV2.id == "a1").first()
+        assert refreshed.state == "resolved"
+        assert refreshed.resolve_notified_at is None
 
 
-def test_engine_resolve_alert_silent_when_notify_false(db):
-    """_resolve_alert(notify=False) does NOT record alert id."""
+def test_engine_resolve_alert_silent_stamps_resolve_notified_at(db):
+    """_resolve_alert(notify=False) opts the alert out of recovery dispatch
+    by pre-stamping resolve_notified_at."""
     engine = AlertEngine(db)
 
     with db.get_session() as session:
@@ -242,7 +245,10 @@ def test_engine_resolve_alert_silent_when_notify_false(db):
         session.refresh(alert)
 
     engine._resolve_alert(alert, "manual", notify=False)
-    assert engine.drain_recently_resolved() == []
+
+    with db.get_session() as session:
+        refreshed = session.query(AlertV2).filter(AlertV2.id == "a2").first()
+        assert refreshed.resolve_notified_at is not None
 
 
 @pytest.mark.asyncio
@@ -407,36 +413,51 @@ async def test_dispatcher_fires_and_sets_resolve_notified_at(db):
 
 
 @pytest.mark.asyncio
-async def test_resolve_notification_loop_drains_engine_queue(db):
-    """Background loop drains engine._recently_resolved and dispatches notifications."""
-    engine = AlertEngine(db)
-    engine._recently_resolved = ["alert-1", "alert-2"]
+async def test_drain_dispatches_eligible_alerts_from_db(db):
+    """The DB-backed scan finds resolved alerts whose rule has notify_on_resolve=True
+    and dispatches each via _send_resolve_notification."""
+    with db.get_session() as session:
+        # Eligible: state=resolved, notified_at set, resolve_notified_at NULL,
+        # rule has notify_on_resolve=True, auto_resolve=False.
+        eligible_rule = AlertRuleV2(
+            id="r-eligible", name="Eligible", scope="container", kind="container_stopped",
+            severity="warning", enabled=True, notify_on_resolve=True,
+        )
+        ineligible_rule = AlertRuleV2(
+            id="r-ineligible", name="Ineligible", scope="container", kind="container_stopped",
+            severity="warning", enabled=True, notify_on_resolve=False,
+        )
+        session.add_all([eligible_rule, ineligible_rule])
+
+        for alert_id, rule_id in [("a-eligible", "r-eligible"), ("a-ineligible", "r-ineligible")]:
+            session.add(AlertV2(
+                id=alert_id, dedup_key=alert_id, scope_type="container", scope_id="h:c",
+                kind="container_stopped", severity="warning", state="resolved",
+                title="X", message="Y",
+                first_seen=datetime.now(timezone.utc), last_seen=datetime.now(timezone.utc),
+                resolved_at=datetime.now(timezone.utc),
+                occurrences=1, rule_id=rule_id,
+                notified_at=datetime.now(timezone.utc),
+                resolve_notified_at=None,
+            ))
+        session.commit()
 
     service = AlertEvaluationService(db=db, notification_service=MagicMock())
-
     sent = []
 
     async def fake_dispatch(alert_id):
         sent.append(alert_id)
 
     service._send_resolve_notification = fake_dispatch
-    service.engine = engine  # Override the auto-created engine with our seeded one
 
-    # Run a single iteration of the loop body
     await service._drain_and_dispatch_resolves()
 
-    assert sent == ["alert-1", "alert-2"]
-    assert engine.drain_recently_resolved() == []  # already drained
+    assert sent == ["a-eligible"]
 
 
-def test_engine_respects_notify_false_even_when_rule_enables_resolve_notifications(db):
-    """notify=False overrides rule.notify_on_resolve=True (no queue entry).
-
-    The API manual-resolve endpoint relies on this contract -- but a regression
-    where api.py stops passing notify=False would NOT be caught here; this test
-    only verifies the engine side. Manual resolve via the HTTP endpoint is
-    covered by the round-trip integration tests.
-    """
+def test_engine_respects_notify_false_by_stamping_resolve_notified_at(db):
+    """notify=False (manual resolve API path) pre-stamps resolve_notified_at,
+    which the dispatcher's DB query filters on, opting out of recovery dispatch."""
     engine = AlertEngine(db)
 
     with db.get_session() as session:
@@ -457,8 +478,8 @@ def test_engine_respects_notify_false_even_when_rule_enables_resolve_notificatio
         session.commit()
         session.refresh(alert)
 
-    # Simulate API path
     engine._resolve_alert(alert, "Manually resolved by user", notify=False)
 
-    # Queue must remain empty even though rule.notify_on_resolve=True
-    assert engine.drain_recently_resolved() == []
+    with db.get_session() as session:
+        refreshed = session.query(AlertV2).filter(AlertV2.id == "a-manual").first()
+        assert refreshed.resolve_notified_at is not None

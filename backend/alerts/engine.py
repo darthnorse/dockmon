@@ -90,9 +90,6 @@ class AlertEngine:
         # Track pending alert clears waiting for clear delay to pass
         # Key: alert_id, Value: PendingAlertClear
         self._pending_alert_clears: Dict[str, PendingAlertClear] = {}
-        # _resolve_alert(notify=True) appends alert ids here; the EvaluationService
-        # background loop drains them and dispatches resolve notifications.
-        self._recently_resolved: List[str] = []
 
     # ==================== Deduplication ====================
 
@@ -251,38 +248,30 @@ class AlertEngine:
     ) -> AlertV2:
         """Mark alert as resolved.
 
+        The EvaluationService's resolve dispatcher polls the DB for resolved alerts
+        with resolve_notified_at IS NULL and rule.notify_on_resolve=True. When notify
+        is False (e.g. manual user-initiated resolve via the API), resolve_notified_at
+        is pre-stamped to opt the alert out of recovery dispatch.
+
         Args:
             alert: The alert to resolve.
             reason: Human-readable resolution reason.
-            notify: If True (default), queue alert id for resolve notification dispatch.
-                    Pass notify=False for silent paths (e.g., manual user-initiated resolve
-                    via the API).
+            notify: If False, suppress resolve notification by stamping resolve_notified_at.
         """
         with self.db.get_session() as session:
             alert = session.merge(alert)
             alert.state = "resolved"
-            alert.resolved_at = datetime.now(timezone.utc)
+            now = datetime.now(timezone.utc)
+            alert.resolved_at = now
             alert.resolved_reason = reason
+            if not notify:
+                alert.resolve_notified_at = now
 
             session.commit()
             session.refresh(alert)
 
             logger.info(f"Resolved alert {alert.id}: {reason}")
-
-            if notify:
-                self._recently_resolved.append(alert.id)
-
             return alert
-
-    def drain_recently_resolved(self) -> List[str]:
-        """Return the queued resolved-alert ids and clear the queue.
-
-        Called by the EvaluationService background loop to dispatch resolve
-        notifications for alerts resolved with notify=True.
-        """
-        ids = list(self._recently_resolved)
-        self._recently_resolved.clear()
-        return ids
 
     def _check_cooldown(self, alert: AlertV2, cooldown_seconds: int) -> bool:
         """

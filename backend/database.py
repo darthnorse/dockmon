@@ -966,6 +966,8 @@ class AlertRuleV2(Base):
     # Notifications
     notify_channels_json = Column(Text, nullable=True)  # JSON: ["slack", "telegram"]
     custom_template = Column(Text, nullable=True)  # Custom message template for this rule
+    # Resolve/recovery notifications (issue #189)
+    notify_on_resolve = Column(Boolean, default=False, nullable=False)
 
     # Lifecycle
     created_at = Column(DateTime, default=utcnow, nullable=False)
@@ -1020,6 +1022,8 @@ class AlertV2(Base):
     last_notification_attempt_at = Column(DateTime, nullable=True)  # First notification attempt (for 24h timeout)
     next_retry_at = Column(DateTime, nullable=True)  # When to retry next (exponential backoff)
     suppressed_by_blackout = Column(Boolean, default=False, nullable=False)  # Alert suppressed during blackout window
+    # Resolve notification tracking (issue #189) — idempotency for resolve notifications
+    resolve_notified_at = Column(DateTime, nullable=True)
 
     # Relationships
     rule = relationship("AlertRuleV2", foreign_keys=[rule_id])
@@ -1681,6 +1685,26 @@ class DatabaseManager:
                     session.execute(text("ALTER TABLE alert_rules_v2 ADD COLUMN custom_template TEXT"))
                     session.commit()
                     logger.info("Added custom_template column to alert_rules_v2 table")
+
+                # Migration: Add notify_on_resolve column to alert_rules_v2 (issue #189)
+                if 'notify_on_resolve' not in alert_rules_column_names:
+                    session.execute(text(
+                        "ALTER TABLE alert_rules_v2 ADD COLUMN notify_on_resolve BOOLEAN NOT NULL DEFAULT 0"
+                    ))
+                    session.commit()
+                    logger.info("Added notify_on_resolve column to alert_rules_v2 table")
+
+                # Migration: Add resolve_notified_at column to alerts_v2 (issue #189)
+                alerts_v2_inspector = session.connection().engine.dialect.get_columns(
+                    session.connection(), 'alerts_v2'
+                )
+                alerts_v2_column_names = [col['name'] for col in alerts_v2_inspector]
+                if 'resolve_notified_at' not in alerts_v2_column_names:
+                    session.execute(text(
+                        "ALTER TABLE alerts_v2 ADD COLUMN resolve_notified_at DATETIME"
+                    ))
+                    session.commit()
+                    logger.info("Added resolve_notified_at column to alerts_v2 table")
 
                 # Migration: Clear old tag data (starting fresh with normalized schema)
                 # The new tag system uses 'tags' and 'tag_assignments' tables

@@ -796,6 +796,57 @@ class NotificationService:
             logger.error(f"Failed to send Teams notification: {e}")
             return False
 
+    async def _send_google_chat(self, config: Dict[str, Any], message: str, event=None, action_url: str = '') -> bool:
+        """Send notification via Google Chat incoming webhook
+
+        Google Chat space webhooks accept a JSON payload with a `text` field
+        (markdown-formatted) or a `cardsV2` payload. We send `text` because the
+        same message string is reused across channels.
+
+        Args:
+            config: Google Chat channel configuration (webhook_url)
+            message: Formatted message to send (markdown supported)
+            event: Optional event object (unused, for signature consistency)
+            action_url: Optional action URL to append as a link
+        """
+        try:
+            webhook_url = config.get('webhook_url', '').strip()
+
+            if not webhook_url:
+                logger.error("Google Chat config missing webhook_url")
+                return False
+
+            if not webhook_url.startswith('https://chat.googleapis.com/'):
+                logger.error(f"Google Chat webhook_url must point to chat.googleapis.com: {webhook_url}")
+                return False
+
+            chat_message = message
+            if action_url:
+                chat_message += f"\n\n<{action_url}|Update Now>"
+
+            payload = {"text": chat_message}
+
+            response = await self.http_client.post(webhook_url, json=payload)
+            response.raise_for_status()
+
+            logger.info("Google Chat notification sent successfully")
+            return True
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                retry_after = int(e.response.headers.get('Retry-After', 60))
+                retry_timestamp = datetime.now(timezone.utc) + timedelta(seconds=retry_after)
+                self._rate_limited_channels['google_chat'] = retry_timestamp
+                logger.warning(f"Google Chat rate limited, retry after {retry_after}s")
+            logger.error(f"Failed to send Google Chat notification: {e}")
+            return False
+        except httpx.RequestError as e:
+            logger.error(f"Google Chat connection error: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to send Google Chat notification: {e}")
+            return False
+
     async def _send_webhook(self, config: Dict[str, Any], message: str, event=None, title: str = "DockMon Alert", action_url: str = '') -> bool:
         """Send notification via webhook (HTTP POST/PUT)
 
@@ -970,6 +1021,8 @@ class NotificationService:
                 success = await self._send_webhook(channel_config, test_message, test_event)
             elif channel_type == 'teams':
                 success = await self._send_teams(channel_config, test_message, test_event)
+            elif channel_type == 'google_chat':
+                success = await self._send_google_chat(channel_config, test_message, test_event)
             else:
                 return {"success": False, "error": f"Unsupported channel type: {channel_type}"}
 
@@ -1012,6 +1065,7 @@ class NotificationService:
                 'pushover': lambda: self._send_pushover(channel_config, message, None),
                 'teams': lambda: self._send_teams(channel_config, message),
                 'webhook': lambda: self._send_webhook(channel_config, message, title=title),
+                'google_chat': lambda: self._send_google_chat(channel_config, message),
             }
 
             sender = senders.get(channel_type)
@@ -1196,6 +1250,9 @@ class NotificationService:
                                 success_count += 1
                         elif channel.type == "teams":
                             if await self._send_teams(channel.config, message, action_url=action_url):
+                                success_count += 1
+                        elif channel.type == "google_chat":
+                            if await self._send_google_chat(channel.config, message, action_url=action_url):
                                 success_count += 1
                         else:
                             logger.warning(f"Unknown channel type '{channel.type}' for channel {channel.name}")

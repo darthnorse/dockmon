@@ -171,7 +171,7 @@ class NotificationChannelCreate(BaseModel):
         if not v or not v.strip():
             raise ValueError('Channel type cannot be empty')
 
-        valid_types = {'telegram', 'discord', 'pushover', 'slack', 'gotify', 'ntfy', 'smtp', 'webhook', 'teams'}
+        valid_types = {'telegram', 'discord', 'pushover', 'slack', 'gotify', 'ntfy', 'smtp', 'webhook', 'teams', 'google_chat'}
         v = v.strip().lower()
 
         if v not in valid_types:
@@ -229,6 +229,16 @@ class NotificationChannelCreate(BaseModel):
             webhook_url = v.get('webhook_url', '')
             if not (webhook_url.startswith('http://') or webhook_url.startswith('https://')):
                 raise ValueError('Teams webhook URL must start with http:// or https://')
+
+        elif channel_type == 'google_chat':
+            required_keys = {'webhook_url'}
+            if not all(key in v for key in required_keys):
+                raise ValueError(f'Google Chat config must contain: {required_keys}')
+
+            # Google Chat space webhooks live under chat.googleapis.com
+            webhook_url = v.get('webhook_url', '')
+            if not webhook_url.startswith('https://chat.googleapis.com/'):
+                raise ValueError('Google Chat webhook URL must start with https://chat.googleapis.com/')
 
         elif channel_type == 'pushover':
             required_keys = {'app_token', 'user_key'}

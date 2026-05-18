@@ -34,7 +34,7 @@ class AlertRuleValidator:
     VALID_SCOPES = {'host', 'container', 'group'}
     VALID_SEVERITIES = {'info', 'warning', 'error', 'critical'}
     VALID_OPERATORS = {'>=', '<=', '==', '>', '<', '!='}
-    VALID_NOTIFICATION_CHANNELS = {'slack', 'discord', 'telegram', 'pushover', 'gotify', 'ntfy', 'smtp', 'webhook', 'teams'}
+    VALID_NOTIFICATION_CHANNELS = {'slack', 'discord', 'telegram', 'pushover', 'gotify', 'ntfy', 'smtp', 'webhook', 'teams', 'google_chat'}
 
     # CPU metrics — can exceed 100% on multi-core containers
     CPU_METRICS = {

@@ -1,16 +1,17 @@
-"""Integration test: notify_on_resolve survives POST -> GET round trip (#189).
+"""Integration tests for the alert resolve path (#189).
 
 Routes under test:
   POST   /api/alerts/rules          create_alert_rule_v2
   GET    /api/alerts/rules          get_alert_rules_v2  (returns all rules)
   PUT    /api/alerts/rules/{id}     update_alert_rule_v2
+  POST   /api/alerts/{id}/resolve   resolve_alert
 
 Fixtures used:
   client       - shared FastAPI TestClient (conftest.py, auth bypass via get_current_user)
   monkeypatch  - provided by pytest
 
 Auth handling:
-  The alert-rule endpoints use require_capability("alerts.manage" / "alerts.view"),
+  The alert endpoints use require_capability("alerts.manage" / "alerts.view"),
   which is resolved via get_current_user_or_api_key (from auth.api_key_auth).
   We override both that dependency and the capability check (same pattern used by
   tests/integration/deployment_tests/test_validate_ports_route.py::authed_client).
@@ -20,9 +21,11 @@ Database:
   so the test exercises the full SQL path without touching production state.
 """
 
+from datetime import datetime, timezone
+
 import pytest
 import database as database_module
-from database import DatabaseManager
+from database import AlertV2, DatabaseManager
 from unittest.mock import MagicMock
 
 
@@ -204,3 +207,39 @@ def test_update_rule_toggles_notify_on_resolve_back_to_false(alert_client):
     rule = _find_rule(get_resp.json()["rules"], rule_id)
     assert rule is not None
     assert rule["notify_on_resolve"] is False
+
+
+def test_manual_resolve_endpoint_returns_200_not_500(alert_client, _real_db):
+    """POST /api/alerts/{id}/resolve must succeed end-to-end including audit logging.
+
+    Regression for: TypeError: 'SecurityAuditLogger' object is not callable
+    (alerts/api.py:221 was invoking the SecurityAuditLogger instance as if it
+    were a function; the instance has no __call__).
+    """
+    now = datetime.now(timezone.utc)
+    with _real_db.get_session() as session:
+        session.add(AlertV2(
+            id="alert-resolve-endpoint-1",
+            dedup_key="container_stopped|container:h:c1",
+            scope_type="container",
+            scope_id="h:c1",
+            kind="container_stopped",
+            severity="warning",
+            state="open",
+            title="Container stopped",
+            message="c1 stopped",
+            first_seen=now,
+            last_seen=now,
+            occurrences=1,
+        ))
+        session.commit()
+
+    resp = alert_client.post(
+        "/api/alerts/alert-resolve-endpoint-1/resolve",
+        json={"reason": "Manually resolved"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["state"] == "resolved"
+    assert body["resolved_reason"] == "Manually resolved"

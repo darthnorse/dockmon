@@ -177,3 +177,55 @@ async def test_get_annotations_no_user_row_query_n_plus_1(db_session, test_user)
         event.remove(db_session.get_bind(), "before_execute", _before_execute)
 
     assert user_table_queries <= 1, f"expected <=1 User query, got {user_table_queries}"
+
+
+@pytest.fixture
+def db_manager(tmp_path):
+    """Real DatabaseManager backed by a temp SQLite file.
+
+    Needed for tests that call instance methods like change_username, which
+    open their own session via self.get_session().
+    """
+    import database as database_module
+    from database import DatabaseManager
+
+    db_path = str(tmp_path / "test_annotations.db")
+    database_module._database_manager_instance = None
+    db = DatabaseManager(db_path=db_path)
+    try:
+        yield db
+    finally:
+        if hasattr(db, "engine"):
+            db.engine.dispose()
+        database_module._database_manager_instance = None
+
+
+@pytest.mark.integration
+def test_change_username_cascades_to_annotations(db_manager):
+    """Renaming a user updates the username stored on their annotations."""
+    from database import User
+
+    with db_manager.get_session() as session:
+        user = User(
+            username="rename_me",
+            password_hash="$2b$12$test_hash_not_real",
+            auth_provider="local",
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(user)
+        session.commit()
+
+        alert_id = _make_alert(session)
+        session.add(AlertAnnotation(
+            alert_id=alert_id,
+            timestamp=datetime.now(timezone.utc),
+            user="rename_me",
+            text="before rename",
+        ))
+        session.commit()
+
+    assert db_manager.change_username("rename_me", "renamed_user") is True
+
+    with db_manager.get_session() as session:
+        row = session.query(AlertAnnotation).filter_by(alert_id=alert_id).one()
+        assert row.user == "renamed_user"

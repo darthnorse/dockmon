@@ -152,9 +152,19 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 			Warn("Failed to inspect old image labels; new container will keep inherited labels (cosmetic-only impact)")
 	}
 
+	// Same lookup for the old image's ENV defaults, so env vars baked into
+	// the old image (e.g. APP_VERSION) don't get pinned onto the new
+	// container as per-container overrides. Same image-ID rationale as the
+	// labels lookup above; best-effort with the same cosmetic fallback.
+	oldImageEnv, envErr := update.GetImageEnv(ctx, h.dockerClient.RawClient(), oldContainer.Image)
+	if envErr != nil {
+		h.log.WithError(envErr).WithField("old_image_id", oldContainer.Image).
+			Warn("Failed to inspect old image env; new container will keep inherited env vars")
+	}
+
 	// Create new container with same config but new image
 	h.sendProgress("create", "Creating new container")
-	newConfig := h.cloneContainerConfig(&oldContainer, req.Image, oldImageLabels)
+	newConfig := h.cloneContainerConfig(&oldContainer, req.Image, oldImageLabels, oldImageEnv)
 	newHostConfig := h.cloneHostConfig(oldContainer.HostConfig)
 
 	// Use temporary name - will be renamed after old container is removed
@@ -501,11 +511,17 @@ func (h *SelfUpdateHandler) performContainerCleanup(cleanupFilePath string) erro
 // oldImageLabels is the Labels map of the OLD image (the one the existing
 // container was created from). It's used to filter out image-inherited
 // labels so the NEW image's labels take effect on inspection. Pass nil
-// to skip filtering (degrades to pre-fix behavior - preserves all labels).
+// to skip label filtering (degrades to pre-fix behavior - preserves all labels).
+//
+// oldImageEnv is the Env list of the OLD image's ENV directives. Same role
+// for env vars as oldImageLabels for labels - filters out image-inherited
+// env so the NEW image's ENV directives take effect. Pass nil to skip env
+// filtering.
 func (h *SelfUpdateHandler) cloneContainerConfig(
 	inspect *dockerTypes.ContainerJSON,
 	newImage string,
 	oldImageLabels map[string]string,
+	oldImageEnv []string,
 ) *container.Config {
 	config := inspect.Config
 
@@ -517,6 +533,12 @@ func (h *SelfUpdateHandler) cloneContainerConfig(
 		labels = update.ExtractUserLabels(h.log, config.Labels, oldImageLabels)
 	} else {
 		labels = config.Labels
+	}
+
+	// Same filtering for env vars.
+	env := config.Env
+	if oldImageEnv != nil {
+		env = update.ExtractUserEnv(h.log, config.Env, oldImageEnv)
 	}
 
 	return &container.Config{
@@ -531,7 +553,7 @@ func (h *SelfUpdateHandler) cloneContainerConfig(
 		Tty:          config.Tty,
 		OpenStdin:    config.OpenStdin,
 		StdinOnce:    config.StdinOnce,
-		Env:          config.Env,
+		Env:          env,
 		Cmd:          config.Cmd,
 		Image:        newImage,
 		WorkingDir:   config.WorkingDir,

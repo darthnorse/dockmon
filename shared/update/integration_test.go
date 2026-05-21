@@ -123,7 +123,7 @@ func TestIntegration_VolumePassthrough(t *testing.T) {
 	}
 
 	// Extract config
-	extracted, err := ExtractConfig(ctx, cli, log, &inspect, "alpine:latest", nil, nil, false)
+	extracted, err := ExtractConfig(ctx, cli, log, &inspect, "alpine:latest", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Failed to extract config: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestIntegration_StaticIPPreservation(t *testing.T) {
 	}
 
 	// Extract config
-	extracted, err := ExtractConfig(ctx, cli, log, &inspect, "alpine:latest", nil, nil, false)
+	extracted, err := ExtractConfig(ctx, cli, log, &inspect, "alpine:latest", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Failed to extract config: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestIntegration_NetworkModeContainerResolution(t *testing.T) {
 	}
 
 	// Extract config - should resolve ID to name
-	extracted, err := ExtractConfig(ctx, cli, log, &inspect, "alpine:latest", nil, nil, false)
+	extracted, err := ExtractConfig(ctx, cli, log, &inspect, "alpine:latest", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Failed to extract config: %v", err)
 	}
@@ -381,7 +381,7 @@ func TestIntegration_NetworkModeContainerClearsPorts(t *testing.T) {
 	}
 
 	// Extract config - should clear port bindings for container:X network mode
-	extracted, err := ExtractConfig(ctx, cli, log, &inspect, "alpine:latest", nil, nil, false)
+	extracted, err := ExtractConfig(ctx, cli, log, &inspect, "alpine:latest", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Failed to extract config: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestIntegration_FullUpdateWorkflow(t *testing.T) {
 	}
 
 	// Extract config for recreation with new image
-	extracted, err := ExtractConfig(ctx, cli, log, &inspect, "alpine:3.19", nil, nil, false)
+	extracted, err := ExtractConfig(ctx, cli, log, &inspect, "alpine:3.19", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Failed to extract config: %v", err)
 	}
@@ -527,6 +527,100 @@ func TestIntegration_FullUpdateWorkflow(t *testing.T) {
 }
 
 // =============================================================================
+// Integration Test: Image-Default Env Stripping (Issue #218)
+//
+// Regression test ensuring env vars that came from the OLD image's ENV
+// directives are stripped on update, so the NEW image's ENV defaults take
+// effect. Pairs with TestIntegration_FullUpdateWorkflow above, which
+// verifies the user-added-env passthrough case.
+// =============================================================================
+
+func TestIntegration_ImageDefaultEnvStrippedOnUpdate(t *testing.T) {
+	cli := getDockerClient(t)
+	ctx := context.Background()
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	pullImage(t, cli, "alpine:3.18")
+
+	containerName := fmt.Sprintf("dockmon-test-envfilter-%d", time.Now().Unix())
+
+	// Create a container with env entries that simulate two cases:
+	//   APP_VERSION=v3.0.0 - "inherited from old image" (we'll declare this
+	//                       in oldImageEnv to mark it as an image default)
+	//   DB_HOST=prod       - user-added (not in oldImageEnv)
+	resp, err := cli.ContainerCreate(ctx,
+		&container.Config{
+			Image: "alpine:3.18",
+			Cmd:   []string{"sleep", "60"},
+			Env: []string{
+				"APP_VERSION=v3.0.0",
+				"DB_HOST=prod",
+			},
+		},
+		&container.HostConfig{},
+		nil, nil, containerName,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create container: %v", err)
+	}
+	defer removeContainer(cli, resp.ID)
+
+	inspect, err := cli.ContainerInspect(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("Failed to inspect container: %v", err)
+	}
+
+	// Simulate the old image having baked in APP_VERSION=v3.0.0 via an ENV
+	// directive. ExtractConfig should strip this entry so the new image's
+	// APP_VERSION (or absence of it) takes effect on recreate.
+	oldImageEnv := []string{"APP_VERSION=v3.0.0"}
+
+	extracted, err := ExtractConfig(ctx, cli, log, &inspect, "alpine:3.18", nil, nil, oldImageEnv, false)
+	if err != nil {
+		t.Fatalf("ExtractConfig failed: %v", err)
+	}
+
+	// Inherited entry must be gone.
+	for _, e := range extracted.Config.Env {
+		if e == "APP_VERSION=v3.0.0" {
+			t.Errorf("Expected APP_VERSION=v3.0.0 (image default) to be stripped, found %q in extracted.Config.Env", e)
+		}
+	}
+
+	// User-added entry must survive.
+	foundDBHost := false
+	for _, e := range extracted.Config.Env {
+		if e == "DB_HOST=prod" {
+			foundDBHost = true
+			break
+		}
+	}
+	if !foundDBHost {
+		t.Errorf("Expected user-added DB_HOST=prod preserved, got %v", extracted.Config.Env)
+	}
+
+	// Sanity check: with oldImageEnv=nil (graceful degradation path),
+	// behavior must be the same as before the fix - APP_VERSION survives.
+	extractedNoFilter, err := ExtractConfig(ctx, cli, log, &inspect, "alpine:3.18", nil, nil, nil, false)
+	if err != nil {
+		t.Fatalf("ExtractConfig (nil oldImageEnv) failed: %v", err)
+	}
+	foundAppVer := false
+	for _, e := range extractedNoFilter.Config.Env {
+		if e == "APP_VERSION=v3.0.0" {
+			foundAppVer = true
+			break
+		}
+	}
+	if !foundAppVer {
+		t.Error("With oldImageEnv=nil, expected APP_VERSION=v3.0.0 to survive (degrades to pre-fix behavior)")
+	}
+
+	t.Log("Image-default env stripped on update: OK")
+}
+
+// =============================================================================
 // Integration Test: Port Bindings Preservation
 // =============================================================================
 
@@ -574,7 +668,7 @@ func TestIntegration_PortBindingsPreservation(t *testing.T) {
 	}
 
 	// Extract config
-	extracted, err := ExtractConfig(ctx, cli, log, &inspect, "nginx:alpine", nil, nil, false)
+	extracted, err := ExtractConfig(ctx, cli, log, &inspect, "nginx:alpine", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Failed to extract config: %v", err)
 	}
@@ -667,7 +761,7 @@ func TestIntegration_MultipleNetworks(t *testing.T) {
 	}
 
 	// Extract config
-	extracted, err := ExtractConfig(ctx, cli, log, &inspect, "alpine:latest", nil, nil, false)
+	extracted, err := ExtractConfig(ctx, cli, log, &inspect, "alpine:latest", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Failed to extract config: %v", err)
 	}

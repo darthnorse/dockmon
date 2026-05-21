@@ -4158,12 +4158,16 @@ class DatabaseManager:
             return user is not None
 
     def change_username(self, old_username: str, new_username: str) -> bool:
-        """Change user's username"""
+        """Change user's username and cascade to attribution columns."""
         with self.get_session() as session:
             user = session.query(User).filter(User.username == old_username).first()
             if user:
                 user.username = new_username
                 user.updated_at = datetime.now(timezone.utc)
+                # Keep AlertAnnotation.user (used as a stable username key) in sync.
+                session.query(AlertAnnotation).filter(
+                    AlertAnnotation.user == old_username
+                ).update({AlertAnnotation.user: new_username}, synchronize_session=False)
                 session.commit()
                 logger.info(f"Username changed from {old_username} to {new_username}")
                 return True

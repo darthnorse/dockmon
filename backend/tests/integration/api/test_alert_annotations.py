@@ -229,3 +229,91 @@ def test_change_username_cascades_to_annotations(db_manager):
     with db_manager.get_session() as session:
         row = session.query(AlertAnnotation).filter_by(alert_id=alert_id).one()
         assert row.user == "renamed_user"
+
+
+@pytest.mark.integration
+def test_api_key_caller_stored_as_api_key_marker(db_manager, monkeypatch):
+    """API-key callers: annotation.user is 'API Key: <key name>' verbatim.
+
+    Uses the TestClient + real api_key_auth path so the live dependency
+    populates current_user. Wires the auth-shared DB and monitor.db to the
+    same test DatabaseManager so the API key validates against the same
+    rows the endpoint reads/writes.
+    """
+    import secrets
+    import hashlib
+    from fastapi.testclient import TestClient
+
+    from database import User, ApiKey, CustomGroup, GroupPermission
+    from auth.capabilities import ALL_CAPABILITIES
+
+    # Seed: admin group + permissions + user + API key in the test DB.
+    raw_key = f"dockmon_{secrets.token_hex(16)}"
+    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    key_name = "Test Write Key"
+
+    with db_manager.get_session() as session:
+        group = session.query(CustomGroup).filter(
+            CustomGroup.name == "Administrators"
+        ).first()
+        if not group:
+            group = CustomGroup(name="Administrators", description="Full access", is_system=True)
+            session.add(group)
+            session.flush()
+            for cap in ALL_CAPABILITIES:
+                session.add(GroupPermission(group_id=group.id, capability=cap, allowed=True))
+            session.flush()
+
+        user = User(
+            username="api_key_owner",
+            password_hash="$2b$12$test_hash_not_real",
+            auth_provider="local",
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(user)
+        session.flush()
+
+        api_key = ApiKey(
+            created_by_user_id=user.id,
+            group_id=group.id,
+            name=key_name,
+            key_hash=key_hash,
+            key_prefix=raw_key[:12],
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        session.add(api_key)
+
+        alert_id = _make_alert(session)
+        session.commit()
+
+    # Wire all DB references to the same test DatabaseManager.
+    # api_key_auth binds `db` at import time via `from auth.shared import db`,
+    # so we must patch the bound name on the api_key_auth module.
+    import main
+    import auth.api_key_auth as api_key_auth_mod
+    import auth.shared as auth_shared
+    monkeypatch.setattr(auth_shared, "db", db_manager)
+    monkeypatch.setattr(api_key_auth_mod, "db", db_manager)
+    monkeypatch.setattr(main.monitor, "db", db_manager)
+
+    client = TestClient(main.app)
+
+    response = client.post(
+        f"/api/alerts/{alert_id}/annotations",
+        json={"text": "deploy bot here"},
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert response.status_code == 200, response.text
+
+    with db_manager.get_session() as session:
+        row = session.query(AlertAnnotation).filter_by(alert_id=alert_id).one()
+        assert row.user == f"API Key: {key_name}"
+
+    # GET passes the marker through unchanged.
+    get_resp = client.get(
+        f"/api/alerts/{alert_id}/annotations",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert get_resp.status_code == 200, get_resp.text
+    assert get_resp.json()["annotations"][0]["user"] == f"API Key: {key_name}"

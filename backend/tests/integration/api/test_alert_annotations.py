@@ -37,26 +37,11 @@ def _make_alert(db_session, alert_id: str | None = None) -> str:
     return alert_id
 
 
-class _FakeDb:
-    """Minimal DatabaseManager stand-in: returns the test session."""
-    def __init__(self, session):
-        self._session = session
-
-    def get_session(self):
-        from contextlib import contextmanager
-
-        @contextmanager
-        def _cm():
-            yield self._session
-        return _cm()
-
-
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_add_annotation_stores_session_username(db_session, test_user):
+async def test_add_annotation_stores_session_username(db_session, test_user, test_database_manager):
     """Session-auth: annotation row stores current_user['username'], not request.user."""
     alert_id = _make_alert(db_session)
-    db = _FakeDb(db_session)
     current_user = {
         "auth_type": "session",
         "user_id": test_user.id,
@@ -67,7 +52,7 @@ async def test_add_annotation_stores_session_username(db_session, test_user):
     await add_annotation(
         alert_id=alert_id,
         request=AddAnnotationRequest(text="investigating"),
-        db=db,
+        db=test_database_manager,
         current_user=current_user,
     )
 
@@ -78,7 +63,7 @@ async def test_add_annotation_stores_session_username(db_session, test_user):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_get_annotations_resolves_display_name(db_session, test_user):
+async def test_get_annotations_resolves_display_name(db_session, test_user, test_database_manager):
     """GET resolves stored username -> User.effective_display_name."""
     alert_id = _make_alert(db_session)
 
@@ -103,14 +88,14 @@ async def test_get_annotations_resolves_display_name(db_session, test_user):
     test_user.display_name = "Patrik Runald"
     db_session.commit()
 
-    result = await get_annotations(alert_id=alert_id, db=_FakeDb(db_session))
+    result = await get_annotations(alert_id=alert_id, db=test_database_manager)
 
     assert [a["user"] for a in result["annotations"]] == ["Patrik Runald", "Patrik Runald"]
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_get_annotations_falls_back_to_stored_string(db_session):
+async def test_get_annotations_falls_back_to_stored_string(db_session, test_database_manager):
     """GET returns the stored string verbatim when no User row matches.
 
     Covers three cases: deleted user, renamed user (stored username stale),
@@ -133,7 +118,7 @@ async def test_get_annotations_falls_back_to_stored_string(db_session):
     ])
     db_session.commit()
 
-    result = await get_annotations(alert_id=alert_id, db=_FakeDb(db_session))
+    result = await get_annotations(alert_id=alert_id, db=test_database_manager)
     users = {a["text"]: a["user"] for a in result["annotations"]}
     assert users["orphan"] == "ghost_user"
     assert users["from a key"] == "API Key: Deploy Bot"
@@ -141,7 +126,7 @@ async def test_get_annotations_falls_back_to_stored_string(db_session):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_get_annotations_no_user_row_query_n_plus_1(db_session, test_user):
+async def test_get_annotations_no_user_row_query_n_plus_1(db_session, test_user, test_database_manager):
     """N+1 guard: many annotations by the same user should issue a single User query.
 
     Implementation detail check via SQLAlchemy event hook — keeps the read
@@ -172,7 +157,7 @@ async def test_get_annotations_no_user_row_query_n_plus_1(db_session, test_user)
 
     event.listen(db_session.get_bind(), "before_execute", _before_execute)
     try:
-        await get_annotations(alert_id=alert_id, db=_FakeDb(db_session))
+        await get_annotations(alert_id=alert_id, db=test_database_manager)
     finally:
         event.remove(db_session.get_bind(), "before_execute", _before_execute)
 

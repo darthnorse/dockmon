@@ -215,14 +215,18 @@ async def resolve_alert(
         if alert.state == "resolved":
             raise HTTPException(status_code=400, detail="Alert already resolved")
 
-        # Resolve the alert
-        alert = engine._resolve_alert(alert, request.reason)
+        # Manual resolves are silent: the user who clicked already knows.
+        alert = engine._resolve_alert(alert, request.reason, notify=False)
 
-        security_audit(
-            action="alert.resolve",
+        security_audit.log_event(
+            event_type="alert_resolved",
+            severity="info",
             user_id=user_id,
-            display_name=display_name,
-            details={"alert_id": alert_id, "reason": request.reason}
+            details={
+                "alert_id": alert_id,
+                "reason": request.reason,
+                "display_name": display_name,
+            },
         )
 
         labels = json.loads(alert.labels_json) if alert.labels_json else None

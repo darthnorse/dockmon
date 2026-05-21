@@ -4024,6 +4024,7 @@ async def get_alert_rules_v2(current_user: dict = Depends(get_current_user)):
             "labels_json": rule.labels_json,
             "notify_channels_json": rule.notify_channels_json,
             "custom_template": rule.custom_template,
+            "notify_on_resolve": rule.notify_on_resolve,
             "created_at": rule.created_at.isoformat() + 'Z',
             "updated_at": rule.updated_at.isoformat() + 'Z',
             "version": rule.version,
@@ -4076,6 +4077,7 @@ async def create_alert_rule_v2(
             labels_json=rule.labels_json,
             notify_channels_json=rule.notify_channels_json,
             custom_template=rule.custom_template,
+            notify_on_resolve=rule.notify_on_resolve or False,
             created_by=display_name,
         )
 

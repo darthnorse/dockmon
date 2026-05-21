@@ -966,6 +966,7 @@ class AlertRuleV2(Base):
     # Notifications
     notify_channels_json = Column(Text, nullable=True)  # JSON: ["slack", "telegram"]
     custom_template = Column(Text, nullable=True)  # Custom message template for this rule
+    notify_on_resolve = Column(Boolean, default=False, server_default=text("0"), nullable=False)
 
     # Lifecycle
     created_at = Column(DateTime, default=utcnow, nullable=False)
@@ -1020,6 +1021,7 @@ class AlertV2(Base):
     last_notification_attempt_at = Column(DateTime, nullable=True)  # First notification attempt (for 24h timeout)
     next_retry_at = Column(DateTime, nullable=True)  # When to retry next (exponential backoff)
     suppressed_by_blackout = Column(Boolean, default=False, nullable=False)  # Alert suppressed during blackout window
+    resolve_notified_at = Column(DateTime, nullable=True)  # Set once resolve dispatch is decided (sent or deliberately skipped)
 
     # Relationships
     rule = relationship("AlertRuleV2", foreign_keys=[rule_id])
@@ -1673,14 +1675,51 @@ class DatabaseManager:
                         settings.polling_interval_migrated = True
                         session.commit()
 
-                # Migration: Add custom_template column to alert_rules_v2 table
-                alert_rules_inspector = session.connection().engine.dialect.get_columns(session.connection(), 'alert_rules_v2')
-                alert_rules_column_names = [col['name'] for col in alert_rules_inspector]
+                def _table_columns(table_name):
+                    return {
+                        col['name']
+                        for col in session.connection().engine.dialect.get_columns(
+                            session.connection(), table_name
+                        )
+                    }
 
-                if 'custom_template' not in alert_rules_column_names:
+                alert_rules_v2_cols = _table_columns('alert_rules_v2')
+
+                if 'custom_template' not in alert_rules_v2_cols:
                     session.execute(text("ALTER TABLE alert_rules_v2 ADD COLUMN custom_template TEXT"))
                     session.commit()
                     logger.info("Added custom_template column to alert_rules_v2 table")
+
+                if 'notify_on_resolve' not in alert_rules_v2_cols:
+                    session.execute(text(
+                        "ALTER TABLE alert_rules_v2 ADD COLUMN notify_on_resolve BOOLEAN NOT NULL DEFAULT 0"
+                    ))
+                    session.commit()
+                    logger.info("Added notify_on_resolve column to alert_rules_v2 table")
+
+                if 'resolve_notified_at' not in _table_columns('alerts_v2'):
+                    session.execute(text(
+                        "ALTER TABLE alerts_v2 ADD COLUMN resolve_notified_at DATETIME"
+                    ))
+                    session.commit()
+                    logger.info("Added resolve_notified_at column to alerts_v2 table")
+
+                # One-time backfill: stamp resolve_notified_at for pre-existing resolved
+                # alerts so the new dispatcher loop doesn't replay them when a user later
+                # enables notify_on_resolve on a rule with historical resolved alerts.
+                if 'resolve_notification_backfill_done' not in _table_columns('global_settings'):
+                    session.execute(text(
+                        "ALTER TABLE global_settings ADD COLUMN resolve_notification_backfill_done BOOLEAN NOT NULL DEFAULT 0"
+                    ))
+                    session.execute(text(
+                        "UPDATE alerts_v2 SET resolve_notified_at = resolved_at "
+                        "WHERE state = 'resolved' AND resolved_at IS NOT NULL AND resolve_notified_at IS NULL"
+                    ))
+                    session.execute(text(
+                        "UPDATE global_settings SET resolve_notification_backfill_done = 1"
+                    ))
+                    session.commit()
+                    logger.info("Backfilled resolve_notified_at for pre-existing resolved alerts")
 
                 # Migration: Clear old tag data (starting fresh with normalized schema)
                 # The new tag system uses 'tags' and 'tag_assignments' tables
@@ -3709,6 +3748,7 @@ class DatabaseManager:
         labels_json: Optional[str] = None,
         notify_channels_json: Optional[str] = None,
         custom_template: Optional[str] = None,
+        notify_on_resolve: bool = False,
         created_by: Optional[str] = None,
     ) -> AlertRuleV2:
         """Create a new alert rule v2"""
@@ -3742,6 +3782,7 @@ class DatabaseManager:
                 labels_json=labels_json,
                 notify_channels_json=notify_channels_json,
                 custom_template=custom_template,
+                notify_on_resolve=notify_on_resolve,
                 created_by=created_by,
             )
             session.add(rule)

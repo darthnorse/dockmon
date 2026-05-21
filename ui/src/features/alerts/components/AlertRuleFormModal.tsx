@@ -54,6 +54,7 @@ interface AlertRuleFormData {
   custom_template: string | null
   auto_resolve_updates: boolean
   auto_resolve_on_clear: boolean
+  notify_on_resolve: boolean
   suppress_during_updates: boolean
 }
 
@@ -304,6 +305,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       // Auto-resolve defaults to false - user can enable for any alert type
       auto_resolve_updates: rule?.auto_resolve ?? false,
       auto_resolve_on_clear: rule?.auto_resolve_on_clear ?? false,
+      notify_on_resolve: rule?.notify_on_resolve ?? false,
       // Default suppress_during_updates to true for container-scoped rules
       suppress_during_updates: rule?.suppress_during_updates ?? (scope === 'container'),
     }
@@ -530,6 +532,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       // Add auto_resolve flags for all alert types
       requestData.auto_resolve = formData.auto_resolve_updates || false
       requestData.auto_resolve_on_clear = formData.auto_resolve_on_clear || false
+      requestData.notify_on_resolve = formData.notify_on_resolve || false
 
       // Add suppress_during_updates flag for container-scoped rules
       if (formData.scope === 'container') {
@@ -1467,6 +1470,30 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                 </label>
                 <p className="mt-1 text-xs text-gray-400">
                   Alert will be auto-resolved immediately after sending notification. Use this for notification-only mode if you don't want alerts to accumulate in the DockMon alert list.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Resolve / Recovery Notifications */}
+          <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/30 p-4">
+            <h3 className="text-sm font-semibold text-white">Recovery Notification</h3>
+
+            <div className="flex items-start gap-3">
+              <input
+                type="checkbox"
+                id="notify_on_resolve"
+                checked={formData.notify_on_resolve || false}
+                onChange={(e) => handleChange('notify_on_resolve', e.target.checked)}
+                className="mt-1 h-4 w-4 rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-900"
+              />
+              <div className="flex-1">
+                <label htmlFor="notify_on_resolve" className="block text-sm font-medium text-gray-300 cursor-pointer">
+                  Notify when alert resolves
+                </label>
+                <p className="mt-1 text-xs text-gray-400">
+                  Send a recovery notification (to the same channels as this rule) when this
+                  alert clears. Manual resolves through the DockMon UI are always silent.
                 </p>
               </div>
             </div>

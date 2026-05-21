@@ -243,14 +243,29 @@ class AlertEngine:
     def _resolve_alert(
         self,
         alert: AlertV2,
-        reason: str = "Clear condition met"
+        reason: str = "Clear condition met",
+        notify: bool = True,
     ) -> AlertV2:
-        """Mark alert as resolved"""
+        """Mark alert as resolved.
+
+        The EvaluationService's resolve dispatcher polls the DB for resolved alerts
+        with resolve_notified_at IS NULL and rule.notify_on_resolve=True. When notify
+        is False (e.g. manual user-initiated resolve via the API), resolve_notified_at
+        is pre-stamped to opt the alert out of recovery dispatch.
+
+        Args:
+            alert: The alert to resolve.
+            reason: Human-readable resolution reason.
+            notify: If False, suppress resolve notification by stamping resolve_notified_at.
+        """
         with self.db.get_session() as session:
             alert = session.merge(alert)
             alert.state = "resolved"
-            alert.resolved_at = datetime.now(timezone.utc)
+            now = datetime.now(timezone.utc)
+            alert.resolved_at = now
             alert.resolved_reason = reason
+            if not notify:
+                alert.resolve_notified_at = now
 
             session.commit()
             session.refresh(alert)

@@ -184,8 +184,8 @@ export function useAddAnnotation() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ alertId, text, user }: { alertId: string; text: string; user?: string }) => {
-      return await apiClient.post(`/alerts/${alertId}/annotations`, { text, user })
+    mutationFn: async ({ alertId, text }: { alertId: string; text: string }) => {
+      return await apiClient.post(`/alerts/${alertId}/annotations`, { text })
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['alert-annotations', variables.alertId] })

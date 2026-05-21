@@ -315,12 +315,7 @@ async def add_annotation(
     db: DatabaseManager = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    """Add an annotation to an alert.
-
-    Stores the session's stable username (or an "API Key: <name>" marker
-    for API key callers). The GET endpoint resolves the display name at
-    read time. See get_annotations() for the read path.
-    """
+    """Add an annotation; author is auto-derived from current_user."""
     user_id, display_name = get_auditable_user_info(current_user)
 
     if current_user.get("auth_type") == "api_key":
@@ -360,13 +355,7 @@ async def get_annotations(
     alert_id: str,
     db: DatabaseManager = Depends(get_db),
 ):
-    """Get annotations for an alert.
-
-    Resolves the stored `user` value (a username for session callers, or
-    an "API Key: ..." marker for API-key callers) to the user's current
-    effective display name. Falls back to the stored string when no User
-    row matches (deleted user, renamed user, or API-key marker).
-    """
+    """List annotations; resolves stored usernames to current display names."""
     with db.get_session() as session:
         alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
         if not alert:
@@ -376,7 +365,6 @@ async def get_annotations(
             AlertAnnotation.alert_id == alert_id,
         ).order_by(AlertAnnotation.timestamp.desc()).all()
 
-        # Batch-resolve usernames -> effective display name.
         usernames = {a.user for a in annotations if a.user}
         display_by_username: dict[str, str] = {}
         if usernames:

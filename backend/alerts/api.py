@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Any
 from fastapi import APIRouter, HTTPException, Depends, Query, status
 from pydantic import BaseModel, Field, ConfigDict, field_serializer
 
-from database import DatabaseManager, AlertV2, AlertAnnotation
+from database import DatabaseManager, AlertV2, AlertAnnotation, User
 from alerts.engine import AlertEngine
 from security.rate_limiting import get_rate_limit_dependency
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability  # v2 hybrid auth (cookies + API keys)
@@ -358,26 +358,38 @@ async def add_annotation(
 @router.get("/{alert_id}/annotations", dependencies=[Depends(get_rate_limit_dependency("alerts")), Depends(require_capability("alerts.view"))])
 async def get_annotations(
     alert_id: str,
-    db: DatabaseManager = Depends(get_db)
+    db: DatabaseManager = Depends(get_db),
 ):
-    """Get annotations for an alert"""
+    """Get annotations for an alert.
+
+    Resolves the stored `user` value (a username for session callers, or
+    an "API Key: ..." marker for API-key callers) to the user's current
+    effective display name. Falls back to the stored string when no User
+    row matches (deleted user, renamed user, or API-key marker).
+    """
     with db.get_session() as session:
         alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
-
         if not alert:
             raise HTTPException(status_code=404, detail="Alert not found")
 
         annotations = session.query(AlertAnnotation).filter(
-            AlertAnnotation.alert_id == alert_id
+            AlertAnnotation.alert_id == alert_id,
         ).order_by(AlertAnnotation.timestamp.desc()).all()
+
+        # Batch-resolve usernames -> effective display name.
+        usernames = {a.user for a in annotations if a.user}
+        display_by_username: dict[str, str] = {}
+        if usernames:
+            users = session.query(User).filter(User.username.in_(usernames)).all()
+            display_by_username = {u.username: u.effective_display_name for u in users}
 
         return {
             "annotations": [
                 {
                     "id": ann.id,
                     "timestamp": ann.timestamp.isoformat() + 'Z' if ann.timestamp else None,
-                    "user": ann.user,
-                    "text": ann.text
+                    "user": display_by_username.get(ann.user, ann.user),
+                    "text": ann.text,
                 }
                 for ann in annotations
             ]

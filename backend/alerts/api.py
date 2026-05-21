@@ -95,7 +95,6 @@ class SnoozeAlertRequest(BaseModel):
 class AddAnnotationRequest(BaseModel):
     """Request to add annotation to alert"""
     text: str = Field(min_length=1, max_length=5000)
-    user: Optional[str] = None
 
 
 # ==================== Dependencies ====================
@@ -316,30 +315,41 @@ async def add_annotation(
     db: DatabaseManager = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    """Add an annotation to an alert"""
+    """Add an annotation to an alert.
+
+    Stores the session's stable username (or an "API Key: <name>" marker
+    for API key callers). The GET endpoint resolves the display name at
+    read time. See get_annotations() for the read path.
+    """
     user_id, display_name = get_auditable_user_info(current_user)
+
+    if current_user.get("auth_type") == "api_key":
+        author = f"API Key: {current_user.get('api_key_name', 'unknown')}"
+    else:
+        author = current_user.get("username")
+
     with db.get_session() as session:
         alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
-
         if not alert:
             raise HTTPException(status_code=404, detail="Alert not found")
 
-        # Create annotation
         annotation = AlertAnnotation(
             alert_id=alert_id,
             timestamp=datetime.now(timezone.utc),
-            user=request.user,
-            text=request.text
+            user=author,
+            text=request.text,
         )
-
         session.add(annotation)
         session.commit()
 
-        security_audit(
-            action="alert.annotate",
+        security_audit.log_event(
+            event_type="alert_annotated",
+            severity="info",
             user_id=user_id,
-            display_name=display_name,
-            details={"alert_id": alert_id}
+            details={
+                "alert_id": alert_id,
+                "display_name": display_name,
+            },
         )
 
         return {"status": "success", "annotation_id": annotation.id}

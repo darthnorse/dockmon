@@ -365,7 +365,10 @@ async def get_annotations(
             AlertAnnotation.alert_id == alert_id,
         ).order_by(AlertAnnotation.timestamp.desc()).all()
 
-        usernames = {a.user for a in annotations if a.user}
+        # API-key markers ("API Key: <name>") share the column with usernames;
+        # exclude them from the User lookup so attribution stays unambiguous
+        # even if username validation rules are relaxed later.
+        usernames = {a.user for a in annotations if a.user and not a.user.startswith("API Key: ")}
         display_by_username: dict[str, str] = {}
         if usernames:
             users = session.query(User).filter(User.username.in_(usernames)).all()

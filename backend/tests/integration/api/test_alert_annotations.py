@@ -364,3 +364,25 @@ def test_profile_rename_cascades_to_annotations(db_manager, monkeypatch):
     with db_manager.get_session() as session:
         row = session.query(AlertAnnotation).filter_by(alert_id=alert_id).one()
         assert row.user == "renamed_via_api"
+
+
+def test_username_validators_block_api_key_marker_collision():
+    """Username regex must reject 'API Key: ...' so it cannot collide with
+    the marker stored on AlertAnnotation rows for API-key authors.
+
+    If either validator is relaxed in the future, this test fires before
+    the namespace ambiguity reaches production.
+    """
+    from pydantic import ValidationError
+    from auth.user_management_routes import CreateUserRequest
+    from auth.v2_routes import UpdateProfileRequest
+
+    with pytest.raises(ValidationError):
+        CreateUserRequest(
+            username="API Key: Deploy Bot",
+            password="placeholder123",
+            group_ids=[1],
+        )
+
+    with pytest.raises(ValidationError):
+        UpdateProfileRequest(username="API Key: Deploy Bot")

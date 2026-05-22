@@ -386,3 +386,120 @@ def test_username_validators_block_api_key_marker_collision():
 
     with pytest.raises(ValidationError):
         UpdateProfileRequest(username="API Key: Deploy Bot")
+
+
+# ---------------------------------------------------------------------------
+# Snooze/unsnooze regression tests
+#
+# These endpoints sit next to the annotation endpoint and shared the same
+# security_audit(...) TypeError pattern that was fixed for /resolve in 0b5defd
+# and for /annotations in this branch. Tests confirm the endpoints return 200
+# (would 500 on the unfixed code: state committed, then audit call crashes).
+# ---------------------------------------------------------------------------
+
+
+def _seed_admin_session_user(db_manager) -> int:
+    """Seed a user with an Administrators group membership; return user_id."""
+    from database import User, CustomGroup, GroupPermission, UserGroupMembership
+    from auth.capabilities import ALL_CAPABILITIES
+
+    with db_manager.get_session() as session:
+        group = session.query(CustomGroup).filter(CustomGroup.name == "Administrators").first()
+        if not group:
+            group = CustomGroup(name="Administrators", description="Full access", is_system=True)
+            session.add(group)
+            session.flush()
+            for cap in ALL_CAPABILITIES:
+                session.add(GroupPermission(group_id=group.id, capability=cap, allowed=True))
+            session.flush()
+
+        user = User(
+            username="snooze_test_user",
+            password_hash="$2b$12$test_hash_not_real",
+            auth_provider="local",
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(user)
+        session.flush()
+        session.add(UserGroupMembership(user_id=user.id, group_id=group.id))
+        session.commit()
+        return user.id
+
+
+@pytest.mark.integration
+def test_snooze_endpoint_does_not_crash_on_audit(db_manager, monkeypatch):
+    """POST /api/alerts/{id}/snooze must return 200 and persist 'snoozed' state."""
+    from fastapi.testclient import TestClient
+
+    user_id = _seed_admin_session_user(db_manager)
+    with db_manager.get_session() as session:
+        alert_id = _make_alert(session)
+
+    import main
+    import auth.shared as auth_shared
+    import auth.api_key_auth as api_key_auth_mod
+    monkeypatch.setattr(auth_shared, "db", db_manager)
+    monkeypatch.setattr(api_key_auth_mod, "db", db_manager)
+    monkeypatch.setattr(main.monitor, "db", db_manager)
+
+    from auth.api_key_auth import get_current_user_or_api_key
+
+    async def _mock_user():
+        return {
+            "auth_type": "session",
+            "user_id": user_id,
+            "username": "snooze_test_user",
+            "display_name": None,
+        }
+
+    main.app.dependency_overrides[get_current_user_or_api_key] = _mock_user
+    try:
+        client = TestClient(main.app)
+        resp = client.post(f"/api/alerts/{alert_id}/snooze", json={"duration_minutes": 30})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["state"] == "snoozed"
+    finally:
+        main.app.dependency_overrides.pop(get_current_user_or_api_key, None)
+
+
+@pytest.mark.integration
+def test_unsnooze_endpoint_does_not_crash_on_audit(db_manager, monkeypatch):
+    """POST /api/alerts/{id}/unsnooze must return 200 and persist 'open' state."""
+    from fastapi.testclient import TestClient
+    from database import AlertV2
+    from datetime import timedelta
+
+    user_id = _seed_admin_session_user(db_manager)
+    with db_manager.get_session() as session:
+        alert_id = _make_alert(session)
+        # Move it to snoozed so unsnooze has something to do.
+        alert = session.query(AlertV2).filter_by(id=alert_id).one()
+        alert.state = "snoozed"
+        alert.snoozed_until = datetime.now(timezone.utc) + timedelta(hours=1)
+        session.commit()
+
+    import main
+    import auth.shared as auth_shared
+    import auth.api_key_auth as api_key_auth_mod
+    monkeypatch.setattr(auth_shared, "db", db_manager)
+    monkeypatch.setattr(api_key_auth_mod, "db", db_manager)
+    monkeypatch.setattr(main.monitor, "db", db_manager)
+
+    from auth.api_key_auth import get_current_user_or_api_key
+
+    async def _mock_user():
+        return {
+            "auth_type": "session",
+            "user_id": user_id,
+            "username": "snooze_test_user",
+            "display_name": None,
+        }
+
+    main.app.dependency_overrides[get_current_user_or_api_key] = _mock_user
+    try:
+        client = TestClient(main.app)
+        resp = client.post(f"/api/alerts/{alert_id}/unsnooze")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["state"] == "open"
+    finally:
+        main.app.dependency_overrides.pop(get_current_user_or_api_key, None)

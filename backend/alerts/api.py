@@ -258,11 +258,15 @@ async def snooze_alert(
         alert.snoozed_until = datetime.now(timezone.utc) + timedelta(minutes=request.duration_minutes)
         session.commit()
 
-        security_audit(
-            action="alert.snooze",
+        security_audit.log_event(
+            event_type="alert_snoozed",
+            severity="info",
             user_id=user_id,
-            display_name=display_name,
-            details={"alert_id": alert_id, "duration_minutes": request.duration_minutes}
+            details={
+                "alert_id": alert_id,
+                "duration_minutes": request.duration_minutes,
+                "display_name": display_name,
+            },
         )
 
         labels = json.loads(alert.labels_json) if alert.labels_json else None
@@ -294,11 +298,14 @@ async def unsnooze_alert(
         alert.snoozed_until = None
         session.commit()
 
-        security_audit(
-            action="alert.unsnooze",
+        security_audit.log_event(
+            event_type="alert_unsnoozed",
+            severity="info",
             user_id=user_id,
-            display_name=display_name,
-            details={"alert_id": alert_id}
+            details={
+                "alert_id": alert_id,
+                "display_name": display_name,
+            },
         )
 
         labels = json.loads(alert.labels_json) if alert.labels_json else None

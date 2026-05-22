@@ -51,7 +51,7 @@ def _sanitize_for_log(value: str, max_length: int = 100) -> str:
 
 # Import shared database instance (single connection pool)
 from auth.shared import db
-from database import User, OIDCConfig
+from database import User, OIDCConfig, AlertAnnotation
 from auth.api_key_auth import (
     get_current_user_or_api_key,
     get_user_groups,
@@ -663,6 +663,10 @@ async def update_profile_v2(
 
             user.username = new_username
             changes['username'] = {'old': username, 'new': new_username}
+            # Keep AlertAnnotation.user (stable username key) in sync.
+            session.query(AlertAnnotation).filter(
+                AlertAnnotation.user == username
+            ).update({AlertAnnotation.user: new_username}, synchronize_session=False)
 
         if changes:
             user.updated_at = datetime.now(timezone.utc)

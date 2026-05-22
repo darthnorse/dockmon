@@ -302,3 +302,65 @@ def test_api_key_caller_stored_as_api_key_marker(db_manager, monkeypatch):
     )
     assert get_resp.status_code == 200, get_resp.text
     assert get_resp.json()["annotations"][0]["user"] == f"API Key: {key_name}"
+
+
+@pytest.mark.integration
+def test_profile_rename_cascades_to_annotations(db_manager, monkeypatch):
+    """Renaming via POST /api/v2/auth/update-profile cascades to AlertAnnotation.user.
+
+    Regression test for the bug where DatabaseManager.change_username had the
+    cascade but the live rename path in auth/v2_routes.py mutated user.username
+    directly, leaving historical annotations pointing at the stale username.
+    """
+    from fastapi.testclient import TestClient
+    from database import User
+
+    with db_manager.get_session() as session:
+        user = User(
+            username="rename_via_api",
+            password_hash="$2b$12$test_hash_not_real",
+            auth_provider="local",
+            must_change_password=False,
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(user)
+        session.flush()
+        user_id = user.id
+
+        alert_id = _make_alert(session)
+        session.add(AlertAnnotation(
+            alert_id=alert_id,
+            timestamp=datetime.now(timezone.utc),
+            user="rename_via_api",
+            text="before rename",
+        ))
+        session.commit()
+
+    import main
+    import auth.v2_routes as v2_routes_mod
+    import auth.shared as auth_shared
+    monkeypatch.setattr(auth_shared, "db", db_manager)
+    monkeypatch.setattr(v2_routes_mod, "db", db_manager)
+
+    async def _mock_current_user():
+        return {
+            "auth_type": "session",
+            "user_id": user_id,
+            "username": "rename_via_api",
+            "display_name": None,
+        }
+
+    main.app.dependency_overrides[v2_routes_mod.get_current_user_dependency] = _mock_current_user
+    try:
+        client = TestClient(main.app)
+        resp = client.post(
+            "/api/v2/auth/update-profile",
+            json={"username": "renamed_via_api"},
+        )
+        assert resp.status_code == 200, resp.text
+    finally:
+        main.app.dependency_overrides.pop(v2_routes_mod.get_current_user_dependency, None)
+
+    with db_manager.get_session() as session:
+        row = session.query(AlertAnnotation).filter_by(alert_id=alert_id).one()
+        assert row.user == "renamed_via_api"

@@ -8,17 +8,41 @@ value is the stable `username` for session users (or a literal
 propagate to historical annotations.
 """
 
-import pytest
+import hashlib
+import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from database import AlertV2, AlertAnnotation, User
+import pytest
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
+from sqlalchemy import event
+
+import database as database_module
+import main
+import auth.api_key_auth as api_key_auth_mod
+import auth.shared as auth_shared
+import auth.v2_routes as v2_routes_mod
 from alerts.api import add_annotation, get_annotations, AddAnnotationRequest
+from auth.api_key_auth import get_current_user_or_api_key
+from auth.capabilities import ALL_CAPABILITIES
+from auth.user_management_routes import CreateUserRequest
+from auth.v2_routes import UpdateProfileRequest
+from database import (
+    AlertV2,
+    AlertAnnotation,
+    ApiKey,
+    CustomGroup,
+    DatabaseManager,
+    GroupPermission,
+    User,
+    UserGroupMembership,
+)
 
 
-def _make_alert(db_session, alert_id: str | None = None) -> str:
+def _make_alert(db_session) -> str:
     """Create an open alert and return its id."""
-    alert_id = alert_id or str(uuid.uuid4())
+    alert_id = str(uuid.uuid4())
     alert = AlertV2(
         id=alert_id,
         dedup_key=f"cpu_high|host:{alert_id}",
@@ -106,7 +130,7 @@ async def test_get_annotations_falls_back_to_stored_string(db_session, test_data
         AlertAnnotation(
             alert_id=alert_id,
             timestamp=datetime.now(timezone.utc),
-            user="ghost_user",       # no such User row
+            user="ghost_user",
             text="orphan",
         ),
         AlertAnnotation(
@@ -132,8 +156,6 @@ async def test_get_annotations_no_user_row_query_n_plus_1(db_session, test_user,
     Implementation detail check via SQLAlchemy event hook — keeps the read
     path cheap as alerts accrue annotations.
     """
-    from sqlalchemy import event
-
     alert_id = _make_alert(db_session)
     test_user.display_name = "Patrik"
     db_session.commit()
@@ -171,9 +193,6 @@ def db_manager(tmp_path):
     Needed for tests that call instance methods like change_username, which
     open their own session via self.get_session().
     """
-    import database as database_module
-    from database import DatabaseManager
-
     db_path = str(tmp_path / "test_annotations.db")
     database_module._database_manager_instance = None
     db = DatabaseManager(db_path=db_path)
@@ -188,8 +207,6 @@ def db_manager(tmp_path):
 @pytest.mark.integration
 def test_change_username_cascades_to_annotations(db_manager):
     """Renaming a user updates the username stored on their annotations."""
-    from database import User
-
     with db_manager.get_session() as session:
         user = User(
             username="rename_me",
@@ -225,13 +242,6 @@ def test_api_key_caller_stored_as_api_key_marker(db_manager, monkeypatch):
     same test DatabaseManager so the API key validates against the same
     rows the endpoint reads/writes.
     """
-    import secrets
-    import hashlib
-    from fastapi.testclient import TestClient
-
-    from database import User, ApiKey, CustomGroup, GroupPermission
-    from auth.capabilities import ALL_CAPABILITIES
-
     # Seed: admin group + permissions + user + API key in the test DB.
     raw_key = f"dockmon_{secrets.token_hex(16)}"
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
@@ -275,9 +285,6 @@ def test_api_key_caller_stored_as_api_key_marker(db_manager, monkeypatch):
     # Wire all DB references to the same test DatabaseManager.
     # api_key_auth binds `db` at import time via `from auth.shared import db`,
     # so we must patch the bound name on the api_key_auth module.
-    import main
-    import auth.api_key_auth as api_key_auth_mod
-    import auth.shared as auth_shared
     monkeypatch.setattr(auth_shared, "db", db_manager)
     monkeypatch.setattr(api_key_auth_mod, "db", db_manager)
     monkeypatch.setattr(main.monitor, "db", db_manager)
@@ -312,9 +319,6 @@ def test_profile_rename_cascades_to_annotations(db_manager, monkeypatch):
     cascade but the live rename path in auth/v2_routes.py mutated user.username
     directly, leaving historical annotations pointing at the stale username.
     """
-    from fastapi.testclient import TestClient
-    from database import User
-
     with db_manager.get_session() as session:
         user = User(
             username="rename_via_api",
@@ -336,9 +340,6 @@ def test_profile_rename_cascades_to_annotations(db_manager, monkeypatch):
         ))
         session.commit()
 
-    import main
-    import auth.v2_routes as v2_routes_mod
-    import auth.shared as auth_shared
     monkeypatch.setattr(auth_shared, "db", db_manager)
     monkeypatch.setattr(v2_routes_mod, "db", db_manager)
 
@@ -373,10 +374,6 @@ def test_username_validators_block_api_key_marker_collision():
     If either validator is relaxed in the future, this test fires before
     the namespace ambiguity reaches production.
     """
-    from pydantic import ValidationError
-    from auth.user_management_routes import CreateUserRequest
-    from auth.v2_routes import UpdateProfileRequest
-
     with pytest.raises(ValidationError):
         CreateUserRequest(
             username="API Key: Deploy Bot",
@@ -400,9 +397,6 @@ def test_username_validators_block_api_key_marker_collision():
 
 def _seed_admin_session_user(db_manager) -> int:
     """Seed a user with an Administrators group membership; return user_id."""
-    from database import User, CustomGroup, GroupPermission, UserGroupMembership
-    from auth.capabilities import ALL_CAPABILITIES
-
     with db_manager.get_session() as session:
         group = session.query(CustomGroup).filter(CustomGroup.name == "Administrators").first()
         if not group:
@@ -429,20 +423,13 @@ def _seed_admin_session_user(db_manager) -> int:
 @pytest.mark.integration
 def test_snooze_endpoint_does_not_crash_on_audit(db_manager, monkeypatch):
     """POST /api/alerts/{id}/snooze must return 200 and persist 'snoozed' state."""
-    from fastapi.testclient import TestClient
-
     user_id = _seed_admin_session_user(db_manager)
     with db_manager.get_session() as session:
         alert_id = _make_alert(session)
 
-    import main
-    import auth.shared as auth_shared
-    import auth.api_key_auth as api_key_auth_mod
     monkeypatch.setattr(auth_shared, "db", db_manager)
     monkeypatch.setattr(api_key_auth_mod, "db", db_manager)
     monkeypatch.setattr(main.monitor, "db", db_manager)
-
-    from auth.api_key_auth import get_current_user_or_api_key
 
     async def _mock_user():
         return {
@@ -465,10 +452,6 @@ def test_snooze_endpoint_does_not_crash_on_audit(db_manager, monkeypatch):
 @pytest.mark.integration
 def test_unsnooze_endpoint_does_not_crash_on_audit(db_manager, monkeypatch):
     """POST /api/alerts/{id}/unsnooze must return 200 and persist 'open' state."""
-    from fastapi.testclient import TestClient
-    from database import AlertV2
-    from datetime import timedelta
-
     user_id = _seed_admin_session_user(db_manager)
     with db_manager.get_session() as session:
         alert_id = _make_alert(session)
@@ -478,14 +461,9 @@ def test_unsnooze_endpoint_does_not_crash_on_audit(db_manager, monkeypatch):
         alert.snoozed_until = datetime.now(timezone.utc) + timedelta(hours=1)
         session.commit()
 
-    import main
-    import auth.shared as auth_shared
-    import auth.api_key_auth as api_key_auth_mod
     monkeypatch.setattr(auth_shared, "db", db_manager)
     monkeypatch.setattr(api_key_auth_mod, "db", db_manager)
     monkeypatch.setattr(main.monitor, "db", db_manager)
-
-    from auth.api_key_auth import get_current_user_or_api_key
 
     async def _mock_user():
         return {

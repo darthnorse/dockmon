@@ -319,7 +319,7 @@ async def add_annotation(
     user_id, display_name = get_auditable_user_info(current_user)
 
     if current_user.get("auth_type") == "api_key":
-        author = f"API Key: {current_user.get('api_key_name', 'unknown')}"
+        author = display_name  # 'API Key: <name>' from get_auditable_user_info
     else:
         author = current_user.get("username")
 

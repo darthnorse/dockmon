@@ -302,6 +302,66 @@ class TestUpdateValidatorPatternMatching:
         assert result.matched_pattern == "nginx"
 
 
+class TestUpdateValidatorPatternMatchesNameNotTagOrRegistry:
+    """Patterns must match the image *name*, not the tag (Issue #220) or
+    the registry host."""
+
+    def _validator_with_pattern(self, mock_db_session, pattern_str):
+        mock_pattern = MagicMock(spec=UpdatePolicy)
+        mock_pattern.pattern = pattern_str
+        mock_pattern.category = "proxies"
+        mock_pattern.enabled = True
+        mock_pattern.action = "warn"
+        mock_db_session.query.return_value.filter_by.return_value.first.return_value = None
+        mock_db_session.query.return_value.filter_by.return_value.all.return_value = [mock_pattern]
+        return UpdateValidator(mock_db_session)
+
+    def test_pattern_does_not_match_tag(self, mock_db_session):
+        """'nginx' pattern must NOT match an image whose only 'nginx' is the tag."""
+        validator = self._validator_with_pattern(mock_db_session, "nginx")
+
+        result = validator.validate_update(
+            host_id="host-123",
+            container_id="abc123def456",
+            container_name="baikal",
+            image_name="ghcr.io/aalmenar/baikal:nginx",
+            labels={}
+        )
+
+        assert result.result == ValidationResult.ALLOW
+        assert result.matched_pattern is None
+
+    def test_pattern_does_not_match_registry_host(self, mock_db_session):
+        """'docker' pattern must NOT match every image on docker.io."""
+        validator = self._validator_with_pattern(mock_db_session, "docker")
+
+        result = validator.validate_update(
+            host_id="host-123",
+            container_id="abc123def456",
+            container_name="my-postgres",
+            image_name="docker.io/library/postgres:16",
+            labels={}
+        )
+
+        assert result.result == ValidationResult.ALLOW
+        assert result.matched_pattern is None
+
+    def test_pattern_still_matches_repository_name(self, mock_db_session):
+        """Genuine name match still works after registry/tag are stripped."""
+        validator = self._validator_with_pattern(mock_db_session, "nginx")
+
+        result = validator.validate_update(
+            host_id="host-123",
+            container_id="abc123def456",
+            container_name="web",
+            image_name="docker.io/library/nginx:1.25",
+            labels={}
+        )
+
+        assert result.result == ValidationResult.WARN
+        assert result.matched_pattern == "nginx"
+
+
 class TestUpdateValidatorDefaultBehavior:
     """Test default behavior (Priority 4)"""
 

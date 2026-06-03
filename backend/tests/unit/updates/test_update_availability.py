@@ -992,3 +992,50 @@ class TestRegistryFallback:
         for image, should_fallback, reason in test_cases:
             eligible = '@' not in image
             assert eligible == should_fallback, f"Failed for {reason}: {image}"
+
+
+class TestMatchesIgnorePattern:
+    """
+    Ignore patterns must match the image *name* (repository), not the tag
+    (Issue #220) or the registry host. Container-name matching stays substring.
+    """
+
+    def test_pattern_does_not_match_tag(self):
+        """'nginx' ignore pattern must NOT skip ghcr.io/aalmenar/baikal:nginx."""
+        checker = UpdateChecker(db=None, monitor=None)
+
+        container = {"name": "baikal", "image": "ghcr.io/aalmenar/baikal:nginx"}
+
+        assert checker._matches_ignore_pattern(container, ["nginx"]) is False
+
+    def test_pattern_does_not_match_registry_host(self):
+        """'docker' ignore pattern must NOT skip every docker.io image."""
+        checker = UpdateChecker(db=None, monitor=None)
+
+        container = {"name": "my-postgres", "image": "docker.io/library/postgres:16"}
+
+        assert checker._matches_ignore_pattern(container, ["docker"]) is False
+
+    def test_pattern_matches_repository_name(self):
+        """A genuine image-name match still skips the container."""
+        checker = UpdateChecker(db=None, monitor=None)
+
+        container = {"name": "web", "image": "docker.io/library/nginx:1.25"}
+
+        assert checker._matches_ignore_pattern(container, ["nginx"]) is True
+
+    def test_pattern_matches_container_name(self):
+        """Container-name substring matching is unaffected."""
+        checker = UpdateChecker(db=None, monitor=None)
+
+        container = {"name": "my-traefik-proxy", "image": "ghcr.io/org/app:latest"}
+
+        assert checker._matches_ignore_pattern(container, ["traefik"]) is True
+
+    def test_no_patterns_never_matches(self):
+        """Empty pattern list never matches."""
+        checker = UpdateChecker(db=None, monitor=None)
+
+        container = {"name": "nginx", "image": "nginx:latest"}
+
+        assert checker._matches_ignore_pattern(container, []) is False

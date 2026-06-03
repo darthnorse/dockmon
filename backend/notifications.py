@@ -820,7 +820,9 @@ class NotificationService:
                 logger.error(f"Google Chat webhook_url must point to chat.googleapis.com: {webhook_url}")
                 return False
 
-            chat_message = message
+            # Google Chat uses single-asterisk bold (like Slack), not the **bold**
+            # produced by the message templates, so normalize before sending.
+            chat_message = message.replace('**', '*')
             if action_url:
                 chat_message += f"\n\n<{action_url}|Update Now>"
 
@@ -1127,6 +1129,8 @@ class NotificationService:
                 return await self._send_webhook(channel.config, message, event=alert, title=title, action_url=action_url)
             if channel.type == "teams":
                 return await self._send_teams(channel.config, message, action_url=action_url)
+            if channel.type == "google_chat":
+                return await self._send_google_chat(channel.config, message, action_url=action_url)
             logger.warning(f"{context}: unknown channel type '{channel.type}'")
             return False
         except Exception as e:

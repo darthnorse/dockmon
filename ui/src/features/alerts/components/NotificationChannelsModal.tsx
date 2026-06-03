@@ -6,7 +6,7 @@
 
 import { useState } from 'react'
 import { X, Plus, Trash2, Edit, Power, PowerOff, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react'
-import { Smartphone, Send, MessageSquare, Hash, Bell, Mail, Users, BellRing, LucideIcon } from 'lucide-react'
+import { Smartphone, Send, MessageSquare, MessageCircle, Hash, Bell, Mail, Users, BellRing, LucideIcon } from 'lucide-react'
 import { RemoveScroll } from 'react-remove-scroll'
 import {
   useNotificationChannels,
@@ -32,6 +32,7 @@ const CHANNEL_ICONS: Record<string, LucideIcon> = {
   discord: MessageSquare,
   slack: Hash,
   teams: Users,
+  google_chat: MessageCircle,
   pushover: Smartphone,
   gotify: Bell,
   ntfy: BellRing,

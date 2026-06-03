@@ -6,7 +6,7 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { X, Search, Check, Bell, BellRing, Send, MessageSquare, Hash, Smartphone, Mail, Globe, Users } from 'lucide-react'
+import { X, Search, Check, Bell, BellRing, Send, MessageSquare, MessageCircle, Hash, Smartphone, Mail, Globe, Users } from 'lucide-react'
 import { RemoveScroll } from 'react-remove-scroll'
 import { useCreateAlertRule, useUpdateAlertRule } from '../hooks/useAlertRules'
 import { useNotificationChannels } from '../hooks/useNotificationChannels'
@@ -187,6 +187,7 @@ const CHANNEL_TYPE_INFO: Record<string, { label: string; icon: typeof Bell }> = 
   discord: { label: 'Discord', icon: MessageSquare },
   slack: { label: 'Slack', icon: Hash },
   teams: { label: 'Microsoft Teams', icon: Users },
+  google_chat: { label: 'Google Chat', icon: MessageCircle },
   gotify: { label: 'Gotify', icon: Bell },
   ntfy: { label: 'ntfy', icon: BellRing },
   smtp: { label: 'Email', icon: Mail },

@@ -655,6 +655,11 @@ class AlertEngine:
             # Container stopped/exited (includes clean stops with exit 0 and crashes)
             return event_type == "state_change" and event_data and event_data.get("new_state") in ["stopped", "exited", "dead"]
 
+        if rule.kind == "container_started":
+            # Container started/now running (fires when container transitions to running state,
+            # regardless of what triggered it — manual start, host reboot recovery, etc.)
+            return event_type == "state_change" and event_data and event_data.get("new_state") == "running"
+
         if rule.kind in ["container_restart", "container_restarted"]:
             # Container restarted (went through restart cycle)
             return event_type == "state_change" and event_data and event_data.get("new_state") == "restarting"

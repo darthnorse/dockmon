@@ -587,6 +587,13 @@ class AlertEvaluationService:
                     logger.error(f"Error verifying host alert {alert.id}: {e}", exc_info=True)
                     return True
 
+            # For container_started alerts, do not re-verify. A start is a point-in-time
+            # event, not a sustained condition, so the notification stands even if the
+            # container has since stopped. A transient start→stop within the grace period
+            # is already handled by clearing the pending alert on the stop event.
+            elif alert.kind == "container_started" and alert.scope_type == "container":
+                return True
+
             # For other alert types, default to sending notification
             return True
 
@@ -1319,7 +1326,7 @@ class AlertEvaluationService:
             # Use composite key for scope_id to prevent cross-host collisions
             context = EvaluationContext(
                 scope_type="container",
-                scope_id=make_composite_key(host_id, container_id),
+                scope_id=composite_key,
                 host_id=host_id,
                 host_name=host_name,
                 container_id=container_id,
@@ -1341,14 +1348,14 @@ class AlertEvaluationService:
                     # Clear existing alerts
                     await self._auto_clear_alerts_by_kind(
                         scope_type="container",
-                        scope_id=make_composite_key(host_id, container_id),
+                        scope_id=composite_key,
                         kinds_to_clear=["container_stopped"],
                         reason="Container started"
                     )
                     # Clear pending alerts (Issue #96 - alert_active_delay)
                     cleared = self.engine.clear_pending_for_scope(
                         scope_type="container",
-                        scope_id=make_composite_key(host_id, container_id),
+                        scope_id=composite_key,
                         kinds=["container_stopped"]
                     )
                     if cleared > 0:
@@ -1358,7 +1365,7 @@ class AlertEvaluationService:
                     # during a transient stop, cancel the clear since container is running again)
                     cancelled = self.engine.cancel_pending_clears_for_scope(
                         scope_type="container",
-                        scope_id=make_composite_key(host_id, container_id),
+                        scope_id=composite_key,
                         kinds=["container_started"]
                     )
                     if cancelled > 0:
@@ -1368,14 +1375,14 @@ class AlertEvaluationService:
                 elif new_state == "healthy":
                     await self._auto_clear_alerts_by_kind(
                         scope_type="container",
-                        scope_id=make_composite_key(host_id, container_id),
+                        scope_id=composite_key,
                         kinds_to_clear=["unhealthy", "container_unhealthy"],
                         reason="Container became healthy"
                     )
                     # Clear pending alerts (Issue #96 - alert_active_delay)
                     cleared = self.engine.clear_pending_for_scope(
                         scope_type="container",
-                        scope_id=make_composite_key(host_id, container_id),
+                        scope_id=composite_key,
                         kinds=["unhealthy", "container_unhealthy"]
                     )
                     if cleared > 0:
@@ -1387,7 +1394,7 @@ class AlertEvaluationService:
                 elif new_state in ["stopped", "exited", "dead"]:
                     cancelled = self.engine.cancel_pending_clears_for_scope(
                         scope_type="container",
-                        scope_id=make_composite_key(host_id, container_id),
+                        scope_id=composite_key,
                         kinds=["container_stopped"]
                     )
                     if cancelled > 0:
@@ -1396,14 +1403,14 @@ class AlertEvaluationService:
                     # Auto-clear container_started alerts (container is no longer running)
                     await self._auto_clear_alerts_by_kind(
                         scope_type="container",
-                        scope_id=make_composite_key(host_id, container_id),
+                        scope_id=composite_key,
                         kinds_to_clear=["container_started"],
                         reason="Container stopped"
                     )
                     # Clear pending container_started alerts (those with alert_active_delay)
                     cleared = self.engine.clear_pending_for_scope(
                         scope_type="container",
-                        scope_id=make_composite_key(host_id, container_id),
+                        scope_id=composite_key,
                         kinds=["container_started"]
                     )
                     if cleared > 0:
@@ -1413,7 +1420,7 @@ class AlertEvaluationService:
                 elif new_state == "unhealthy":
                     cancelled = self.engine.cancel_pending_clears_for_scope(
                         scope_type="container",
-                        scope_id=make_composite_key(host_id, container_id),
+                        scope_id=composite_key,
                         kinds=["unhealthy", "container_unhealthy"]
                     )
                     if cancelled > 0:
@@ -1425,7 +1432,7 @@ class AlertEvaluationService:
             if event_data.get('container_deleted'):
                 cleared = self.engine.clear_pending_for_scope(
                     scope_type="container",
-                    scope_id=make_composite_key(host_id, container_id),
+                    scope_id=composite_key,
                     kinds=None  # Clear ALL kinds - container is gone
                 )
                 if cleared > 0:

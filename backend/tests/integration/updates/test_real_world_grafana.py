@@ -28,6 +28,20 @@ def docker_client():
         pytest.skip(f"Docker not available: {e}")
 
 
+@pytest.fixture(autouse=True)
+def require_alpine_image(docker_client):
+    """Skip these tests when alpine:latest (the image they create from) is absent.
+
+    These are real-container integration tests; without the image they fail with
+    ImageNotFound rather than reporting a code problem. CI pulls the image (or run
+    with DOCKMON_TEST_PULL_IMAGES=1 / `docker pull alpine:latest`).
+    """
+    try:
+        docker_client.images.get("alpine:latest")
+    except docker.errors.ImageNotFound:
+        pytest.skip("alpine:latest not present (set DOCKMON_TEST_PULL_IMAGES=1 or run `docker pull alpine:latest`)")
+
+
 @pytest.fixture
 def grafana_networks(docker_client):
     """Create test networks for Grafana."""

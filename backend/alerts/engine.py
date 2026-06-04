@@ -676,8 +676,10 @@ class AlertEngine:
             return event_type == "state_change" and event_data and event_data.get("new_state") == "running"
 
         if rule.kind in ["container_restart", "container_restarted"]:
-            # Container restarted (went through restart cycle)
-            return event_type == "state_change" and event_data and event_data.get("new_state") == "restarting"
+            # Container restarted (went through a restart cycle). A Docker 'restart'
+            # surfaces as new_state == "running" (same as a plain start), so match on
+            # the container_restarted flag set by the EventBus, not new_state.
+            return event_type == "state_change" and event_data and event_data.get("container_restarted") is True
 
         if rule.kind in ["host_disconnected", "host_down"]:
             # Host disconnected/offline

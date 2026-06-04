@@ -24,6 +24,46 @@ logger = logging.getLogger(__name__)
 
 # V1 dataclasses AlertEvent and DockerEventAlert removed - V2 uses AlertV2 database model
 
+# Human-readable labels for alert kinds, used in notification titles ({KIND}).
+# Unmapped kinds fall back to title-casing (e.g. 'some_kind' -> 'Some Kind').
+_KIND_LABELS = {
+    "container_started": "Container Started",
+    "container_stopped": "Container Stopped",
+    "container_restart": "Container Restarted",
+    "container_restarted": "Container Restarted",
+    "container_paused": "Container Paused",
+    "container_died": "Container Died",
+    "container_killed": "Container Killed",
+    "container_unhealthy": "Container Unhealthy",
+    "unhealthy": "Container Unhealthy",
+    "container_healthy": "Container Healthy",
+    "health_check_failed": "Health Check Failed",
+    "host_disconnected": "Host Disconnected",
+    "host_down": "Host Down",
+    "cpu_high": "High CPU",
+    "cpu_low": "Low CPU",
+    "memory_high": "High Memory",
+    "memory_low": "Low Memory",
+    "disk_high": "High Disk Usage",
+    "disk_low": "Low Disk Space",
+    "network_high": "High Network",
+    "update_available": "Update Available",
+    "update_completed": "Update Completed",
+    "update_failed": "Update Failed",
+}
+
+
+def _friendly_kind(kind: Optional[str]) -> str:
+    """Return a human-readable label for an alert kind (for notification titles).
+
+    Falls back to title-casing unknown kinds so new kinds still render
+    acceptably (e.g. 'some_new_kind' -> 'Some New Kind').
+    """
+    if not kind:
+        return ""
+    return _KIND_LABELS.get(kind, kind.replace("_", " ").title())
+
+
 class NotificationService:
     """Handles all notification channels and alert processing"""
 
@@ -1422,9 +1462,18 @@ class NotificationService:
 **Time:** {TIMESTAMP}
 **Rule:** {RULE_NAME}"""
 
-        # State change alerts (stopped, started, paused, restarted, died, killed)
-        if kind in ['container_stopped', 'container_started', 'container_paused', 'container_restart', 'container_restarted',
-                    'container_died', 'container_killed']:
+        # Container still present (started/restarted/paused) - no exit code to show
+        if kind in ['container_started', 'container_restart', 'container_restarted', 'container_paused']:
+            return """🚨 **{SEVERITY} Alert: {KIND}**
+
+**Container:** {CONTAINER_NAME}
+**Host:** {HOST_NAME}
+**State change:** {OLD_STATE} to {NEW_STATE}
+**Time:** {TIMESTAMP}
+**Rule:** {RULE_NAME}"""
+
+        # Container exited (stopped/died/killed) - exit code is meaningful
+        if kind in ['container_stopped', 'container_died', 'container_killed']:
             return """🚨 **{SEVERITY} Alert: {KIND}**
 
 **Container:** {CONTAINER_NAME}
@@ -1510,7 +1559,7 @@ class NotificationService:
             duration_str = self._format_duration((resolved_at - first_seen).total_seconds())
 
         substitutions = {
-            "{KIND}": alert.kind or "",
+            "{KIND}": _friendly_kind(alert.kind),
             "{CONTAINER_NAME}": alert.container_name or "N/A",
             "{HOST_NAME}": alert.host_name or "N/A",
             "{RESOLVED_REASON}": alert.resolved_reason or "Clear condition met",
@@ -1606,7 +1655,7 @@ class NotificationService:
 
             # Alert info
             '{SEVERITY}': alert.severity.upper(),
-            '{KIND}': alert.kind,
+            '{KIND}': _friendly_kind(alert.kind),
             '{TITLE}': alert.title,
             '{MESSAGE}': alert.message,
             '{SCOPE_TYPE}': alert.scope_type.capitalize(),

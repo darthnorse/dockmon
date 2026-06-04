@@ -97,6 +97,23 @@ def ensure_docker_images():
         # Don't fail here - let individual tests fail if needed
 
 
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    """Reset the global rate limiter before each test.
+
+    security.rate_limiting.rate_limiter is a module-level singleton with an
+    in-memory token bucket keyed by client IP. Every TestClient request shares
+    the 'testclient' IP, so without a reset the bucket drains across the session
+    and later tests get spurious HTTP 429s depending on run order (e.g. the
+    stack validate-ports routes). Clearing the buckets before each test isolates
+    rate-limit state. Tests that exercise rate limiting build up their own state
+    within the test, after this reset, so they are unaffected.
+    """
+    from security.rate_limiting import rate_limiter
+    rate_limiter.clients.clear()
+    yield
+
+
 # =============================================================================
 # Test Fixtures
 # =============================================================================

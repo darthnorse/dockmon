@@ -288,6 +288,10 @@ class EventBus:
                 event_data['update_completed'] = True
             elif event.event_type == EventType.CONTAINER_DELETED:
                 event_data['container_deleted'] = True
+            elif event.event_type == EventType.CONTAINER_RESTARTED:
+                # A Docker 'restart' surfaces as new_state == "running" (same as a
+                # plain start), so flag it here for the container_restarted rule.
+                event_data['container_restarted'] = True
 
             # Call alert evaluation service based on scope
             if event.scope_type == 'container':

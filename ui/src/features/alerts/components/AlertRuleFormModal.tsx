@@ -132,6 +132,14 @@ const RULE_KINDS = [
     scopes: ['container']
   },
   {
+    value: 'container_started',
+    label: 'Container Started / Now Running',
+    description: 'Alert when container transitions to running state — manual start, host reboot recovery, or external trigger',
+    category: 'Container State',
+    requiresMetric: false,
+    scopes: ['container']
+  },
+  {
     value: 'container_restart',
     label: 'Container Restarted',
     description: 'Alert when container restarts (any restart, expected or unexpected)',

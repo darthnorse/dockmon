@@ -12,7 +12,7 @@ SECURITY IMPROVEMENTS over v1:
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
+from urllib.parse import urlencode
 import httpx
 from fastapi import APIRouter, HTTPException, Response, Cookie, Request, Depends
 from pydantic import BaseModel, Field, field_validator
@@ -23,6 +23,7 @@ from auth.password import ph
 
 from auth.cookie_sessions import cookie_session_manager, get_session_cookie_max_age, should_set_secure_cookie
 from utils.client_ip import get_client_ip, get_request_scheme, get_request_host
+from utils.oidc import build_discovery_url
 from security.rate_limiting import rate_limit_auth, get_rate_limit_dependency
 from audit import log_login, log_logout, log_login_failure, AuditAction
 from audit.audit_logger import get_client_info, log_audit, AuditEntityType
@@ -396,10 +397,7 @@ async def logout_v2(
                 config = session.query(OIDCConfig).filter(OIDCConfig.id == 1).first()
                 if config and config.enabled and config.provider_url:
                     try:
-                        provider_url = config.provider_url.rstrip('/')
-                        if provider_url.endswith('/.well-known/openid-configuration'):
-                            provider_url = provider_url[:-len('/.well-known/openid-configuration')]
-                        discovery_url = f"{provider_url}/.well-known/openid-configuration"
+                        discovery_url = build_discovery_url(config.provider_url)
                         async with httpx.AsyncClient(timeout=5.0) as client:
                             resp = await client.get(discovery_url)
                             if resp.status_code == 200:
@@ -412,7 +410,19 @@ async def logout_v2(
                                     host = get_request_host(request)
                                     base_path = get_base_path().rstrip('/')
                                     post_logout_uri = f"{scheme}://{host}{base_path}/login"
-                                    oidc_logout_url = f"{end_session}?post_logout_redirect_uri={quote(post_logout_uri, safe='')}"
+                                    # Keycloak 18+ rejects post_logout_redirect_uri unless
+                                    # id_token_hint OR client_id is also sent. DockMon does not
+                                    # retain the id_token, so send client_id.
+                                    params = {'post_logout_redirect_uri': post_logout_uri}
+                                    if config.client_id:
+                                        params['client_id'] = config.client_id
+                                    else:
+                                        logger.warning(
+                                            "OIDC logout: client_id not configured; provider "
+                                            "may reject the logout (post_logout_redirect_uri "
+                                            "requires id_token_hint or client_id)"
+                                        )
+                                    oidc_logout_url = f"{end_session}?{urlencode(params)}"
                     except Exception as e:
                         logger.warning(f"Failed to fetch OIDC end_session_endpoint: {e}")
 

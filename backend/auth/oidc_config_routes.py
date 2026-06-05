@@ -26,6 +26,7 @@ from database import OIDCConfig, OIDCGroupMapping, CustomGroup
 from audit import get_client_info, AuditAction
 from audit.audit_logger import AuditEntityType
 from utils.encryption import encrypt_password, decrypt_password
+from utils.oidc import build_discovery_url
 
 logger = logging.getLogger(__name__)
 
@@ -451,10 +452,7 @@ async def discover_oidc_provider(
     except httpx.HTTPStatusError as e:
         hint = ""
         if e.response.status_code == 404:
-            provider_url = provider_url.rstrip('/')
-            if provider_url.endswith('/.well-known/openid-configuration'):
-                provider_url = provider_url[:-len('/.well-known/openid-configuration')]
-            discovery_url = f"{provider_url}/.well-known/openid-configuration"
+            discovery_url = build_discovery_url(provider_url)
             hint = (
                 f". Tried: {discovery_url} — check that the Provider URL includes the full path "
                 "(e.g. for Authentik: https://auth.example.com/application/o/your-app-slug)"

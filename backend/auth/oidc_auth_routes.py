@@ -43,6 +43,7 @@ from auth.cookie_sessions import cookie_session_manager, get_session_cookie_max_
 from auth.api_key_auth import invalidate_user_groups_cache
 from auth.utils import count_other_admins
 from utils.base_path import get_base_path
+from utils.oidc import build_discovery_url, normalize_provider_url
 from database import User, OIDCConfig, OIDCGroupMapping, PendingOIDCAuth, CustomGroup, UserGroupMembership
 from security.rate_limiting import rate_limit_auth
 from audit import log_login, log_login_failure, get_client_info, AuditAction
@@ -122,15 +123,13 @@ def _build_scopes(config) -> str:
 
 async def _fetch_oidc_discovery(provider_url: str) -> dict:
     """Fetch OIDC provider discovery document."""
-    provider_url = provider_url.rstrip('/')
-    if provider_url.endswith('/.well-known/openid-configuration'):
-        provider_url = provider_url[:-len('/.well-known/openid-configuration')]
+    provider_url = normalize_provider_url(provider_url)
 
     if not provider_url.startswith('https://'):
         logger.warning(f"OIDC provider URL is not HTTPS: {provider_url}")
         raise ValueError(f"OIDC provider URL must use HTTPS: {provider_url}")
 
-    discovery_url = f"{provider_url}/.well-known/openid-configuration"
+    discovery_url = build_discovery_url(provider_url)
 
     async with httpx.AsyncClient(timeout=OIDC_HTTP_TIMEOUT) as client:
         response = await client.get(discovery_url)

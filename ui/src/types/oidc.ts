@@ -87,6 +87,7 @@ export interface OIDCStatus {
   enabled: boolean
   provider_configured: boolean
   sso_default: boolean
+  local_login_disabled: boolean  // Effective SSO-only state (DB flag AND NOT env override)
 }
 
 // ==================== Legacy Role Types (for migration) ====================

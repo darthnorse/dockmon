@@ -30,6 +30,13 @@ services:
       # - DOCKMON_CORS_ORIGINS=https://dockmon.yourcompany.com
       - DOCKMON_CORS_ORIGINS=
 
+      # Break-glass: force local (username/password) login ON regardless of the
+      # SSO-only switch. Use this to recover access if you disabled local login
+      # and SSO later broke: uncomment, `docker compose up -d`, log in, fix OIDC,
+      # then re-comment. (Normally toggle SSO-only via:
+      #   docker exec dockmon python backend/manage_auth.py disable-local-login)
+      # - DOCKMON_FORCE_LOCAL_LOGIN=true
+
       # HOST_STACKS_DIR is auto-discovered from /proc/self/mountinfo at startup,
       # so relative bind mounts in stacks (e.g., ./data:/app/data) work without
       # configuration. Set this only as an override if auto-discovery picks the

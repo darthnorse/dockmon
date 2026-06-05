@@ -196,6 +196,9 @@ class OIDCConfig(Base):
     require_approval = Column(Boolean, nullable=False, server_default='0', default=False)
     approval_notify_channel_ids = Column(Text, nullable=True)  # JSON array of channel IDs
 
+    # SSO-only enforcement flag; effective-state rules live in auth/local_login.py.
+    local_login_disabled = Column(Boolean, nullable=False, server_default='0', default=False)
+
     created_at = Column(DateTime, nullable=False, default=utcnow)
     updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
 
@@ -1741,6 +1744,10 @@ class DatabaseManager:
                         session.execute(text("ALTER TABLE oidc_config ADD COLUMN sso_default BOOLEAN NOT NULL DEFAULT 0"))
                         session.commit()
                         logger.info("Added sso_default column to oidc_config table")
+                    if 'local_login_disabled' not in oidc_column_names:
+                        session.execute(text("ALTER TABLE oidc_config ADD COLUMN local_login_disabled BOOLEAN NOT NULL DEFAULT 0"))
+                        session.commit()
+                        logger.info("Added local_login_disabled column to oidc_config table")
 
 
         except Exception as e:

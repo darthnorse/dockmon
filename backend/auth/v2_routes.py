@@ -22,6 +22,7 @@ from argon2.exceptions import VerifyMismatchError, InvalidHashError
 from auth.password import ph
 
 from auth.cookie_sessions import cookie_session_manager, get_session_cookie_max_age, should_set_secure_cookie
+from auth.local_login import is_local_login_effectively_disabled
 from utils.client_ip import get_client_ip, get_request_scheme, get_request_host
 from utils.oidc import build_discovery_url
 from security.rate_limiting import rate_limit_auth, get_rate_limit_dependency
@@ -99,6 +100,26 @@ def verify_password(password: str, password_hash: str) -> tuple[bool, bool]:
         logger.debug(f"bcrypt verification failed: {bcrypt_error}")
 
     return False, False
+
+
+def _reject_login(
+    session, request, *, password: str, username: str, reason: str, log_message: str
+) -> HTTPException:
+    """Build a constant-time generic rejection for a local login attempt.
+
+    Runs the dummy hash verify (timing parity with the real-password path), logs
+    a sanitized warning, best-effort audits the failure, and returns the generic
+    401 to raise. Centralizes the no-account-existence-leak contract so every
+    rejection reason behaves identically. Callers: `raise _reject_login(...)`.
+    """
+    _verify_dummy(password)
+    logger.warning(log_message)
+    try:
+        log_login_failure(session, username, request, reason)
+        session.commit()
+    except Exception as audit_err:
+        logger.warning(f"Failed to log audit entry: {audit_err}")
+    return HTTPException(status_code=401, detail="Invalid username or password")
 
 
 class LoginRequest(BaseModel):
@@ -216,54 +237,53 @@ async def login_v2(
         User data and session cookie
     """
     with db.get_session() as session:
+        # SSO-only enforcement: when local login is effectively disabled, reject
+        # every local password login before any credential work. API keys use a
+        # separate endpoint and are intentionally unaffected.
+        if is_local_login_effectively_disabled(session):
+            safe_username = _sanitize_for_log(credentials.username)
+            raise _reject_login(
+                session, request,
+                password=credentials.password,
+                username=credentials.username,
+                reason="local_login_disabled",
+                log_message=f"Login failed: local login disabled (user '{safe_username}')",
+            )
+
         user = session.query(User).filter(
             User.username == credentials.username,
         ).first()
 
         if not user:
-            _verify_dummy(credentials.password)
             safe_username = _sanitize_for_log(credentials.username)
-            reason = "user_not_found"
-            logger.warning(f"Login failed: user '{safe_username}' not found")
-
-            try:
-                log_login_failure(session, credentials.username, request, reason)
-                session.commit()
-            except Exception as audit_err:
-                logger.warning(f"Failed to log audit entry: {audit_err}")
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid username or password"
+            raise _reject_login(
+                session, request,
+                password=credentials.password,
+                username=credentials.username,
+                reason="user_not_found",
+                log_message=f"Login failed: user '{safe_username}' not found",
             )
 
         # Block OIDC users from local login (constant-time rejection)
         if user.auth_provider == 'oidc':
-            _verify_dummy(credentials.password)
             safe_username = _sanitize_for_log(credentials.username)
-            logger.warning(f"Login failed: OIDC user '{safe_username}' attempted local login")
-            try:
-                log_login_failure(session, credentials.username, request, "oidc_user_local_attempt")
-                session.commit()
-            except Exception as audit_err:
-                logger.warning(f"Failed to log audit entry: {audit_err}")
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid username or password"
+            raise _reject_login(
+                session, request,
+                password=credentials.password,
+                username=credentials.username,
+                reason="oidc_user_local_attempt",
+                log_message=f"Login failed: OIDC user '{safe_username}' attempted local login",
             )
 
         # Check account lockout
         if user.locked_until and user.locked_until.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc):
-            _verify_dummy(credentials.password)
             safe_username = _sanitize_for_log(credentials.username)
-            logger.warning(f"Login failed: account '{safe_username}' is locked")
-            try:
-                log_login_failure(session, credentials.username, request, "account_locked")
-                session.commit()
-            except Exception as audit_err:
-                logger.warning(f"Failed to log audit entry: {audit_err}")
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid username or password"
+            raise _reject_login(
+                session, request,
+                password=credentials.password,
+                username=credentials.username,
+                reason="account_locked",
+                log_message=f"Login failed: account '{safe_username}' is locked",
             )
 
         # Verify password (with backward compatibility for bcrypt)

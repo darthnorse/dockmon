@@ -247,6 +247,12 @@ class AppConfig:
     CORS_ORIGINS = get_cors_origins()
     REVERSE_PROXY_MODE = os.getenv('REVERSE_PROXY_MODE', 'false').lower() == 'true'
 
+    # Break-glass override: force local password login on regardless of the
+    # oidc_config.local_login_disabled DB flag. Lets an operator recover access
+    # if SSO breaks while local login is disabled (set in compose, restart, log
+    # in, fix OIDC, remove it).
+    FORCE_LOCAL_LOGIN = os.getenv('DOCKMON_FORCE_LOCAL_LOGIN', 'false').lower() == 'true'
+
     # Import centralized paths
     from .paths import DATABASE_URL as DEFAULT_DATABASE_URL, CREDENTIALS_FILE as DEFAULT_CREDENTIALS_FILE
 

@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field, field_validator
 
 from auth.shared import db, safe_audit_log
+from auth.local_login import local_login_effective_disabled
 from auth.api_key_auth import require_capability, get_current_user_or_api_key
 from auth.utils import format_timestamp_required, get_group_or_400, get_auditable_user_info
 from auth.oidc_auth_routes import _fetch_oidc_discovery, OIDC_HTTP_TIMEOUT
@@ -129,6 +130,7 @@ class OIDCStatusResponse(BaseModel):
     enabled: bool
     provider_configured: bool
     sso_default: bool
+    local_login_disabled: bool = False  # Effective SSO-only state (DB flag AND NOT env override)
 
 
 # ==================== Helper Functions ====================
@@ -203,20 +205,15 @@ def _mapping_to_response(
 
 
 def _get_or_create_config(session) -> OIDCConfig:
-    """Get or create the singleton OIDC config"""
+    """Get or create the singleton OIDC config.
+
+    Field defaults (scopes, claim_for_groups, sso_default, require_approval,
+    local_login_disabled, timestamps) come from the OIDCConfig model so this and
+    the manage_auth CLI cannot drift on the default set.
+    """
     config = session.query(OIDCConfig).filter(OIDCConfig.id == 1).first()
     if not config:
-        config = OIDCConfig(
-            id=1,
-            enabled=False,
-            scopes='openid profile email groups',
-            claim_for_groups='groups',
-            sso_default=False,
-            require_approval=False,
-            approval_notify_channel_ids=None,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
-        )
+        config = OIDCConfig(id=1, enabled=False)
         session.add(config)
         session.commit()
         session.refresh(config)
@@ -238,10 +235,16 @@ async def get_oidc_status() -> OIDCStatusResponse:
             OIDCConfig.provider_url,
             OIDCConfig.client_id,
             OIDCConfig.sso_default,
+            OIDCConfig.local_login_disabled,
         ).filter(OIDCConfig.id == 1).first()
 
         if not row:
-            return OIDCStatusResponse(enabled=False, provider_configured=False, sso_default=False)
+            return OIDCStatusResponse(
+                enabled=False,
+                provider_configured=False,
+                sso_default=False,
+                local_login_disabled=local_login_effective_disabled(False),
+            )
 
         provider_configured = bool(row.provider_url and row.client_id)
         is_enabled = row.enabled and provider_configured
@@ -250,6 +253,7 @@ async def get_oidc_status() -> OIDCStatusResponse:
             enabled=is_enabled,
             provider_configured=provider_configured,
             sso_default=row.sso_default and is_enabled,
+            local_login_disabled=local_login_effective_disabled(row.local_login_disabled),
         )
 
 

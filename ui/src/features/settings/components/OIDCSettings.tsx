@@ -26,6 +26,7 @@ import {
 } from 'lucide-react'
 import {
   useOIDCConfig,
+  useOIDCStatus,
   useUpdateOIDCConfig,
   useDiscoverOIDC,
   useOIDCGroupMappings,
@@ -77,6 +78,7 @@ function arraysEqual(a: number[], b: number[]): boolean {
 
 export function OIDCSettings() {
   const { data: config, isLoading: configLoading } = useOIDCConfig()
+  const { data: oidcStatus } = useOIDCStatus()
   const { data: mappings, isLoading: mappingsLoading } = useOIDCGroupMappings()
   const { data: groupsData } = useGroups()
   const updateConfig = useUpdateOIDCConfig()
@@ -273,6 +275,35 @@ export function OIDCSettings() {
               </Label>
             </div>
           </div>
+        </div>
+
+        {/* Local login (SSO-only enforcement) - read-only; controlled via CLI/env */}
+        <div className="rounded-lg border border-gray-800 bg-gray-900/50 p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className={`h-4 w-4 ${oidcStatus?.local_login_disabled ? 'text-amber-400' : 'text-gray-500'}`} />
+            <span className="text-sm font-medium text-gray-200">
+              Local login: {oidcStatus?.local_login_disabled ? 'Disabled (SSO-only)' : 'Enabled'}
+            </span>
+          </div>
+          <p className="text-xs text-gray-400">
+            {oidcStatus?.local_login_disabled
+              ? 'Password login is rejected; users must sign in with SSO. API keys are unaffected.'
+              : 'Username/password login is allowed. Disable it to enforce SSO-only sign-in.'}
+          </p>
+          <p className="text-xs text-gray-500">
+            This is controlled from the server, not here. Run on the Docker host
+            (<span className="font-mono text-gray-400">dockmon</span> is the default container name; change it if yours differs):
+          </p>
+          <pre className="overflow-x-auto rounded bg-gray-950/60 p-2 font-mono text-xs text-gray-300">
+{oidcStatus?.local_login_disabled
+  ? 'docker exec dockmon python backend/manage_auth.py enable-local-login'
+  : 'docker exec dockmon python backend/manage_auth.py disable-local-login'}
+          </pre>
+          <p className="text-xs text-gray-500">
+            Disabling does <span className="text-gray-300">not</span> sign out already-logged-in
+            local users; existing sessions persist until they expire or the container restarts.
+            Break-glass: set <span className="font-mono text-gray-300">DOCKMON_FORCE_LOCAL_LOGIN=true</span> and restart.
+          </p>
         </div>
 
         <div className="rounded-lg border border-gray-800 bg-gray-900/50 p-4 space-y-4">

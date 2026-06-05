@@ -60,9 +60,11 @@ type HealthCheckHandler struct {
 	mu        sync.RWMutex
 	log       *logrus.Logger
 	sendEvent func(msgType string, payload interface{}) error
-	stopChan  chan struct{}
-	stopOnce  sync.Once // Ensures stopChan is only closed once
-	wg        sync.WaitGroup
+	// cancel stops the loop started by the most recent Start(); it is reset on
+	// every Start() so the handler can be restarted after a reconnect.
+	// Guarded by mu.
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 // NewHealthCheckHandler creates a new health check handler
@@ -71,22 +73,38 @@ func NewHealthCheckHandler(log *logrus.Logger, sendEvent func(string, interface{
 		configs:   make(map[string]*HealthCheckConfig),
 		log:       log,
 		sendEvent: sendEvent,
-		stopChan:  make(chan struct{}),
 	}
 }
 
-// Start starts the health check loop
+// Start starts the health check loop. It may be called again after Stop()
+// (e.g. when the agent's WebSocket reconnects); each call runs an independent
+// loop, so health checks resume across reconnects.
 func (h *HealthCheckHandler) Start(ctx context.Context) {
+	loopCtx, cancel := context.WithCancel(ctx)
+	h.mu.Lock()
+	// Defensive: if a previous loop is still registered (Start called twice with
+	// no intervening Stop), cancel it so its goroutine can exit; otherwise Stop()
+	// would block forever in wg.Wait() on the orphaned loop.
+	if h.cancel != nil {
+		h.cancel()
+	}
+	h.cancel = cancel
+	h.mu.Unlock()
 	h.wg.Add(1)
-	go h.healthCheckLoop(ctx)
+	go h.healthCheckLoop(loopCtx)
 	h.log.Info("Health check handler started")
 }
 
-// Stop stops the health check handler
+// Stop stops the loop started by the most recent Start() and waits for it to
+// exit. Safe to call when no loop is running.
 func (h *HealthCheckHandler) Stop() {
-	h.stopOnce.Do(func() {
-		close(h.stopChan)
-	})
+	h.mu.Lock()
+	cancel := h.cancel
+	h.cancel = nil
+	h.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	h.wg.Wait()
 	h.log.Info("Health check handler stopped")
 }
@@ -221,10 +239,7 @@ func (h *HealthCheckHandler) healthCheckLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			h.log.Info("Health check loop: context cancelled")
-			return
-		case <-h.stopChan:
-			h.log.Info("Health check loop: stop signal received")
+			h.log.Info("Health check loop: stopped")
 			return
 		case <-ticker.C:
 			h.runDueChecks(ctx, lastCheck)
@@ -249,8 +264,13 @@ func (h *HealthCheckHandler) runDueChecks(ctx context.Context, lastCheck map[str
 		interval := time.Duration(config.CheckIntervalSeconds) * time.Second
 
 		if !exists || now.Sub(last) >= interval {
-			// Run check in goroutine to avoid blocking
-			go h.performCheck(ctx, config)
+			// Run check in a goroutine to avoid blocking. Tracked by wg so Stop()
+			// waits for in-flight checks instead of letting them outlive the loop.
+			h.wg.Add(1)
+			go func(cfg *HealthCheckConfig) {
+				defer h.wg.Done()
+				h.performCheck(ctx, cfg)
+			}(config)
 			lastCheck[containerID] = now
 		}
 	}
@@ -290,7 +310,7 @@ func (h *HealthCheckHandler) performCheck(ctx context.Context, config *HealthChe
 
 	req, err := http.NewRequestWithContext(ctx, method, config.URL, nil)
 	if err != nil {
-		h.sendResult(config, false, 0, time.Since(startTime).Milliseconds(), fmt.Sprintf("Failed to create request: %v", err))
+		h.sendResult(ctx, config, false, 0, time.Since(startTime).Milliseconds(), fmt.Sprintf("Failed to create request: %v", err))
 		return
 	}
 
@@ -328,7 +348,7 @@ func (h *HealthCheckHandler) performCheck(ctx context.Context, config *HealthChe
 		} else {
 			errorMsg = fmt.Sprintf("Connection failed: %.100s", err.Error())
 		}
-		h.sendResult(config, false, 0, responseTimeMs, errorMsg)
+		h.sendResult(ctx, config, false, 0, responseTimeMs, errorMsg)
 		return
 	}
 	defer resp.Body.Close()
@@ -347,11 +367,16 @@ func (h *HealthCheckHandler) performCheck(ctx context.Context, config *HealthChe
 		errorMsg = fmt.Sprintf("Status %d", resp.StatusCode)
 	}
 
-	h.sendResult(config, isHealthy, resp.StatusCode, responseTimeMs, errorMsg)
+	h.sendResult(ctx, config, isHealthy, resp.StatusCode, responseTimeMs, errorMsg)
 }
 
-// sendResult sends the health check result to the backend
-func (h *HealthCheckHandler) sendResult(config *HealthCheckConfig, healthy bool, statusCode int, responseTimeMs int64, errorMsg string) {
+// sendResult sends the health check result to the backend. Results for a check
+// whose context was cancelled (e.g. the connection dropped mid-check) are
+// dropped so a late result cannot land on the next reconnected WebSocket.
+func (h *HealthCheckHandler) sendResult(ctx context.Context, config *HealthCheckConfig, healthy bool, statusCode int, responseTimeMs int64, errorMsg string) {
+	if ctx.Err() != nil {
+		return
+	}
 	result := HealthCheckResult{
 		ContainerID:    config.ContainerID,
 		HostID:         config.HostID,

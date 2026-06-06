@@ -33,6 +33,7 @@ import {
   useCreateOIDCGroupMapping,
   useUpdateOIDCGroupMapping,
   useDeleteOIDCGroupMapping,
+  useSetLocalLogin,
 } from '@/hooks/useOIDC'
 import { useGroups } from '@/hooks/useGroups'
 import { usePendingUserCount, useApproveAllUsers } from '@/hooks/useUsers'
@@ -79,6 +80,7 @@ function arraysEqual(a: number[], b: number[]): boolean {
 export function OIDCSettings() {
   const { data: config, isLoading: configLoading } = useOIDCConfig()
   const { data: oidcStatus } = useOIDCStatus()
+  const setLocalLogin = useSetLocalLogin()
   const { data: mappings, isLoading: mappingsLoading } = useOIDCGroupMappings()
   const { data: groupsData } = useGroups()
   const updateConfig = useUpdateOIDCConfig()
@@ -105,6 +107,23 @@ export function OIDCSettings() {
   const [requireApproval, setRequireApproval] = useState(false)
   const [approvalNotifyChannelIds, setApprovalNotifyChannelIds] = useState<number[]>([])
   const [showApprovalConfirm, setShowApprovalConfirm] = useState(false)
+  const [showDisableLocalConfirm, setShowDisableLocalConfirm] = useState(false)
+  const localLoginDisabled = oidcStatus?.local_login_disabled ?? false
+  const localLoginEnvOverride = oidcStatus?.local_login_env_override ?? false
+
+  const handleLocalLoginToggle = (checked: boolean) => {
+    if (checked) {
+      // Enabling SSO-only is consequential — confirm first.
+      setShowDisableLocalConfirm(true)
+    } else {
+      setLocalLogin.mutate(false)
+    }
+  }
+
+  const confirmDisableLocalLogin = () => {
+    setShowDisableLocalConfirm(false)
+    setLocalLogin.mutate(true)
+  }
 
   const callbackUrl = useMemo(() => {
     return `${window.location.origin}${getBasePath()}/api/v2/auth/oidc/callback`
@@ -277,32 +296,38 @@ export function OIDCSettings() {
           </div>
         </div>
 
-        {/* Local login (SSO-only enforcement) - read-only; controlled via CLI/env */}
+        {/* Local login (SSO-only enforcement) */}
         <div className="rounded-lg border border-gray-800 bg-gray-900/50 p-4 space-y-3">
           <div className="flex items-center gap-2">
-            <ShieldCheck className={`h-4 w-4 ${oidcStatus?.local_login_disabled ? 'text-amber-400' : 'text-gray-500'}`} />
-            <span className="text-sm font-medium text-gray-200">
-              Local login: {oidcStatus?.local_login_disabled ? 'Disabled (SSO-only)' : 'Enabled'}
-            </span>
+            <ShieldCheck className={`h-4 w-4 ${localLoginDisabled ? 'text-amber-400' : 'text-gray-500'}`} />
+            <span className="text-sm font-medium text-gray-200">SSO-only sign-in</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Switch
+              id="disable-local-login"
+              checked={localLoginDisabled}
+              onCheckedChange={handleLocalLoginToggle}
+              disabled={localLoginEnvOverride || setLocalLogin.isPending}
+            />
+            <Label htmlFor="disable-local-login" className="text-sm text-gray-300">
+              Disable local (username/password) login
+            </Label>
           </div>
           <p className="text-xs text-gray-400">
-            {oidcStatus?.local_login_disabled
+            {localLoginDisabled
               ? 'Password login is rejected; users must sign in with SSO. API keys are unaffected.'
-              : 'Username/password login is allowed. Disable it to enforce SSO-only sign-in.'}
+              : 'Username/password login is allowed. Turn on to enforce SSO-only sign-in.'}
           </p>
+          {localLoginEnvOverride && (
+            <p className="text-xs text-amber-400">
+              Local login is forced ON by the <span className="font-mono">DOCKMON_FORCE_LOCAL_LOGIN</span> environment
+              variable. Remove it to control this here.
+            </p>
+          )}
           <p className="text-xs text-gray-500">
-            This is controlled from the server, not here. Run on the Docker host
-            (<span className="font-mono text-gray-400">dockmon</span> is the default container name; change it if yours differs):
-          </p>
-          <pre className="overflow-x-auto rounded bg-gray-950/60 p-2 font-mono text-xs text-gray-300">
-{oidcStatus?.local_login_disabled
-  ? 'docker exec dockmon python backend/manage_auth.py enable-local-login'
-  : 'docker exec dockmon python backend/manage_auth.py disable-local-login'}
-          </pre>
-          <p className="text-xs text-gray-500">
-            Disabling does <span className="text-gray-300">not</span> sign out already-logged-in
-            local users; existing sessions persist until they expire or the container restarts.
-            Break-glass: set <span className="font-mono text-gray-300">DOCKMON_FORCE_LOCAL_LOGIN=true</span> and restart.
+            Break-glass: re-enable from the Docker host with
+            <span className="font-mono text-gray-400"> docker exec dockmon python backend/manage_auth.py enable-local-login</span>,
+            or set <span className="font-mono text-gray-400">DOCKMON_FORCE_LOCAL_LOGIN=true</span> and restart.
           </p>
         </div>
 
@@ -774,6 +799,29 @@ export function OIDCSettings() {
               disabled={approveAllUsers.isPending || updateConfig.isPending}
             >
               {approveAllUsers.isPending ? 'Approving...' : 'Yes, approve all'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Disable Local Login Confirmation */}
+      <Dialog open={showDisableLocalConfirm} onOpenChange={() => setShowDisableLocalConfirm(false)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Disable local login?</DialogTitle>
+            <DialogDescription>
+              Users will only be able to sign in with SSO. Username/password login will be rejected.
+              Already signed-in local users are not logged out — existing sessions remain until they
+              expire or the container restarts. API keys are unaffected. If SSO breaks, recover from
+              the Docker host with the manage_auth CLI or the DOCKMON_FORCE_LOCAL_LOGIN env override.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowDisableLocalConfirm(false)}>
+              Cancel
+            </Button>
+            <Button onClick={confirmDisableLocalLogin} disabled={setLocalLogin.isPending}>
+              Disable local login
             </Button>
           </DialogFooter>
         </DialogContent>

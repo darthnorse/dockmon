@@ -19,8 +19,13 @@ from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field, field_validator
 
 from auth.shared import db, safe_audit_log
-from auth.local_login import local_login_effective_disabled
+from auth.local_login import (
+    local_login_effective_disabled,
+    oidc_usable,
+    has_approved_oidc_admin,
+)
 from auth.api_key_auth import require_capability, get_current_user_or_api_key
+from config.settings import AppConfig
 from auth.utils import format_timestamp_required, get_group_or_400, get_auditable_user_info
 from auth.oidc_auth_routes import _fetch_oidc_discovery, OIDC_HTTP_TIMEOUT
 from database import OIDCConfig, OIDCGroupMapping, CustomGroup
@@ -131,6 +136,17 @@ class OIDCStatusResponse(BaseModel):
     provider_configured: bool
     sso_default: bool
     local_login_disabled: bool = False  # Effective SSO-only state (DB flag AND NOT env override)
+
+
+class LocalLoginUpdateRequest(BaseModel):
+    """Enable or disable local password login (SSO-only enforcement)."""
+    disabled: bool
+
+
+class LocalLoginResponse(BaseModel):
+    """Effective local-login state after a write."""
+    local_login_disabled: bool       # effective (DB flag AND NOT env override)
+    local_login_env_override: bool
 
 
 # ==================== Helper Functions ====================
@@ -367,6 +383,78 @@ async def update_oidc_config(
         logger.info(f"OIDC configuration updated by {display_name}")
 
         return _config_to_response(config, session)
+
+
+@router.put(
+    "/local-login",
+    response_model=LocalLoginResponse,
+    dependencies=[Depends(require_capability("oidc.manage"))],
+)
+async def set_local_login(
+    body: LocalLoginUpdateRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user_or_api_key),
+) -> LocalLoginResponse:
+    """
+    Enable or disable local password login (SSO-only enforcement).
+
+    Disabling is refused (409) unless OIDC is usable and an approved OIDC admin
+    exists, mirroring the manage_auth CLI guard. There is no force option here;
+    use the CLI's --force for that. The DOCKMON_FORCE_LOCAL_LOGIN env override
+    controls the effective state, so writes are refused while it is active.
+    """
+    user_id, display_name = get_auditable_user_info(current_user)
+
+    if AppConfig.FORCE_LOCAL_LOGIN:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Local login is controlled by the DOCKMON_FORCE_LOCAL_LOGIN "
+                "environment variable. Remove it to manage this setting here."
+            ),
+        )
+
+    with db.get_session() as session:
+        config = _get_or_create_config(session)
+
+        if body.disabled:
+            if not oidc_usable(config):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Enable and configure OIDC before enforcing SSO-only login.",
+                )
+            if not has_approved_oidc_admin(session):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "No approved OIDC user with admin permissions exists. Add one "
+                        "before disabling local login, or you could lock yourself out."
+                    ),
+                )
+
+        if config.local_login_disabled != body.disabled:
+            config.local_login_disabled = body.disabled
+            config.updated_at = datetime.now(timezone.utc)
+            safe_audit_log(
+                session,
+                user_id,
+                display_name,
+                AuditAction.UPDATE,
+                AuditEntityType.OIDC_CONFIG,
+                entity_id="1",
+                entity_name="oidc_config",
+                details={"local_login_disabled": body.disabled, "via": "ui"},
+                **get_client_info(request),
+            )
+            session.commit()
+            logger.info(
+                f"Local login {'disabled' if body.disabled else 'enabled'} by {display_name}"
+            )
+
+        return LocalLoginResponse(
+            local_login_disabled=local_login_effective_disabled(config.local_login_disabled),
+            local_login_env_override=AppConfig.FORCE_LOCAL_LOGIN,
+        )
 
 
 async def _validate_client_credentials(

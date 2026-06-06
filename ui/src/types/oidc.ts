@@ -88,6 +88,7 @@ export interface OIDCStatus {
   provider_configured: boolean
   sso_default: boolean
   local_login_disabled: boolean  // Effective SSO-only state (DB flag AND NOT env override)
+  local_login_env_override: boolean  // DOCKMON_FORCE_LOCAL_LOGIN is active (toggle is read-only)
 }
 
 // ==================== Legacy Role Types (for migration) ====================

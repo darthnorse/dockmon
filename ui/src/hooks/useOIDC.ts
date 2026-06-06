@@ -70,6 +70,30 @@ export function useUpdateOIDCConfig() {
   })
 }
 
+export function useSetLocalLogin() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (disabled: boolean) => {
+      return apiClient.put<{ local_login_disabled: boolean; local_login_env_override: boolean }>(
+        '/v2/oidc/local-login',
+        { disabled },
+      )
+    },
+    onSuccess: (_data, disabled) => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.status })
+      toast.success(disabled ? 'Local login disabled' : 'Local login enabled', {
+        description: disabled
+          ? 'Only SSO can be used to sign in. Existing sessions remain active.'
+          : 'Username/password login is allowed again.',
+      })
+    },
+    onError: (error: Error) => {
+      toast.error('Could not change local login', { description: error.message })
+    },
+  })
+}
+
 export function useDiscoverOIDC() {
   return useMutation({
     mutationFn: async (data: OIDCDiscoveryRequest) => {

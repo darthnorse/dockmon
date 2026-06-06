@@ -68,3 +68,18 @@ async def test_status_env_override_reports_enabled(status_env, monkeypatch):
 async def test_status_no_config_defaults_to_enabled(status_env):
     result = await oidc_routes.get_oidc_status()
     assert result.local_login_disabled is False
+
+
+@pytest.mark.asyncio
+async def test_status_reports_env_override_flag(status_env, monkeypatch):
+    monkeypatch.setattr(AppConfig, "FORCE_LOCAL_LOGIN", True, raising=False)
+    _add_config(status_env, local_login_disabled=True)
+    result = await oidc_routes.get_oidc_status()
+    assert result.local_login_env_override is True
+
+
+@pytest.mark.asyncio
+async def test_status_env_override_false_by_default(status_env):
+    _add_config(status_env)
+    result = await oidc_routes.get_oidc_status()
+    assert result.local_login_env_override is False

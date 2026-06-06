@@ -136,6 +136,7 @@ class OIDCStatusResponse(BaseModel):
     provider_configured: bool
     sso_default: bool
     local_login_disabled: bool = False  # Effective SSO-only state (DB flag AND NOT env override)
+    local_login_env_override: bool = False  # DOCKMON_FORCE_LOCAL_LOGIN is active
 
 
 class LocalLoginUpdateRequest(BaseModel):
@@ -260,6 +261,7 @@ async def get_oidc_status() -> OIDCStatusResponse:
                 provider_configured=False,
                 sso_default=False,
                 local_login_disabled=local_login_effective_disabled(False),
+                local_login_env_override=AppConfig.FORCE_LOCAL_LOGIN,
             )
 
         provider_configured = bool(row.provider_url and row.client_id)
@@ -270,6 +272,7 @@ async def get_oidc_status() -> OIDCStatusResponse:
             provider_configured=provider_configured,
             sso_default=row.sso_default and is_enabled,
             local_login_disabled=local_login_effective_disabled(row.local_login_disabled),
+            local_login_env_override=AppConfig.FORCE_LOCAL_LOGIN,
         )
 
 

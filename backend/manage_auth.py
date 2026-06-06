@@ -23,21 +23,13 @@ import sys
 from datetime import datetime, timezone
 
 from audit.audit_logger import AuditAction, AuditEntityType, log_audit
-from auth.local_login import local_login_effective_disabled
+from auth.local_login import has_approved_oidc_admin, local_login_effective_disabled, oidc_usable
 from config.paths import DATABASE_PATH
 from config.settings import AppConfig
 from database import (
     DatabaseManager,
-    GroupPermission,
     OIDCConfig,
-    User,
-    UserGroupMembership,
 )
-
-# Capabilities that mark a user as an administrator for lockout-guard purposes.
-# Possessing any of these via a group means the OIDC user can keep administering
-# DockMon, so SSO is a viable sole login path.
-ADMIN_GUARD_CAPABILITIES = ("users.manage", "groups.manage", "oidc.manage", "settings.manage")
 
 AUDIT_USERNAME = "manage_auth CLI"
 ENABLE_COMMAND = "docker exec dockmon python backend/manage_auth.py enable-local-login"
@@ -49,25 +41,6 @@ class GuardError(Exception):
 
 def _get_config(session) -> OIDCConfig | None:
     return session.query(OIDCConfig).filter(OIDCConfig.id == 1).first()
-
-
-def _oidc_usable(config: OIDCConfig | None) -> bool:
-    """OIDC is usable as a login path when enabled and fully configured."""
-    return bool(config and config.enabled and config.provider_url and config.client_id)
-
-
-def _has_approved_oidc_admin(session) -> bool:
-    """True if at least one approved OIDC user has an admin-tier capability."""
-    return session.query(User.id).join(
-        UserGroupMembership, UserGroupMembership.user_id == User.id
-    ).join(
-        GroupPermission, GroupPermission.group_id == UserGroupMembership.group_id
-    ).filter(
-        User.auth_provider == "oidc",
-        User.approved.is_(True),
-        GroupPermission.allowed.is_(True),
-        GroupPermission.capability.in_(ADMIN_GUARD_CAPABILITIES),
-    ).first() is not None
 
 
 def _audit_flag_change(session, new_value: bool) -> None:
@@ -92,8 +65,8 @@ def get_status(db) -> dict:
             "db_flag": db_flag,
             "env_override": AppConfig.FORCE_LOCAL_LOGIN,
             "effective_disabled": local_login_effective_disabled(db_flag),
-            "oidc_enabled": _oidc_usable(config),
-            "has_oidc_admin": _has_approved_oidc_admin(session),
+            "oidc_enabled": oidc_usable(config),
+            "has_oidc_admin": has_approved_oidc_admin(session),
         }
 
 
@@ -103,13 +76,13 @@ def disable_local_login(db, force: bool = False) -> None:
         config = _get_config(session)
 
         if not force:
-            if not _oidc_usable(config):
+            if not oidc_usable(config):
                 raise GuardError(
                     "OIDC is not enabled/configured. Disabling local login now would "
                     "leave no way in. Enable OIDC first, or re-run with --force if you "
                     "know what you are doing."
                 )
-            if not _has_approved_oidc_admin(session):
+            if not has_approved_oidc_admin(session):
                 raise GuardError(
                     "No approved OIDC admin exists. Disabling local login now could "
                     "lock you out. Ensure an approved OIDC user with admin permissions "

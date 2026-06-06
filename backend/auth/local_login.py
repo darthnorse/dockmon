@@ -11,7 +11,7 @@ when SSO is broken and the DB flag is awkward to flip.
 """
 
 from config.settings import AppConfig
-from database import OIDCConfig
+from database import GroupPermission, OIDCConfig, User, UserGroupMembership
 
 
 def local_login_effective_disabled(db_flag: bool) -> bool:
@@ -45,3 +45,28 @@ def is_local_login_effectively_disabled(session) -> bool:
         .scalar()
     )
     return local_login_effective_disabled(db_flag)
+
+
+# Capabilities that mark a user as an administrator for lockout-guard purposes.
+# Possessing any of these via a group means an OIDC user can keep administering
+# DockMon, so SSO is a viable sole login path.
+ADMIN_GUARD_CAPABILITIES = ("users.manage", "groups.manage", "oidc.manage", "settings.manage")
+
+
+def oidc_usable(config) -> bool:
+    """OIDC is usable as a login path when enabled and fully configured."""
+    return bool(config and config.enabled and config.provider_url and config.client_id)
+
+
+def has_approved_oidc_admin(session) -> bool:
+    """True if at least one approved OIDC user has an admin-tier capability."""
+    return session.query(User.id).join(
+        UserGroupMembership, UserGroupMembership.user_id == User.id
+    ).join(
+        GroupPermission, GroupPermission.group_id == UserGroupMembership.group_id
+    ).filter(
+        User.auth_provider == "oidc",
+        User.approved.is_(True),
+        GroupPermission.allowed.is_(True),
+        GroupPermission.capability.in_(ADMIN_GUARD_CAPABILITIES),
+    ).first() is not None

@@ -365,6 +365,19 @@ async def update_oidc_config(
             }
             config.approval_notify_channel_ids = json.dumps(config_data.approval_notify_channel_ids)
 
+        # Lockout guard: refuse a change that would make OIDC unusable while local
+        # login is effectively disabled (SSO-only) — that would leave no working way
+        # to sign in. Break-glass via the manage_auth CLI or DOCKMON_FORCE_LOCAL_LOGIN
+        # still applies; re-enable local login first to make this change.
+        if local_login_effective_disabled(config.local_login_disabled) and not oidc_usable(config):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Local login is disabled (SSO-only). Re-enable local login before "
+                    "disabling or unconfiguring OIDC, or you would lock everyone out."
+                ),
+            )
+
         config.updated_at = datetime.now(timezone.utc)
         # Audit log (before commit for atomicity)
         if changes:

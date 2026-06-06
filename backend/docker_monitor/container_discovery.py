@@ -22,6 +22,7 @@ from utils.async_docker import async_docker_call, async_client_ping
 from utils.keys import make_composite_key
 from utils.ip_extraction import extract_container_ips
 from utils.cache import async_ttl_cache
+from utils.url_template import resolve_chain
 
 logger = logging.getLogger(__name__)
 
@@ -413,6 +414,18 @@ class ContainerDiscovery:
         if not host:
             return containers
 
+        # WebUI URL mapping chain — fallback for containers with no manual URL.
+        # Read fresh per cycle: `self.settings` is a startup snapshot and is
+        # NOT refreshed when monitor.settings is reassigned by /api/settings.
+        try:
+            current_settings = self.db.get_settings()
+            webui_url_chain = (
+                getattr(current_settings, 'webui_url_mapping_chain', None) or []
+            )
+        except Exception as e:
+            logger.warning(f"Could not load webui_url_mapping_chain: {e}")
+            webui_url_chain = []
+
         # Agent-based hosts - get container data from agent via WebSocket
         if host.connection_type == "agent":
             from agent.command_executor import get_agent_command_executor
@@ -568,6 +581,15 @@ class ContainerDiscovery:
 
                         desired_state, web_ui_url = host_desired_states.get(container_id, ('unspecified', None))
 
+                        # Env from agent (v1.1.0+). Older agents omit this field and
+                        # env-based templates won't resolve for those hosts — upgrade
+                        # the agent if you want env: placeholders to work everywhere.
+                        env = dc_data.get("Env") or {}
+
+                        # Fall back to the mapping chain only when no manual URL.
+                        if not web_ui_url:
+                            web_ui_url = resolve_chain(webui_url_chain, env=env, labels=labels)
+
                         ports_data = dc_data.get("Ports") or []
                         ports_set: set[str] = set()
                         for port in ports_data:
@@ -634,7 +656,7 @@ class ContainerDiscovery:
                             compose_project=compose_project,
                             compose_service=compose_service,
                             tags=tags,
-                            environment={},  # Not available in list response
+                            env=env,  # From agent v1.0.10+ (cached forever per container ID)
                             repo_digests=repo_digests,  # Image digests for update checking
                             docker_ip=docker_ip,
                             docker_ips=docker_ips
@@ -858,6 +880,11 @@ class ContainerDiscovery:
 
                     env_list = dc.attrs.get('Config', {}).get('Env', [])
                     env = parse_container_env(env_list)
+
+                    # Fall back to the mapping chain only when no manual URL.
+                    # Manual URL always wins; chain is the fallback.
+                    if not web_ui_url:
+                        web_ui_url = resolve_chain(webui_url_chain, env=env, labels=labels)
 
                     container = Container(
                         id=container_id,  # Short 12-char ID (per CLAUDE.md spec)

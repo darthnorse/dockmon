@@ -72,7 +72,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logoutMutation = useMutation({
     mutationFn: authApi.logout,
     onSuccess: (response) => {
-      queryClient.clear()
+      // For OIDC users, redirect to the provider's logout URL FIRST — before
+      // clearing the cache or navigating to /login. Clearing the cache flips the
+      // app to LoginPage, which would briefly flash the local username/password
+      // form before the browser leaves for the IdP. We're navigating away
+      // anyway, so leaving the (now server-invalidated) cache in place is fine.
       if (response?.oidc_logout_url) {
         // Validate URL protocol before redirecting to prevent javascript: or data: URIs
         try {
@@ -82,12 +86,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             return
           }
         } catch {
-          // Invalid URL - fall through to login redirect
+          // Invalid URL - fall through to local logout
         }
-        navigate('/login', { replace: true })
-      } else {
-        navigate('/login', { replace: true })
       }
+      // Local logout: clear client state and return to the login page.
+      queryClient.clear()
+      navigate('/login', { replace: true })
     },
   })
 

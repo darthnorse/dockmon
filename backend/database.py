@@ -196,6 +196,9 @@ class OIDCConfig(Base):
     require_approval = Column(Boolean, nullable=False, server_default='0', default=False)
     approval_notify_channel_ids = Column(Text, nullable=True)  # JSON array of channel IDs
 
+    # SSO-only enforcement flag; effective-state rules live in auth/local_login.py.
+    local_login_disabled = Column(Boolean, nullable=False, server_default='0', default=False)
+
     created_at = Column(DateTime, nullable=False, default=utcnow)
     updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
 
@@ -685,6 +688,11 @@ class GlobalSettings(Base):
     alert_template_health = Column(Text, nullable=True)  # Health check alert template
     alert_template_update = Column(Text, nullable=True)  # Container update alert template
     blackout_windows = Column(JSON, nullable=True)  # Array of blackout time windows
+    # WebUI URL mapping chain (Issue #207). Ordered list of template strings.
+    # First template that resolves to a non-empty value wins. Templates support
+    # ${env:VARNAME} and ${label:LABELNAME} placeholders. Used only when a
+    # container has no manually-set web_ui_url.
+    webui_url_mapping_chain = Column(JSON, nullable=True)
     first_run_complete = Column(Boolean, default=False)  # Track if first run setup is complete
     polling_interval_migrated = Column(Boolean, default=False)  # Track if polling interval has been migrated to 2s
     timezone_offset = Column(Integer, default=0)  # Timezone offset in minutes from UTC
@@ -961,6 +969,7 @@ class AlertRuleV2(Base):
     # Notifications
     notify_channels_json = Column(Text, nullable=True)  # JSON: ["slack", "telegram"]
     custom_template = Column(Text, nullable=True)  # Custom message template for this rule
+    notify_on_resolve = Column(Boolean, default=False, server_default=text("0"), nullable=False)
 
     # Lifecycle
     created_at = Column(DateTime, default=utcnow, nullable=False)
@@ -1015,6 +1024,7 @@ class AlertV2(Base):
     last_notification_attempt_at = Column(DateTime, nullable=True)  # First notification attempt (for 24h timeout)
     next_retry_at = Column(DateTime, nullable=True)  # When to retry next (exponential backoff)
     suppressed_by_blackout = Column(Boolean, default=False, nullable=False)  # Alert suppressed during blackout window
+    resolve_notified_at = Column(DateTime, nullable=True)  # Set once resolve dispatch is decided (sent or deliberately skipped)
 
     # Relationships
     rule = relationship("AlertRuleV2", foreign_keys=[rule_id])
@@ -1668,14 +1678,51 @@ class DatabaseManager:
                         settings.polling_interval_migrated = True
                         session.commit()
 
-                # Migration: Add custom_template column to alert_rules_v2 table
-                alert_rules_inspector = session.connection().engine.dialect.get_columns(session.connection(), 'alert_rules_v2')
-                alert_rules_column_names = [col['name'] for col in alert_rules_inspector]
+                def _table_columns(table_name):
+                    return {
+                        col['name']
+                        for col in session.connection().engine.dialect.get_columns(
+                            session.connection(), table_name
+                        )
+                    }
 
-                if 'custom_template' not in alert_rules_column_names:
+                alert_rules_v2_cols = _table_columns('alert_rules_v2')
+
+                if 'custom_template' not in alert_rules_v2_cols:
                     session.execute(text("ALTER TABLE alert_rules_v2 ADD COLUMN custom_template TEXT"))
                     session.commit()
                     logger.info("Added custom_template column to alert_rules_v2 table")
+
+                if 'notify_on_resolve' not in alert_rules_v2_cols:
+                    session.execute(text(
+                        "ALTER TABLE alert_rules_v2 ADD COLUMN notify_on_resolve BOOLEAN NOT NULL DEFAULT 0"
+                    ))
+                    session.commit()
+                    logger.info("Added notify_on_resolve column to alert_rules_v2 table")
+
+                if 'resolve_notified_at' not in _table_columns('alerts_v2'):
+                    session.execute(text(
+                        "ALTER TABLE alerts_v2 ADD COLUMN resolve_notified_at DATETIME"
+                    ))
+                    session.commit()
+                    logger.info("Added resolve_notified_at column to alerts_v2 table")
+
+                # One-time backfill: stamp resolve_notified_at for pre-existing resolved
+                # alerts so the new dispatcher loop doesn't replay them when a user later
+                # enables notify_on_resolve on a rule with historical resolved alerts.
+                if 'resolve_notification_backfill_done' not in _table_columns('global_settings'):
+                    session.execute(text(
+                        "ALTER TABLE global_settings ADD COLUMN resolve_notification_backfill_done BOOLEAN NOT NULL DEFAULT 0"
+                    ))
+                    session.execute(text(
+                        "UPDATE alerts_v2 SET resolve_notified_at = resolved_at "
+                        "WHERE state = 'resolved' AND resolved_at IS NOT NULL AND resolve_notified_at IS NULL"
+                    ))
+                    session.execute(text(
+                        "UPDATE global_settings SET resolve_notification_backfill_done = 1"
+                    ))
+                    session.commit()
+                    logger.info("Backfilled resolve_notified_at for pre-existing resolved alerts")
 
                 # Migration: Clear old tag data (starting fresh with normalized schema)
                 # The new tag system uses 'tags' and 'tag_assignments' tables
@@ -1697,6 +1744,10 @@ class DatabaseManager:
                         session.execute(text("ALTER TABLE oidc_config ADD COLUMN sso_default BOOLEAN NOT NULL DEFAULT 0"))
                         session.commit()
                         logger.info("Added sso_default column to oidc_config table")
+                    if 'local_login_disabled' not in oidc_column_names:
+                        session.execute(text("ALTER TABLE oidc_config ADD COLUMN local_login_disabled BOOLEAN NOT NULL DEFAULT 0"))
+                        session.commit()
+                        logger.info("Added local_login_disabled column to oidc_config table")
 
 
         except Exception as e:
@@ -3502,7 +3553,7 @@ class DatabaseManager:
                     'event_suppression_patterns', 'alert_retention_days', 'unused_tag_retention_days',
                     'enable_notifications', 'alert_template', 'alert_template_metric',
                     'alert_template_state_change', 'alert_template_health', 'alert_template_update',
-                    'blackout_windows', 'timezone_offset', 'show_host_stats',
+                    'blackout_windows', 'webui_url_mapping_chain', 'timezone_offset', 'show_host_stats',
                     'show_container_stats', 'show_container_alerts_on_hosts',
                     'auto_update_enabled_default', 'update_check_interval_hours',
                     'update_check_time', 'skip_compose_containers', 'health_check_timeout_seconds',
@@ -3704,6 +3755,7 @@ class DatabaseManager:
         labels_json: Optional[str] = None,
         notify_channels_json: Optional[str] = None,
         custom_template: Optional[str] = None,
+        notify_on_resolve: bool = False,
         created_by: Optional[str] = None,
     ) -> AlertRuleV2:
         """Create a new alert rule v2"""
@@ -3737,6 +3789,7 @@ class DatabaseManager:
                 labels_json=labels_json,
                 notify_channels_json=notify_channels_json,
                 custom_template=custom_template,
+                notify_on_resolve=notify_on_resolve,
                 created_by=created_by,
             )
             session.add(rule)
@@ -4112,12 +4165,16 @@ class DatabaseManager:
             return user is not None
 
     def change_username(self, old_username: str, new_username: str) -> bool:
-        """Change user's username"""
+        """Change user's username and cascade to attribution columns."""
         with self.get_session() as session:
             user = session.query(User).filter(User.username == old_username).first()
             if user:
                 user.username = new_username
                 user.updated_at = datetime.now(timezone.utc)
+                # Keep AlertAnnotation.user (used as a stable username key) in sync.
+                session.query(AlertAnnotation).filter(
+                    AlertAnnotation.user == old_username
+                ).update({AlertAnnotation.user: new_username}, synchronize_session=False)
                 session.commit()
                 logger.info(f"Username changed from {old_username} to {new_username}")
                 return True

@@ -28,6 +28,7 @@ func ExtractConfig(
 	newImage string,
 	oldImageLabels map[string]string,
 	newImageLabels map[string]string,
+	oldImageEnv []string,
 	isPodman bool,
 ) (*ExtractedConfig, error) {
 
@@ -64,8 +65,13 @@ func ExtractConfig(
 	}
 
 	// Extract user-added labels (filter out old image labels)
-	userLabels := extractUserLabels(log, newConfig.Labels, oldImageLabels)
+	userLabels := ExtractUserLabels(log, newConfig.Labels, oldImageLabels)
 	newConfig.Labels = userLabels
+
+	// Extract user-added/modified env vars (filter out old image ENV defaults).
+	// Without this, env vars inherited from the old image become per-container
+	// overrides that shadow the new image's ENV directives.
+	newConfig.Env = ExtractUserEnv(log, newConfig.Env, oldImageEnv)
 
 	// Extract network configuration
 	primaryNetConfig, additionalNetworks := extractNetworkConfig(log, inspect)
@@ -126,9 +132,10 @@ func resolveNetworkMode(
 	return nil
 }
 
-// extractUserLabels filters container labels to preserve only user-added labels.
+// ExtractUserLabels filters container labels to preserve only user-added labels.
 // Removes labels that came from the OLD image so new image labels can take effect.
-func extractUserLabels(
+// Exported so the agent self-update path can reuse the same filtering logic.
+func ExtractUserLabels(
 	log *logrus.Logger,
 	containerLabels map[string]string,
 	oldImageLabels map[string]string,
@@ -152,6 +159,60 @@ func extractUserLabels(
 		len(containerLabels), len(oldImageLabels), len(userLabels))
 
 	return userLabels
+}
+
+// ExtractUserEnv filters container env vars to preserve only user-added or
+// user-modified entries. Removes entries that exactly match the OLD image's
+// ENV defaults so the NEW image's ENV directives can take effect on update.
+//
+// Docker's container inspect returns the merged effective env (image defaults
+// + user-set), so without filtering, every image default becomes a per-
+// container override that shadows the new image on recreate.
+//
+// Known trade-off: if a user explicitly sets an env var to exactly the same
+// value as the old image's default (e.g. `-e APP_VERSION=v3.0.0` against an
+// image whose ENV already says `APP_VERSION=v3.0.0`), we cannot distinguish
+// that from inheritance and the entry is dropped. On update, the new image's
+// value wins. This matches `docker compose up -d` semantics, where env vars
+// not in the compose file come from the new image.
+//
+// Parsing: each entry is split on the FIRST '=' only via strings.Cut, so
+// values containing '=' (e.g. DATABASE_URL=postgres://u:p=hash@host) are
+// preserved correctly. Entries with no '=' are kept as-is defensively.
+func ExtractUserEnv(
+	log *logrus.Logger,
+	containerEnv []string,
+	oldImageEnv []string,
+) []string {
+	if containerEnv == nil {
+		return []string{}
+	}
+
+	imageDefaults := make(map[string]string, len(oldImageEnv))
+	for _, entry := range oldImageEnv {
+		if key, value, ok := strings.Cut(entry, "="); ok {
+			imageDefaults[key] = value
+		}
+	}
+
+	userEnv := make([]string, 0, len(containerEnv))
+	for _, entry := range containerEnv {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			// Malformed (no '='): keep defensively, don't crash.
+			userEnv = append(userEnv, entry)
+			continue
+		}
+		// Keep if user added (not in image) OR user modified (different value).
+		if imageValue, existsInImage := imageDefaults[key]; !existsInImage || value != imageValue {
+			userEnv = append(userEnv, entry)
+		}
+	}
+
+	log.Debugf("Env filtering: %d container - %d image defaults = %d user env preserved",
+		len(containerEnv), len(oldImageEnv), len(userEnv))
+
+	return userEnv
 }
 
 // extractNetworkConfig extracts network configuration from container.
@@ -281,4 +342,18 @@ func GetImageLabels(ctx context.Context, cli *client.Client, imageRef string) (m
 	}
 
 	return img.Config.Labels, nil
+}
+
+// GetImageEnv returns the env vars defined in an image's ENV directives.
+func GetImageEnv(ctx context.Context, cli *client.Client, imageRef string) ([]string, error) {
+	img, _, err := cli.ImageInspectWithRaw(ctx, imageRef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect image: %w", err)
+	}
+
+	if img.Config == nil || img.Config.Env == nil {
+		return []string{}, nil
+	}
+
+	return img.Config.Env, nil
 }

@@ -12,7 +12,7 @@ SECURITY IMPROVEMENTS over v1:
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
+from urllib.parse import urlencode
 import httpx
 from fastapi import APIRouter, HTTPException, Response, Cookie, Request, Depends
 from pydantic import BaseModel, Field, field_validator
@@ -22,7 +22,9 @@ from argon2.exceptions import VerifyMismatchError, InvalidHashError
 from auth.password import ph
 
 from auth.cookie_sessions import cookie_session_manager, get_session_cookie_max_age, should_set_secure_cookie
+from auth.local_login import is_local_login_effectively_disabled
 from utils.client_ip import get_client_ip, get_request_scheme, get_request_host
+from utils.oidc import build_discovery_url
 from security.rate_limiting import rate_limit_auth, get_rate_limit_dependency
 from audit import log_login, log_logout, log_login_failure, AuditAction
 from audit.audit_logger import get_client_info, log_audit, AuditEntityType
@@ -51,7 +53,7 @@ def _sanitize_for_log(value: str, max_length: int = 100) -> str:
 
 # Import shared database instance (single connection pool)
 from auth.shared import db
-from database import User, OIDCConfig
+from database import User, OIDCConfig, AlertAnnotation
 from auth.api_key_auth import (
     get_current_user_or_api_key,
     get_user_groups,
@@ -98,6 +100,26 @@ def verify_password(password: str, password_hash: str) -> tuple[bool, bool]:
         logger.debug(f"bcrypt verification failed: {bcrypt_error}")
 
     return False, False
+
+
+def _reject_login(
+    session, request, *, password: str, username: str, reason: str, log_message: str
+) -> HTTPException:
+    """Build a constant-time generic rejection for a local login attempt.
+
+    Runs the dummy hash verify (timing parity with the real-password path), logs
+    a sanitized warning, best-effort audits the failure, and returns the generic
+    401 to raise. Centralizes the no-account-existence-leak contract so every
+    rejection reason behaves identically. Callers: `raise _reject_login(...)`.
+    """
+    _verify_dummy(password)
+    logger.warning(log_message)
+    try:
+        log_login_failure(session, username, request, reason)
+        session.commit()
+    except Exception as audit_err:
+        logger.warning(f"Failed to log audit entry: {audit_err}")
+    return HTTPException(status_code=401, detail="Invalid username or password")
 
 
 class LoginRequest(BaseModel):
@@ -215,54 +237,53 @@ async def login_v2(
         User data and session cookie
     """
     with db.get_session() as session:
+        # SSO-only enforcement: when local login is effectively disabled, reject
+        # every local password login before any credential work. API keys use a
+        # separate endpoint and are intentionally unaffected.
+        if is_local_login_effectively_disabled(session):
+            safe_username = _sanitize_for_log(credentials.username)
+            raise _reject_login(
+                session, request,
+                password=credentials.password,
+                username=credentials.username,
+                reason="local_login_disabled",
+                log_message=f"Login failed: local login disabled (user '{safe_username}')",
+            )
+
         user = session.query(User).filter(
             User.username == credentials.username,
         ).first()
 
         if not user:
-            _verify_dummy(credentials.password)
             safe_username = _sanitize_for_log(credentials.username)
-            reason = "user_not_found"
-            logger.warning(f"Login failed: user '{safe_username}' not found")
-
-            try:
-                log_login_failure(session, credentials.username, request, reason)
-                session.commit()
-            except Exception as audit_err:
-                logger.warning(f"Failed to log audit entry: {audit_err}")
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid username or password"
+            raise _reject_login(
+                session, request,
+                password=credentials.password,
+                username=credentials.username,
+                reason="user_not_found",
+                log_message=f"Login failed: user '{safe_username}' not found",
             )
 
         # Block OIDC users from local login (constant-time rejection)
         if user.auth_provider == 'oidc':
-            _verify_dummy(credentials.password)
             safe_username = _sanitize_for_log(credentials.username)
-            logger.warning(f"Login failed: OIDC user '{safe_username}' attempted local login")
-            try:
-                log_login_failure(session, credentials.username, request, "oidc_user_local_attempt")
-                session.commit()
-            except Exception as audit_err:
-                logger.warning(f"Failed to log audit entry: {audit_err}")
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid username or password"
+            raise _reject_login(
+                session, request,
+                password=credentials.password,
+                username=credentials.username,
+                reason="oidc_user_local_attempt",
+                log_message=f"Login failed: OIDC user '{safe_username}' attempted local login",
             )
 
         # Check account lockout
         if user.locked_until and user.locked_until.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc):
-            _verify_dummy(credentials.password)
             safe_username = _sanitize_for_log(credentials.username)
-            logger.warning(f"Login failed: account '{safe_username}' is locked")
-            try:
-                log_login_failure(session, credentials.username, request, "account_locked")
-                session.commit()
-            except Exception as audit_err:
-                logger.warning(f"Failed to log audit entry: {audit_err}")
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid username or password"
+            raise _reject_login(
+                session, request,
+                password=credentials.password,
+                username=credentials.username,
+                reason="account_locked",
+                log_message=f"Login failed: account '{safe_username}' is locked",
             )
 
         # Verify password (with backward compatibility for bcrypt)
@@ -396,10 +417,7 @@ async def logout_v2(
                 config = session.query(OIDCConfig).filter(OIDCConfig.id == 1).first()
                 if config and config.enabled and config.provider_url:
                     try:
-                        provider_url = config.provider_url.rstrip('/')
-                        if provider_url.endswith('/.well-known/openid-configuration'):
-                            provider_url = provider_url[:-len('/.well-known/openid-configuration')]
-                        discovery_url = f"{provider_url}/.well-known/openid-configuration"
+                        discovery_url = build_discovery_url(config.provider_url)
                         async with httpx.AsyncClient(timeout=5.0) as client:
                             resp = await client.get(discovery_url)
                             if resp.status_code == 200:
@@ -412,7 +430,19 @@ async def logout_v2(
                                     host = get_request_host(request)
                                     base_path = get_base_path().rstrip('/')
                                     post_logout_uri = f"{scheme}://{host}{base_path}/login"
-                                    oidc_logout_url = f"{end_session}?post_logout_redirect_uri={quote(post_logout_uri, safe='')}"
+                                    # Keycloak 18+ rejects post_logout_redirect_uri unless
+                                    # id_token_hint OR client_id is also sent. DockMon does not
+                                    # retain the id_token, so send client_id.
+                                    params = {'post_logout_redirect_uri': post_logout_uri}
+                                    if config.client_id:
+                                        params['client_id'] = config.client_id
+                                    else:
+                                        logger.warning(
+                                            "OIDC logout: client_id not configured; provider "
+                                            "may reject the logout (post_logout_redirect_uri "
+                                            "requires id_token_hint or client_id)"
+                                        )
+                                    oidc_logout_url = f"{end_session}?{urlencode(params)}"
                     except Exception as e:
                         logger.warning(f"Failed to fetch OIDC end_session_endpoint: {e}")
 
@@ -663,6 +693,10 @@ async def update_profile_v2(
 
             user.username = new_username
             changes['username'] = {'old': username, 'new': new_username}
+            # Keep AlertAnnotation.user (stable username key) in sync.
+            session.query(AlertAnnotation).filter(
+                AlertAnnotation.user == username
+            ).update({AlertAnnotation.user: new_username}, synchronize_session=False)
 
         if changes:
             user.updated_at = datetime.now(timezone.utc)

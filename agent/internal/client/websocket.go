@@ -591,9 +591,8 @@ func (c *WebSocketClient) handleConnection(ctx context.Context) error {
 		c.log.Info("Host stats collection started (systemd mode)")
 	}
 
-	// Start health check handler
+	// Start health check handler (Start() logs "Health check handler started")
 	c.healthCheckHandler.Start(connCtx)
-	c.log.Info("Health check handler started")
 
 	// Ensure cleanup when we exit
 	// IMPORTANT: Order matters here to prevent deadlocks and races:

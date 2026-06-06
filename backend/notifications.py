@@ -24,6 +24,46 @@ logger = logging.getLogger(__name__)
 
 # V1 dataclasses AlertEvent and DockerEventAlert removed - V2 uses AlertV2 database model
 
+# Human-readable labels for alert kinds, used in notification titles ({KIND}).
+# Unmapped kinds fall back to title-casing (e.g. 'some_kind' -> 'Some Kind').
+_KIND_LABELS = {
+    "container_started": "Container Started",
+    "container_stopped": "Container Stopped",
+    "container_restart": "Container Restarted",
+    "container_restarted": "Container Restarted",
+    "container_paused": "Container Paused",
+    "container_died": "Container Died",
+    "container_killed": "Container Killed",
+    "container_unhealthy": "Container Unhealthy",
+    "unhealthy": "Container Unhealthy",
+    "container_healthy": "Container Healthy",
+    "health_check_failed": "Health Check Failed",
+    "host_disconnected": "Host Disconnected",
+    "host_down": "Host Down",
+    "cpu_high": "High CPU",
+    "cpu_low": "Low CPU",
+    "memory_high": "High Memory",
+    "memory_low": "Low Memory",
+    "disk_high": "High Disk Usage",
+    "disk_low": "Low Disk Space",
+    "network_high": "High Network",
+    "update_available": "Update Available",
+    "update_completed": "Update Completed",
+    "update_failed": "Update Failed",
+}
+
+
+def _friendly_kind(kind: Optional[str]) -> str:
+    """Return a human-readable label for an alert kind (for notification titles).
+
+    Falls back to title-casing unknown kinds so new kinds still render
+    acceptably (e.g. 'some_new_kind' -> 'Some New Kind').
+    """
+    if not kind:
+        return ""
+    return _KIND_LABELS.get(kind, kind.replace("_", " ").title())
+
+
 class NotificationService:
     """Handles all notification channels and alert processing"""
 
@@ -796,6 +836,59 @@ class NotificationService:
             logger.error(f"Failed to send Teams notification: {e}")
             return False
 
+    async def _send_google_chat(self, config: Dict[str, Any], message: str, event=None, action_url: str = '') -> bool:
+        """Send notification via Google Chat incoming webhook
+
+        Google Chat space webhooks accept a JSON payload with a `text` field
+        (markdown-formatted) or a `cardsV2` payload. We send `text` because the
+        same message string is reused across channels.
+
+        Args:
+            config: Google Chat channel configuration (webhook_url)
+            message: Formatted message to send (markdown supported)
+            event: Optional event object (unused, for signature consistency)
+            action_url: Optional action URL to append as a link
+        """
+        try:
+            webhook_url = config.get('webhook_url', '').strip()
+
+            if not webhook_url:
+                logger.error("Google Chat config missing webhook_url")
+                return False
+
+            if not webhook_url.startswith('https://chat.googleapis.com/'):
+                logger.error(f"Google Chat webhook_url must point to chat.googleapis.com: {webhook_url}")
+                return False
+
+            # Google Chat uses single-asterisk bold (like Slack), not the **bold**
+            # produced by the message templates, so normalize before sending.
+            chat_message = message.replace('**', '*')
+            if action_url:
+                chat_message += f"\n\n<{action_url}|Update Now>"
+
+            payload = {"text": chat_message}
+
+            response = await self.http_client.post(webhook_url, json=payload)
+            response.raise_for_status()
+
+            logger.info("Google Chat notification sent successfully")
+            return True
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                retry_after = int(e.response.headers.get('Retry-After', 60))
+                retry_timestamp = datetime.now(timezone.utc) + timedelta(seconds=retry_after)
+                self._rate_limited_channels['google_chat'] = retry_timestamp
+                logger.warning(f"Google Chat rate limited, retry after {retry_after}s")
+            logger.error(f"Failed to send Google Chat notification: {e}")
+            return False
+        except httpx.RequestError as e:
+            logger.error(f"Google Chat connection error: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to send Google Chat notification: {e}")
+            return False
+
     async def _send_webhook(self, config: Dict[str, Any], message: str, event=None, title: str = "DockMon Alert", action_url: str = '') -> bool:
         """Send notification via webhook (HTTP POST/PUT)
 
@@ -970,6 +1063,8 @@ class NotificationService:
                 success = await self._send_webhook(channel_config, test_message, test_event)
             elif channel_type == 'teams':
                 success = await self._send_teams(channel_config, test_message, test_event)
+            elif channel_type == 'google_chat':
+                success = await self._send_google_chat(channel_config, test_message, test_event)
             else:
                 return {"success": False, "error": f"Unsupported channel type: {channel_type}"}
 
@@ -1012,6 +1107,7 @@ class NotificationService:
                 'pushover': lambda: self._send_pushover(channel_config, message, None),
                 'teams': lambda: self._send_teams(channel_config, message),
                 'webhook': lambda: self._send_webhook(channel_config, message, title=title),
+                'google_chat': lambda: self._send_google_chat(channel_config, message),
             }
 
             sender = senders.get(channel_type)
@@ -1023,6 +1119,62 @@ class NotificationService:
 
         except Exception as e:
             logger.error(f"Failed to send message to channel {channel_id}: {e}")
+            return False
+
+    @staticmethod
+    def _resolve_channel(channel_id, by_id_map, by_type_map, *, context: str):
+        """Resolve a channel by integer id or string type. Returns None and logs if unmapped."""
+        if isinstance(channel_id, int) and channel_id in by_id_map:
+            return by_id_map[channel_id]
+        if isinstance(channel_id, str) and channel_id in by_type_map:
+            return by_type_map[channel_id]
+        logger.warning(f"{context}: channel '{channel_id}' not found / disabled")
+        return None
+
+    async def _dispatch_to_channel(
+        self,
+        channel,
+        message: str,
+        *,
+        alert,
+        title: str,
+        action_url: str = '',
+        context: str,
+    ) -> bool:
+        """Send one rendered message to one channel.
+
+        Applies the rate-limit check and the per-channel-type send dispatch.
+        Returns True if the underlying _send_* method reported success.
+        """
+        if self._is_rate_limited(channel.type):
+            logger.warning(f"{context}: skipping rate-limited {channel.type}")
+            return False
+
+        try:
+            if channel.type == "telegram":
+                return await self._send_telegram(channel.config, message, action_url=action_url)
+            if channel.type == "discord":
+                return await self._send_discord(channel.config, message, action_url=action_url)
+            if channel.type == "slack":
+                return await self._send_slack(channel.config, message, action_url=action_url)
+            if channel.type == "pushover":
+                return await self._send_pushover(channel.config, message, title, action_url=action_url)
+            if channel.type == "gotify":
+                return await self._send_gotify(channel.config, message, title=title, action_url=action_url)
+            if channel.type == "ntfy":
+                return await self._send_ntfy(channel.config, message, title=title, action_url=action_url)
+            if channel.type == "smtp":
+                return await self._send_smtp(channel.config, message, title=title, action_url=action_url)
+            if channel.type == "webhook":
+                return await self._send_webhook(channel.config, message, event=alert, title=title, action_url=action_url)
+            if channel.type == "teams":
+                return await self._send_teams(channel.config, message, action_url=action_url)
+            if channel.type == "google_chat":
+                return await self._send_google_chat(channel.config, message, action_url=action_url)
+            logger.warning(f"{context}: unknown channel type '{channel.type}'")
+            return False
+        except Exception as e:
+            logger.error(f"{context}: failed to send to {channel.type}: {e}", exc_info=True)
             return False
 
     async def send_alert_v2(self, alert, rule=None) -> bool:
@@ -1153,54 +1305,15 @@ class NotificationService:
 
             # Send to each configured channel
             for channel_id in channel_ids:
-                # Try to find channel by ID first (integer), then by type (string)
-                channel = None
-                if isinstance(channel_id, int) and channel_id in channel_map_by_id:
-                    channel = channel_map_by_id[channel_id]
-                elif isinstance(channel_id, str) and channel_id in channel_map_by_type:
-                    channel = channel_map_by_type[channel_id]
-                else:
-                    logger.warning(f"Notification channel '{channel_id}' not found or not enabled")
+                channel = self._resolve_channel(channel_id, channel_map_by_id, channel_map_by_type, context="Notification")
+                if channel is None:
                     continue
-
-                if channel:
-                    # Check if channel is rate-limited
-                    if self._is_rate_limited(channel.type):
-                        logger.warning(f"Skipping {channel.type} - currently rate limited")
-                        continue
-
-                    try:
-                        if channel.type == "telegram":
-                            if await self._send_telegram(channel.config, message, action_url=action_url):
-                                success_count += 1
-                        elif channel.type == "discord":
-                            if await self._send_discord(channel.config, message, action_url=action_url):
-                                success_count += 1
-                        elif channel.type == "slack":
-                            if await self._send_slack(channel.config, message, action_url=action_url):
-                                success_count += 1
-                        elif channel.type == "pushover":
-                            if await self._send_pushover(channel.config, message, alert.title, action_url=action_url):
-                                success_count += 1
-                        elif channel.type == "gotify":
-                            if await self._send_gotify(channel.config, message, title=alert.title, action_url=action_url):
-                                success_count += 1
-                        elif channel.type == "ntfy":
-                            if await self._send_ntfy(channel.config, message, title=alert.title, action_url=action_url):
-                                success_count += 1
-                        elif channel.type == "smtp":
-                            if await self._send_smtp(channel.config, message, title=alert.title, action_url=action_url):
-                                success_count += 1
-                        elif channel.type == "webhook":
-                            if await self._send_webhook(channel.config, message, event=alert, title=alert.title, action_url=action_url):
-                                success_count += 1
-                        elif channel.type == "teams":
-                            if await self._send_teams(channel.config, message, action_url=action_url):
-                                success_count += 1
-                        else:
-                            logger.warning(f"Unknown channel type '{channel.type}' for channel {channel.name}")
-                    except Exception as e:
-                        logger.error(f"Failed to send alert to channel {channel.name}: {e}")
+                if await self._dispatch_to_channel(
+                    channel, message,
+                    alert=alert, title=alert.title, action_url=action_url,
+                    context=f"Alert {alert.id}",
+                ):
+                    success_count += 1
 
             # Mark operation as committed if any notification succeeded
             if success_count > 0:
@@ -1240,6 +1353,61 @@ class NotificationService:
                 logger.error(f"Error sending alert v2 notification: {e}", exc_info=True)
                 return False
 
+    async def send_resolve_v2(self, alert, rule) -> bool:
+        """
+        Send resolve/recovery notification for Alert System v2 (issue #189).
+
+        Skip conditions (caller should check rule.notify_on_resolve before calling;
+        this method enforces channel/blackout checks):
+        - No channels configured -> return False
+        - Blackout window active -> return False
+        - Channel rate-limited -> skip channel, continue with others
+
+        Returns True if notification dispatched to at least one channel.
+        """
+        logger.info(f"send_resolve_v2 START: alert.id={alert.id}, rule={rule.name if rule else 'None'}")
+
+        if not rule:
+            logger.warning(f"No rule for resolve notification of alert {alert.id}")
+            return False
+
+        try:
+            channel_ids = json.loads(rule.notify_channels_json) if rule.notify_channels_json else []
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(f"Invalid notify_channels_json for rule {rule.id}")
+            return False
+
+        if not channel_ids:
+            logger.info(f"No channels configured for rule {rule.name} - resolve notification skipped")
+            return False
+
+        is_blackout, window_name = self.blackout_manager.is_in_blackout_window()
+        if is_blackout:
+            logger.info(f"Suppressed resolve notification for alert {alert.id} during blackout '{window_name}'")
+            return False
+
+        channels = self.db.get_notification_channels(enabled_only=True)
+        channel_map_by_id = {ch.id: ch for ch in channels}
+        channel_map_by_type = {ch.type: ch for ch in channels}
+
+        message = self._format_resolve_message_v2(alert, rule)
+        title = f"Recovered: {alert.title}"
+        success_count = 0
+
+        for channel_id in channel_ids:
+            channel = self._resolve_channel(channel_id, channel_map_by_id, channel_map_by_type, context="Resolve notification")
+            if channel is None:
+                continue
+            if await self._dispatch_to_channel(
+                channel, message,
+                alert=alert, title=title,
+                context=f"Resolve {alert.id}",
+            ):
+                success_count += 1
+
+        logger.info(f"send_resolve_v2 done: alert {alert.id}, {success_count}/{len(channel_ids)} channels succeeded")
+        return success_count > 0
+
     def _get_template_for_alert_v2(self, alert, rule):
         """Get the appropriate template for v2 alert based on priority"""
         # Priority 1: Custom template on the rule
@@ -1253,7 +1421,7 @@ class NotificationService:
             if rule.metric and settings.alert_template_metric:
                 return settings.alert_template_metric
             # Check if it's a state change alert
-            elif rule.kind in ['container_stopped', 'container_restart', 'container_restarted'] and settings.alert_template_state_change:
+            elif rule.kind in ['container_stopped', 'container_started', 'container_restart', 'container_restarted'] and settings.alert_template_state_change:
                 return settings.alert_template_state_change
             # Check if it's a health alert
             elif rule.kind in ['container_unhealthy', 'host_unhealthy', 'health_check_failed'] and settings.alert_template_health:
@@ -1294,9 +1462,18 @@ class NotificationService:
 **Time:** {TIMESTAMP}
 **Rule:** {RULE_NAME}"""
 
-        # State change alerts (stopped, started, paused, restarted, died, killed)
-        if kind in ['container_stopped', 'container_started', 'container_paused', 'container_restart', 'container_restarted',
-                    'container_died', 'container_killed']:
+        # Container still present (started/restarted/paused) - no exit code to show
+        if kind in ['container_started', 'container_restart', 'container_restarted', 'container_paused']:
+            return """🚨 **{SEVERITY} Alert: {KIND}**
+
+**Container:** {CONTAINER_NAME}
+**Host:** {HOST_NAME}
+**State change:** {OLD_STATE} to {NEW_STATE}
+**Time:** {TIMESTAMP}
+**Rule:** {RULE_NAME}"""
+
+        # Container exited (stopped/died/killed) - exit code is meaningful
+        if kind in ['container_stopped', 'container_died', 'container_killed']:
             return """🚨 **{SEVERITY} Alert: {KIND}**
 
 **Container:** {CONTAINER_NAME}
@@ -1326,6 +1503,77 @@ class NotificationService:
 **Current Value:** {CURRENT_VALUE} (threshold: {THRESHOLD})
 **Time:** {TIMESTAMP}
 **Rule:** {RULE_NAME}"""
+
+    def _get_default_resolve_template_v2(self) -> str:
+        """Built-in default template for resolve/recovery notifications."""
+        return """✅ **Recovered: {KIND}**
+
+**Container:** {CONTAINER_NAME}
+**Host:** {HOST_NAME}
+**Resolution:** {RESOLVED_REASON}
+**Was active for:** {ALERT_DURATION}
+**Resolved at:** {RESOLVED_AT}
+**Rule:** {RULE_NAME}"""
+
+    def _get_local_tz(self) -> timezone:
+        """Build the local timezone object from settings.timezone_offset (minutes)."""
+        settings = self.db.get_settings()
+        offset_minutes = settings.timezone_offset if settings else 0
+        return timezone(timedelta(minutes=offset_minutes))
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        """Format a duration as 'Xs', 'Xm Ys', or 'Xh Ym'."""
+        if seconds < 60:
+            return f"{int(seconds)}s"
+        if seconds < 3600:
+            return f"{int(seconds // 60)}m {int(seconds % 60)}s"
+        return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m"
+
+    def _format_resolve_message_v2(self, alert, rule) -> str:
+        """Render the resolve notification message with variable substitution.
+
+        Substitutes {KIND}, {CONTAINER_NAME}, {HOST_NAME}, {RESOLVED_REASON},
+        {RESOLVED_AT}, {ALERT_DURATION}, {RULE_NAME}, {TITLE}, {SEVERITY}.
+        Computes ALERT_DURATION from first_seen->resolved_at and respects
+        settings.timezone_offset for RESOLVED_AT (which includes the offset
+        suffix so external receivers can disambiguate).
+
+        Intentionally simpler than _format_message_v2 because the built-in
+        resolve template uses a small subset of variables. If per-rule custom
+        resolve templates are added later, this should share a substitution
+        helper with _format_message_v2.
+        """
+        local_tz = self._get_local_tz()
+
+        resolved_at = alert.resolved_at or datetime.now(timezone.utc)
+        if resolved_at.tzinfo is None:
+            resolved_at = resolved_at.replace(tzinfo=timezone.utc)
+        resolved_local = resolved_at.astimezone(local_tz)
+
+        duration_str = "unknown"
+        if alert.first_seen:
+            first_seen = alert.first_seen
+            if first_seen.tzinfo is None:
+                first_seen = first_seen.replace(tzinfo=timezone.utc)
+            duration_str = self._format_duration((resolved_at - first_seen).total_seconds())
+
+        substitutions = {
+            "{KIND}": _friendly_kind(alert.kind),
+            "{CONTAINER_NAME}": alert.container_name or "N/A",
+            "{HOST_NAME}": alert.host_name or "N/A",
+            "{RESOLVED_REASON}": alert.resolved_reason or "Clear condition met",
+            "{RESOLVED_AT}": resolved_local.strftime("%Y-%m-%d %H:%M:%S %z"),
+            "{ALERT_DURATION}": duration_str,
+            "{RULE_NAME}": rule.name or "",
+            "{TITLE}": alert.title or "",
+            "{SEVERITY}": (alert.severity or "").upper(),
+        }
+
+        message = self._get_default_resolve_template_v2()
+        for key, val in substitutions.items():
+            message = message.replace(key, str(val))
+        return message
 
     def _get_update_status(self, kind: str) -> str:
         """Map alert kind to human-readable update status"""
@@ -1374,12 +1622,7 @@ class NotificationService:
             template: Message template string
             action_url: Optional URL for one-click action (e.g., update container)
         """
-        # Get timezone offset from settings
-        settings = self.db.get_settings()
-        tz_offset_minutes = settings.timezone_offset if settings else 0
-
-        # Create timezone object from offset
-        local_tz = timezone(timedelta(minutes=tz_offset_minutes))
+        local_tz = self._get_local_tz()
 
         # Convert UTC timestamps to local time
         first_seen_local = alert.first_seen.replace(tzinfo=timezone.utc).astimezone(local_tz) if alert.first_seen else datetime.now(timezone.utc)
@@ -1412,7 +1655,7 @@ class NotificationService:
 
             # Alert info
             '{SEVERITY}': alert.severity.upper(),
-            '{KIND}': alert.kind,
+            '{KIND}': _friendly_kind(alert.kind),
             '{TITLE}': alert.title,
             '{MESSAGE}': alert.message,
             '{SCOPE_TYPE}': alert.scope_type.capitalize(),

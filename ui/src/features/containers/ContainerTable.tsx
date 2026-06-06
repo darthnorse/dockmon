@@ -71,6 +71,7 @@ import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from 
 import { useContainerUpdateStatus, useUpdatesSummary, useAllAutoUpdateConfigs, useAllHealthCheckConfigs } from './hooks/useContainerUpdates'
 import { useContainerActions } from './hooks/useContainerActions'
 import { useContainerHealthCheck } from './hooks/useContainerHealthCheck'
+import { isCustomColumnId, extractColumnValue, buildCustomColumnDef } from './utils/customColumns'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
 import { sanitizeHref } from '@/lib/utils/urlSanitize'
 import { formatBytes } from '@/lib/utils/formatting'
@@ -845,9 +846,16 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
     })
   }, [data, filters, updatesSummary, allAutoUpdateConfigs, allHealthCheckConfigs])
 
+  // Single source for both the columns memo and the global filter.
+  const customColumnIds = useMemo<string[]>(
+    () => (preferences?.container_table_column_order ?? []).filter(isCustomColumnId),
+    [preferences?.container_table_column_order],
+  )
+
   // Table columns
   const columns = useMemo<ColumnDef<Container>[]>(
-    () => [
+    () => {
+      const builtIn: ColumnDef<Container>[] = [
       // 0. Selection checkbox — uses TanStack Table's built-in row selection
       // so column identity is stable across selection changes.
       {
@@ -919,24 +927,46 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
           const remainingCount = tags.length - visibleTags.length
           const isExpanded = expandedTagsContainerId === row.original.id
 
+          const safeWebUiHref = row.original.web_ui_url
+            ? sanitizeHref(row.original.web_ui_url)
+            : undefined
+
+          const containerName = row.original.name || 'Unknown'
+
           return (
-            <div className="flex flex-col gap-1">
-              <button
-                className="font-medium text-foreground hover:text-primary transition-colors text-left"
-                onClick={() => {
-                  const compositeKey = makeCompositeKey(row.original)
-                  if (simplifiedWorkflow) {
-                    // Open global modal directly
-                    openModal(compositeKey, 'info')
-                  } else {
-                    // Open drawer (keeps local state for drawer)
-                    setSelectedContainerId(compositeKey)
-                    setDrawerOpen(true)
-                  }
-                }}
-              >
-                {row.original.name || 'Unknown'}
-              </button>
+            <div className="flex flex-col gap-1 min-w-0">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <button
+                  className="font-medium text-foreground hover:text-primary transition-colors text-left truncate min-w-0"
+                  title={containerName}
+                  onClick={() => {
+                    const compositeKey = makeCompositeKey(row.original)
+                    if (simplifiedWorkflow) {
+                      // Open global modal directly
+                      openModal(compositeKey, 'info')
+                    } else {
+                      // Open drawer (keeps local state for drawer)
+                      setSelectedContainerId(compositeKey)
+                      setDrawerOpen(true)
+                    }
+                  }}
+                >
+                  {containerName}
+                </button>
+                {safeWebUiHref && (
+                  <a
+                    href={safeWebUiHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-muted-foreground hover:text-primary transition-colors flex-shrink-0"
+                    title="Open WebUI"
+                    aria-label="Open WebUI"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                  </a>
+                )}
+              </div>
               {tags.length > 0 && (
                 <div className="flex flex-wrap gap-1 items-center">
                   {visibleTags.map((tag) => (
@@ -1383,26 +1413,15 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
                   openModal(makeCompositeKey(container), 'updates')
                 }}
               />
-
-              {/* WebUI link - shows if web_ui_url is defined and safe */}
-              {container.web_ui_url && sanitizeHref(container.web_ui_url) && (
-                <a
-                  href={sanitizeHref(container.web_ui_url)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center justify-center h-8 w-8 rounded hover:bg-surface-2 text-muted-foreground hover:text-primary transition-colors"
-                  title="Open WebUI"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <ExternalLink className="h-4 w-4" />
-                </a>
-              )}
             </div>
           )
         },
       },
-    ],
-    [executeAction, isContainerPending, alertCounts, allAutoUpdateConfigs, allHealthCheckConfigs, canOperate]
+      ]
+
+      return [...builtIn, ...customColumnIds.map((id) => buildCustomColumnDef<Container>(id))]
+    },
+    [executeAction, isContainerPending, alertCounts, allAutoUpdateConfigs, allHealthCheckConfigs, canOperate, customColumnIds]
   )
 
   const table = useReactTable({
@@ -1461,6 +1480,14 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
           ip.toLowerCase().includes(searchValue)
         )
         if (ipMatches) {
+          return true
+        }
+      }
+
+      // Custom env/label columns are searchable too.
+      for (const id of customColumnIds) {
+        const value = extractColumnValue(container, id)
+        if (value && value.toLowerCase().includes(searchValue)) {
           return true
         }
       }

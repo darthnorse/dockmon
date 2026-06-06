@@ -5,7 +5,7 @@
 
 import { useState } from 'react'
 import { Plus, Trash2, Edit, Power, PowerOff, Bell, BellRing, LucideIcon } from 'lucide-react'
-import { Smartphone, Send, MessageSquare, Hash, Mail, Users } from 'lucide-react'
+import { Smartphone, Send, MessageSquare, MessageCircle, Hash, Mail, Users } from 'lucide-react'
 import { useAuth } from '@/features/auth/AuthContext'
 import {
   useNotificationChannels,
@@ -25,6 +25,7 @@ const CHANNEL_ICONS: Record<string, LucideIcon> = {
   discord: MessageSquare,
   slack: Hash,
   teams: Users,
+  google_chat: MessageCircle,
   pushover: Smartphone,
   gotify: Bell,
   ntfy: BellRing,

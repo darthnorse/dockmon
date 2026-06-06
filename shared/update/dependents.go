@@ -106,11 +106,13 @@ func recreateDependentContainer(
 ) error {
 	log.Infof("Recreating dependent container: %s", dep.Name)
 
-	// Get labels for filtering (skip for dependents since we don't have old image labels)
+	// Skip label and env filtering for dependents: we're not updating their
+	// image, just rewiring NetworkMode to the new parent, so inherited values
+	// should pass through verbatim.
 	emptyLabels := make(map[string]string)
 
 	// Extract config from dependent container
-	extractedConfig, err := ExtractConfig(ctx, cli, log, &dep.Container, dep.Image, emptyLabels, emptyLabels, isPodman)
+	extractedConfig, err := ExtractConfig(ctx, cli, log, &dep.Container, dep.Image, emptyLabels, emptyLabels, nil, isPodman)
 	if err != nil {
 		return fmt.Errorf("failed to extract config: %w", err)
 	}

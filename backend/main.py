@@ -3331,6 +3331,11 @@ async def get_security_audit_stats(current_user: dict = Depends(get_current_user
 async def get_settings(current_user: dict = Depends(get_current_user)):
     """Get global settings + user-specific settings"""
     # Validate username exists in session
+    # TODO(#207-followup): API-key auth populates `api_key_name` / `created_by_user_id`
+    # but no `username`, so this 401s for valid bearer tokens. POST /api/settings works
+    # under API-key auth via require_capability. The asymmetry should be resolved either
+    # by accepting api_key_name as a fallback identity here, or by switching to
+    # require_capability("settings.view"). Tracked separately from Issue #207.
     username = current_user.get('username')
     if not username:
         raise HTTPException(status_code=401, detail="Username not found in session")
@@ -3406,6 +3411,7 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "unused_tag_retention_days": getattr(settings, 'unused_tag_retention_days', 30),
         "event_retention_days": getattr(settings, 'event_retention_days', 60),
         "event_suppression_patterns": getattr(settings, 'event_suppression_patterns', None),
+        "webui_url_mapping_chain": getattr(settings, 'webui_url_mapping_chain', None) or [],
         "alert_retention_days": getattr(settings, 'alert_retention_days', 90),
         "update_check_time": getattr(settings, 'update_check_time', "02:00"),
         "skip_compose_containers": getattr(settings, 'skip_compose_containers', True),
@@ -3557,6 +3563,7 @@ async def update_settings(
         "unused_tag_retention_days": getattr(updated, 'unused_tag_retention_days', 30),
         "event_retention_days": getattr(updated, 'event_retention_days', 60),
         "event_suppression_patterns": getattr(updated, 'event_suppression_patterns', None),
+        "webui_url_mapping_chain": getattr(updated, 'webui_url_mapping_chain', None) or [],
         "alert_retention_days": getattr(updated, 'alert_retention_days', 90),
         "update_check_time": getattr(updated, 'update_check_time', "02:00"),
         "skip_compose_containers": getattr(updated, 'skip_compose_containers', True),
@@ -4017,6 +4024,7 @@ async def get_alert_rules_v2(current_user: dict = Depends(get_current_user)):
             "labels_json": rule.labels_json,
             "notify_channels_json": rule.notify_channels_json,
             "custom_template": rule.custom_template,
+            "notify_on_resolve": rule.notify_on_resolve,
             "created_at": rule.created_at.isoformat() + 'Z',
             "updated_at": rule.updated_at.isoformat() + 'Z',
             "version": rule.version,
@@ -4069,6 +4077,7 @@ async def create_alert_rule_v2(
             labels_json=rule.labels_json,
             notify_channels_json=rule.notify_channels_json,
             custom_template=rule.custom_template,
+            notify_on_resolve=rule.notify_on_resolve or False,
             created_by=display_name,
         )
 

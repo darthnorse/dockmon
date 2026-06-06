@@ -70,17 +70,24 @@ func (u *Updater) Update(ctx context.Context, req UpdateRequest) *UpdateResult {
 	// See: https://github.com/darthnorse/dockmon/issues/90
 	wasRunning := oldContainer.State.Running
 
-	// Step 3: Get image labels for label filtering
+	// Step 3: Get image labels and env for filtering.
+	// Use oldContainer.Image (immutable image ID set at container-create time)
+	// rather than a tag, since the earlier ImagePull may have retargeted the tag.
+	// On error, the returned value is nil and the filter helpers degrade to
+	// "no defaults to subtract" - the new container keeps all inherited values.
 	oldImageLabels, err := GetImageLabels(ctx, u.cli, oldContainer.Image)
 	if err != nil {
 		u.log.WithError(err).Warn("Failed to get old image labels, continuing without label filtering")
-		oldImageLabels = make(map[string]string)
 	}
 
 	newImageLabels, err := GetImageLabels(ctx, u.cli, newImage)
 	if err != nil {
 		u.log.WithError(err).Warn("Failed to get new image labels, continuing without label filtering")
-		newImageLabels = make(map[string]string)
+	}
+
+	oldImageEnv, err := GetImageEnv(ctx, u.cli, oldContainer.Image)
+	if err != nil {
+		u.log.WithError(err).Warn("Failed to get old image env, continuing without env filtering")
 	}
 
 	// Step 4: Find dependent containers BEFORE we stop the parent
@@ -95,7 +102,7 @@ func (u *Updater) Update(ctx context.Context, req UpdateRequest) *UpdateResult {
 	}
 
 	// Step 5: Extract and transform config using struct copy
-	extractedConfig, err := ExtractConfig(ctx, u.cli, u.log, &oldContainer, newImage, oldImageLabels, newImageLabels, u.options.IsPodman)
+	extractedConfig, err := ExtractConfig(ctx, u.cli, u.log, &oldContainer, newImage, oldImageLabels, newImageLabels, oldImageEnv, u.options.IsPodman)
 	if err != nil {
 		return u.failResult(containerID, StageConfiguring, err)
 	}

@@ -114,6 +114,7 @@ class AlertEvaluationService:
         self._snooze_task: Optional[asyncio.Task] = None
         self._blackout_task: Optional[asyncio.Task] = None
         self._pending_event_alerts_task: Optional[asyncio.Task] = None
+        self._resolve_loop_task: Optional[asyncio.Task] = None
 
         # Track blackout state for transition detection
         self._last_blackout_state = False
@@ -130,6 +131,7 @@ class AlertEvaluationService:
         self._snooze_task = asyncio.create_task(self._snooze_expiry_loop())
         self._blackout_task = asyncio.create_task(self._blackout_transition_loop())
         self._pending_event_alerts_task = asyncio.create_task(self._pending_event_alerts_loop())
+        self._resolve_loop_task = asyncio.create_task(self._resolve_notification_loop())
         logger.info(f"Alert evaluation service started (interval: {self.evaluation_interval}s)")
 
     async def stop(self):
@@ -168,6 +170,13 @@ class AlertEvaluationService:
             self._pending_event_alerts_task.cancel()
             try:
                 await self._pending_event_alerts_task
+            except asyncio.CancelledError:
+                pass
+
+        if self._resolve_loop_task:
+            self._resolve_loop_task.cancel()
+            try:
+                await self._resolve_loop_task
             except asyncio.CancelledError:
                 pass
 
@@ -578,6 +587,13 @@ class AlertEvaluationService:
                     logger.error(f"Error verifying host alert {alert.id}: {e}", exc_info=True)
                     return True
 
+            # For container_started alerts, do not re-verify. A start is a point-in-time
+            # event, not a sustained condition, so the notification stands even if the
+            # container has since stopped. A transient start→stop within the grace period
+            # is already handled by clearing the pending alert on the stop event.
+            elif alert.kind == "container_started" and alert.scope_type == "container":
+                return True
+
             # For other alert types, default to sending notification
             return True
 
@@ -737,6 +753,100 @@ class AlertEvaluationService:
 
         except Exception as e:
             logger.error(f"Error in _send_notification: {e}", exc_info=True)
+
+    def _stamp_resolve_notified_at(self, alert_id: str) -> None:
+        """Atomic UPDATE to set resolve_notified_at, marking dispatch decided."""
+        with self.db.get_session() as session:
+            session.query(AlertV2).filter(AlertV2.id == alert_id).update(
+                {"resolve_notified_at": datetime.now(timezone.utc)}
+            )
+            session.commit()
+
+    async def _send_resolve_notification(self, alert_id: str) -> None:
+        """Send resolve/recovery notification for a resolved alert.
+
+        The pending-resolve query in _drain_and_dispatch_resolves filters most
+        ineligible alerts out at query time. The defensive checks below catch any
+        race where state changed between query and dispatch.
+
+        Outcomes:
+        - Success: stamp resolve_notified_at (mark dispatch done).
+        - Terminal skip (alert vanished, rule deleted, rule changed to opt out):
+          stamp resolve_notified_at so the alert is not re-queried.
+        - Temporary failure (blackout active, all channels rate-limited, send error):
+          leave resolve_notified_at NULL so the next loop tick retries.
+        """
+        try:
+            with self.db.get_session() as session:
+                alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
+                if not alert:
+                    return  # vanished — nothing to stamp
+
+                if alert.resolve_notified_at is not None:
+                    return  # race: already done
+
+                if alert.notified_at is None:
+                    self._stamp_resolve_notified_at(alert_id)
+                    return  # terminal: never notified
+
+                rule_id = alert.rule_id
+                session.expunge(alert)
+
+            rule = self.db.get_alert_rule_v2(rule_id) if rule_id else None
+            if not rule or not rule.notify_on_resolve or rule.auto_resolve:
+                self._stamp_resolve_notified_at(alert_id)
+                return  # terminal: rule no longer eligible
+
+            if not self.notification_service:
+                logger.warning(f"Resolve notification: no notification_service for alert {alert_id}")
+                return  # temporary: no service wired
+
+            if await self.notification_service.send_resolve_v2(alert, rule):
+                self._stamp_resolve_notified_at(alert_id)
+                logger.info(f"Resolve notification sent for alert {alert_id}")
+            # else: temporary failure (blackout / rate-limited / send error) — retry next tick
+
+        except Exception as e:
+            logger.error(f"Error in _send_resolve_notification for alert {alert_id}: {e}", exc_info=True)
+
+    async def _drain_and_dispatch_resolves(self) -> None:
+        """Find pending resolve-notification dispatches via DB query and process them.
+
+        DB-backed (rather than in-memory queue) so dispatches survive process restarts,
+        cancelled drains, and transient send failures. The query filters at SQL level for
+        eligibility; defensive checks remain in _send_resolve_notification for race safety.
+        """
+        with self.db.get_session() as session:
+            rows = (
+                session.query(AlertV2.id)
+                .join(AlertRuleV2, AlertV2.rule_id == AlertRuleV2.id)
+                .filter(
+                    AlertV2.state == "resolved",
+                    AlertV2.notified_at.is_not(None),
+                    AlertV2.resolve_notified_at.is_(None),
+                    AlertRuleV2.notify_on_resolve.is_(True),
+                    AlertRuleV2.auto_resolve.is_(False),
+                )
+                .limit(50)  # bound work per tick
+                .all()
+            )
+            alert_ids = [row[0] for row in rows]
+
+        for alert_id in alert_ids:
+            await self._send_resolve_notification(alert_id)
+
+    async def _resolve_notification_loop(self) -> None:
+        """Background task: scan for pending resolve dispatches every 2s."""
+        check_interval = 2.0
+        while self._running:
+            try:
+                await self._drain_and_dispatch_resolves()
+                await asyncio.sleep(check_interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in resolve notification loop: {e}", exc_info=True)
+                await asyncio.sleep(check_interval)
 
     async def _evaluate_all_rules(self):
         """Evaluate all enabled metric-driven rules"""
@@ -1216,7 +1326,7 @@ class AlertEvaluationService:
             # Use composite key for scope_id to prevent cross-host collisions
             context = EvaluationContext(
                 scope_type="container",
-                scope_id=make_composite_key(host_id, container_id),
+                scope_id=composite_key,
                 host_id=host_id,
                 host_name=host_name,
                 container_id=container_id,
@@ -1228,7 +1338,7 @@ class AlertEvaluationService:
 
             # Auto-clear opposite-state alerts before evaluating new rules
             # If container started, clear any container_stopped alerts
-            # If container stopped, clear any container_started alerts (if we add those)
+            # If container stopped, clear any container_started alerts
             if event_type == "state_change" and event_data:
                 new_state = event_data.get("new_state")
 
@@ -1238,31 +1348,41 @@ class AlertEvaluationService:
                     # Clear existing alerts
                     await self._auto_clear_alerts_by_kind(
                         scope_type="container",
-                        scope_id=make_composite_key(host_id, container_id),
+                        scope_id=composite_key,
                         kinds_to_clear=["container_stopped"],
                         reason="Container started"
                     )
                     # Clear pending alerts (Issue #96 - alert_active_delay)
                     cleared = self.engine.clear_pending_for_scope(
                         scope_type="container",
-                        scope_id=make_composite_key(host_id, container_id),
+                        scope_id=composite_key,
                         kinds=["container_stopped"]
                     )
                     if cleared > 0:
                         logger.info(f"Cleared {cleared} pending container_stopped alert(s) for {container_name}")
 
+                    # Cancel any pending clears for container_started (if it was being cleared
+                    # during a transient stop, cancel the clear since container is running again)
+                    cancelled = self.engine.cancel_pending_clears_for_scope(
+                        scope_type="container",
+                        scope_id=composite_key,
+                        kinds=["container_started"]
+                    )
+                    if cancelled > 0:
+                        logger.info(f"Cancelled {cancelled} pending clear(s) for {container_name} (container started again)")
+
                 # Container became healthy → clear unhealthy alerts
                 elif new_state == "healthy":
                     await self._auto_clear_alerts_by_kind(
                         scope_type="container",
-                        scope_id=make_composite_key(host_id, container_id),
+                        scope_id=composite_key,
                         kinds_to_clear=["unhealthy", "container_unhealthy"],
                         reason="Container became healthy"
                     )
                     # Clear pending alerts (Issue #96 - alert_active_delay)
                     cleared = self.engine.clear_pending_for_scope(
                         scope_type="container",
-                        scope_id=make_composite_key(host_id, container_id),
+                        scope_id=composite_key,
                         kinds=["unhealthy", "container_unhealthy"]
                     )
                     if cleared > 0:
@@ -1270,20 +1390,37 @@ class AlertEvaluationService:
 
                 # Container stopped/exited → cancel any pending clears for container_stopped
                 # (Issue #96 - alert_clear_delay_seconds: if container stops again while clear is pending, cancel it)
+                # Also clear any container_started alerts since the container is no longer running
                 elif new_state in ["stopped", "exited", "dead"]:
                     cancelled = self.engine.cancel_pending_clears_for_scope(
                         scope_type="container",
-                        scope_id=make_composite_key(host_id, container_id),
+                        scope_id=composite_key,
                         kinds=["container_stopped"]
                     )
                     if cancelled > 0:
                         logger.info(f"Cancelled {cancelled} pending clear(s) for {container_name} (container stopped again)")
 
+                    # Auto-clear container_started alerts (container is no longer running)
+                    await self._auto_clear_alerts_by_kind(
+                        scope_type="container",
+                        scope_id=composite_key,
+                        kinds_to_clear=["container_started"],
+                        reason="Container stopped"
+                    )
+                    # Clear pending container_started alerts (those with alert_active_delay)
+                    cleared = self.engine.clear_pending_for_scope(
+                        scope_type="container",
+                        scope_id=composite_key,
+                        kinds=["container_started"]
+                    )
+                    if cleared > 0:
+                        logger.info(f"Cleared {cleared} pending container_started alert(s) for {container_name}")
+
                 # Container became unhealthy → cancel any pending clears for unhealthy
                 elif new_state == "unhealthy":
                     cancelled = self.engine.cancel_pending_clears_for_scope(
                         scope_type="container",
-                        scope_id=make_composite_key(host_id, container_id),
+                        scope_id=composite_key,
                         kinds=["unhealthy", "container_unhealthy"]
                     )
                     if cancelled > 0:
@@ -1295,7 +1432,7 @@ class AlertEvaluationService:
             if event_data.get('container_deleted'):
                 cleared = self.engine.clear_pending_for_scope(
                     scope_type="container",
-                    scope_id=make_composite_key(host_id, container_id),
+                    scope_id=composite_key,
                     kinds=None  # Clear ALL kinds - container is gone
                 )
                 if cleared > 0:

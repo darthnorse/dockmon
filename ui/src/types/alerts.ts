@@ -97,6 +97,7 @@ export interface AlertRule {
   // Behavior
   auto_resolve: boolean
   auto_resolve_on_clear: boolean
+  notify_on_resolve: boolean
   suppress_during_updates: boolean
   host_selector_json?: string | null
   container_selector_json?: string | null
@@ -132,6 +133,7 @@ export interface AlertRuleRequest {
   // Behavior
   auto_resolve?: boolean
   auto_resolve_on_clear?: boolean
+  notify_on_resolve?: boolean
   suppress_during_updates?: boolean
   host_selector_json?: string
   container_selector_json?: string

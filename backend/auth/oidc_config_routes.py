@@ -19,13 +19,20 @@ from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field, field_validator
 
 from auth.shared import db, safe_audit_log
+from auth.local_login import (
+    local_login_effective_disabled,
+    oidc_usable,
+    has_approved_oidc_admin,
+)
 from auth.api_key_auth import require_capability, get_current_user_or_api_key
+from config.settings import AppConfig
 from auth.utils import format_timestamp_required, get_group_or_400, get_auditable_user_info
 from auth.oidc_auth_routes import _fetch_oidc_discovery, OIDC_HTTP_TIMEOUT
 from database import OIDCConfig, OIDCGroupMapping, CustomGroup
 from audit import get_client_info, AuditAction
 from audit.audit_logger import AuditEntityType
 from utils.encryption import encrypt_password, decrypt_password
+from utils.oidc import build_discovery_url
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +135,19 @@ class OIDCStatusResponse(BaseModel):
     enabled: bool
     provider_configured: bool
     sso_default: bool
+    local_login_disabled: bool = False  # Effective SSO-only state (DB flag AND NOT env override)
+    local_login_env_override: bool = False  # DOCKMON_FORCE_LOCAL_LOGIN is active
+
+
+class LocalLoginUpdateRequest(BaseModel):
+    """Enable or disable local password login (SSO-only enforcement)."""
+    disabled: bool
+
+
+class LocalLoginResponse(BaseModel):
+    """Effective local-login state after a write."""
+    local_login_disabled: bool       # effective (DB flag AND NOT env override)
+    local_login_env_override: bool
 
 
 # ==================== Helper Functions ====================
@@ -202,20 +222,15 @@ def _mapping_to_response(
 
 
 def _get_or_create_config(session) -> OIDCConfig:
-    """Get or create the singleton OIDC config"""
+    """Get or create the singleton OIDC config.
+
+    Field defaults (scopes, claim_for_groups, sso_default, require_approval,
+    local_login_disabled, timestamps) come from the OIDCConfig model so this and
+    the manage_auth CLI cannot drift on the default set.
+    """
     config = session.query(OIDCConfig).filter(OIDCConfig.id == 1).first()
     if not config:
-        config = OIDCConfig(
-            id=1,
-            enabled=False,
-            scopes='openid profile email groups',
-            claim_for_groups='groups',
-            sso_default=False,
-            require_approval=False,
-            approval_notify_channel_ids=None,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
-        )
+        config = OIDCConfig(id=1, enabled=False)
         session.add(config)
         session.commit()
         session.refresh(config)
@@ -237,10 +252,17 @@ async def get_oidc_status() -> OIDCStatusResponse:
             OIDCConfig.provider_url,
             OIDCConfig.client_id,
             OIDCConfig.sso_default,
+            OIDCConfig.local_login_disabled,
         ).filter(OIDCConfig.id == 1).first()
 
         if not row:
-            return OIDCStatusResponse(enabled=False, provider_configured=False, sso_default=False)
+            return OIDCStatusResponse(
+                enabled=False,
+                provider_configured=False,
+                sso_default=False,
+                local_login_disabled=local_login_effective_disabled(False),
+                local_login_env_override=AppConfig.FORCE_LOCAL_LOGIN,
+            )
 
         provider_configured = bool(row.provider_url and row.client_id)
         is_enabled = row.enabled and provider_configured
@@ -249,6 +271,8 @@ async def get_oidc_status() -> OIDCStatusResponse:
             enabled=is_enabled,
             provider_configured=provider_configured,
             sso_default=row.sso_default and is_enabled,
+            local_login_disabled=local_login_effective_disabled(row.local_login_disabled),
+            local_login_env_override=AppConfig.FORCE_LOCAL_LOGIN,
         )
 
 
@@ -341,6 +365,19 @@ async def update_oidc_config(
             }
             config.approval_notify_channel_ids = json.dumps(config_data.approval_notify_channel_ids)
 
+        # Lockout guard: refuse a change that would make OIDC unusable while local
+        # login is effectively disabled (SSO-only) — that would leave no working way
+        # to sign in. Break-glass via the manage_auth CLI or DOCKMON_FORCE_LOCAL_LOGIN
+        # still applies; re-enable local login first to make this change.
+        if local_login_effective_disabled(config.local_login_disabled) and not oidc_usable(config):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Local login is disabled (SSO-only). Re-enable local login before "
+                    "disabling or unconfiguring OIDC, or you would lock everyone out."
+                ),
+            )
+
         config.updated_at = datetime.now(timezone.utc)
         # Audit log (before commit for atomicity)
         if changes:
@@ -362,6 +399,78 @@ async def update_oidc_config(
         logger.info(f"OIDC configuration updated by {display_name}")
 
         return _config_to_response(config, session)
+
+
+@router.put(
+    "/local-login",
+    response_model=LocalLoginResponse,
+    dependencies=[Depends(require_capability("oidc.manage"))],
+)
+async def set_local_login(
+    body: LocalLoginUpdateRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user_or_api_key),
+) -> LocalLoginResponse:
+    """
+    Enable or disable local password login (SSO-only enforcement).
+
+    Disabling is refused (409) unless OIDC is usable and an approved OIDC admin
+    exists, mirroring the manage_auth CLI guard. There is no force option here;
+    use the CLI's --force for that. The DOCKMON_FORCE_LOCAL_LOGIN env override
+    controls the effective state, so writes are refused while it is active.
+    """
+    user_id, display_name = get_auditable_user_info(current_user)
+
+    if AppConfig.FORCE_LOCAL_LOGIN:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Local login is controlled by the DOCKMON_FORCE_LOCAL_LOGIN "
+                "environment variable. Remove it to manage this setting here."
+            ),
+        )
+
+    with db.get_session() as session:
+        config = _get_or_create_config(session)
+
+        if body.disabled:
+            if not oidc_usable(config):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Enable and configure OIDC before enforcing SSO-only login.",
+                )
+            if not has_approved_oidc_admin(session):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "No approved OIDC user with admin permissions exists. Add one "
+                        "before disabling local login, or you could lock yourself out."
+                    ),
+                )
+
+        if config.local_login_disabled != body.disabled:
+            config.local_login_disabled = body.disabled
+            config.updated_at = datetime.now(timezone.utc)
+            safe_audit_log(
+                session,
+                user_id,
+                display_name,
+                AuditAction.UPDATE,
+                AuditEntityType.OIDC_CONFIG,
+                entity_id="1",
+                entity_name="oidc_config",
+                details={"local_login_disabled": body.disabled, "via": "ui"},
+                **get_client_info(request),
+            )
+            session.commit()
+            logger.info(
+                f"Local login {'disabled' if body.disabled else 'enabled'} by {display_name}"
+            )
+
+        return LocalLoginResponse(
+            local_login_disabled=local_login_effective_disabled(config.local_login_disabled),
+            local_login_env_override=AppConfig.FORCE_LOCAL_LOGIN,
+        )
 
 
 async def _validate_client_credentials(
@@ -451,10 +560,7 @@ async def discover_oidc_provider(
     except httpx.HTTPStatusError as e:
         hint = ""
         if e.response.status_code == 404:
-            provider_url = provider_url.rstrip('/')
-            if provider_url.endswith('/.well-known/openid-configuration'):
-                provider_url = provider_url[:-len('/.well-known/openid-configuration')]
-            discovery_url = f"{provider_url}/.well-known/openid-configuration"
+            discovery_url = build_discovery_url(provider_url)
             hint = (
                 f". Tried: {discovery_url} — check that the Provider URL includes the full path "
                 "(e.g. for Authentik: https://auth.example.com/application/o/your-app-slug)"

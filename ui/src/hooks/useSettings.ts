@@ -31,6 +31,8 @@ export interface GlobalSettings {
   unused_tag_retention_days: number
   event_retention_days: number
   event_suppression_patterns: string[] | null
+  // WebUI URL mapping chain (Issue #207)
+  webui_url_mapping_chain?: string[] | null
   alert_retention_days: number
   update_check_time: string
   skip_compose_containers: boolean

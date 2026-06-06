@@ -17,6 +17,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 from database import UpdatePolicy, ContainerUpdate
 from utils.keys import make_composite_key
+from utils.image_ref import extract_image_repository
 import logging
 
 logger = logging.getLogger(__name__)
@@ -143,13 +144,16 @@ class ContainerValidator:
             enabled=True
         ).all()
 
+        # Match against the image *name* (repository) only - never the tag or
+        # the registry host, both of which cause false matches.
+        container_name_lower = container_name.lower()
+        image_repo_lower = extract_image_repository(image_name).lower()
+
         for pattern in patterns:
             # Check if pattern matches container name or image name
             pattern_lower = pattern.pattern.lower()
-            container_name_lower = container_name.lower()
-            image_name_lower = image_name.lower()
 
-            if pattern_lower in container_name_lower or pattern_lower in image_name_lower:
+            if pattern_lower in container_name_lower or pattern_lower in image_repo_lower:
                 # Pattern matched - use action from pattern (defaults to 'warn')
                 action = getattr(pattern, 'action', 'warn') or 'warn'
                 try:

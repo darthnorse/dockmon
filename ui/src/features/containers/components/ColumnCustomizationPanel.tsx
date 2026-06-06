@@ -8,6 +8,7 @@
  * Integrates with TanStack Table v8 and user preferences API
  */
 
+import { useState } from 'react'
 import type { Table } from '@tanstack/react-table'
 import {
   DndContext,
@@ -22,9 +23,13 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useDndSensors } from '@/features/dashboard/hooks/useDndSensors'
-import { Settings, GripVertical, Eye, EyeOff, RotateCcw } from 'lucide-react'
+import { Settings, GripVertical, Eye, EyeOff, RotateCcw, Trash2, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu } from '@/components/ui/dropdown-menu'
+import { isCustomColumnId, getColumnLabel as getCustomColumnLabel } from '../utils/customColumns'
+import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
+import { AddCustomColumnDialog } from './AddCustomColumnDialog'
+import { useAuth } from '@/features/auth/AuthContext'
 
 interface ColumnCustomizationPanelProps<TData> {
   table: Table<TData>
@@ -36,12 +41,16 @@ function SortableColumnItem({
   isVisible,
   onToggleVisibility,
   canHide,
+  onRemove,
 }: {
   id: string
   label: string
   isVisible: boolean
   onToggleVisibility: () => void
   canHide: boolean
+  // Note: typed as union with undefined (not `?:`) so callers can pass
+  // `onRemove={cond ? fn : undefined}` cleanly under exactOptionalPropertyTypes.
+  onRemove: (() => void) | undefined
 }) {
   const {
     attributes,
@@ -87,6 +96,16 @@ function SortableColumnItem({
       >
         {isVisible ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
       </button>
+
+      {onRemove && (
+        <button
+          onClick={onRemove}
+          className="text-muted-foreground hover:text-destructive"
+          title="Remove custom column"
+        >
+          <Trash2 className="h-4 w-4" />
+        </button>
+      )}
     </div>
   )
 }
@@ -127,6 +146,39 @@ export function ColumnCustomizationPanel<TData>({ table }: ColumnCustomizationPa
 
   const sensors = useDndSensors()
 
+  const { data: preferences } = useUserPreferences()
+  const updatePreferences = useUpdatePreferences()
+  const { hasCapability } = useAuth()
+  // Adding env columns requires the same capability that gates whether env
+  // values are delivered to the user at all (containers.view_env). Without
+  // it, env columns would render only "—" — so we hide that option from the
+  // Add dialog rather than offering a misleading choice. Label columns are
+  // always available since labels aren't gated.
+  const canAddEnvColumns = hasCapability('containers.view_env')
+
+  const [addDialogOpen, setAddDialogOpen] = useState(false)
+
+  const handleAddCustomColumn = (columnId: string) => {
+    const currentOrder = preferences?.container_table_column_order ?? []
+    const currentVisibility = preferences?.container_table_column_visibility ?? {}
+    updatePreferences.mutate({
+      container_table_column_order: [...currentOrder, columnId],
+      container_table_column_visibility: { ...currentVisibility, [columnId]: true },
+    })
+  }
+
+  const handleRemoveCustomColumn = (columnId: string) => {
+    const newOrder = (preferences?.container_table_column_order ?? []).filter(
+      (id: string) => id !== columnId
+    )
+    const visibility = { ...(preferences?.container_table_column_visibility ?? {}) }
+    delete visibility[columnId]
+    updatePreferences.mutate({
+      container_table_column_order: newOrder,
+      container_table_column_visibility: visibility,
+    })
+  }
+
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event
 
@@ -157,75 +209,107 @@ export function ColumnCustomizationPanel<TData>({ table }: ColumnCustomizationPa
   const visibleCount = allColumns.filter((col) => col.getIsVisible()).length
 
   return (
-    <DropdownMenu
-      trigger={
-        <Button variant="outline" size="sm" className="h-9">
-          <Settings className="h-3.5 w-3.5 mr-2" />
-          Columns
-        </Button>
-      }
-      align="end"
-    >
-      <div className="min-w-[280px] max-w-[320px]" onClick={(e) => e.stopPropagation()}>
-        <div className="px-3 py-2 border-b border-border">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium">Customize Columns</span>
+    <>
+      <DropdownMenu
+        trigger={
+          <Button variant="outline" size="sm" className="h-9">
+            <Settings className="h-3.5 w-3.5 mr-2" />
+            Columns
+          </Button>
+        }
+        align="end"
+      >
+        <div className="min-w-[280px] max-w-[320px]" onClick={(e) => e.stopPropagation()}>
+          <div className="px-3 py-2 border-b border-border">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium">Customize Columns</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleResetColumns}
+                className="h-7 text-xs"
+              >
+                <RotateCcw className="h-3 w-3 mr-1" />
+                Reset
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {visibleCount} of {allColumns.length} visible
+            </p>
+          </div>
+
+          <div className="px-3 py-3 max-h-[400px] overflow-y-auto">
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handleDragEnd}
+            >
+              <SortableContext
+                items={orderedColumns.map((col) => col.id)}
+                strategy={verticalListSortingStrategy}
+              >
+                <div className="space-y-1.5">
+                  {orderedColumns.map((column) => {
+                    const canHide = visibleCount > 1 || !column.getIsVisible()
+
+                    const label = isCustomColumnId(column.id)
+                      ? getCustomColumnLabel(column.id)
+                      : (COLUMN_LABELS[column.id] ??
+                          (typeof column.columnDef.header === 'string'
+                            ? column.columnDef.header
+                            : column.id))
+
+                    return (
+                      <SortableColumnItem
+                        key={column.id}
+                        id={column.id}
+                        label={label}
+                        isVisible={column.getIsVisible()}
+                        onToggleVisibility={() => handleToggleVisibility(column.id)}
+                        canHide={canHide}
+                        onRemove={isCustomColumnId(column.id)
+                          ? () => handleRemoveCustomColumn(column.id)
+                          : undefined}
+                      />
+                    )
+                  })}
+                </div>
+              </SortableContext>
+            </DndContext>
+          </div>
+
+          <div className="px-3 py-2 border-t border-border">
             <Button
               variant="ghost"
               size="sm"
-              onClick={handleResetColumns}
-              className="h-7 text-xs"
+              onClick={() => setAddDialogOpen(true)}
+              className="w-full justify-start text-sm"
             >
-              <RotateCcw className="h-3 w-3 mr-1" />
-              Reset
+              <Plus className="h-3.5 w-3.5 mr-2" />
+              Add custom column…
             </Button>
           </div>
-          <p className="text-xs text-muted-foreground mt-1">
-            {visibleCount} of {allColumns.length} visible
-          </p>
+
+          <div className="px-3 py-2 border-t border-border bg-muted/30">
+            <p className="text-xs text-muted-foreground">
+              Drag rows to reorder columns. Click the eye icon to show/hide.
+            </p>
+          </div>
         </div>
+      </DropdownMenu>
 
-        <div className="px-3 py-3 max-h-[400px] overflow-y-auto">
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCenter}
-            onDragEnd={handleDragEnd}
-          >
-            <SortableContext
-              items={orderedColumns.map((col) => col.id)}
-              strategy={verticalListSortingStrategy}
-            >
-              <div className="space-y-1.5">
-                {orderedColumns.map((column) => {
-                  const canHide = visibleCount > 1 || !column.getIsVisible()
-
-                  const label = COLUMN_LABELS[column.id] ||
-                    (typeof column.columnDef.header === 'string'
-                      ? column.columnDef.header
-                      : column.id.charAt(0).toUpperCase() + column.id.slice(1))
-
-                  return (
-                    <SortableColumnItem
-                      key={column.id}
-                      id={column.id}
-                      label={label}
-                      isVisible={column.getIsVisible()}
-                      onToggleVisibility={() => handleToggleVisibility(column.id)}
-                      canHide={canHide}
-                    />
-                  )
-                })}
-              </div>
-            </SortableContext>
-          </DndContext>
-        </div>
-
-        <div className="px-3 py-2 border-t border-border bg-muted/30">
-          <p className="text-xs text-muted-foreground">
-            Drag rows to reorder columns. Click the eye icon to show/hide.
-          </p>
-        </div>
-      </div>
-    </DropdownMenu>
+      {/* Dialog must be a SIBLING of DropdownMenu (not a child). The dialog
+          renders into a portal, so clicks inside it register as "outside the
+          dropdown" and would close the dropdown — which would then unmount
+          the dialog along with all its other children. Hoisting it here keeps
+          its lifetime independent of the dropdown's open/closed state. */}
+      <AddCustomColumnDialog
+        open={addDialogOpen}
+        existingColumnIds={allColumns.map(c => c.id)}
+        canAddEnv={canAddEnvColumns}
+        onOpenChange={setAddDialogOpen}
+        onAdd={handleAddCustomColumn}
+      />
+    </>
   )
 }

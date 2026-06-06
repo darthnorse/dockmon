@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Any
 from fastapi import APIRouter, HTTPException, Depends, Query, status
 from pydantic import BaseModel, Field, ConfigDict, field_serializer
 
-from database import DatabaseManager, AlertV2, AlertAnnotation
+from database import DatabaseManager, AlertV2, AlertAnnotation, User
 from alerts.engine import AlertEngine
 from security.rate_limiting import get_rate_limit_dependency
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability  # v2 hybrid auth (cookies + API keys)
@@ -95,7 +95,6 @@ class SnoozeAlertRequest(BaseModel):
 class AddAnnotationRequest(BaseModel):
     """Request to add annotation to alert"""
     text: str = Field(min_length=1, max_length=5000)
-    user: Optional[str] = None
 
 
 # ==================== Dependencies ====================
@@ -215,14 +214,18 @@ async def resolve_alert(
         if alert.state == "resolved":
             raise HTTPException(status_code=400, detail="Alert already resolved")
 
-        # Resolve the alert
-        alert = engine._resolve_alert(alert, request.reason)
+        # Manual resolves are silent: the user who clicked already knows.
+        alert = engine._resolve_alert(alert, request.reason, notify=False)
 
-        security_audit(
-            action="alert.resolve",
+        security_audit.log_event(
+            event_type="alert_resolved",
+            severity="info",
             user_id=user_id,
-            display_name=display_name,
-            details={"alert_id": alert_id, "reason": request.reason}
+            details={
+                "alert_id": alert_id,
+                "reason": request.reason,
+                "display_name": display_name,
+            },
         )
 
         labels = json.loads(alert.labels_json) if alert.labels_json else None
@@ -255,11 +258,15 @@ async def snooze_alert(
         alert.snoozed_until = datetime.now(timezone.utc) + timedelta(minutes=request.duration_minutes)
         session.commit()
 
-        security_audit(
-            action="alert.snooze",
+        security_audit.log_event(
+            event_type="alert_snoozed",
+            severity="info",
             user_id=user_id,
-            display_name=display_name,
-            details={"alert_id": alert_id, "duration_minutes": request.duration_minutes}
+            details={
+                "alert_id": alert_id,
+                "duration_minutes": request.duration_minutes,
+                "display_name": display_name,
+            },
         )
 
         labels = json.loads(alert.labels_json) if alert.labels_json else None
@@ -291,11 +298,14 @@ async def unsnooze_alert(
         alert.snoozed_until = None
         session.commit()
 
-        security_audit(
-            action="alert.unsnooze",
+        security_audit.log_event(
+            event_type="alert_unsnoozed",
+            severity="info",
             user_id=user_id,
-            display_name=display_name,
-            details={"alert_id": alert_id}
+            details={
+                "alert_id": alert_id,
+                "display_name": display_name,
+            },
         )
 
         labels = json.loads(alert.labels_json) if alert.labels_json else None
@@ -312,30 +322,36 @@ async def add_annotation(
     db: DatabaseManager = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    """Add an annotation to an alert"""
+    """Add an annotation; author is auto-derived from current_user."""
     user_id, display_name = get_auditable_user_info(current_user)
+
+    if current_user.get("auth_type") == "api_key":
+        author = display_name  # 'API Key: <name>' from get_auditable_user_info
+    else:
+        author = current_user.get("username")
+
     with db.get_session() as session:
         alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
-
         if not alert:
             raise HTTPException(status_code=404, detail="Alert not found")
 
-        # Create annotation
         annotation = AlertAnnotation(
             alert_id=alert_id,
             timestamp=datetime.now(timezone.utc),
-            user=request.user,
-            text=request.text
+            user=author,
+            text=request.text,
         )
-
         session.add(annotation)
         session.commit()
 
-        security_audit(
-            action="alert.annotate",
+        security_audit.log_event(
+            event_type="alert_annotated",
+            severity="info",
             user_id=user_id,
-            display_name=display_name,
-            details={"alert_id": alert_id}
+            details={
+                "alert_id": alert_id,
+                "display_name": display_name,
+            },
         )
 
         return {"status": "success", "annotation_id": annotation.id}
@@ -344,26 +360,34 @@ async def add_annotation(
 @router.get("/{alert_id}/annotations", dependencies=[Depends(get_rate_limit_dependency("alerts")), Depends(require_capability("alerts.view"))])
 async def get_annotations(
     alert_id: str,
-    db: DatabaseManager = Depends(get_db)
+    db: DatabaseManager = Depends(get_db),
 ):
-    """Get annotations for an alert"""
+    """List annotations; resolves stored usernames to current display names."""
     with db.get_session() as session:
         alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
-
         if not alert:
             raise HTTPException(status_code=404, detail="Alert not found")
 
         annotations = session.query(AlertAnnotation).filter(
-            AlertAnnotation.alert_id == alert_id
+            AlertAnnotation.alert_id == alert_id,
         ).order_by(AlertAnnotation.timestamp.desc()).all()
+
+        # API-key markers ("API Key: <name>") share the column with usernames;
+        # exclude them from the User lookup so attribution stays unambiguous
+        # even if username validation rules are relaxed later.
+        usernames = {a.user for a in annotations if a.user and not a.user.startswith("API Key: ")}
+        display_by_username: dict[str, str] = {}
+        if usernames:
+            users = session.query(User).filter(User.username.in_(usernames)).all()
+            display_by_username = {u.username: u.effective_display_name for u in users}
 
         return {
             "annotations": [
                 {
                     "id": ann.id,
                     "timestamp": ann.timestamp.isoformat() + 'Z' if ann.timestamp else None,
-                    "user": ann.user,
-                    "text": ann.text
+                    "user": display_by_username.get(ann.user, ann.user),
+                    "text": ann.text,
                 }
                 for ann in annotations
             ]

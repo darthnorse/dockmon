@@ -246,28 +246,33 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
               ) : (
                 <div>
                   {webUiUrl ? (
-                    <div className="flex items-center gap-2">
-                      {sanitizeHref(webUiUrl) ? (
-                        <a
-                          href={sanitizeHref(webUiUrl)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-sm text-primary hover:underline truncate flex-1"
-                        >
-                          {webUiUrl}
-                        </a>
-                      ) : (
-                        <span className="text-sm text-muted-foreground truncate flex-1">
-                          {webUiUrl}
-                        </span>
-                      )}
-                      <button
-                        onClick={() => setIsEditingWebUi(true)}
-                        className="text-xs text-primary hover:text-primary/80"
-                      >
-                        Edit
-                      </button>
-                    </div>
+                    (() => {
+                      const safeWebUiHref = sanitizeHref(webUiUrl)
+                      return (
+                        <div className="flex items-center gap-2">
+                          {safeWebUiHref ? (
+                            <a
+                              href={safeWebUiHref}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-sm text-primary hover:underline truncate flex-1"
+                            >
+                              {webUiUrl}
+                            </a>
+                          ) : (
+                            <span className="text-sm text-muted-foreground truncate flex-1">
+                              {webUiUrl}
+                            </span>
+                          )}
+                          <button
+                            onClick={() => setIsEditingWebUi(true)}
+                            className="text-xs text-primary hover:text-primary/80"
+                          >
+                            Edit
+                          </button>
+                        </div>
+                      )
+                    })()
                   ) : (
                     <button
                       onClick={() => setIsEditingWebUi(true)}

@@ -10,7 +10,7 @@ import (
 )
 
 // =============================================================================
-// Test extractUserLabels() - Label Filtering (from test_label_merge.py)
+// Test ExtractUserLabels() - Label Filtering (from test_label_merge.py)
 // =============================================================================
 
 func TestExtractUserLabels_RemovesImageLabels(t *testing.T) {
@@ -24,7 +24,7 @@ func TestExtractUserLabels_RemovesImageLabels(t *testing.T) {
 		"org.opencontainers.image.version": "1.0.0",
 	}
 
-	result := extractUserLabels(log, containerLabels, oldImageLabels)
+	result := ExtractUserLabels(log, containerLabels, oldImageLabels)
 
 	// Image label removed - Docker will merge from new image
 	if len(result) != 0 {
@@ -44,7 +44,7 @@ func TestExtractUserLabels_PreservesComposeLabels(t *testing.T) {
 		"org.opencontainers.image.version": "1.0.0",
 	}
 
-	result := extractUserLabels(log, containerLabels, oldImageLabels)
+	result := ExtractUserLabels(log, containerLabels, oldImageLabels)
 
 	// Compose label preserved, image label removed
 	if len(result) != 1 {
@@ -68,7 +68,7 @@ func TestExtractUserLabels_PreservesDockmonLabels(t *testing.T) {
 		"org.opencontainers.image.version": "1.0.0",
 	}
 
-	result := extractUserLabels(log, containerLabels, oldImageLabels)
+	result := ExtractUserLabels(log, containerLabels, oldImageLabels)
 
 	// DockMon labels preserved, image label removed
 	if len(result) != 2 {
@@ -92,7 +92,7 @@ func TestExtractUserLabels_PreservesCustomLabels(t *testing.T) {
 	}
 	oldImageLabels := map[string]string{}
 
-	result := extractUserLabels(log, containerLabels, oldImageLabels)
+	result := ExtractUserLabels(log, containerLabels, oldImageLabels)
 
 	// All custom labels preserved (no image labels to remove)
 	if len(result) != 2 {
@@ -115,7 +115,7 @@ func TestExtractUserLabels_EmptyContainerLabels(t *testing.T) {
 		"org.opencontainers.image.version": "2.0.0",
 	}
 
-	result := extractUserLabels(log, containerLabels, oldImageLabels)
+	result := ExtractUserLabels(log, containerLabels, oldImageLabels)
 
 	// No container labels = no user labels
 	if len(result) != 0 {
@@ -132,7 +132,7 @@ func TestExtractUserLabels_EmptyImageLabels(t *testing.T) {
 	}
 	oldImageLabels := map[string]string{}
 
-	result := extractUserLabels(log, containerLabels, oldImageLabels)
+	result := ExtractUserLabels(log, containerLabels, oldImageLabels)
 
 	// No image labels to subtract = all container labels preserved
 	if len(result) != 1 {
@@ -147,7 +147,7 @@ func TestExtractUserLabels_BothEmpty(t *testing.T) {
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
 
-	result := extractUserLabels(log, map[string]string{}, map[string]string{})
+	result := ExtractUserLabels(log, map[string]string{}, map[string]string{})
 
 	if len(result) != 0 {
 		t.Errorf("Expected empty labels, got %v", result)
@@ -158,7 +158,7 @@ func TestExtractUserLabels_NilContainerLabels(t *testing.T) {
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
 
-	result := extractUserLabels(log, nil, map[string]string{"key": "value"})
+	result := ExtractUserLabels(log, nil, map[string]string{"key": "value"})
 
 	// Defensive handling of nil
 	if result == nil {
@@ -182,11 +182,221 @@ func TestExtractUserLabels_ResolvesConflictsInFavorOfImage(t *testing.T) {
 		"org.opencontainers.image.version": "1.0.0",
 	}
 
-	result := extractUserLabels(log, containerLabels, oldImageLabels)
+	result := ExtractUserLabels(log, containerLabels, oldImageLabels)
 
 	// Both labels matched old image = both removed
 	if len(result) != 0 {
 		t.Errorf("Expected empty labels, got %v", result)
+	}
+}
+
+// =============================================================================
+// Test ExtractUserEnv() - Env Var Filtering (Issue #218)
+//
+// Mirrors ExtractUserLabels semantics for Config.Env. Docker's container
+// inspect returns the *merged* env (image defaults + user-set). Cloning that
+// verbatim into ContainerCreate pins old image's defaults as per-container
+// overrides that shadow the new image's ENV directives on update.
+// =============================================================================
+
+func TestExtractUserEnv_RemovesImageDefaults(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	containerEnv := []string{"APP_VERSION=v3.0.0"}
+	oldImageEnv := []string{"APP_VERSION=v3.0.0"}
+
+	result := ExtractUserEnv(log, containerEnv, oldImageEnv)
+
+	if len(result) != 0 {
+		t.Errorf("Expected empty env, got %v", result)
+	}
+}
+
+func TestExtractUserEnv_PreservesUserAdded(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	containerEnv := []string{
+		"APP_VERSION=v3.0.0",
+		"DB_HOST=prod-db",
+	}
+	oldImageEnv := []string{"APP_VERSION=v3.0.0"}
+
+	result := ExtractUserEnv(log, containerEnv, oldImageEnv)
+
+	if len(result) != 1 {
+		t.Fatalf("Expected 1 env entry, got %d (%v)", len(result), result)
+	}
+	if result[0] != "DB_HOST=prod-db" {
+		t.Errorf("Expected DB_HOST=prod-db, got %q", result[0])
+	}
+}
+
+func TestExtractUserEnv_PreservesUserOverride(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	containerEnv := []string{"LOG_LEVEL=debug"}
+	oldImageEnv := []string{"LOG_LEVEL=info"}
+
+	result := ExtractUserEnv(log, containerEnv, oldImageEnv)
+
+	if len(result) != 1 {
+		t.Fatalf("Expected 1 env entry, got %d (%v)", len(result), result)
+	}
+	if result[0] != "LOG_LEVEL=debug" {
+		t.Errorf("Expected LOG_LEVEL=debug, got %q", result[0])
+	}
+}
+
+func TestExtractUserEnv_EmptyContainerEnv(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	result := ExtractUserEnv(log, []string{}, []string{"APP_VERSION=v3.0.0"})
+
+	if result == nil {
+		t.Error("Expected non-nil slice")
+	}
+	if len(result) != 0 {
+		t.Errorf("Expected empty env, got %v", result)
+	}
+}
+
+func TestExtractUserEnv_EmptyImageEnv(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	containerEnv := []string{
+		"APP_VERSION=v3.0.0",
+		"CUSTOM=value",
+	}
+
+	result := ExtractUserEnv(log, containerEnv, []string{})
+
+	if len(result) != 2 {
+		t.Fatalf("Expected 2 env entries, got %d (%v)", len(result), result)
+	}
+}
+
+func TestExtractUserEnv_BothEmpty(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	result := ExtractUserEnv(log, []string{}, []string{})
+
+	if result == nil {
+		t.Error("Expected non-nil slice")
+	}
+	if len(result) != 0 {
+		t.Errorf("Expected empty env, got %v", result)
+	}
+}
+
+func TestExtractUserEnv_NilContainerEnv(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	result := ExtractUserEnv(log, nil, []string{"APP_VERSION=v3.0.0"})
+
+	if result == nil {
+		t.Error("Expected non-nil slice")
+	}
+	if len(result) != 0 {
+		t.Errorf("Expected empty env, got %v", result)
+	}
+}
+
+func TestExtractUserEnv_ValueContainsEquals(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	// DATABASE_URL is added by the user (not in image) and its value contains
+	// '=' characters. The filter must split on the FIRST '=' only.
+	containerEnv := []string{"DATABASE_URL=postgres://u:p=hash@host:5432/db?k=v"}
+	oldImageEnv := []string{}
+
+	result := ExtractUserEnv(log, containerEnv, oldImageEnv)
+
+	if len(result) != 1 {
+		t.Fatalf("Expected 1 env entry, got %d (%v)", len(result), result)
+	}
+	if result[0] != "DATABASE_URL=postgres://u:p=hash@host:5432/db?k=v" {
+		t.Errorf("Value with embedded '=' was mangled: %q", result[0])
+	}
+}
+
+func TestExtractUserEnv_ValueContainsEqualsMatchesImageDefault(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	// Image default has '=' in value; container has the exact same entry.
+	// First-'=' split must correctly identify both as KEY=<same-value>.
+	containerEnv := []string{"DATABASE_URL=postgres://u:p=hash@host/db"}
+	oldImageEnv := []string{"DATABASE_URL=postgres://u:p=hash@host/db"}
+
+	result := ExtractUserEnv(log, containerEnv, oldImageEnv)
+
+	if len(result) != 0 {
+		t.Errorf("Expected entry dropped (exact match), got %v", result)
+	}
+}
+
+func TestExtractUserEnv_EmptyValueMatchesImageDefault(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	// KEY= (set-to-empty-string) is a legal Docker env entry. If the image
+	// also sets KEY=, they match exactly and the entry should be dropped.
+	containerEnv := []string{"OPTIONAL_FLAG="}
+	oldImageEnv := []string{"OPTIONAL_FLAG="}
+
+	result := ExtractUserEnv(log, containerEnv, oldImageEnv)
+
+	if len(result) != 0 {
+		t.Errorf("Expected entry dropped (both empty values match), got %v", result)
+	}
+}
+
+func TestExtractUserEnv_EmptyValueDiffersFromImageDefault(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	// User explicitly cleared an env var the image set to a non-empty value.
+	// That's a real override - the empty-string container value must be kept.
+	containerEnv := []string{"OPTIONAL_FLAG="}
+	oldImageEnv := []string{"OPTIONAL_FLAG=enabled"}
+
+	result := ExtractUserEnv(log, containerEnv, oldImageEnv)
+
+	if len(result) != 1 {
+		t.Fatalf("Expected 1 env entry, got %d (%v)", len(result), result)
+	}
+	if result[0] != "OPTIONAL_FLAG=" {
+		t.Errorf("Expected user's empty-string override preserved, got %q", result[0])
+	}
+}
+
+func TestExtractUserEnv_MalformedEntryNoEquals(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	// A bare token with no '=' is not a valid env entry, but we shouldn't
+	// crash on it. Defensive behavior: keep it as-is.
+	containerEnv := []string{
+		"MALFORMED",
+		"VALID=ok",
+	}
+	oldImageEnv := []string{"VALID=ok"}
+
+	result := ExtractUserEnv(log, containerEnv, oldImageEnv)
+
+	if len(result) != 1 {
+		t.Fatalf("Expected 1 env entry (malformed kept, VALID dropped), got %d (%v)", len(result), result)
+	}
+	if result[0] != "MALFORMED" {
+		t.Errorf("Expected malformed entry preserved as-is, got %q", result[0])
 	}
 }
 

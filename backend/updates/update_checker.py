@@ -29,6 +29,7 @@ from updates.types import MANIFEST_LIST_TYPES, match_platform_manifest
 from utils.keys import make_composite_key
 from utils.encryption import decrypt_password
 from utils.container_id import normalize_container_id
+from utils.image_ref import extract_image_repository
 from utils.async_docker import async_docker_call
 
 logger = logging.getLogger(__name__)
@@ -951,10 +952,12 @@ class UpdateChecker:
             return False
 
         container_name = container.get('name', '').lower()
-        image_name = container.get('image', '').lower()
+        # Match against the image *name* (repository) only - never the tag or
+        # the registry host, both of which cause false matches.
+        image_repo = extract_image_repository(container.get('image', '')).lower()
 
         for pattern in ignore_patterns:
-            if pattern in container_name or pattern in image_name:
+            if pattern in container_name or pattern in image_repo:
                 return True
 
         return False

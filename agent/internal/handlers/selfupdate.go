@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/darthnorse/dockmon-agent/internal/docker"
+	"github.com/darthnorse/dockmon-shared/update"
 	dockerTypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/sirupsen/logrus"
@@ -94,14 +95,10 @@ func (h *SelfUpdateHandler) PerformSelfUpdate(ctx context.Context, req SelfUpdat
 	return h.performNativeSelfUpdate(ctx, req)
 }
 
-// performContainerSelfUpdate updates the agent's own container
-// Flow:
-// 1. Pull new image
-// 2. Inspect own container to get config
-// 3. Create new container with same config but new image
-// 4. Start new container
-// 5. Wait for it to be healthy
-// 6. Stop ourselves (old container)
+// performContainerSelfUpdate updates the agent's own container by pulling
+// the new image, inspecting the running container and its image, creating
+// a replacement container with filtered labels, waiting for it to become
+// healthy, then signaling graceful shutdown so Docker switches over.
 func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req SelfUpdateRequest) error {
 	if req.Image == "" {
 		return fmt.Errorf("image is required for container self-update")
@@ -116,14 +113,14 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 		"new_image":    req.Image,
 	}).Info("Performing container-based self-update")
 
-	// Step 1: Pull new image
+	// Pull new image
 	h.sendProgress("pull", fmt.Sprintf("Pulling image %s", req.Image))
 	if err := h.dockerClient.PullImage(ctx, req.Image); err != nil {
 		h.sendProgressError("pull", err)
 		return fmt.Errorf("failed to pull image: %w", err)
 	}
 
-	// Step 2: Inspect own container to get configuration
+	// Inspect own container to get configuration
 	h.sendProgress("inspect", "Inspecting current container")
 	oldContainer, err := h.dockerClient.InspectContainer(ctx, h.myContainerID)
 	if err != nil {
@@ -139,9 +136,35 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 
 	h.log.WithField("original_name", originalName).Debug("Got container configuration")
 
-	// Step 3: Create new container with same config but new image
+	// Inspect old image to get its labels, used to filter inherited labels
+	// off the new container so the new image's labels take effect.
+	// Use the immutable image ID (oldContainer.Image, a sha256 digest), NOT
+	// oldContainer.Config.Image - the earlier PullImage may have retargeted
+	// a shared tag (":latest", or a republished version tag) at the new
+	// image, in which case the tag would resolve to new-image labels and
+	// the diff would treat every old inherited label as a "user override".
+	// The image ID is set at container create time and is stable.
+	// Best-effort: if inspection fails, oldImageLabels stays nil and
+	// cloneContainerConfig skips filtering (cosmetic-only impact).
+	oldImageLabels, imgErr := update.GetImageLabels(ctx, h.dockerClient.RawClient(), oldContainer.Image)
+	if imgErr != nil {
+		h.log.WithError(imgErr).WithField("old_image_id", oldContainer.Image).
+			Warn("Failed to inspect old image labels; new container will keep inherited labels (cosmetic-only impact)")
+	}
+
+	// Same lookup for the old image's ENV defaults, so env vars baked into
+	// the old image (e.g. APP_VERSION) don't get pinned onto the new
+	// container as per-container overrides. Same image-ID rationale as the
+	// labels lookup above; best-effort with the same cosmetic fallback.
+	oldImageEnv, envErr := update.GetImageEnv(ctx, h.dockerClient.RawClient(), oldContainer.Image)
+	if envErr != nil {
+		h.log.WithError(envErr).WithField("old_image_id", oldContainer.Image).
+			Warn("Failed to inspect old image env; new container will keep inherited env vars")
+	}
+
+	// Create new container with same config but new image
 	h.sendProgress("create", "Creating new container")
-	newConfig := h.cloneContainerConfig(&oldContainer, req.Image)
+	newConfig := h.cloneContainerConfig(&oldContainer, req.Image, oldImageLabels, oldImageEnv)
 	newHostConfig := h.cloneHostConfig(oldContainer.HostConfig)
 
 	// Use temporary name - will be renamed after old container is removed
@@ -155,8 +178,8 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 
 	h.log.WithField("new_container_id", safeShortID(newContainerID)).Info("Created new container")
 
-	// Step 4: Write cleanup file BEFORE starting new container
-	// This ensures the new agent finds it on startup (race condition fix)
+	// Write cleanup file BEFORE starting new container.
+	// This ensures the new agent finds it on startup (race condition fix).
 	cleanupFile := filepath.Join(h.dataDir, "cleanup.json")
 	cleanupData := map[string]string{
 		"old_container_id":   h.myContainerID,
@@ -172,7 +195,7 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 		}
 	}
 
-	// Step 5: Start new container
+	// Start new container
 	h.sendProgress("start", "Starting new container")
 	if err := h.dockerClient.StartContainer(ctx, newContainerID); err != nil {
 		// Cleanup: remove the failed container and cleanup file
@@ -186,7 +209,7 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 		return fmt.Errorf("failed to start new container: %w", err)
 	}
 
-	// Step 6: Wait for new container to be healthy
+	// Wait for new container to be healthy
 	h.sendProgress("health", "Waiting for new container to be healthy")
 	if err := h.waitForHealthy(ctx, newContainerID, 60); err != nil {
 		h.log.WithError(err).Warn("New container failed health check, rolling back")
@@ -206,7 +229,7 @@ func (h *SelfUpdateHandler) performContainerSelfUpdate(ctx context.Context, req 
 
 	h.log.Info("New container is healthy")
 
-	// Step 7: Signal completion and stop ourselves
+	// Signal completion and stop ourselves
 	h.sendProgress("complete", "Self-update complete, stopping old container")
 
 	h.log.Info("Self-update successful, stopping old container")
@@ -483,9 +506,40 @@ func (h *SelfUpdateHandler) performContainerCleanup(cleanupFilePath string) erro
 	return nil
 }
 
-// cloneContainerConfig creates a new container config based on existing container
-func (h *SelfUpdateHandler) cloneContainerConfig(inspect *dockerTypes.ContainerJSON, newImage string) *container.Config {
+// cloneContainerConfig creates a new container config based on existing container.
+//
+// oldImageLabels is the Labels map of the OLD image (the one the existing
+// container was created from). It's used to filter out image-inherited
+// labels so the NEW image's labels take effect on inspection. Pass nil
+// to skip label filtering (degrades to pre-fix behavior - preserves all labels).
+//
+// oldImageEnv is the Env list of the OLD image's ENV directives. Same role
+// for env vars as oldImageLabels for labels - filters out image-inherited
+// env so the NEW image's ENV directives take effect. Pass nil to skip env
+// filtering.
+func (h *SelfUpdateHandler) cloneContainerConfig(
+	inspect *dockerTypes.ContainerJSON,
+	newImage string,
+	oldImageLabels map[string]string,
+	oldImageEnv []string,
+) *container.Config {
 	config := inspect.Config
+
+	// Filter inherited image labels so the NEW image's LABEL directives
+	// (e.g. org.opencontainers.image.version) aren't shadowed by stale
+	// per-container copies of the OLD image's labels.
+	var labels map[string]string
+	if oldImageLabels != nil {
+		labels = update.ExtractUserLabels(h.log, config.Labels, oldImageLabels)
+	} else {
+		labels = config.Labels
+	}
+
+	// Same filtering for env vars.
+	env := config.Env
+	if oldImageEnv != nil {
+		env = update.ExtractUserEnv(h.log, config.Env, oldImageEnv)
+	}
 
 	return &container.Config{
 		// Don't clone Hostname - let Docker assign a new one so the new container
@@ -499,12 +553,12 @@ func (h *SelfUpdateHandler) cloneContainerConfig(inspect *dockerTypes.ContainerJ
 		Tty:          config.Tty,
 		OpenStdin:    config.OpenStdin,
 		StdinOnce:    config.StdinOnce,
-		Env:          config.Env,
+		Env:          env,
 		Cmd:          config.Cmd,
-		Image:        newImage, // Use new image
+		Image:        newImage,
 		WorkingDir:   config.WorkingDir,
 		Entrypoint:   config.Entrypoint,
-		Labels:       config.Labels,
+		Labels:       labels,
 		StopSignal:   config.StopSignal,
 		StopTimeout:  config.StopTimeout,
 	}

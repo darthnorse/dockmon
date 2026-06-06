@@ -122,6 +122,7 @@ class AlertRuleV2Create(BaseModel):
     auto_resolve: Optional[bool] = False  # Resolve immediately after notification (notification-only mode)
     auto_resolve_on_clear: Optional[bool] = False  # Clear when condition resolves (e.g., container restarts)
     suppress_during_updates: Optional[bool] = False  # Suppress alert during container updates
+    notify_on_resolve: Optional[bool] = False  # Send notification when alert resolves
 
     # Selectors (JSON strings)
     host_selector_json: Optional[str] = None
@@ -161,6 +162,7 @@ class AlertRuleV2Update(BaseModel):
     auto_resolve: Optional[bool] = None  # Resolve immediately after notification (notification-only mode)
     auto_resolve_on_clear: Optional[bool] = None  # Clear when condition resolves (e.g., container restarts)
     suppress_during_updates: Optional[bool] = None  # Suppress alert during container updates
+    notify_on_resolve: Optional[bool] = None  # Send notification when alert resolves
 
     host_selector_json: Optional[str] = None
     container_selector_json: Optional[str] = None
@@ -197,6 +199,14 @@ class GlobalSettingsUpdate(BaseModel):
 
     # Event suppression (v2.2.0+)
     event_suppression_patterns: Optional[List[str]] = Field(None, description="Glob patterns for container names to suppress from event log")
+
+    # WebUI URL mapping chain. Capped at 20 templates × 2048 chars to prevent
+    # admin-triggered DOS via the resolver loop running per container per cycle.
+    webui_url_mapping_chain: Optional[List[str]] = Field(
+        None,
+        max_length=20,
+        description="Ordered list of URL templates (env/label placeholders) for auto-deriving WebUI URLs",
+    )
 
     # Notification settings
     enable_notifications: Optional[bool] = None
@@ -240,6 +250,26 @@ class GlobalSettingsUpdate(BaseModel):
     stats_points_per_view: Optional[int] = Field(None, ge=100, le=2000, description="Stats points per view/tier (100-2000)")
 
     model_config = ConfigDict(extra="forbid")  # Reject unknown keys (typos, attacks)
+
+    @field_validator('webui_url_mapping_chain')
+    @classmethod
+    def validate_webui_url_mapping_chain(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        """Reject empty templates and cap individual template length."""
+        if v is None:
+            return v
+        cleaned: List[str] = []
+        for i, template in enumerate(v):
+            if not isinstance(template, str):
+                raise ValueError(f"webui_url_mapping_chain[{i}] must be a string")
+            stripped = template.strip()
+            if not stripped:
+                raise ValueError(f"webui_url_mapping_chain[{i}] is empty")
+            if len(stripped) > 2048:
+                raise ValueError(
+                    f"webui_url_mapping_chain[{i}] exceeds 2048 characters"
+                )
+            cleaned.append(stripped)
+        return cleaned
 
     @field_validator('update_check_time')
     @classmethod

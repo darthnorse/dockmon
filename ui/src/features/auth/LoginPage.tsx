@@ -160,7 +160,7 @@ const DEFAULT_OIDC_ERROR = 'SSO authentication failed. Please try again or conta
 
 export function LoginPage() {
   const { login, isLoading } = useAuth()
-  const { data: oidcStatus } = useOIDCStatus()
+  const { data: oidcStatus, isLoading: oidcStatusLoading } = useOIDCStatus()
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const [username, setUsername] = useState('')
@@ -229,6 +229,98 @@ export function LoginPage() {
     error, setError, isLoading, onSubmit: handleSubmit,
   }
 
+  // One of four mutually-exclusive auth layouts. Early returns keep the cases
+  // flat instead of nesting ternaries in JSX.
+  const renderAuthBody = () => {
+    // Until the OIDC status resolves we don't know which layout to show. Render a
+    // neutral loading state rather than defaulting to the local form, which would
+    // flash the username/password fields for SSO-only setups (e.g. right after
+    // clicking logout). On error, oidcStatusLoading is false so we fall through
+    // to the local form — users are never locked out of the login UI.
+    if (oidcStatusLoading) {
+      return (
+        <div data-testid="login-loading" role="status" className="flex justify-center py-6">
+          <span className="h-6 w-6 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
+          <span className="sr-only">Loading</span>
+        </div>
+      )
+    }
+
+    // SSO-only enforced: never render the local form.
+    if (oidcStatus?.local_login_disabled) {
+      if (!oidcStatus.enabled) {
+        return (
+          <div
+            role="alert"
+            className="rounded-lg border-l-4 border-danger bg-danger/10 p-3 text-sm text-danger"
+          >
+            Local login is disabled and SSO is currently unavailable. Please contact
+            your administrator to restore access.
+          </div>
+        )
+      }
+      return (
+        <>
+          <Button type="button" className="w-full" size="lg" onClick={handleOIDCLogin}>
+            <KeyRound className="h-4 w-4" />
+            Sign in with SSO
+          </Button>
+          <p className="mt-4 text-center text-sm text-muted-foreground">
+            Local login is disabled. Sign in with SSO.
+          </p>
+        </>
+      )
+    }
+
+    // SSO primary, local login behind a link.
+    if (oidcStatus?.enabled && oidcStatus.sso_default) {
+      return (
+        <>
+          <Button type="button" className="w-full" size="lg" onClick={handleOIDCLogin}>
+            <KeyRound className="h-4 w-4" />
+            Sign in with SSO
+          </Button>
+          {!showLocalLogin ? (
+            <button
+              type="button"
+              className="mt-4 w-full text-center text-sm text-muted-foreground hover:text-foreground transition-colors"
+              onClick={() => setShowLocalLogin(true)}
+            >
+              Sign in with local account
+            </button>
+          ) : (
+            <>
+              <Divider label="local account" />
+              <LocalLoginForm {...formProps} submitVariant="outline" />
+            </>
+          )}
+        </>
+      )
+    }
+
+    // Default: local login primary, SSO secondary (if enabled).
+    return (
+      <>
+        <LocalLoginForm {...formProps} />
+        {oidcStatus?.enabled && (
+          <>
+            <Divider label="or" />
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              size="lg"
+              onClick={handleOIDCLogin}
+            >
+              <KeyRound className="h-4 w-4" />
+              Sign in with SSO
+            </Button>
+          </>
+        )}
+      </>
+    )
+  }
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
       <Card className="w-full max-w-md">
@@ -250,57 +342,7 @@ export function LoginPage() {
             </div>
           )}
 
-          {oidcStatus?.enabled && oidcStatus.sso_default ? (
-            <>
-              {/* SSO-primary layout */}
-              <Button
-                type="button"
-                className="w-full"
-                size="lg"
-                onClick={handleOIDCLogin}
-              >
-                <KeyRound className="h-4 w-4" />
-                Sign in with SSO
-              </Button>
-
-              {!showLocalLogin ? (
-                <button
-                  type="button"
-                  className="mt-4 w-full text-center text-sm text-muted-foreground hover:text-foreground transition-colors"
-                  onClick={() => setShowLocalLogin(true)}
-                >
-                  Sign in with local account
-                </button>
-              ) : (
-                <>
-                  <Divider label="local account" />
-                  <LocalLoginForm {...formProps} submitVariant="outline" />
-                </>
-              )}
-            </>
-          ) : (
-            <>
-              {/* Default layout: local login primary */}
-              <LocalLoginForm {...formProps} />
-
-              {/* OIDC SSO Button (secondary) */}
-              {oidcStatus?.enabled && (
-                <>
-                  <Divider label="or" />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="w-full"
-                    size="lg"
-                    onClick={handleOIDCLogin}
-                  >
-                    <KeyRound className="h-4 w-4" />
-                    Sign in with SSO
-                  </Button>
-                </>
-              )}
-            </>
-          )}
+          {renderAuthBody()}
         </CardContent>
       </Card>
     </div>

@@ -2,7 +2,7 @@
  * AuthContext Tests
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
@@ -184,6 +184,64 @@ describe('AuthContext', () => {
       expect(authApi.logout).toHaveBeenCalled()
 
       // Query cache should be cleared
+      expect(queryClient.getQueryData(['auth', 'currentUser'])).toBeUndefined()
+    })
+  })
+
+  describe('OIDC logout', () => {
+    let originalLocation: Location
+
+    beforeEach(() => {
+      originalLocation = window.location
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        writable: true,
+        value: { href: '' } as Location,
+      })
+    })
+
+    afterEach(() => {
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        writable: true,
+        value: originalLocation,
+      })
+    })
+
+    it('redirects to the provider logout URL without clearing the cache (prevents login-form flash)', async () => {
+      const mockUser = { user: { id: 1, username: 'testuser' } }
+      vi.mocked(authApi.getCurrentUser).mockResolvedValue(mockUser)
+      vi.mocked(authApi.logout).mockResolvedValueOnce({
+        oidc_logout_url: 'https://idp.example.com/logout?client_id=abc',
+      })
+
+      const { result } = renderHook(() => useAuth(), { wrapper })
+
+      await waitFor(() => expect(result.current.isAuthenticated).toBe(true))
+
+      await result.current.logout()
+
+      // Browser is sent straight to the IdP logout endpoint...
+      expect(window.location.href).toBe(
+        'https://idp.example.com/logout?client_id=abc'
+      )
+      // ...and the cache is NOT cleared, so LoginPage (with the local form) never
+      // renders on the way out.
+      expect(queryClient.getQueryData(['auth', 'currentUser'])).toEqual(mockUser)
+    })
+
+    it('does a local logout (clears cache) when the provider has no logout URL', async () => {
+      const mockUser = { user: { id: 1, username: 'testuser' } }
+      vi.mocked(authApi.getCurrentUser).mockResolvedValue(mockUser)
+      vi.mocked(authApi.logout).mockResolvedValueOnce({ oidc_logout_url: null })
+
+      const { result } = renderHook(() => useAuth(), { wrapper })
+
+      await waitFor(() => expect(result.current.isAuthenticated).toBe(true))
+
+      await result.current.logout()
+
+      expect(window.location.href).toBe('')
       expect(queryClient.getQueryData(['auth', 'currentUser'])).toBeUndefined()
     })
   })

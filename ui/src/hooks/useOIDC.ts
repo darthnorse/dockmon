@@ -34,6 +34,10 @@ export function useOIDCStatus() {
       return apiClient.get('/v2/oidc/status')
     },
     staleTime: 5 * 60 * 1000, // 5 minutes
+    // This status gates which login UI renders, so fail fast to the local-form
+    // fallback instead of retry-storming (which would hold the login page on a
+    // loading spinner). The query refetches on mount, so a transient miss recovers.
+    retry: false,
   })
 }
 

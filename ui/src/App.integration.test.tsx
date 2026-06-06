@@ -66,11 +66,15 @@ describe('App Integration Tests', () => {
       expect(hasContent).toBe(true)
     })
 
-    // Eventually should show either loading or login
+    // Eventually should show either loading or login. Assert inside waitFor so it
+    // actually retries until one appears (a bare `return a || b` resolves on the
+    // first tick with null, before anything has rendered).
     const loadingOrLogin = await waitFor(() => {
       const loading = screen.queryByText(/loading/i)
       const login = screen.queryByLabelText(/username/i)
-      return loading || login
+      const found = loading || login
+      expect(found).toBeTruthy()
+      return found
     }, { timeout: 3000 })
 
     expect(loadingOrLogin).toBeTruthy()

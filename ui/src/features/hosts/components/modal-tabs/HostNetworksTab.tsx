@@ -5,10 +5,11 @@
  */
 
 import { useState, useMemo, useCallback, useDeferredValue } from 'react'
-import { Search, Trash2, Filter, Shield, Network } from 'lucide-react'
-import { useHostNetworks, useDeleteNetwork, useDeleteNetworks, usePruneNetworks } from '../../hooks/useHostNetworks'
+import { Search, Trash2, Filter, Shield, Network, Plus } from 'lucide-react'
+import { useHostNetworks, useDeleteNetwork, useDeleteNetworks, usePruneNetworks, useCreateNetwork } from '../../hooks/useHostNetworks'
 import { useSelectionManager } from '@/hooks/useSelectionManager'
 import { NetworkDeleteConfirmModal } from '../NetworkDeleteConfirmModal'
+import { NetworkCreateModal } from '../NetworkCreateModal'
 import { ConfirmModal } from '@/components/shared/ConfirmModal'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { ContainerLinkList } from '@/components/shared/ContainerLinkList'
@@ -70,6 +71,7 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
   const deleteMutation = useDeleteNetwork()
   const deleteNetworksMutation = useDeleteNetworks()
   const pruneMutation = usePruneNetworks(hostId)
+  const createMutation = useCreateNetwork(hostId)
 
   // UI state
   const [searchQuery, setSearchQuery] = useState('')
@@ -78,6 +80,7 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
   const [networksToDelete, setNetworksToDelete] = useState<DockerNetwork[]>([])
   const [showPruneConfirm, setShowPruneConfirm] = useState(false)
+  const [createModalOpen, setCreateModalOpen] = useState(false)
 
   // Filter networks (using deferred search to prevent jank on large lists)
   const filteredNetworks = useMemo(() => {
@@ -269,14 +272,23 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
             <span className="ml-2 text-accent">({selectedCount} selected)</span>
           )}
         </div>
-        <button
-          onClick={() => setShowPruneConfirm(true)}
-          disabled={pruneMutation.isPending || unusedCount === 0}
-          className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg bg-warning/10 text-warning border border-warning/30 hover:bg-warning/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          <Trash2 className="h-4 w-4" />
-          Prune All Unused
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setCreateModalOpen(true)}
+            className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg bg-accent text-accent-foreground hover:bg-accent/90 transition-colors"
+          >
+            <Plus className="h-4 w-4" />
+            Create Network
+          </button>
+          <button
+            onClick={() => setShowPruneConfirm(true)}
+            disabled={pruneMutation.isPending || unusedCount === 0}
+            className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg bg-warning/10 text-warning border border-warning/30 hover:bg-warning/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            <Trash2 className="h-4 w-4" />
+            Prune All Unused
+          </button>
+        </div>
       </div>
 
       {/* Networks table */}
@@ -423,6 +435,18 @@ export function HostNetworksTab({ hostId }: HostNetworksTabProps) {
       )}
 
       </fieldset>
+
+      {/* Create network modal */}
+      <NetworkCreateModal
+        isOpen={createModalOpen}
+        onClose={() => setCreateModalOpen(false)}
+        onConfirm={(params) => {
+          createMutation.mutate(params, {
+            onSuccess: () => setCreateModalOpen(false),
+          })
+        }}
+        isPending={createMutation.isPending}
+      />
 
       {/* Delete confirmation modal */}
       <NetworkDeleteConfirmModal

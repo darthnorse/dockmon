@@ -10,13 +10,11 @@ import { useContainerModal } from '@/providers/ContainerModalProvider'
 interface ContainerLinkListProps {
   containers: Array<{ id: string; name: string }>
   hostId: string
-  maxVisible?: number
 }
 
 export function ContainerLinkList({
   containers,
   hostId,
-  maxVisible = 3,
 }: ContainerLinkListProps) {
   const { openModal } = useContainerModal()
 
@@ -25,9 +23,10 @@ export function ContainerLinkList({
     return <span className="text-sm text-muted-foreground">—</span>
   }
 
+  // No truncation: cap height + scroll so every attached container stays clickable.
   return (
-    <div className="flex flex-wrap gap-1">
-      {containers.slice(0, maxVisible).map((container) => {
+    <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
+      {containers.map((container) => {
         const shortId = container.id.slice(0, 12)
         return (
           <button
@@ -40,11 +39,6 @@ export function ContainerLinkList({
           </button>
         )
       })}
-      {containers.length > maxVisible && (
-        <span className="text-sm text-muted-foreground px-1.5 py-0.5">
-          +{containers.length - maxVisible} more
-        </span>
-      )}
     </div>
   )
 }

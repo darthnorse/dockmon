@@ -68,7 +68,7 @@ from models.request_models import (
     AutoRestartRequest, DesiredStateRequest, AlertRuleCreate, AlertRuleUpdate,
     NotificationChannelCreate, NotificationChannelUpdate, EventLogFilter, BatchJobCreate,
     ContainerTagUpdate, HostTagUpdate, HttpHealthCheckConfig, GenerateTokenRequest,
-    RenameContainerRequest
+    RenameContainerRequest, CreateNetworkRequest
 )
 from audit.audit_logger import AuditAction, AuditEntityType, log_audit, log_container_action, log_host_change, log_settings_change, get_client_info
 from security.audit import security_audit
@@ -86,6 +86,8 @@ from utils.base_path import get_base_path
 from utils.response_filtering import filter_container_env, filter_container_inspect_env, filter_ws_container_message
 from utils.host_ips import deserialize_host_ips
 from utils.client_ip import get_client_ip_ws
+from utils.networks import BUILTIN_NETWORKS, format_network, create_network_local
+from utils.timestamps import normalize_docker_timestamp
 import aiohttp
 from stats_client import get_stats_client, StatsServiceClient
 from updates.container_validator import ContainerValidator, ValidationResult
@@ -1366,11 +1368,7 @@ async def list_host_images(host_id: str, current_user: dict = Depends(get_curren
             short_id = normalize_image_id(image.short_id) if image.short_id else normalize_image_id(image.id)
             containers_using = image_usage.get(short_id, [])
 
-            # Parse created timestamp - strip timezone offset and add Z suffix
-            created = image.attrs.get('Created', '')
-            if created and not created.endswith('Z'):
-                # Handle both +HH:MM and -HH:MM timezone offsets
-                created = re.sub(r'[+-]\d{2}:\d{2}$', 'Z', created)
+            created = normalize_docker_timestamp(image.attrs.get('Created', ''))
 
             tags = image.tags or []
             result.append({
@@ -1443,10 +1441,6 @@ async def prune_host_images(host_id: str, request: Request, current_user: dict =
         raise HTTPException(status_code=500, detail="Failed to prune images")
 
 
-# Built-in Docker networks that cannot be deleted
-BUILTIN_NETWORKS = frozenset(['bridge', 'host', 'none'])
-
-
 @app.get("/api/hosts/{host_id}/networks", tags=["hosts"], dependencies=[Depends(require_capability("containers.view"))])
 async def list_host_networks(host_id: str, current_user: dict = Depends(get_current_user)):
     """
@@ -1482,45 +1476,7 @@ async def list_host_networks(host_id: str, current_user: dict = Depends(get_curr
         # Get all networks
         networks = await async_docker_call(client.networks.list)
 
-        # Format response
-        result = []
-        for network in networks:
-            attrs = network.attrs or {}
-            short_id = network.short_id if hasattr(network, 'short_id') and network.short_id else network.id[:12]
-
-            # Parse created timestamp - strip timezone offset and add Z suffix
-            created = attrs.get('Created', '')
-            if created and not created.endswith('Z'):
-                # Handle both +HH:MM and -HH:MM timezone offsets
-                # Format: 2026-01-03T17:11:27.020018176-07:00
-                created = re.sub(r'[+-]\d{2}:\d{2}$', 'Z', created)
-
-            # Get connected containers
-            containers_info = attrs.get('Containers') or {}
-            containers = []
-            for container_id, container_data in containers_info.items():
-                containers.append({
-                    'id': container_id[:12],
-                    'name': container_data.get('Name', '').lstrip('/')
-                })
-
-            # Extract IPAM subnet info
-            ipam = attrs.get('IPAM', {}) or {}
-            ipam_config = ipam.get('Config', []) or []
-            subnet = ipam_config[0].get('Subnet', '') if ipam_config else ''
-
-            result.append({
-                'id': short_id,
-                'name': network.name,
-                'driver': attrs.get('Driver', ''),
-                'scope': attrs.get('Scope', 'local'),
-                'created': created,
-                'internal': attrs.get('Internal', False),
-                'subnet': subnet,
-                'containers': containers,
-                'container_count': len(containers),
-                'is_builtin': network.name in BUILTIN_NETWORKS,
-            })
+        result = [format_network(network) for network in networks]
 
         # Sort by name
         result.sort(key=lambda x: x['name'])
@@ -1530,6 +1486,66 @@ async def list_host_networks(host_id: str, current_user: dict = Depends(get_curr
     except Exception as e:
         logger.error(f"Error listing networks for host {host_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to list networks")
+
+
+@app.post("/api/hosts/{host_id}/networks", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
+async def create_host_network(
+    host_id: str,
+    body: CreateNetworkRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Create a Docker network on a host.
+
+    Body:
+        name: Network name (required)
+        driver: Network driver (only "bridge" is supported; default bridge)
+        subnet: Optional CIDR (e.g. 172.20.0.0/16)
+        gateway: Optional gateway IP (requires subnet, must be within it)
+        internal: Restrict external connectivity (default False)
+
+    Returns:
+        The created network in the same shape as the list endpoint.
+
+    Raises:
+        404: Host or agent not found
+        409: A network with that name already exists
+        500: Docker API failure
+    """
+    # Route through agent if the host uses one
+    agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+    if agent_id:
+        logger.info(f"Routing create_network for host {host_id} through agent {agent_id}")
+        result = await monitor.operations.agent_operations.create_network(
+            host_id,
+            name=body.name,
+            driver=body.driver,
+            subnet=body.subnet or "",
+            gateway=body.gateway or "",
+            internal=body.internal,
+        )
+        _safe_audit(current_user, log_host_change, AuditAction.CREATE, host_id, _get_host_name(host_id), request, details={'resource': 'network', 'network_name': body.name})
+        return result
+
+    # Legacy path: Direct Docker socket access
+    client = monitor.clients.get(host_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    result = await create_network_local(
+        client,
+        body.name,
+        body.driver,
+        body.subnet or "",
+        body.gateway or "",
+        body.internal,
+    )
+
+    logger.info(f"Created network '{body.name}' on host {host_id}")
+    _safe_audit(current_user, log_host_change, AuditAction.CREATE, host_id, _get_host_name(host_id), request, details={'resource': 'network', 'network_name': body.name})
+
+    return result
 
 
 @app.delete("/api/hosts/{host_id}/networks/{network_id}", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
@@ -1724,10 +1740,7 @@ async def list_host_volumes(host_id: str, current_user: dict = Depends(get_curre
             attrs = volume.attrs or {}
             name = volume.name
 
-            # Parse created timestamp - strip timezone offset and add Z suffix
-            created = attrs.get('CreatedAt', '')
-            if created and not created.endswith('Z'):
-                created = re.sub(r'[+-]\d{2}:\d{2}$', 'Z', created)
+            created = normalize_docker_timestamp(attrs.get('CreatedAt', ''))
 
             containers_using = volume_usage.get(name, [])
 

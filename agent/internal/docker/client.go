@@ -1240,58 +1240,81 @@ var builtinNetworks = map[string]bool{
 	"none":   true,
 }
 
+// networkInfoFromInspect maps a Docker network inspect/summary into NetworkInfo.
+// Shared by ListNetworks and CreateNetwork; network.Summary aliases network.Inspect.
+func networkInfoFromInspect(n network.Inspect) NetworkInfo {
+	created := n.Created.UTC().Format("2006-01-02T15:04:05Z")
+
+	containers := make([]NetworkContainerInfo, 0, len(n.Containers))
+	for containerID, endpoint := range n.Containers {
+		containers = append(containers, NetworkContainerInfo{
+			ID:   truncateID(containerID),
+			Name: stripContainerNamePrefix(endpoint.Name),
+		})
+	}
+
+	subnet := ""
+	if len(n.IPAM.Config) > 0 {
+		subnet = n.IPAM.Config[0].Subnet
+	}
+
+	return NetworkInfo{
+		ID:             truncateID(n.ID),
+		Name:           n.Name,
+		Driver:         n.Driver,
+		Scope:          n.Scope,
+		Created:        created,
+		Internal:       n.Internal,
+		Subnet:         subnet,
+		Containers:     containers,
+		ContainerCount: len(containers),
+		IsBuiltin:      builtinNetworks[n.Name],
+	}
+}
+
+// buildCreateNetworkOptions maps the backend fields to Docker create options:
+// empty driver -> bridge; empty subnet -> no IPAM block (Docker auto-assigns).
+func buildCreateNetworkOptions(driver, subnet, gateway string, internal bool) network.CreateOptions {
+	if driver == "" {
+		driver = "bridge"
+	}
+
+	opts := network.CreateOptions{
+		Driver:   driver,
+		Internal: internal,
+	}
+
+	if subnet != "" {
+		ipamConfig := network.IPAMConfig{Subnet: subnet}
+		if gateway != "" {
+			ipamConfig.Gateway = gateway
+		}
+		opts.IPAM = &network.IPAM{
+			Config: []network.IPAMConfig{ipamConfig},
+		}
+	}
+
+	return opts
+}
+
 // ListNetworks returns all networks with connected container info
 func (c *Client) ListNetworks(ctx context.Context) ([]NetworkInfo, error) {
-	// Get all networks
 	networks, err := c.cli.NetworkList(ctx, network.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list networks: %w", err)
 	}
 
-	// Build result
 	result := make([]NetworkInfo, 0, len(networks))
 	for _, net := range networks {
-		// NetworkList doesn't populate Containers - need to inspect each network
+		// NetworkList doesn't populate Containers - inspect to get them.
+		// On inspect failure, fall back to the (container-less) summary data.
 		inspected, err := c.cli.NetworkInspect(ctx, net.ID, network.InspectOptions{})
 		if err != nil {
-			c.log.WithError(err).Warnf("Failed to inspect network %s, skipping container info", net.Name)
-			// Continue with basic info from list
+			c.log.WithError(err).Warnf("Failed to inspect network %s, using summary data", net.Name)
+			result = append(result, networkInfoFromInspect(net))
+			continue
 		}
-
-		// Format created timestamp with Z suffix for frontend
-		created := net.Created.UTC().Format("2006-01-02T15:04:05Z")
-
-		// Get connected containers from inspected data (if available)
-		containerMap := net.Containers
-		if inspected.Containers != nil {
-			containerMap = inspected.Containers
-		}
-		containers := make([]NetworkContainerInfo, 0, len(containerMap))
-		for containerID, endpoint := range containerMap {
-			containers = append(containers, NetworkContainerInfo{
-				ID:   truncateID(containerID),
-				Name: stripContainerNamePrefix(endpoint.Name),
-			})
-		}
-
-		// Extract IPAM subnet
-		subnet := ""
-		if net.IPAM.Config != nil && len(net.IPAM.Config) > 0 {
-			subnet = net.IPAM.Config[0].Subnet
-		}
-
-		result = append(result, NetworkInfo{
-			ID:             truncateID(net.ID),
-			Name:           net.Name,
-			Driver:         net.Driver,
-			Scope:          net.Scope,
-			Created:        created,
-			Internal:       net.Internal,
-			Subnet:         subnet,
-			Containers:     containers,
-			ContainerCount: len(containers),
-			IsBuiltin:      builtinNetworks[net.Name],
-		})
+		result = append(result, networkInfoFromInspect(inspected))
 	}
 
 	return result, nil
@@ -1330,6 +1353,37 @@ func (c *Client) DeleteNetwork(ctx context.Context, networkID string, force bool
 	}
 
 	return nil
+}
+
+// CreateNetwork creates a network and returns it in the same shape as ListNetworks.
+func (c *Client) CreateNetwork(ctx context.Context, name, driver, subnet, gateway string, internal bool) (*NetworkInfo, error) {
+	if name == "" {
+		return nil, fmt.Errorf("network name is required")
+	}
+
+	opts := buildCreateNetworkOptions(driver, subnet, gateway, internal)
+
+	resp, err := c.cli.NetworkCreate(ctx, name, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create network: %w", err)
+	}
+
+	// NetworkCreate returns only an ID; inspect for the full shape.
+	inspected, err := c.cli.NetworkInspect(ctx, resp.ID, network.InspectOptions{})
+	if err != nil {
+		// Created successfully; don't fail the operation on a late inspect error.
+		c.log.WithError(err).Warnf("Created network %s but failed to inspect it", name)
+		return &NetworkInfo{
+			ID:         truncateID(resp.ID),
+			Name:       name,
+			Driver:     opts.Driver,
+			Scope:      "local",
+			Containers: []NetworkContainerInfo{}, // non-nil so JSON is [] not null
+		}, nil
+	}
+
+	info := networkInfoFromInspect(inspected)
+	return &info, nil
 }
 
 // NetworkPruneResult contains the result of a network prune operation

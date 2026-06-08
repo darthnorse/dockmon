@@ -833,6 +833,19 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 		// List all networks with connected container info
 		result, err = c.docker.ListNetworks(ctx)
 
+	case "create_network":
+		// Create a Docker network
+		var createReq struct {
+			Name     string `json:"name"`
+			Driver   string `json:"driver"`
+			Subnet   string `json:"subnet"`
+			Gateway  string `json:"gateway"`
+			Internal bool   `json:"internal"`
+		}
+		if err = protocol.ParseCommand(msg, &createReq); err == nil {
+			result, err = c.docker.CreateNetwork(ctx, createReq.Name, createReq.Driver, createReq.Subnet, createReq.Gateway, createReq.Internal)
+		}
+
 	case "delete_network":
 		// Delete a Docker network
 		var deleteReq struct {

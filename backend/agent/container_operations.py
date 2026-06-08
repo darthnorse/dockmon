@@ -1136,6 +1136,82 @@ class AgentContainerOperations:
                 detail=f"Failed to delete network: {error_msg}"
             )
 
+    async def create_network(
+        self,
+        host_id: str,
+        name: str,
+        driver: str = "bridge",
+        subnet: str = "",
+        gateway: str = "",
+        internal: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Create a Docker network via agent.
+
+        Args:
+            host_id: Docker host ID
+            name: Network name
+            driver: Network driver (default bridge)
+            subnet: Optional CIDR subnet (e.g. "172.20.0.0/16"); empty = auto-assign
+            gateway: Optional gateway IP; empty = auto-assign
+            internal: If True, restrict external connectivity
+
+        Returns:
+            Network info dict (same shape as list_networks entries)
+
+        Raises:
+            HTTPException: 404 if no agent, 409 on duplicate name, 504 on timeout,
+                500 on other failures
+        """
+        agent_id = self._get_agent_for_host(host_id)
+        if not agent_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent registered for host {host_id}"
+            )
+
+        command = {
+            "type": "command",
+            "command": "create_network",
+            "payload": {
+                "name": name,
+                "driver": driver,
+                "subnet": subnet,
+                "gateway": gateway,
+                "internal": internal,
+            }
+        }
+
+        result = await self.command_executor.execute_command(
+            agent_id,
+            command,
+            timeout=30.0
+        )
+
+        if result.status == CommandStatus.SUCCESS:
+            logger.info(f"Created network '{name}' on agent host {host_id}")
+            return result.response or {}
+        elif result.status == CommandStatus.TIMEOUT:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Timeout creating network '{name}' on host {host_id}"
+            )
+        else:
+            error_msg = result.error or "Unknown error"
+            # An out-of-date agent (predating create_network) returns the
+            # default "unknown command" error - surface a clear upgrade prompt.
+            if "unknown command" in error_msg.lower():
+                raise HTTPException(
+                    status_code=501,
+                    detail="This host's agent is too old to create networks. Update the agent to the latest version."
+                )
+            if "already exists" in error_msg.lower():
+                raise HTTPException(status_code=409, detail=error_msg)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to create network: {error_msg}"
+            )
+
     async def prune_networks(self, host_id: str) -> Dict[str, Any]:
         """
         Prune unused networks via agent.

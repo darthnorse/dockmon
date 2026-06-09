@@ -60,6 +60,7 @@ import {
   useRenameStack,
   useDeleteStack,
   useCopyStack,
+  useDeleteEnvFile,
 } from '../hooks/useStacks'
 import { useStackAction } from '../hooks/useDeployments'
 import type { StackAction } from '../hooks/useDeployments'
@@ -75,7 +76,7 @@ import { useAuth } from '@/features/auth/AuthContext'
 // Base path for stack storage (matches backend STACKS_DIR)
 const STACKS_BASE_PATH = '/app/data/stacks'
 
-type DialogType = 'delete' | 'copy' | 'save-changes' | 'remove-confirm' | 'add-env-file' | null
+type DialogType = 'delete' | 'copy' | 'save-changes' | 'remove-confirm' | 'add-env-file' | 'remove-env-file' | null
 
 interface PendingActionState {
   action: StackAction
@@ -107,6 +108,7 @@ export function StackEditor({
   const deleteStack = useDeleteStack()
   const copyStack = useCopyStack()
   const stackAction = useStackAction()
+  const deleteEnvFile = useDeleteEnvFile()
 
   // Fetch selected stack content
   const { data: selectedStack, isLoading: stackLoading } = useStack(selectedStackName)
@@ -137,6 +139,7 @@ export function StackEditor({
   const [newEnvFileName, setNewEnvFileName] = useState('')
   const [envFileNameError, setEnvFileNameError] = useState<string | null>(null)
   const [pendingAction, setPendingAction] = useState<PendingActionState | null>(null)
+  const [envFileToRemove, setEnvFileToRemove] = useState<string | null>(null)
 
   // Tab state
   const [activeTab, setActiveTab] = useState<string>('compose')
@@ -170,13 +173,17 @@ export function StackEditor({
   const hasContentChanges = composeYaml !== originalCompose || !envFilesEqual(envFiles, originalEnvFiles)
   const hasNameChange = stackName !== originalName && !isCreateMode
   const hasChanges = hasContentChanges || hasNameChange
+  const isEnvFileToRemovePersisted =
+    envFileToRemove != null &&
+    Object.prototype.hasOwnProperty.call(originalEnvFiles, envFileToRemove)
   const isSubmitting =
     createStack.isPending ||
     updateStack.isPending ||
     renameStack.isPending ||
     deleteStack.isPending ||
     copyStack.isPending ||
-    stackAction.isPending
+    stackAction.isPending ||
+    deleteEnvFile.isPending
 
   // Sort hosts alphabetically
   const sortedHosts = useMemo(
@@ -217,6 +224,7 @@ export function StackEditor({
     setCopyDestName('')
     setNewEnvFileName('')
     setEnvFileNameError(null)
+    setEnvFileToRemove(null)
     setActiveTab('compose')
   }, [])
 
@@ -507,6 +515,37 @@ export function StackEditor({
     setActiveDialog(null)
   }
 
+  // Remove an env file tab (persisted or unsaved)
+  const handleRemoveEnvFile = async () => {
+    const fname = envFileToRemove
+    if (!fname) return
+    const isPersisted = Object.prototype.hasOwnProperty.call(originalEnvFiles, fname)
+    if (isPersisted) {
+      if (!selectedStackName || selectedStackName === '__new__') return
+      try {
+        await deleteEnvFile.mutateAsync({ name: selectedStackName, filename: fname })
+      } catch (error: unknown) {
+        handleApiError(error, 'remove env file')
+        setActiveDialog(null)
+        setEnvFileToRemove(null)
+        return
+      }
+      setOriginalEnvFiles((prev) => {
+        const next = { ...prev }
+        delete next[fname]
+        return next
+      })
+    }
+    setEnvFiles((prev) => {
+      const next = { ...prev }
+      delete next[fname]
+      return next
+    })
+    if (activeTab === fname) setActiveTab('compose')
+    setActiveDialog(null)
+    setEnvFileToRemove(null)
+  }
+
   // Reset deployment progress state (used by both back and complete actions)
   const resetDeploymentState = () => {
     setIsDeploying(false)
@@ -655,18 +694,38 @@ export function StackEditor({
               Compose
             </Button>
             {canViewEnv &&
-              envTabNames.map((fname) => (
-                <Button
-                  key={fname}
-                  type="button"
-                  variant={activeTab === fname ? 'default' : 'ghost'}
-                  size="sm"
-                  className="font-mono"
-                  onClick={() => setActiveTab(fname)}
-                >
-                  {fname}
-                </Button>
-              ))}
+              envTabNames.map((fname) => {
+                const removable = Object.prototype.hasOwnProperty.call(envFiles, fname)
+                return (
+                  <div key={fname} className="flex items-center">
+                    <Button
+                      type="button"
+                      variant={activeTab === fname ? 'default' : 'ghost'}
+                      size="sm"
+                      className="font-mono"
+                      onClick={() => setActiveTab(fname)}
+                    >
+                      {fname}
+                    </Button>
+                    {removable && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 -ml-1"
+                        disabled={!canEdit || deleteEnvFile.isPending}
+                        title={`Remove ${fname}`}
+                        onClick={() => {
+                          setEnvFileToRemove(fname)
+                          setActiveDialog('remove-env-file')
+                        }}
+                      >
+                        <X className="h-3 w-3" />
+                      </Button>
+                    )}
+                  </div>
+                )
+              })}
             {canViewEnv && (
               <Button
                 type="button"
@@ -1045,6 +1104,59 @@ export function StackEditor({
             <fieldset disabled={!canEdit || !canDeploy} className="disabled:opacity-60">
               <AlertDialogAction onClick={handleSaveAndDeploy}>
                 Save & Deploy
+              </AlertDialogAction>
+            </fieldset>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Remove Env File Confirmation */}
+      <AlertDialog
+        open={activeDialog === 'remove-env-file'}
+        onOpenChange={(open) => {
+          if (!open) {
+            setActiveDialog(null)
+            setEnvFileToRemove(null)
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {isEnvFileToRemovePersisted ? 'Delete env file' : 'Remove env file'}
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                {isEnvFileToRemovePersisted ? (
+                  <>
+                    <p>
+                      Delete &ldquo;<strong className="font-mono">{envFileToRemove}</strong>&rdquo; from
+                      this stack? This permanently removes the file from the stack directory.
+                    </p>
+                    <p className="text-amber-500">
+                      If your compose references this file with{' '}
+                      <code className="bg-muted px-1 rounded">env_file:</code>, remove that line
+                      too, or it will reappear empty and deploys may fail.
+                    </p>
+                  </>
+                ) : (
+                  <p>
+                    Remove &ldquo;<strong className="font-mono">{envFileToRemove}</strong>&rdquo;? It hasn&apos;t
+                    been saved yet.
+                  </p>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <fieldset disabled={!canEdit} className="disabled:opacity-60">
+              <AlertDialogAction
+                onClick={handleRemoveEnvFile}
+                disabled={deleteEnvFile.isPending}
+                className={isEnvFileToRemovePersisted ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90' : undefined}
+              >
+                {deleteEnvFile.isPending ? 'Deleting...' : isEnvFileToRemovePersisted ? 'Delete file' : 'Remove file'}
               </AlertDialogAction>
             </fieldset>
           </AlertDialogFooter>

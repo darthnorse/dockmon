@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { forwardRef } from 'react'
-import { render, screen } from '@/test/utils'
+import { render, screen, waitFor } from '@/test/utils'
 import userEvent from '@testing-library/user-event'
 import { StackEditor } from './StackEditor'
 import * as useStacksModule from '../hooks/useStacks'
@@ -27,15 +27,18 @@ vi.mock('./ConfigurationEditor', () => ({
 }))
 
 const mutation = { mutateAsync: vi.fn(), isPending: false }
+const deleteEnvFileMock = { mutateAsync: vi.fn().mockResolvedValue({ deleted: true }), isPending: false }
 
 beforeEach(() => {
   vi.clearAllMocks()
+  deleteEnvFileMock.mutateAsync.mockResolvedValue({ deleted: true })
   vi.mocked(useStacksModule.useStack).mockReturnValue({ data: undefined, isLoading: false } as any)
   vi.mocked(useStacksModule.useCreateStack).mockReturnValue(mutation as any)
   vi.mocked(useStacksModule.useUpdateStack).mockReturnValue(mutation as any)
   vi.mocked(useStacksModule.useRenameStack).mockReturnValue(mutation as any)
   vi.mocked(useStacksModule.useDeleteStack).mockReturnValue(mutation as any)
   vi.mocked(useStacksModule.useCopyStack).mockReturnValue(mutation as any)
+  vi.mocked(useStacksModule.useDeleteEnvFile).mockReturnValue(deleteEnvFileMock as any)
   vi.mocked(useDeploymentsModule.useStackAction).mockReturnValue(mutation as any)
   vi.mocked(usePortConflictsModule.usePortConflicts).mockReturnValue({
     conflicts: [],
@@ -75,5 +78,81 @@ describe('StackEditor env files', () => {
     // No tab created; an inline error is shown instead.
     expect(screen.queryByRole('button', { name: 'sub/dir.env' })).not.toBeInTheDocument()
     expect(screen.getByText(/cannot contain spaces or path separators/i)).toBeInTheDocument()
+  })
+})
+
+describe('StackEditor remove env file', () => {
+  it('shows a × button for a session-added env tab, clicking it opens the confirm dialog', async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 })
+    render(<StackEditor selectedStackName="__new__" hosts={[]} onStackChange={vi.fn()} />)
+
+    // Add .db.env via the add flow
+    await user.click(screen.getByTitle('Add env file'))
+    await user.type(screen.getByLabelText('Filename'), '.db.env')
+    await user.click(screen.getByRole('button', { name: 'Add File' }))
+
+    // The × button should appear for the newly-added tab
+    expect(screen.getByTitle('Remove .db.env')).toBeInTheDocument()
+
+    // Clicking it should open the confirm dialog for an unsaved file
+    await user.click(screen.getByTitle('Remove .db.env'))
+    expect(screen.getByRole('button', { name: 'Remove file' })).toBeInTheDocument()
+  })
+
+  it('confirming removal of an unsaved added file drops the tab with no delete call', async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 })
+    render(<StackEditor selectedStackName="__new__" hosts={[]} onStackChange={vi.fn()} />)
+
+    // Add .db.env via the add flow
+    await user.click(screen.getByTitle('Add env file'))
+    await user.type(screen.getByLabelText('Filename'), '.db.env')
+    await user.click(screen.getByRole('button', { name: 'Add File' }))
+
+    // Open the remove dialog
+    await user.click(screen.getByTitle('Remove .db.env'))
+
+    // Confirm removal
+    await user.click(screen.getByRole('button', { name: 'Remove file' }))
+
+    // Tab should be gone; no backend call
+    expect(screen.queryByRole('button', { name: '.db.env' })).not.toBeInTheDocument()
+    expect(deleteEnvFileMock.mutateAsync).not.toHaveBeenCalled()
+  })
+
+  it('confirming removal of a persisted file calls the delete mutation and drops the tab', async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 })
+
+    vi.mocked(useStacksModule.useStack).mockReturnValue({
+      data: { name: 'myapp', compose_yaml: 'services: {}\n', env_files: { '.db.env': 'A=1' }, deployed_to: [] },
+      isLoading: false,
+    } as any)
+
+    render(<StackEditor selectedStackName="myapp" hosts={[]} onStackChange={vi.fn()} />)
+
+    // The .db.env tab should be loaded from the persisted stack
+    expect(screen.getByRole('button', { name: '.db.env' })).toBeInTheDocument()
+
+    // Click the × button — dialog should show "Delete file" (persisted)
+    await user.click(screen.getByTitle('Remove .db.env'))
+    expect(screen.getByRole('button', { name: 'Delete file' })).toBeInTheDocument()
+
+    // Confirm deletion
+    await user.click(screen.getByRole('button', { name: 'Delete file' }))
+
+    // Backend should be called and tab should be gone
+    await waitFor(() => {
+      expect(deleteEnvFileMock.mutateAsync).toHaveBeenCalledWith({ name: 'myapp', filename: '.db.env' })
+      expect(screen.queryByRole('button', { name: '.db.env' })).not.toBeInTheDocument()
+    })
+  })
+
+  it('the virtual default .env placeholder shows no × button', () => {
+    render(<StackEditor selectedStackName="__new__" hosts={[]} onStackChange={vi.fn()} />)
+
+    // The .env tab should be present as a tab button
+    expect(screen.getByRole('button', { name: '.env' })).toBeInTheDocument()
+
+    // But there should be no × button for the virtual .env
+    expect(screen.queryByTitle('Remove .env')).not.toBeInTheDocument()
   })
 })

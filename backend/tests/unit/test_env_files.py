@@ -1,7 +1,7 @@
 """Tests for env-file name safety and env_file: directive parsing (#205)."""
 import pytest
 
-from utils.env_files import is_safe_env_filename, parse_env_file_refs
+from utils.env_files import is_safe_env_filename, parse_env_file_refs, is_env_filename
 
 
 @pytest.mark.parametrize("name", [".env", ".db.env", "app.env", "./app.env"])
@@ -72,6 +72,20 @@ services:
 def test_parse_malformed_or_no_services_returns_empty():
     assert parse_env_file_refs(":\n  bad: [") == ([], [])
     assert parse_env_file_refs("version: '3'") == ([], [])
+
+
+@pytest.mark.parametrize("name", [
+    ".env", ".env.prod", ".env.staging", ".db.env", "prod.env", "app.env",
+])
+def test_is_env_filename_accepts_env_naming(name):
+    assert is_env_filename(name) is True
+
+
+@pytest.mark.parametrize("name", [
+    ".envrc", "env", "compose.yaml", "docker-compose.yml", "data.txt", "config", "",
+])
+def test_is_env_filename_rejects_non_env(name):
+    assert is_env_filename(name) is False
 
 
 def test_parse_deeply_nested_yaml_does_not_raise():

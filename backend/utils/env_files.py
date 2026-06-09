@@ -35,6 +35,21 @@ def is_safe_env_filename(name: str) -> bool:
     return True
 
 
+def is_env_filename(name: str) -> bool:
+    """True if `name` follows an env-file naming convention DockMon manages.
+
+    Matches the conventional '.env', dotfile-suffixed names ('.env.prod',
+    '.env.staging'), and '*.env' names ('.db.env', 'prod.env'). Used to
+    discover env files that exist on disk but are not (currently) referenced
+    by an env_file: directive, so an env-swap workflow can keep editing the
+    inactive files. This is the naming convention only; path-safety is checked
+    separately via is_safe_env_filename.
+    """
+    if not name or not isinstance(name, str):
+        return False
+    return name == ".env" or name.startswith(".env.") or name.endswith(".env")
+
+
 def normalize_env_filename(name: str) -> str:
     """Strip a leading './' so the stored filename is bare.
 

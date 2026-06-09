@@ -2,17 +2,16 @@
 Docker Compose stack deployment executor.
 
 Uses Go Compose Service with official Docker Compose SDK for full compatibility.
-Handles validation, variable substitution, and container linkage.
+Handles validation and container linkage.
 """
 
 import logging
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 from sqlalchemy.orm import Session
 
 from database import DatabaseManager, Deployment, DockerHostDB, DeploymentMetadata, DeploymentContainer
 from utils.registry_credentials import get_all_registry_credentials
-from .compose_parser import ComposeParser, ComposeParseError
 from .compose_validator import ComposeValidator, ComposeValidationError
 from .compose_client import (
     ComposeClient,
@@ -41,7 +40,7 @@ async def execute_stack_deployment(
     Args:
         session: Database session
         deployment: Deployment instance
-        definition: Stack definition with compose_yaml and variables
+        definition: Stack definition with compose_yaml and env_content
         docker_monitor: DockerMonitor instance (unused, kept for API compatibility)
         state_machine: DeploymentStateMachine instance
         update_progress: Async callback to update progress
@@ -50,40 +49,34 @@ async def execute_stack_deployment(
         pull_images: Pull latest images before starting (for redeploy/update)
 
     Raises:
-        RuntimeError: If validation, parsing, or deployment fails
+        RuntimeError: If validation or deployment fails
     """
     logger.info(f"Starting stack deployment {deployment.id}")
 
-    # Extract compose YAML and variables
+    # Extract compose YAML and env file content
     compose_yaml = definition.get('compose_yaml')
-    variables = definition.get('variables', {})
+    env_content = definition.get('env_content')
 
     if not compose_yaml:
         raise RuntimeError("Stack deployment requires 'compose_yaml' in definition")
 
-    # Step 1: Validate YAML safety (security check)
-    parser = ComposeParser()
+    # Validate YAML safety (security check)
     validator = ComposeValidator()
 
     try:
         await update_progress(session, deployment, 5, 'Validating compose file')
         validator.validate_yaml_safety(compose_yaml)
 
-        # Step 2: Apply variable substitution
-        await update_progress(session, deployment, 10, 'Processing compose file')
-        if variables:
-            compose_yaml = parser.substitute_variables(compose_yaml, variables)
-
-    except (ComposeParseError, ComposeValidationError) as e:
+    except ComposeValidationError as e:
         logger.warning(f"Compose validation failed for deployment {deployment.id}: {e}")
         raise RuntimeError(f"Compose validation failed: {e}")
 
-    # Step 3: Execute via Go Compose Service
+    # Execute via Go Compose Service
     await _execute_via_go_service(
         session=session,
         deployment=deployment,
         compose_yaml=compose_yaml,
-        variables=variables,
+        env_content=env_content,
         state_machine=state_machine,
         update_progress=update_progress,
         create_deployment_metadata=create_deployment_metadata,
@@ -96,7 +89,7 @@ async def _execute_via_go_service(
     session: Session,
     deployment: Deployment,
     compose_yaml: str,
-    variables: Dict[str, str],
+    env_content: Optional[str],
     state_machine,
     update_progress: Callable,
     create_deployment_metadata: Callable,
@@ -140,7 +133,7 @@ async def _execute_via_go_service(
             compose_yaml=compose_yaml,
             progress_callback=on_progress,
             action="up",
-            environment=variables,
+            env_file_content=env_content,
             force_recreate=force_recreate,
             pull_images=pull_images,
             wait_for_healthy=True,

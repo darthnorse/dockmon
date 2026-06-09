@@ -160,6 +160,14 @@ export function StackEditor({
     [canViewEnv, envFiles]
   )
 
+  // Filenames the compose references (from the backend). Tabs not in this set
+  // (and not the always-active .env) are unreferenced/discovered on disk —
+  // editing them won't affect the running stack until env_file: points there.
+  const referencedEnvFiles = useMemo(
+    () => new Set(selectedStack?.referenced_env_files ?? []),
+    [selectedStack]
+  )
+
   // Reset to compose if the active env tab is no longer available
   useEffect(() => {
     if (activeTab !== 'compose' && !envTabNames.includes(activeTab)) {
@@ -702,6 +710,8 @@ export function StackEditor({
             {canViewEnv &&
               envTabNames.map((fname) => {
                 const removable = Object.prototype.hasOwnProperty.call(envFiles, fname)
+                const isUnreferenced =
+                  !isCreateMode && fname !== '.env' && !referencedEnvFiles.has(fname)
                 return (
                   <div key={fname} className="flex items-center">
                     <Button
@@ -713,6 +723,14 @@ export function StackEditor({
                     >
                       {fname}
                     </Button>
+                    {isUnreferenced && (
+                      <span
+                        className="ml-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                        title="Not referenced by your compose — edits won't affect the running stack until an env_file: directive points here."
+                      >
+                        unref
+                      </span>
+                    )}
                     {removable && (
                       <Button
                         type="button"

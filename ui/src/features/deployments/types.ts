@@ -44,6 +44,7 @@ export interface Stack {
   deployed_to: DeployedHost[]   // Hosts where this stack is running (from container labels)
   compose_yaml?: string         // Docker Compose YAML content (optional in list, present in detail)
   env_files?: Record<string, string>   // filename -> content (e.g. { ".env": "...", ".db.env": "..." })
+  referenced_env_files?: string[]   // filenames the compose references; tabs not in this list are unreferenced/discovered
 }
 
 /**

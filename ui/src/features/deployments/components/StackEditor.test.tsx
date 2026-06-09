@@ -195,3 +195,29 @@ describe('StackEditor load-effect guard', () => {
     expect(screen.getByRole('button', { name: '.other.env' })).toBeInTheDocument()
   })
 })
+
+describe('StackEditor unreferenced env badge', () => {
+  const stackWithUnreferenced = {
+    name: 'myapp',
+    deployed_to: [],
+    compose_yaml: 'services:\n  app:\n    image: x\n',
+    env_files: { '.env': 'A=1', '.db.env': 'P=2', '.env.staging': 'S=3' },
+    referenced_env_files: ['.env', '.db.env'],
+  }
+
+  it('badges a discovered unreferenced tab but not referenced tabs', async () => {
+    vi.mocked(useStacksModule.useStack).mockReturnValue({
+      data: stackWithUnreferenced,
+      isLoading: false,
+    } as any)
+
+    render(<StackEditor selectedStackName="myapp" hosts={[]} onStackChange={vi.fn()} />)
+
+    // The unreferenced .env.staging tab carries the "not referenced" badge.
+    const badge = await screen.findByTitle(/not referenced by your compose/i)
+    expect(badge).toBeInTheDocument()
+
+    // Exactly one badge: .env and .db.env (referenced) do not get one.
+    expect(screen.getAllByTitle(/not referenced by your compose/i)).toHaveLength(1)
+  })
+})

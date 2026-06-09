@@ -9,6 +9,11 @@ from typing import List, Tuple
 
 import yaml
 
+# Size cap for reading/discovering an env file. A file named like an env file
+# but larger than this (e.g. mislabeled bind-mount data) is never read or
+# surfaced.
+MAX_ENV_FILE_BYTES = 1024 * 1024
+
 
 def is_safe_env_filename(name: str) -> bool:
     """True if `name` is a bare filename safe to write inside a stack directory.
@@ -109,3 +114,47 @@ def parse_env_file_refs(compose_yaml: str) -> Tuple[List[str], List[str]]:
             handle(ef)
 
     return sorted(captured), skipped
+
+
+def parse_bind_mount_sources(compose_yaml: str) -> set:
+    """Best-effort set of bare same-dir filenames used as bind-mount sources.
+
+    Scans every service's volumes: (short 'SOURCE:TARGET[:MODE]' and long
+    {source: ..., type: bind}) and returns the sources that are bare same-dir
+    filenames (per is_safe_env_filename), normalized. Absolute paths, subdir
+    paths, ${VAR}-interpolated sources, and explicit named volumes are ignored.
+
+    This is a defensive exclusion for env-file discovery: don't surface a data
+    file that the compose bind-mounts. It is intentionally NOT a complete
+    volume parser (over-capturing a coincidentally-named short-syntax named
+    volume only hides an env tab, the safe direction). Malformed YAML -> set().
+    """
+    try:
+        doc = yaml.safe_load(compose_yaml)
+    except (yaml.YAMLError, RecursionError):
+        return set()
+    if not isinstance(doc, dict):
+        return set()
+    services = doc.get("services")
+    if not isinstance(services, dict):
+        return set()
+
+    sources: set = set()
+    for svc in services.values():
+        if not isinstance(svc, dict):
+            continue
+        vols = svc.get("volumes")
+        if not isinstance(vols, list):
+            continue
+        for vol in vols:
+            src = None
+            if isinstance(vol, str):
+                # short syntax: SOURCE:TARGET[:MODE] -> SOURCE is the first field
+                src = vol.split(":", 1)[0]
+            elif isinstance(vol, dict):
+                # long syntax: only bind mounts have a path source
+                if vol.get("type", "bind") == "bind":
+                    src = vol.get("source")
+            if isinstance(src, str) and is_safe_env_filename(src):
+                sources.add(normalize_env_filename(src))
+    return sources

@@ -1,7 +1,7 @@
 """Tests for env-file name safety and env_file: directive parsing (#205)."""
 import pytest
 
-from utils.env_files import is_safe_env_filename, parse_env_file_refs, is_env_filename
+from utils.env_files import is_safe_env_filename, parse_env_file_refs, is_env_filename, parse_bind_mount_sources, MAX_ENV_FILE_BYTES
 
 
 @pytest.mark.parametrize("name", [".env", ".db.env", "app.env", "./app.env"])
@@ -94,3 +94,43 @@ def test_parse_deeply_nested_yaml_does_not_raise():
     # files instead of letting the exception escape to the caller (500).
     nested = "a: " + "[" * 20000 + "]" * 20000 + "\n"
     assert parse_env_file_refs(nested) == ([], [])
+
+
+def test_parse_bind_mount_sources_short_and_long():
+    compose = """
+services:
+  app:
+    image: x
+    volumes:
+      - ./data.env:/app/data.env
+      - .secret.env:/run/secret.env:ro
+      - type: bind
+        source: ./conf.env
+        target: /etc/conf.env
+"""
+    assert parse_bind_mount_sources(compose) == {"data.env", ".secret.env", "conf.env"}
+
+
+def test_parse_bind_mount_sources_ignores_abs_subdir_var_and_named_volume():
+    compose = """
+services:
+  app:
+    image: x
+    volumes:
+      - /etc/host.env:/x
+      - ./sub/dir.env:/y
+      - ${DATA}/var.env:/z
+      - type: volume
+        source: dbdata
+        target: /data
+"""
+    assert parse_bind_mount_sources(compose) == set()
+
+
+def test_parse_bind_mount_sources_malformed_returns_empty_set():
+    assert parse_bind_mount_sources(": : not yaml : :") == set()
+    assert parse_bind_mount_sources("[]") == set()
+
+
+def test_max_env_file_bytes_is_one_mib():
+    assert MAX_ENV_FILE_BYTES == 1024 * 1024

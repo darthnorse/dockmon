@@ -444,7 +444,7 @@ async def rename_stack(name: str, request: StackRename, http_request: Request, u
     dependencies=[rate_limit_stacks, Depends(require_capability("stacks.edit"))],
 )
 async def delete_stack_env_file(
-    name: str, filename: str, user=Depends(get_current_user)
+    name: str, filename: str, http_request: Request, user=Depends(get_current_user)
 ):
     """
     Delete a single env file from a stack directory.
@@ -452,6 +452,9 @@ async def delete_stack_env_file(
     Returns {"deleted": true} if a regular file was removed, {"deleted": false}
     if there was nothing to remove (file already gone). Never deletes directories
     or symlink targets. The filename is a validated bare same-dir name.
+
+    An audit row is written only when a file is actually removed (deleted=True).
+    No-op requests (file already absent) do not produce an audit entry.
     """
     if not await stack_storage.stack_exists(name):
         raise HTTPException(status_code=404, detail=f"Stack '{name}' not found")
@@ -461,8 +464,15 @@ async def delete_stack_env_file(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    _, display_name = get_auditable_user_info(user)
+    user_id, display_name = get_auditable_user_info(user)
     if deleted:
+        db = get_db_manager()
+        with db.get_session() as session:
+            log_stack_change(
+                session, user_id, display_name, AuditAction.UPDATE, name,
+                http_request, details={'removed_env_file': filename},
+            )
+            session.commit()
         logger.info(f"User {display_name} deleted env file '{filename}' from stack '{name}'")
     else:
         logger.debug(f"User {display_name} requested deletion of absent env file '{filename}' from stack '{name}' (no-op)")

@@ -6,7 +6,7 @@ Handles validation and container linkage.
 """
 
 import logging
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict
 
 from sqlalchemy.orm import Session
 

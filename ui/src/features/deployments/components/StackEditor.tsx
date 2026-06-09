@@ -21,6 +21,7 @@ import {
   Rocket,
   RefreshCw,
   Square,
+  Plus,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -68,13 +69,13 @@ import { DeploymentProgress } from './DeploymentProgress'
 import { PortConflictBanner } from './PortConflictBanner'
 import { validateStackName, MAX_STACK_NAME_LENGTH } from '../types'
 import type { DeployedHost, PortConflict } from '../types'
-import { handleApiError, getErrorMessage, envFilesEqual } from '../utils'
+import { handleApiError, getErrorMessage, envFilesEqual, validateEnvFileName } from '../utils'
 import { useAuth } from '@/features/auth/AuthContext'
 
 // Base path for stack storage (matches backend STACKS_DIR)
 const STACKS_BASE_PATH = '/app/data/stacks'
 
-type DialogType = 'delete' | 'copy' | 'save-changes' | 'remove-confirm' | null
+type DialogType = 'delete' | 'copy' | 'save-changes' | 'remove-confirm' | 'add-env-file' | null
 
 interface PendingActionState {
   action: StackAction
@@ -133,17 +134,28 @@ export function StackEditor({
   // Dialog state
   const [activeDialog, setActiveDialog] = useState<DialogType>(null)
   const [copyDestName, setCopyDestName] = useState('')
+  const [newEnvFileName, setNewEnvFileName] = useState('')
+  const [envFileNameError, setEnvFileNameError] = useState<string | null>(null)
   const [pendingAction, setPendingAction] = useState<PendingActionState | null>(null)
 
   // Tab state
   const [activeTab, setActiveTab] = useState<string>('compose')
 
-  // Reset to compose if env tab becomes unavailable
+  // Env-file tabs shown when the user can view env: always offer a default .env
+  // plus any env files the stack already has. A .env that isn't in envFiles stays
+  // virtual (empty) until edited, so it never trips change detection nor writes
+  // an empty file on save.
+  const envTabNames = useMemo(
+    () => (canViewEnv ? Array.from(new Set(['.env', ...Object.keys(envFiles)])) : []),
+    [canViewEnv, envFiles]
+  )
+
+  // Reset to compose if the active env tab is no longer available
   useEffect(() => {
-    if (activeTab !== 'compose' && (!canViewEnv || !(activeTab in envFiles))) {
+    if (activeTab !== 'compose' && !envTabNames.includes(activeTab)) {
       setActiveTab('compose')
     }
-  }, [activeTab, canViewEnv, envFiles])
+  }, [activeTab, envTabNames])
 
   // Errors
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -203,6 +215,8 @@ export function StackEditor({
     setIsEditingName(false)
     setActiveDialog(null)
     setCopyDestName('')
+    setNewEnvFileName('')
+    setEnvFileNameError(null)
     setActiveTab('compose')
   }, [])
 
@@ -468,6 +482,31 @@ export function StackEditor({
     setActiveDialog('copy')
   }
 
+  // Open the add-env-file dialog
+  const openAddEnvFileDialog = () => {
+    setNewEnvFileName('')
+    setEnvFileNameError(null)
+    setActiveDialog('add-env-file')
+  }
+
+  // Add a new (empty) env file tab after validating its name
+  const handleAddEnvFile = () => {
+    const raw = newEnvFileName.trim()
+    const validationError = validateEnvFileName(raw)
+    if (validationError) {
+      setEnvFileNameError(validationError)
+      return
+    }
+    const fname = raw.startsWith('./') ? raw.slice(2) : raw
+    if (envTabNames.includes(fname)) {
+      setEnvFileNameError('A tab for this file already exists')
+      return
+    }
+    setEnvFiles((prev) => ({ ...prev, [fname]: '' }))
+    setActiveTab(fname)
+    setActiveDialog(null)
+  }
+
   // Reset deployment progress state (used by both back and complete actions)
   const resetDeploymentState = () => {
     setIsDeploying(false)
@@ -616,7 +655,7 @@ export function StackEditor({
               Compose
             </Button>
             {canViewEnv &&
-              Object.keys(envFiles).map((fname) => (
+              envTabNames.map((fname) => (
                 <Button
                   key={fname}
                   type="button"
@@ -628,6 +667,19 @@ export function StackEditor({
                   {fname}
                 </Button>
               ))}
+            {canViewEnv && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={openAddEnvFileDialog}
+                disabled={!canEdit}
+                title="Add env file"
+                className="px-2"
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
+            )}
           </div>
 
           {/* Tab content */}
@@ -643,7 +695,7 @@ export function StackEditor({
               />
             )}
 
-            {canViewEnv && activeTab !== 'compose' && activeTab in envFiles && (
+            {canViewEnv && activeTab !== 'compose' && envTabNames.includes(activeTab) && (
               <ConfigurationEditor
                 type="env"
                 value={envFiles[activeTab] ?? ''}
@@ -881,6 +933,64 @@ export function StackEditor({
             <fieldset disabled={!canEdit} className="disabled:opacity-60">
               <Button onClick={handleCopy} disabled={!copyDestName.trim() || isSubmitting}>
                 {isSubmitting ? 'Copying...' : 'Clone Stack'}
+              </Button>
+            </fieldset>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add Env File Dialog */}
+      <Dialog
+        open={activeDialog === 'add-env-file'}
+        onOpenChange={(open) => !open && setActiveDialog(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add Env File</DialogTitle>
+            <DialogDescription>
+              Add an environment file to this stack. Reference it from your compose
+              with <code className="bg-muted px-1 rounded">env_file:</code> to load it
+              into a service.
+            </DialogDescription>
+          </DialogHeader>
+
+          <fieldset disabled={!canEdit} className="space-y-4 disabled:opacity-60">
+            <div className="space-y-2 py-2">
+              <Label htmlFor="new-env-file-name">Filename</Label>
+              <Input
+                id="new-env-file-name"
+                value={newEnvFileName}
+                onChange={(e) => {
+                  setNewEnvFileName(e.target.value)
+                  setEnvFileNameError(null)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    handleAddEnvFile()
+                  }
+                }}
+                placeholder=".db.env"
+                className={cn('font-mono', envFileNameError && 'border-destructive')}
+                autoFocus
+              />
+              {envFileNameError ? (
+                <p className="text-xs text-destructive">{envFileNameError}</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  A bare filename in the stack directory (no slashes), e.g. .env or .db.env
+                </p>
+              )}
+            </div>
+          </fieldset>
+
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setActiveDialog(null)}>
+              Cancel
+            </Button>
+            <fieldset disabled={!canEdit} className="disabled:opacity-60">
+              <Button onClick={handleAddEnvFile} disabled={!newEnvFileName.trim()}>
+                Add File
               </Button>
             </fieldset>
           </div>

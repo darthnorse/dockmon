@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { envFilesEqual } from './utils'
+import { envFilesEqual, validateEnvFileName } from './utils'
 
 describe('envFilesEqual', () => {
   it('equal for same keys and values', () => {
@@ -16,5 +16,34 @@ describe('envFilesEqual', () => {
   })
   it('two empty maps are equal', () => {
     expect(envFilesEqual({}, {})).toBe(true)
+  })
+})
+
+describe('validateEnvFileName', () => {
+  it('accepts bare env filenames', () => {
+    expect(validateEnvFileName('.env')).toBeNull()
+    expect(validateEnvFileName('.db.env')).toBeNull()
+    expect(validateEnvFileName('prod.env')).toBeNull()
+  })
+  it('tolerates a leading ./ (compose same-dir form)', () => {
+    expect(validateEnvFileName('./.env')).toBeNull()
+    expect(validateEnvFileName('./db.env')).toBeNull()
+  })
+  it('rejects an empty name', () => {
+    expect(validateEnvFileName('')).not.toBeNull()
+  })
+  it('rejects . and ..', () => {
+    expect(validateEnvFileName('.')).not.toBeNull()
+    expect(validateEnvFileName('..')).not.toBeNull()
+    expect(validateEnvFileName('./..')).not.toBeNull()
+  })
+  it('rejects path separators and absolute paths', () => {
+    expect(validateEnvFileName('sub/dir.env')).not.toBeNull()
+    expect(validateEnvFileName('a\\b.env')).not.toBeNull()
+    expect(validateEnvFileName('/abs.env')).not.toBeNull()
+  })
+  it('rejects leading/trailing whitespace', () => {
+    expect(validateEnvFileName(' .env')).not.toBeNull()
+    expect(validateEnvFileName('.env ')).not.toBeNull()
   })
 })

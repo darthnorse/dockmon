@@ -673,18 +673,18 @@ class TestDeleteEnvFile:
         assert data.read_text() == "IMPORTANT DATA"
 
     @pytest.mark.asyncio
-    async def test_refuses_unreferenced_env_file(self, temp_stacks_dir):
-        """An on-disk env-looking file that is not in the managed set is refused."""
+    async def test_deletes_discovered_env_file(self, temp_stacks_dir):
+        """An env-named file not referenced by compose is discovered and deletable."""
         stack_dir = temp_stacks_dir / "myapp"
         stack_dir.mkdir()
         (stack_dir / "compose.yaml").write_text("services: {}")
-        stray = stack_dir / ".stray.env"
-        stray.write_text("X=1")
+        discovered = stack_dir / ".stray.env"
+        discovered.write_text("X=1")
 
         result = await delete_env_file("myapp", ".stray.env")
 
-        assert result is False
-        assert stray.exists()
+        assert result is True
+        assert not discovered.exists()
 
     @pytest.mark.asyncio
     async def test_refuses_self_referenced_compose_file(self, temp_stacks_dir):

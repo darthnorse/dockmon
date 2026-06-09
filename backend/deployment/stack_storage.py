@@ -317,6 +317,14 @@ async def read_stack(name: str) -> Tuple[str, Dict[str, str]]:
                 continue
             env_files[fname] = fpath.read_text() if fpath.is_file() else ""
 
+        # Discovered: env-named files on disk not referenced by the compose
+        # (e.g. the inactive files in an env-swap workflow). The discovery set
+        # already guarantees a regular, non-symlink, size-capped file.
+        for fname in _discovered_env_filenames(stack_path, compose_yaml):
+            if fname in env_files:
+                continue
+            env_files[fname] = (stack_path / fname).read_text()
+
         return compose_yaml, env_files
 
     return await asyncio.to_thread(_read)

@@ -206,6 +206,47 @@ async def test_delete_env_file_refuses_compose_file(stacks_dir):
     assert (stacks_dir / "myapp" / "compose.yaml").exists()
 
 
+async def test_read_stack_surfaces_unreferenced_env_files(stacks_dir):
+    compose = "services:\n  app:\n    image: x\n    env_file:\n      - .env.dev\n"
+    await stack_storage.write_stack("myapp", compose, {".env.dev": "D=1\n"}, create_only=True)
+    # Add two unreferenced env files directly on disk (the env-swap orphans).
+    (stacks_dir / "myapp" / ".env.staging").write_text("S=2\n")
+    (stacks_dir / "myapp" / ".env.prod").write_text("P=3\n")
+
+    _compose, env = await stack_storage.read_stack("myapp")
+    assert env == {".env.dev": "D=1\n", ".env.staging": "S=2\n", ".env.prod": "P=3\n"}
+
+
+async def test_read_stack_omits_dot_env_when_absent(stacks_dir):
+    # Regression: with no .env on disk and no refs, read_stack must NOT emit a
+    # ".env" key (keeps the editor's default .env tab virtual; a save then never
+    # writes an empty .env file).
+    compose = "services:\n  app:\n    image: x\n"
+    await stack_storage.write_stack("myapp", compose, {}, create_only=True)
+    (stacks_dir / "myapp" / ".env.staging").write_text("S=1\n")
+
+    _compose, env = await stack_storage.read_stack("myapp")
+    assert ".env" not in env
+    assert env == {".env.staging": "S=1\n"}
+
+
+async def test_read_stack_keeps_referenced_file_even_if_bind_mounted(stacks_dir):
+    # "Authoritative wins": a file that is BOTH env_file:-referenced and
+    # bind-mounted must still surface (the explicit reference proves it's env).
+    compose = (
+        "services:\n"
+        "  app:\n"
+        "    image: x\n"
+        "    env_file:\n"
+        "      - .shared.env\n"
+        "    volumes:\n"
+        "      - ./.shared.env:/etc/app/.shared.env\n"
+    )
+    await stack_storage.write_stack("myapp", compose, {".shared.env": "K=1\n"}, create_only=True)
+    _compose, env = await stack_storage.read_stack("myapp")
+    assert env.get(".shared.env") == "K=1\n"
+
+
 async def test_managed_set_is_superset_of_read_tabs_and_includes_discovered(stacks_dir):
     # Lockstep: every editor tab is in the delete allowlist, and a discovered
     # file is deletable.

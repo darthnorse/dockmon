@@ -685,3 +685,17 @@ class TestDeleteEnvFile:
 
         assert result is False
         assert stray.exists()
+
+    @pytest.mark.asyncio
+    async def test_refuses_self_referenced_compose_file(self, temp_stacks_dir):
+        """A compose that names a compose filename under env_file: still cannot delete it."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text(
+            "services:\n  app:\n    image: x\n    env_file:\n      - compose.yaml\n"
+        )
+
+        result = await delete_env_file("myapp", "compose.yaml")
+
+        assert result is False
+        assert (stack_dir / "compose.yaml").exists()

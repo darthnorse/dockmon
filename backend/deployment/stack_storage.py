@@ -218,7 +218,9 @@ def _managed_env_filenames(compose_yaml: str) -> set:
     file, bind-mount data, or any other non-env file in the stack directory.
     """
     captured, _skipped = parse_env_file_refs(compose_yaml)
-    return {".env", *captured}
+    # Exclude compose filenames so a compose that references its own filename
+    # under env_file: can never make the compose file deletable via this path.
+    return {".env", *captured} - set(COMPOSE_FILENAMES)
 
 
 async def read_stack(name: str) -> Tuple[str, Dict[str, str]]:

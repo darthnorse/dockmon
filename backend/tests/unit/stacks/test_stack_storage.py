@@ -26,6 +26,7 @@ from deployment.stack_storage import (
     read_stack,
     write_stack,
     delete_stack_files,
+    delete_env_file,
     copy_stack,
     rename_stack_files,
     list_stacks,
@@ -521,3 +522,104 @@ class TestListStacks:
         stacks = await list_stacks()
 
         assert stacks == []
+
+
+class TestDeleteEnvFile:
+    """Test single env-file deletion from a stack directory."""
+
+    @pytest.mark.asyncio
+    async def test_deletes_existing_file(self, temp_stacks_dir):
+        """Returns True and removes the env file; compose.yaml and sibling env files untouched."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text("services: {}")
+        (stack_dir / ".db.env").write_text("DB_PASS=secret")
+        target = stack_dir / ".env"
+        target.write_text("PORT=8080")
+
+        result = await delete_env_file("myapp", ".env")
+
+        assert result is True
+        assert not target.exists()
+        # Sibling files must be untouched
+        assert (stack_dir / "compose.yaml").read_text() == "services: {}"
+        assert (stack_dir / ".db.env").read_text() == "DB_PASS=secret"
+
+    @pytest.mark.asyncio
+    async def test_missing_file_returns_false(self, temp_stacks_dir):
+        """Returns False (no exception) when the file does not exist."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text("services: {}")
+
+        result = await delete_env_file("myapp", ".env")
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_unsafe_filename_raises_value_error(self, temp_stacks_dir):
+        """Raises ValueError for any filename that fails is_safe_env_filename."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text("services: {}")
+
+        for bad_name in ("../x", "a/b.env", "", ".."):
+            with pytest.raises(ValueError):
+                await delete_env_file("myapp", bad_name)
+
+    @pytest.mark.asyncio
+    async def test_directory_returns_false(self, temp_stacks_dir):
+        """Returns False and leaves the directory untouched (bind-mount guard)."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text("services: {}")
+        # 'data' passes is_safe_env_filename (bare name); the is_dir() guard is what protects it
+        data_dir = stack_dir / "data"
+        data_dir.mkdir()
+        sentinel = data_dir / "important.db"
+        sentinel.write_text("bind-mount data")
+
+        result = await delete_env_file("myapp", "data")
+
+        assert result is False
+        assert data_dir.is_dir()
+        assert sentinel.read_text() == "bind-mount data"
+
+    @pytest.mark.asyncio
+    async def test_validates_stack_name(self, temp_stacks_dir):
+        """Should reject an invalid stack name."""
+        with pytest.raises(ValueError, match="lowercase"):
+            await delete_env_file("Bad Name!", ".env")
+
+    @pytest.mark.asyncio
+    async def test_deletes_dot_slash_prefixed_name(self, temp_stacks_dir):
+        """A './'-prefixed filename resolves to the same bare file and is deleted."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text("services: {}")
+        (stack_dir / "app.env").write_text("A=1")
+
+        assert await delete_env_file("myapp", "./app.env") is True
+        assert not (stack_dir / "app.env").exists()
+
+    @pytest.mark.asyncio
+    async def test_symlink_returns_false_target_untouched(self, tmp_path, temp_stacks_dir):
+        """Returns False for a symlink; the symlink target's content is not destroyed."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text("services: {}")
+
+        # Create a sensitive file OUTSIDE the stack directory
+        outside = tmp_path / "outside_secret.txt"
+        outside.write_text("sensitive content")
+
+        # Create a symlink inside the stack dir pointing at the outside file
+        symlink = stack_dir / ".secret.env"
+        symlink.symlink_to(outside)
+
+        result = await delete_env_file("myapp", ".secret.env")
+
+        assert result is False
+        # The outside file must still exist with its original content (the security property)
+        assert outside.exists()
+        assert outside.read_text() == "sensitive content"

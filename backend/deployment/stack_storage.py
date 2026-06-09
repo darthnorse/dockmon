@@ -324,6 +324,44 @@ async def delete_stack_files(name: str) -> None:
     await asyncio.to_thread(_delete)
 
 
+async def delete_env_file(name: str, filename: str) -> bool:
+    """Delete a single env file from a stack dir.
+
+    Returns True iff a regular file was removed. Never deletes directories or
+    symlink targets; never touches other files. Raises ValueError on an unsafe
+    filename.
+
+    Args:
+        name: Stack name
+        filename: Env filename to delete (e.g. '.env', '.db.env', './app.env')
+
+    Returns:
+        True if a regular file was deleted, False otherwise
+
+    Raises:
+        ValueError: If stack name is invalid or filename is unsafe
+    """
+    validate_stack_name(name)
+    if not is_safe_env_filename(filename):
+        raise ValueError(f"Unsafe env filename: {filename!r}")
+    bare = filename[2:] if filename.startswith("./") else filename
+    stack_path = get_stack_path(name)
+    target = stack_path / bare
+
+    def _delete() -> bool:
+        if target.parent != stack_path:       # containment, defense in depth
+            return False
+        if target.is_symlink() or target.is_dir():
+            return False
+        if not target.is_file():
+            return False
+        target.unlink()
+        logger.info(f"Deleted env file '{bare}' from stack '{name}'")
+        return True
+
+    return await asyncio.to_thread(_delete)
+
+
 async def copy_stack(source_name: str, dest_name: str) -> None:
     """
     Copy a stack to a new name.

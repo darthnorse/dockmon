@@ -350,6 +350,7 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 			"self_update":          c.myContainerID != "",
 			"compose_deployments":  c.deployHandler != nil,
 			"shell_access":         true,
+			"multi_env_files":      true,
 		},
 	}
 

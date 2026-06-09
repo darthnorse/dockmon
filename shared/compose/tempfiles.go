@@ -314,6 +314,53 @@ func WriteStackEnvFile(stacksDir, projectName, envContent string) (string, error
 	return envPath, nil
 }
 
+// safeEnvFilename reports whether name is a bare filename safe to write inside
+// a stack directory: no separators, no "..", not absolute, not "." or "..".
+func safeEnvFilename(name string) bool {
+	if name == "" {
+		return false
+	}
+	name = strings.TrimPrefix(name, "./")
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	if strings.ContainsAny(name, "/\\\x00") {
+		return false
+	}
+	return name == filepath.Base(name)
+}
+
+// WriteStackEnvFiles writes every provided env file into the stack directory.
+// Creates the stack directory if it does not exist.
+// Each filename is validated; unsafe names are rejected. Files not listed are
+// left untouched (protects bind-mount data and orphans).
+func WriteStackEnvFiles(stacksDir, projectName string, files map[string]string) error {
+	if len(files) == 0 {
+		return nil
+	}
+	stackDir, err := GetStackDir(stacksDir, projectName)
+	if err != nil {
+		return fmt.Errorf("invalid stack: %w", err)
+	}
+	// Validate every name before writing anything so a single unsafe entry
+	// cannot leave a partially-written stack directory.
+	for name := range files {
+		if !safeEnvFilename(name) {
+			return fmt.Errorf("unsafe env filename: %q", name)
+		}
+	}
+	if err := os.MkdirAll(stackDir, StackDirMode); err != nil {
+		return fmt.Errorf("failed to create stack directory: %w", err)
+	}
+	for name, content := range files {
+		bare := strings.TrimPrefix(name, "./")
+		if err := os.WriteFile(filepath.Join(stackDir, bare), []byte(content), StackFileMode); err != nil {
+			return fmt.Errorf("failed to write env file %q: %w", bare, err)
+		}
+	}
+	return nil
+}
+
 // DeleteStackDir removes a stack directory and all its contents.
 // Used when a stack is deleted (after docker compose down).
 // Safe to call if directory doesn't exist.

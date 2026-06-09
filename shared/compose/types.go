@@ -11,7 +11,12 @@ type DeployRequest struct {
 	// Compose content
 	ComposeYAML    string   `json:"compose_yaml"`
 	EnvFileContent string   `json:"env_file_content,omitempty"` // Raw .env file content (written to stack dir)
-	Profiles       []string `json:"profiles,omitempty"`
+	// EnvFiles maps filename -> content for every managed env file in the
+	// stack dir (e.g. {".env": "...", ".db.env": "..."}). Written before
+	// `compose up` so compose-go resolves env_file: references. Takes
+	// precedence over EnvFileContent when non-empty.
+	EnvFiles map[string]string `json:"env_files,omitempty"`
+	Profiles []string          `json:"profiles,omitempty"`
 
 	// Action
 	Action        string `json:"action"`                   // "up", "down", "restart"

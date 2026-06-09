@@ -185,3 +185,62 @@ class TestDeleteStackEnvFileRoute:
         assert response.status_code == 403
         mock_delete.assert_not_called()
         self._log_mock.assert_not_called()
+
+
+# ==================== referenced_env_files tests ====================
+
+def test_stack_response_defaults_referenced_env_files_to_empty_list():
+    r = StackResponse(name="myapp", compose_yaml="services: {}\n")
+    assert r.referenced_env_files == []
+
+
+def _mock_monitor():
+    m = MagicMock()
+    m.get_last_containers = MagicMock(return_value=[])
+    return m
+
+
+@pytest.mark.integration
+def test_get_stack_returns_referenced_env_files(authed_client, monkeypatch):
+    from deployment import stack_storage
+    compose = "services:\n  db:\n    image: x\n    env_file:\n      - .db.env\n"
+    monkeypatch.setattr(stack_storage, "stack_exists", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        stack_storage, "read_stack",
+        AsyncMock(return_value=(compose, {".env": "A=1", ".db.env": "P=2", ".env.staging": "S=3"})),
+    )
+    monkeypatch.setattr(stack_routes, "get_docker_monitor", _mock_monitor)
+    monkeypatch.setattr(stack_routes, "scan_deployed_stacks", lambda c: {})
+
+    resp = authed_client.get("/api/stacks/myapp")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert sorted(body["referenced_env_files"]) == [".db.env", ".env"]
+    assert ".env.staging" not in body["referenced_env_files"]
+
+
+@pytest.mark.integration
+def test_get_stack_hides_referenced_env_files_without_view_env(client, monkeypatch):
+    import main
+    from auth.api_key_auth import get_current_user_or_api_key
+    from deployment import stack_storage
+
+    async def _mock_user():
+        return {"username": "u", "user_id": 1, "auth_type": "session"}
+
+    main.app.dependency_overrides[get_current_user_or_api_key] = _mock_user
+    # Every capability except stacks.view_env.
+    monkeypatch.setattr(
+        "auth.api_key_auth.check_auth_capability",
+        lambda user, cap: cap != "stacks.view_env",
+    )
+    compose = "services:\n  db:\n    image: x\n    env_file: .db.env\n"
+    monkeypatch.setattr(stack_storage, "stack_exists", AsyncMock(return_value=True))
+    monkeypatch.setattr(stack_storage, "read_stack", AsyncMock(return_value=(compose, {".env": "A=1"})))
+    monkeypatch.setattr(stack_routes, "get_docker_monitor", _mock_monitor)
+    monkeypatch.setattr(stack_routes, "scan_deployed_stacks", lambda c: {})
+
+    resp = client.get("/api/stacks/myapp")
+    assert resp.status_code == 200
+    assert resp.json()["referenced_env_files"] == []
+    assert resp.json()["env_files"] == {}

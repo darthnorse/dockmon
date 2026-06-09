@@ -78,6 +78,18 @@ interface ImportStackModalProps {
   onSuccess?: (deployments: Deployment[]) => void
 }
 
+/**
+ * Warn (non-blocking) about env files the backend skipped because they resolve
+ * outside the stack directory. `prefix` labels the stack name in batch imports.
+ */
+function warnSkippedEnvFiles(skipped: string[] | undefined, prefix?: string): void {
+  if (!skipped || skipped.length === 0) return
+  const where = prefix ? `${prefix}: ` : ''
+  toast.warning(
+    `${where}Env file(s) outside the stack directory were not imported: ${skipped.join(', ')}`
+  )
+}
+
 export function ImportStackModal({
   isOpen,
   onClose,
@@ -281,11 +293,7 @@ export function ImportStackModal({
         // Browse mode uses selectedEnvFiles directly; the .env textarea (envContent/showEnvField)
         // is paste-mode only, so it is intentionally not populated here.
         setSelectedEnvFiles(result.env_files ?? {})
-        if (result.skipped_env_files && result.skipped_env_files.length > 0) {
-          toast.warning(
-            `Some env files are outside the stack directory and were not imported: ${result.skipped_env_files.join(', ')}`
-          )
-        }
+        warnSkippedEnvFiles(result.skipped_env_files)
       } else {
         setError(result.error || 'Failed to read file')
       }
@@ -366,11 +374,7 @@ export function ImportStackModal({
         if (readResult.env_files && Object.keys(readResult.env_files).length > 0) {
           request.env_files = readResult.env_files
         }
-        if (readResult.skipped_env_files && readResult.skipped_env_files.length > 0) {
-          toast.warning(
-            `${displayName}: env file(s) outside the stack directory were not imported: ${readResult.skipped_env_files.join(', ')}`
-          )
-        }
+        warnSkippedEnvFiles(readResult.skipped_env_files, displayName)
 
         const result = await importDeployment.mutateAsync(request)
 

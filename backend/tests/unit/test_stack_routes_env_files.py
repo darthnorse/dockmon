@@ -211,6 +211,7 @@ def test_get_stack_returns_referenced_env_files(authed_client, monkeypatch):
     )
     monkeypatch.setattr(stack_routes, "get_docker_monitor", _mock_monitor)
     monkeypatch.setattr(stack_routes, "scan_deployed_stacks", lambda c: {})
+    monkeypatch.setattr(stack_routes, "check_auth_capability", lambda user, cap: True)
 
     resp = authed_client.get("/api/stacks/myapp")
     assert resp.status_code == 200
@@ -234,6 +235,7 @@ def test_get_stack_hides_referenced_env_files_without_view_env(client, monkeypat
         "auth.api_key_auth.check_auth_capability",
         lambda user, cap: cap != "stacks.view_env",
     )
+    monkeypatch.setattr(stack_routes, "check_auth_capability", lambda user, cap: cap != "stacks.view_env")
     compose = "services:\n  db:\n    image: x\n    env_file: .db.env\n"
     monkeypatch.setattr(stack_storage, "stack_exists", AsyncMock(return_value=True))
     monkeypatch.setattr(stack_storage, "read_stack", AsyncMock(return_value=(compose, {".env": "A=1"})))

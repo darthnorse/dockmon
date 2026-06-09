@@ -17,7 +17,6 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, Field
 
-import auth.api_key_auth as _api_key_auth
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, Capabilities
 from audit.audit_logger import AuditAction, log_stack_change
 from auth.utils import get_auditable_user_info
@@ -213,7 +212,7 @@ async def get_stack(name: str, user=Depends(get_current_user)):
         ]
 
     # Filter env_files for users without stacks.view_env capability
-    can_view_env = _api_key_auth.check_auth_capability(user, Capabilities.STACKS_VIEW_ENV)
+    can_view_env = check_auth_capability(user, Capabilities.STACKS_VIEW_ENV)
 
     return StackResponse(
         name=name,
@@ -436,7 +435,7 @@ async def rename_stack(name: str, request: StackRename, http_request: Request, u
     compose_yaml, env_files = await stack_storage.read_stack(request.new_name)
 
     # Filter env_files for users without stacks.view_env capability
-    can_view_env = _api_key_auth.check_auth_capability(user, Capabilities.STACKS_VIEW_ENV)
+    can_view_env = check_auth_capability(user, Capabilities.STACKS_VIEW_ENV)
 
     logger.info(f"User {display_name} renamed stack '{name}' to '{request.new_name}'")
 
@@ -556,7 +555,7 @@ async def copy_stack_endpoint(name: str, request: StackCopy, http_request: Reque
     compose_yaml, env_files = await stack_storage.read_stack(request.dest_name)
 
     # Filter env_files for users without stacks.view_env capability
-    can_view_env = _api_key_auth.check_auth_capability(user, Capabilities.STACKS_VIEW_ENV)
+    can_view_env = check_auth_capability(user, Capabilities.STACKS_VIEW_ENV)
 
     logger.info(f"User {display_name} copied stack '{name}' to '{request.dest_name}'")
 

@@ -37,7 +37,7 @@ from deployment.agent_executor import get_agent_deployment_executor
 logger = logging.getLogger(__name__)
 
 # Maximum size for env files read during import (1 MB)
-MAX_ENV_FILE_SIZE = 1024 * 1024
+MAX_ENV_FILE_SIZE = 1024 * 1024  # cap for env files and the compose on local import
 
 # Create router
 router = APIRouter(prefix="/api/deployments", tags=["deployments"])
@@ -1495,6 +1495,21 @@ async def _read_local_file(request: ReadComposeFileRequest) -> ReadComposeFileRe
 
     # Check file exists
     if not os.path.isfile(path):
+        return ReadComposeFileResponse(
+            success=False,
+            path=path,
+            error="File not found"
+        )
+
+    # Bound the compose read so a pathological file can't be slurped whole.
+    try:
+        if os.path.getsize(path) > MAX_ENV_FILE_SIZE:
+            return ReadComposeFileResponse(
+                success=False,
+                path=path,
+                error="Compose file too large"
+            )
+    except OSError:
         return ReadComposeFileResponse(
             success=False,
             path=path,

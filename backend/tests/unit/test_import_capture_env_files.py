@@ -52,3 +52,13 @@ async def test_read_local_file_skips_oversized_env_file(tmp_path):
     assert resp.success
     assert ".big.env" not in resp.env_files, "Oversized env file must not be read"
     assert ".big.env" in resp.skipped_env_files, "Oversized env file name must be in skipped"
+
+
+async def test_read_local_file_rejects_oversized_compose(tmp_path):
+    """A compose file larger than the cap must be rejected, not slurped whole."""
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_bytes(b"services: {}\n" + b"#" * (MAX_ENV_FILE_SIZE + 1))
+
+    resp = await _read_local_file(ReadComposeFileRequest(path=str(compose)))
+    assert resp.success is False
+    assert "too large" in (resp.error or "").lower()

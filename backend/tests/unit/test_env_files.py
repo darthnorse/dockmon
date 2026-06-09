@@ -72,3 +72,11 @@ services:
 def test_parse_malformed_or_no_services_returns_empty():
     assert parse_env_file_refs(":\n  bad: [") == ([], [])
     assert parse_env_file_refs("version: '3'") == ([], [])
+
+
+def test_parse_deeply_nested_yaml_does_not_raise():
+    # A deeply-nested document makes PyYAML's safe_load raise RecursionError
+    # (well under any size cap). The parser must swallow it and report no env
+    # files instead of letting the exception escape to the caller (500).
+    nested = "a: " + "[" * 20000 + "]" * 20000 + "\n"
+    assert parse_env_file_refs(nested) == ([], [])

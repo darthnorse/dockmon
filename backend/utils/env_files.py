@@ -53,7 +53,10 @@ def parse_env_file_refs(compose_yaml: str) -> Tuple[List[str], List[str]]:
     """
     try:
         doc = yaml.safe_load(compose_yaml)
-    except yaml.YAMLError:
+    except (yaml.YAMLError, RecursionError):
+        # RecursionError: deeply-nested YAML exhausts the parser's stack. Treat
+        # any unparseable document as having no managed env files rather than
+        # letting the exception escape to the caller.
         return [], []
     if not isinstance(doc, dict):
         return [], []

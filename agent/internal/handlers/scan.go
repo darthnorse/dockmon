@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/darthnorse/dockmon-shared/compose"
 	"github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
@@ -408,17 +409,46 @@ func (h *ScanHandler) ReadComposeFile(ctx context.Context, req ReadComposeFileRe
 
 	dir := filepath.Dir(req.Path)
 	envFiles := map[string]string{}
-	if data, err := os.ReadFile(filepath.Join(dir, ".env")); err == nil {
-		envFiles[".env"] = string(data)
-		h.log.WithField("env_path", filepath.Join(dir, ".env")).Debug("Found .env file")
+
+	// Read .env if present, but never follow a symlink and never read oversized files.
+	dotEnvPath := filepath.Join(dir, ".env")
+	if fi, lerr := os.Lstat(dotEnvPath); lerr == nil {
+		switch {
+		case fi.Mode()&os.ModeSymlink != 0:
+			h.log.WithField("env_path", dotEnvPath).Debug("Skipping .env: is a symlink")
+		case fi.Size() > maxFileSize:
+			h.log.WithField("env_path", dotEnvPath).Debug("Skipping .env: exceeds size limit")
+		default:
+			if data, rerr := os.ReadFile(dotEnvPath); rerr == nil {
+				envFiles[".env"] = string(data)
+				h.log.WithField("env_path", dotEnvPath).Debug("Found .env file")
+			}
+		}
 	}
+
 	captured, skipped := parseEnvFileRefs(content)
 	for _, name := range captured {
-		if data, err := os.ReadFile(filepath.Join(dir, name)); err == nil {
-			envFiles[name] = string(data)
-		} else {
+		fpath := filepath.Join(dir, name)
+		fi, lerr := os.Lstat(fpath)
+		if lerr != nil {
 			// Referenced by compose but absent on disk: record the key with empty
 			// content so the importer still knows the reference exists.
+			envFiles[name] = ""
+			continue
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			skipped = append(skipped, name)
+			h.log.WithField("env_file", name).Debug("Skipping env file: is a symlink")
+			continue
+		}
+		if fi.Size() > maxFileSize {
+			skipped = append(skipped, name)
+			h.log.WithField("env_file", name).Debug("Skipping env file: exceeds size limit")
+			continue
+		}
+		if data, rerr := os.ReadFile(fpath); rerr == nil {
+			envFiles[name] = string(data)
+		} else {
 			envFiles[name] = ""
 		}
 	}
@@ -440,21 +470,6 @@ func (h *ScanHandler) ReadComposeFile(ctx context.Context, req ReadComposeFileRe
 	}
 }
 
-// envSafe reports whether name is a bare same-directory filename (no path traversal).
-func envSafe(name string) bool {
-	if name == "" {
-		return false
-	}
-	name = strings.TrimPrefix(name, "./")
-	if name == "" || name == "." || name == ".." {
-		return false
-	}
-	if strings.ContainsAny(name, "/\\\x00") {
-		return false
-	}
-	return name == filepath.Base(name)
-}
-
 // parseEnvFileRefs extracts service-level env_file: targets from a compose document.
 // Returns (captured bare same-dir names with leading "./" stripped, skipped out-of-dir refs).
 func parseEnvFileRefs(composeYAML []byte) (captured []string, skipped []string) {
@@ -471,7 +486,7 @@ func parseEnvFileRefs(composeYAML []byte) (captured []string, skipped []string) 
 		if path == "" {
 			return
 		}
-		if envSafe(path) {
+		if compose.SafeEnvFilename(path) {
 			bare := strings.TrimPrefix(path, "./")
 			if !seen[bare] {
 				seen[bare] = true

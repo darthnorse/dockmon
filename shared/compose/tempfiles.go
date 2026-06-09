@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -314,9 +315,11 @@ func WriteStackEnvFile(stacksDir, projectName, envContent string) (string, error
 	return envPath, nil
 }
 
-// safeEnvFilename reports whether name is a bare filename safe to write inside
-// a stack directory: no separators, no "..", not absolute, not "." or "..".
-func safeEnvFilename(name string) bool {
+// SafeEnvFilename reports whether name is a bare filename safe to write inside
+// a stack directory: no path separators, no traversal components (".." / "."),
+// not absolute, and equals its own filepath.Base. The leading "./" prefix is
+// tolerated and stripped before validation (matches compose env_file convention).
+func SafeEnvFilename(name string) bool {
 	if name == "" {
 		return false
 	}
@@ -345,7 +348,7 @@ func WriteStackEnvFiles(stacksDir, projectName string, files map[string]string) 
 	// Validate every name before writing anything so a single unsafe entry
 	// cannot leave a partially-written stack directory.
 	for name := range files {
-		if !safeEnvFilename(name) {
+		if !SafeEnvFilename(name) {
 			return fmt.Errorf("unsafe env filename: %q", name)
 		}
 	}
@@ -354,8 +357,17 @@ func WriteStackEnvFiles(stacksDir, projectName string, files map[string]string) 
 	}
 	for name, content := range files {
 		bare := strings.TrimPrefix(name, "./")
-		if err := os.WriteFile(filepath.Join(stackDir, bare), []byte(content), StackFileMode); err != nil {
+		fpath := filepath.Join(stackDir, bare)
+		f, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, StackFileMode)
+		if err != nil {
 			return fmt.Errorf("failed to write env file %q: %w", bare, err)
+		}
+		if _, werr := f.Write([]byte(content)); werr != nil {
+			f.Close()
+			return fmt.Errorf("failed to write env file %q: %w", bare, werr)
+		}
+		if cerr := f.Close(); cerr != nil {
+			return fmt.Errorf("failed to write env file %q: %w", bare, cerr)
 		}
 	}
 	return nil

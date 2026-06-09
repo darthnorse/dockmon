@@ -112,6 +112,19 @@ def filter_ws_container_message(
     return filtered_message
 
 
+def filter_stack_env_files(
+    env_files: Optional[Dict[str, str]],
+    can_view_env: bool,
+) -> Dict[str, str]:
+    """Return the env-file map only if the caller may view env content.
+
+    Without stacks.view_env, returns an empty map (the compose is still served).
+    """
+    if not env_files or not can_view_env:
+        return {}
+    return env_files
+
+
 def container_to_dict(container: Any) -> Dict:
     """
     Convert container object to dictionary, handling various types.

@@ -438,6 +438,37 @@ async def rename_stack(name: str, request: StackRename, http_request: Request, u
     )
 
 
+@router.delete(
+    "/{name}/env-files/{filename}",
+    status_code=200,
+    dependencies=[rate_limit_stacks, Depends(require_capability("stacks.edit"))],
+)
+async def delete_stack_env_file(
+    name: str, filename: str, user=Depends(get_current_user)
+):
+    """
+    Delete a single env file from a stack directory.
+
+    Returns {"deleted": true} if a regular file was removed, {"deleted": false}
+    if there was nothing to remove (file already gone). Never deletes directories
+    or symlink targets. The filename is a validated bare same-dir name.
+    """
+    if not await stack_storage.stack_exists(name):
+        raise HTTPException(status_code=404, detail=f"Stack '{name}' not found")
+
+    try:
+        deleted = await stack_storage.delete_env_file(name, filename)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    _, display_name = get_auditable_user_info(user)
+    if deleted:
+        logger.info(f"User {display_name} deleted env file '{filename}' from stack '{name}'")
+    else:
+        logger.debug(f"User {display_name} requested deletion of absent env file '{filename}' from stack '{name}' (no-op)")
+    return {"deleted": deleted}
+
+
 @router.delete("/{name}", status_code=204, dependencies=[rate_limit_stacks, Depends(require_capability("stacks.edit"))])
 async def delete_stack(name: str, http_request: Request, user=Depends(get_current_user)):
     """

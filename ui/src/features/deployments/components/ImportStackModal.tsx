@@ -277,12 +277,10 @@ export function ImportStackModal({
 
       if (result.success) {
         setComposeContent(result.content || '')
-        // Capture the full env_files map so the single import carries every file, not just .env
+        // Capture the full env_files map so the single import carries every file, not just .env.
+        // Browse mode uses selectedEnvFiles directly; the .env textarea (envContent/showEnvField)
+        // is paste-mode only, so it is intentionally not populated here.
         setSelectedEnvFiles(result.env_files ?? {})
-        if (result.env_files && Object.keys(result.env_files).length > 0) {
-          setEnvContent(result.env_files['.env'] ?? '')
-          setShowEnvField(true)
-        }
         if (result.skipped_env_files && result.skipped_env_files.length > 0) {
           toast.warning(
             `Some env files are outside the stack directory and were not imported: ${result.skipped_env_files.join(', ')}`

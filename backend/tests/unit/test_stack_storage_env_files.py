@@ -61,3 +61,19 @@ async def test_no_env_and_no_refs_returns_empty_map(stacks_dir):
     await stack_storage.write_stack("myapp", compose, {}, create_only=True)
     _compose, env = await stack_storage.read_stack("myapp")
     assert env == {}
+
+
+async def test_symlinked_env_file_not_read(stacks_dir, tmp_path):
+    """A referenced env file replaced by a symlink to outside content must not be read."""
+    compose = "services:\n  db:\n    image: x\n    env_file:\n      - .secret.env\n"
+    await stack_storage.write_stack("myapp", compose, {}, create_only=True)
+
+    # Replace the (missing) referenced file with a symlink to an outside file
+    outside = tmp_path / "outside.env"
+    outside.write_text("LEAKED=yes\n")
+    symlink_path = stacks_dir / "myapp" / ".secret.env"
+    symlink_path.symlink_to(outside)
+
+    _compose, env = await stack_storage.read_stack("myapp")
+    assert ".secret.env" not in env, "Symlinked env file must not appear in env map"
+    assert "LEAKED=yes" not in str(env), "Symlink target content must not leak"

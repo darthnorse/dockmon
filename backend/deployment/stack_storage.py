@@ -232,7 +232,7 @@ async def read_stack(name: str) -> Tuple[str, Dict[str, str]]:
 
         env_files: Dict[str, str] = {}
         dot_env = stack_path / ".env"
-        if dot_env.is_file():
+        if dot_env.is_file() and not dot_env.is_symlink():
             env_files[".env"] = dot_env.read_text()
 
         captured, _skipped = parse_env_file_refs(compose_yaml)
@@ -242,6 +242,8 @@ async def read_stack(name: str) -> Tuple[str, Dict[str, str]]:
             if fname in env_files:
                 continue
             fpath = stack_path / fname
+            if fpath.is_symlink():
+                continue
             env_files[fname] = fpath.read_text() if fpath.is_file() else ""
 
         return compose_yaml, env_files

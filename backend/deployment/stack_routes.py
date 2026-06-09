@@ -58,6 +58,7 @@ class StackCreate(BaseModel):
     compose_yaml: str = Field(
         ...,
         description="Docker Compose YAML content",
+        max_length=1024 * 1024,
     )
     env_files: Dict[str, str] = Field(
         default_factory=dict,
@@ -70,6 +71,7 @@ class StackUpdate(BaseModel):
     compose_yaml: str = Field(
         ...,
         description="Docker Compose YAML content",
+        max_length=1024 * 1024,
     )
     env_files: Dict[str, str] = Field(
         default_factory=dict,

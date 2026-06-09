@@ -35,7 +35,7 @@ from utils.registry_credentials import get_all_registry_credentials
 logger = logging.getLogger(__name__)
 
 
-def agent_supports_multi_env_files(agent) -> bool:
+def agent_supports_multi_env_files(agent: Optional[Agent]) -> bool:
     """True if the agent advertised the multi_env_files capability."""
     if agent is None:
         return False
@@ -300,8 +300,10 @@ class AgentDeploymentExecutor:
         if not env_file_content:
             env_file_content = env_files.get(".env", "")
 
-        # Block multi-env-file deploys on agents that predate the multi_env_files capability
-        if len(env_files) > 1:
+        # Block deploys on agents that predate the multi_env_files capability.
+        # Old agents only receive the single legacy .env via env_file_content.
+        # Any managed file other than .env requires the multi_env_files capability.
+        if set(env_files) - {".env"}:
             agent = self._get_agent_record(host_id)
             if not agent_supports_multi_env_files(agent):
                 msg = (

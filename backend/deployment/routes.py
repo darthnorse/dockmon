@@ -36,6 +36,8 @@ from deployment.agent_executor import get_agent_deployment_executor
 
 logger = logging.getLogger(__name__)
 
+# Maximum size for env files read during import (1 MB)
+MAX_ENV_FILE_SIZE = 1024 * 1024
 
 # Create router
 router = APIRouter(prefix="/api/deployments", tags=["deployments"])
@@ -1508,10 +1510,11 @@ async def _read_local_file(request: ReadComposeFileRequest) -> ReadComposeFileRe
         env_files: Dict[str, str] = {}
         base_dir = os.path.dirname(path)
         dot_env = os.path.join(base_dir, ".env")
-        if os.path.isfile(dot_env):
+        if os.path.isfile(dot_env) and not os.path.islink(dot_env):
             try:
-                with open(dot_env, "r", encoding="utf-8") as f:
-                    env_files[".env"] = f.read()
+                if os.path.getsize(dot_env) <= MAX_ENV_FILE_SIZE:
+                    with open(dot_env, "r", encoding="utf-8") as f:
+                        env_files[".env"] = f.read()
             except (OSError, IOError):
                 pass
 
@@ -1520,8 +1523,14 @@ async def _read_local_file(request: ReadComposeFileRequest) -> ReadComposeFileRe
             if not is_safe_env_filename(fname):
                 continue
             fpath = os.path.join(base_dir, fname)
+            if os.path.islink(fpath):
+                skipped.append(fname)
+                continue
             if os.path.isfile(fpath):
                 try:
+                    if os.path.getsize(fpath) > MAX_ENV_FILE_SIZE:
+                        skipped.append(fname)
+                        continue
                     with open(fpath, "r", encoding="utf-8") as f:
                         env_files[fname] = f.read()
                 except (OSError, IOError):

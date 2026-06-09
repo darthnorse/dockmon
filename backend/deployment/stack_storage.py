@@ -17,7 +17,14 @@ from typing import Dict, List, Optional, Tuple
 
 import aiofiles
 
-from utils.env_files import is_safe_env_filename, normalize_env_filename, parse_env_file_refs
+from utils.env_files import (
+    is_safe_env_filename,
+    normalize_env_filename,
+    parse_env_file_refs,
+    is_env_filename,
+    parse_bind_mount_sources,
+    MAX_ENV_FILE_BYTES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +224,43 @@ def referenced_env_filenames(compose_yaml: str) -> set:
     """
     captured, _skipped = parse_env_file_refs(compose_yaml)
     return {".env", *captured} - set(COMPOSE_FILENAMES)
+
+
+def _discovered_env_filenames(stack_path: Path, compose_yaml: str) -> set:
+    """On-disk env files NOT currently referenced by the compose.
+
+    Top-level bare files in the stack dir whose name follows an env naming
+    convention (is_env_filename) and that are not: already in the
+    compose-referenced set, a compose file, a compose-declared bind-mount
+    source, a symlink, a non-regular file, or larger than MAX_ENV_FILE_BYTES.
+
+    This is what lets an env-swap workflow (.env.dev / .env.staging /
+    .env.prod) keep editing the files that aren't the currently-referenced one,
+    without surfacing bind-mount runtime data (which lives in subdirs, is
+    declared in volumes:, or isn't env-named).
+    """
+    referenced = referenced_env_filenames(compose_yaml)
+    bind_sources = parse_bind_mount_sources(compose_yaml)
+    discovered: set = set()
+    try:
+        entries = list(os.scandir(stack_path))
+    except OSError:
+        return discovered
+    for entry in entries:
+        name = entry.name
+        if name in referenced or name in COMPOSE_FILENAMES or name in bind_sources:
+            continue
+        if not is_env_filename(name) or not is_safe_env_filename(name):
+            continue
+        try:
+            if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                continue
+            if entry.stat(follow_symlinks=False).st_size > MAX_ENV_FILE_BYTES:
+                continue
+        except OSError:
+            continue
+        discovered.add(name)
+    return discovered
 
 
 def _managed_env_filenames(compose_yaml: str) -> set:

@@ -93,3 +93,49 @@ def test_referenced_env_filenames_is_dot_env_plus_refs_minus_compose():
 
 def test_referenced_env_filenames_no_refs_is_just_dot_env():
     assert stack_storage.referenced_env_filenames("services:\n  app:\n    image: x\n") == {".env"}
+
+
+async def test_discovered_env_filenames_surfaces_unreferenced_only(stacks_dir):
+    # Compose references .db.env and bind-mounts a data file named bind.env.
+    compose = (
+        "services:\n"
+        "  app:\n"
+        "    image: x\n"
+        "    env_file:\n"
+        "      - .db.env\n"
+        "    volumes:\n"
+        "      - ./bind.env:/etc/bind.env\n"
+    )
+    stack_dir = stacks_dir / "myapp"
+    stack_dir.mkdir()
+    (stack_dir / "compose.yaml").write_text(compose)
+    (stack_dir / ".env").write_text("A=1\n")            # referenced (.env) -> excluded
+    (stack_dir / ".db.env").write_text("P=2\n")          # env_file: ref -> excluded
+    (stack_dir / ".env.staging").write_text("S=3\n")     # unreferenced -> DISCOVERED
+    (stack_dir / "prod.env").write_text("Q=4\n")         # unreferenced -> DISCOVERED
+    (stack_dir / "bind.env").write_text("DATA\n")        # bind-mount source -> excluded
+    (stack_dir / "notes.txt").write_text("hello\n")      # not env-named -> excluded
+    sub = stack_dir / "sub"
+    sub.mkdir()
+    (sub / "nested.env").write_text("N=1\n")             # subdir -> not enumerated
+
+    result = stack_storage._discovered_env_filenames(stack_dir, compose)
+    assert result == {".env.staging", "prod.env"}
+
+
+async def test_discovered_env_filenames_excludes_symlink_and_oversized(stacks_dir, tmp_path):
+    from utils.env_files import MAX_ENV_FILE_BYTES
+
+    compose = "services:\n  app:\n    image: x\n"
+    stack_dir = stacks_dir / "myapp"
+    stack_dir.mkdir()
+    (stack_dir / "compose.yaml").write_text(compose)
+
+    outside = tmp_path / "outside.env"
+    outside.write_text("LEAK=1\n")
+    (stack_dir / "link.env").symlink_to(outside)         # symlink -> excluded
+    (stack_dir / "big.env").write_text("X" * (MAX_ENV_FILE_BYTES + 1))  # too big -> excluded
+    (stack_dir / ".env.ok").write_text("OK=1\n")         # discovered
+
+    result = stack_storage._discovered_env_filenames(stack_dir, compose)
+    assert result == {".env.ok"}

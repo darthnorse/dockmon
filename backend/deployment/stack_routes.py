@@ -441,7 +441,11 @@ async def rename_stack(name: str, request: StackRename, http_request: Request, u
 @router.delete(
     "/{name}/env-files/{filename}",
     status_code=200,
-    dependencies=[rate_limit_stacks, Depends(require_capability("stacks.edit"))],
+    dependencies=[
+        rate_limit_stacks,
+        Depends(require_capability("stacks.edit")),
+        Depends(require_capability("stacks.view_env")),
+    ],
 )
 async def delete_stack_env_file(
     name: str, filename: str, http_request: Request, user=Depends(get_current_user)

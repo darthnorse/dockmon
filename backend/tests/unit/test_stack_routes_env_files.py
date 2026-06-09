@@ -160,3 +160,28 @@ class TestDeleteStackEnvFileRoute:
 
         assert response.status_code == 403
         self._log_mock.assert_not_called()
+
+    def test_without_view_env_returns_403(self, client, monkeypatch):
+        """stacks.edit but NOT stacks.view_env → 403; deleting env files requires env visibility."""
+        import main
+        from auth.api_key_auth import get_current_user_or_api_key
+        from deployment import stack_storage
+
+        async def _mock_user():
+            return {"username": "test_user", "user_id": 1, "auth_type": "session"}
+
+        main.app.dependency_overrides[get_current_user_or_api_key] = _mock_user
+        # Grant every capability except stacks.view_env.
+        monkeypatch.setattr(
+            "auth.api_key_auth.check_auth_capability",
+            lambda user, cap: cap != "stacks.view_env",
+        )
+        mock_delete = AsyncMock(return_value=True)
+        monkeypatch.setattr(stack_storage, "stack_exists", AsyncMock(return_value=True))
+        monkeypatch.setattr(stack_storage, "delete_env_file", mock_delete)
+
+        response = client.delete("/api/stacks/myapp/env-files/.db.env")
+
+        assert response.status_code == 403
+        mock_delete.assert_not_called()
+        self._log_mock.assert_not_called()

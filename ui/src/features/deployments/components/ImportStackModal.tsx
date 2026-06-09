@@ -66,6 +66,7 @@ import {
   Container,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { toast } from 'sonner'
 import { useAuth } from '@/features/auth/AuthContext'
 
 type ImportStep = 'input' | 'select-name' | 'stack-exists' | 'success'
@@ -267,9 +268,25 @@ export function ImportStackModal({
 
       if (result.success) {
         setComposeContent(result.content || '')
-        if (result.env_content) {
-          setEnvContent(result.env_content)
+        // Reset env carried from a previously-selected file before applying this one
+        setEnvContent('')
+        setShowEnvField(false)
+        const envNames = result.env_files ? Object.keys(result.env_files) : []
+        if (envNames.length > 0) {
+          setEnvContent(result.env_files?.['.env'] ?? '')
           setShowEnvField(true)
+          // Single-file import only carries .env; the full set is captured via batch import
+          const extraFiles = envNames.filter((name) => name !== '.env')
+          if (extraFiles.length > 0) {
+            toast.info(
+              `This stack has additional env file(s): ${extraFiles.join(', ')}. Check the box and use "Import Selected" to import all of them.`
+            )
+          }
+        }
+        if (result.skipped_env_files && result.skipped_env_files.length > 0) {
+          toast.warning(
+            `Some env files are outside the stack directory and were not imported: ${result.skipped_env_files.join(', ')}`
+          )
         }
       } else {
         setError(result.error || 'Failed to read file')
@@ -348,8 +365,13 @@ export function ImportStackModal({
         if (file?.project_name) {
           request.project_name = file.project_name
         }
-        if (readResult.env_content) {
-          request.env_content = readResult.env_content
+        if (readResult.env_files && Object.keys(readResult.env_files).length > 0) {
+          request.env_files = readResult.env_files
+        }
+        if (readResult.skipped_env_files && readResult.skipped_env_files.length > 0) {
+          toast.warning(
+            `${displayName}: env file(s) outside the stack directory were not imported: ${readResult.skipped_env_files.join(', ')}`
+          )
         }
 
         const result = await importDeployment.mutateAsync(request)
@@ -401,7 +423,7 @@ export function ImportStackModal({
       const request: ImportDeploymentRequest = {
         compose_content: contentToImport,
       }
-      if (envContent) request.env_content = envContent
+      if (envContent.trim()) request.env_files = { '.env': envContent }
       if (options?.projectName) request.project_name = options.projectName
       if (options?.overwriteStack) request.overwrite_stack = true
       if (options?.useExistingStack) request.use_existing_stack = true

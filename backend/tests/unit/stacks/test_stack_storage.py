@@ -572,8 +572,11 @@ class TestDeleteEnvFile:
         """Returns False and leaves the directory untouched (bind-mount guard)."""
         stack_dir = temp_stacks_dir / "myapp"
         stack_dir.mkdir()
-        (stack_dir / "compose.yaml").write_text("services: {}")
-        # 'data' passes is_safe_env_filename (bare name); the is_dir() guard is what protects it
+        # Reference 'data' so it clears the managed-env-file allowlist; the
+        # is_dir() guard is then what protects the directory from deletion.
+        (stack_dir / "compose.yaml").write_text(
+            "services:\n  app:\n    image: x\n    env_file:\n      - data\n"
+        )
         data_dir = stack_dir / "data"
         data_dir.mkdir()
         sentinel = data_dir / "important.db"
@@ -596,7 +599,9 @@ class TestDeleteEnvFile:
         """A './'-prefixed filename resolves to the same bare file and is deleted."""
         stack_dir = temp_stacks_dir / "myapp"
         stack_dir.mkdir()
-        (stack_dir / "compose.yaml").write_text("services: {}")
+        (stack_dir / "compose.yaml").write_text(
+            "services:\n  app:\n    image: x\n    env_file:\n      - app.env\n"
+        )
         (stack_dir / "app.env").write_text("A=1")
 
         assert await delete_env_file("myapp", "./app.env") is True
@@ -607,7 +612,11 @@ class TestDeleteEnvFile:
         """Returns False for a symlink; the symlink target's content is not destroyed."""
         stack_dir = temp_stacks_dir / "myapp"
         stack_dir.mkdir()
-        (stack_dir / "compose.yaml").write_text("services: {}")
+        # Reference '.secret.env' so it clears the managed-env-file allowlist;
+        # the is_symlink() guard is then what refuses to follow it.
+        (stack_dir / "compose.yaml").write_text(
+            "services:\n  app:\n    image: x\n    env_file:\n      - .secret.env\n"
+        )
 
         # Create a sensitive file OUTSIDE the stack directory
         outside = tmp_path / "outside_secret.txt"
@@ -623,3 +632,56 @@ class TestDeleteEnvFile:
         # The outside file must still exist with its original content (the security property)
         assert outside.exists()
         assert outside.read_text() == "sensitive content"
+
+    @pytest.mark.asyncio
+    async def test_deletes_compose_referenced_env_file(self, temp_stacks_dir):
+        """A compose-referenced env file is managed and can be deleted."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text(
+            "services:\n  db:\n    image: x\n    env_file:\n      - .db.env\n"
+        )
+        (stack_dir / ".db.env").write_text("DB_PASS=secret")
+
+        assert await delete_env_file("myapp", ".db.env") is True
+        assert not (stack_dir / ".db.env").exists()
+
+    @pytest.mark.asyncio
+    async def test_refuses_to_delete_compose_file(self, temp_stacks_dir):
+        """The compose file is not a managed env file and must never be deleted."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text("services: {}")
+
+        result = await delete_env_file("myapp", "compose.yaml")
+
+        assert result is False
+        assert (stack_dir / "compose.yaml").exists()
+
+    @pytest.mark.asyncio
+    async def test_refuses_unreferenced_data_file(self, temp_stacks_dir):
+        """A bind-mounted data file (not '.env', not env_file-referenced) is never deleted."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text("services: {}")
+        data = stack_dir / "database.sqlite"
+        data.write_text("IMPORTANT DATA")
+
+        result = await delete_env_file("myapp", "database.sqlite")
+
+        assert result is False
+        assert data.read_text() == "IMPORTANT DATA"
+
+    @pytest.mark.asyncio
+    async def test_refuses_unreferenced_env_file(self, temp_stacks_dir):
+        """An on-disk env-looking file that is not in the managed set is refused."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text("services: {}")
+        stray = stack_dir / ".stray.env"
+        stray.write_text("X=1")
+
+        result = await delete_env_file("myapp", ".stray.env")
+
+        assert result is False
+        assert stray.exists()

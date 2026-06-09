@@ -35,8 +35,13 @@ def is_safe_env_filename(name: str) -> bool:
     return True
 
 
-def _normalize(name: str) -> str:
-    """Strip a leading './' so the stored filename is bare."""
+def normalize_env_filename(name: str) -> str:
+    """Strip a leading './' so the stored filename is bare.
+
+    A leading './' is the compose same-dir form; the stored/managed filename is
+    always the bare basename. Callers that derive an on-disk path or compare
+    against the managed set must normalize first so the forms agree.
+    """
     return name[2:] if name.startswith("./") else name
 
 
@@ -72,7 +77,7 @@ def parse_env_file_refs(compose_yaml: str) -> Tuple[List[str], List[str]]:
         if not isinstance(path, str) or not path:
             return
         if is_safe_env_filename(path):
-            captured.add(_normalize(path))
+            captured.add(normalize_env_filename(path))
         else:
             skipped.append(path)
 

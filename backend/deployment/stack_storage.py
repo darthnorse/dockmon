@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Tuple
 
 import aiofiles
 
-from utils.env_files import is_safe_env_filename, parse_env_file_refs
+from utils.env_files import is_safe_env_filename, normalize_env_filename, parse_env_file_refs
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +207,20 @@ async def find_stack_by_name(name: str) -> Optional[str]:
     return await asyncio.to_thread(_find)
 
 
+def _managed_env_filenames(compose_yaml: str) -> set:
+    """The set of env filenames a stack manages, derived from its compose.
+
+    The conventional '.env' plus every same-dir bare filename named by an
+    env_file: directive. This is the authoritative allowlist for which files
+    delete_env_file may remove, and it is kept in lockstep with what read_stack
+    surfaces as env tabs. Deriving it from the compose (not directory
+    enumeration) is what keeps the delete path from ever removing the compose
+    file, bind-mount data, or any other non-env file in the stack directory.
+    """
+    captured, _skipped = parse_env_file_refs(compose_yaml)
+    return {".env", *captured}
+
+
 async def read_stack(name: str) -> Tuple[str, Dict[str, str]]:
     """
     Read a stack's compose file and its managed env files.
@@ -299,7 +313,7 @@ async def write_stack(
 
     await _atomic_write_file(stack_path / "compose.yaml", compose_yaml)
     for fname, content in env_files.items():
-        bare = fname[2:] if fname.startswith("./") else fname
+        bare = normalize_env_filename(fname)
         await _atomic_write_file(stack_path / bare, content)
 
     logger.debug(f"Wrote stack '{name}' ({len(env_files)} env file(s)) to {stack_path}")
@@ -325,10 +339,13 @@ async def delete_stack_files(name: str) -> None:
 
 
 async def delete_env_file(name: str, filename: str) -> bool:
-    """Delete a single env file from a stack dir.
+    """Delete a single managed env file from a stack dir.
 
-    Returns True iff a regular file was removed. Never deletes directories or
-    symlink targets; never touches other files. Raises ValueError on an unsafe
+    Only removes a file in the stack's managed env-file set (the conventional
+    '.env' plus the bare same-dir filenames referenced by env_file: directives
+    in the compose). Never removes the compose file, bind-mount data, an
+    unreferenced file, a directory, or a symlink target. Returns True iff a
+    regular managed env file was removed. Raises ValueError on an unsafe
     filename.
 
     Args:
@@ -336,7 +353,7 @@ async def delete_env_file(name: str, filename: str) -> bool:
         filename: Env filename to delete (e.g. '.env', '.db.env', './app.env')
 
     Returns:
-        True if a regular file was deleted, False otherwise
+        True if a regular managed env file was deleted, False otherwise
 
     Raises:
         ValueError: If stack name is invalid or filename is unsafe
@@ -344,11 +361,18 @@ async def delete_env_file(name: str, filename: str) -> bool:
     validate_stack_name(name)
     if not is_safe_env_filename(filename):
         raise ValueError(f"Unsafe env filename: {filename!r}")
-    bare = filename[2:] if filename.startswith("./") else filename
+    bare = normalize_env_filename(filename)
     stack_path = get_stack_path(name)
     target = stack_path / bare
 
     def _delete() -> bool:
+        compose_path = find_compose_file(stack_path)
+        if compose_path is None:
+            return False  # no compose -> nothing managed to delete
+        if bare not in _managed_env_filenames(compose_path.read_text()):
+            # Not a managed env file: the compose file itself, bind-mount data,
+            # or any same-dir file not named '.env'/referenced by env_file:.
+            return False
         if target.parent != stack_path:       # containment, defense in depth
             return False
         if target.is_symlink() or target.is_dir():

@@ -13,9 +13,11 @@ import re
 import shutil
 import tempfile
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import aiofiles
+
+from utils.env_files import is_safe_env_filename, parse_env_file_refs
 
 logger = logging.getLogger(__name__)
 
@@ -205,44 +207,46 @@ async def find_stack_by_name(name: str) -> Optional[str]:
     return await asyncio.to_thread(_find)
 
 
-async def read_stack(name: str) -> Tuple[str, Optional[str]]:
+async def read_stack(name: str) -> Tuple[str, Dict[str, str]]:
     """
-    Read compose file and .env for a stack.
+    Read a stack's compose file and its managed env files.
 
-    Supports compose.yaml, compose.yml, docker-compose.yaml, docker-compose.yml.
-
-    Args:
-        name: Stack name
+    The env-file set is derived from the compose (not the directory): the
+    conventional '.env' (if present) plus every same-dir bare filename named by
+    an env_file: directive. Referenced-but-missing files read as ''. This keeps
+    bind-mount runtime data in the stack dir invisible.
 
     Returns:
-        Tuple of (compose_yaml, env_content or None)
+        (compose_yaml, env_files) where env_files maps filename -> content.
 
     Raises:
-        FileNotFoundError: If stack doesn't exist (no compose file found)
+        FileNotFoundError: If no compose file exists for the stack.
     """
     stack_path = get_stack_path(name)
-    env_path = stack_path / ".env"
 
-    # Check existence async (for NFS compatibility)
-    def _find_files():
+    def _read() -> Tuple[str, Dict[str, str]]:
         compose_path = find_compose_file(stack_path)
-        env_exists = env_path.exists()
-        return compose_path, env_exists
+        if compose_path is None:
+            raise FileNotFoundError(f"Stack '{name}' not found (no compose file)")
+        compose_yaml = compose_path.read_text()
 
-    compose_path, env_exists = await asyncio.to_thread(_find_files)
+        env_files: Dict[str, str] = {}
+        dot_env = stack_path / ".env"
+        if dot_env.is_file():
+            env_files[".env"] = dot_env.read_text()
 
-    if compose_path is None:
-        raise FileNotFoundError(f"Stack '{name}' not found (no compose file)")
+        captured, _skipped = parse_env_file_refs(compose_yaml)
+        for fname in captured:
+            if not is_safe_env_filename(fname):
+                continue
+            if fname in env_files:
+                continue
+            fpath = stack_path / fname
+            env_files[fname] = fpath.read_text() if fpath.is_file() else ""
 
-    async with aiofiles.open(compose_path, 'r') as f:
-        compose_yaml = await f.read()
+        return compose_yaml, env_files
 
-    env_content = None
-    if env_exists:
-        async with aiofiles.open(env_path, 'r') as f:
-            env_content = await f.read()
-
-    return compose_yaml, env_content
+    return await asyncio.to_thread(_read)
 
 
 async def _atomic_write_file(target_path: Path, content: str) -> None:
@@ -261,27 +265,28 @@ async def _atomic_write_file(target_path: Path, content: str) -> None:
 async def write_stack(
     name: str,
     compose_yaml: str,
-    env_content: Optional[str] = None,
-    create_only: bool = False
+    env_files: Optional[Dict[str, str]] = None,
+    create_only: bool = False,
 ) -> None:
     """
-    Write compose.yaml and .env for a stack.
+    Write a stack's compose file and its env files.
 
-    Creates directory if needed. Uses atomic write pattern.
-
-    Args:
-        name: Stack name (validated)
-        compose_yaml: Compose file content
-        env_content: Optional .env file content
-        create_only: If True, fail if stack already exists (race-safe creation)
+    Writes ONLY compose.yaml and the provided env files (creating or
+    overwriting them). Never deletes or touches any other file in the stack
+    directory, protecting relative bind-mount data and leaving unreferenced
+    env files as harmless, invisible orphans.
 
     Raises:
-        ValueError: If name is invalid or stack exists (when create_only=True)
+        ValueError: If the stack name or any env filename is invalid, or (with
+            create_only) the stack already exists.
     """
     validate_stack_name(name)
-    stack_path = get_stack_path(name)
+    env_files = env_files or {}
+    for fname in env_files:
+        if not is_safe_env_filename(fname):
+            raise ValueError(f"Unsafe env filename: {fname!r}")
 
-    # For create_only, use atomic directory creation to prevent race conditions
+    stack_path = get_stack_path(name)
     if create_only:
         try:
             stack_path.mkdir(parents=True, exist_ok=False)
@@ -290,21 +295,12 @@ async def write_stack(
     else:
         stack_path.mkdir(parents=True, exist_ok=True)
 
-    # Write compose.yaml atomically
     await _atomic_write_file(stack_path / "compose.yaml", compose_yaml)
+    for fname, content in env_files.items():
+        bare = fname[2:] if fname.startswith("./") else fname
+        await _atomic_write_file(stack_path / bare, content)
 
-    # Handle .env file
-    env_path = stack_path / ".env"
-    if env_content and env_content.strip():
-        await _atomic_write_file(env_path, env_content)
-    else:
-        # Remove .env if it exists and new content is empty
-        def _remove_env_if_exists():
-            if env_path.exists():
-                env_path.unlink()
-        await asyncio.to_thread(_remove_env_if_exists)
-
-    logger.debug(f"Wrote stack '{name}' to {stack_path}")
+    logger.debug(f"Wrote stack '{name}' ({len(env_files)} env file(s)) to {stack_path}")
 
 
 async def delete_stack_files(name: str) -> None:

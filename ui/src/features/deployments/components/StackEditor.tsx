@@ -68,7 +68,7 @@ import { DeploymentProgress } from './DeploymentProgress'
 import { PortConflictBanner } from './PortConflictBanner'
 import { validateStackName, MAX_STACK_NAME_LENGTH } from '../types'
 import type { DeployedHost, PortConflict } from '../types'
-import { handleApiError, getErrorMessage } from '../utils'
+import { handleApiError, getErrorMessage, envFilesEqual } from '../utils'
 import { useAuth } from '@/features/auth/AuthContext'
 
 // Base path for stack storage (matches backend STACKS_DIR)
@@ -114,12 +114,12 @@ export function StackEditor({
   const [stackName, setStackName] = useState('')
   const [originalName, setOriginalName] = useState('')
   const [composeYaml, setComposeYaml] = useState('')
-  const [envContent, setEnvContent] = useState('')
+  const [envFiles, setEnvFiles] = useState<Record<string, string>>({})
   const [isEditingName, setIsEditingName] = useState(false)
 
   // Track original content for change detection
   const [originalCompose, setOriginalCompose] = useState('')
-  const [originalEnv, setOriginalEnv] = useState('')
+  const [originalEnvFiles, setOriginalEnvFiles] = useState<Record<string, string>>({})
 
   // Deploy state
   const [hostId, setHostId] = useState('')
@@ -136,14 +136,14 @@ export function StackEditor({
   const [pendingAction, setPendingAction] = useState<PendingActionState | null>(null)
 
   // Tab state
-  const [activeTab, setActiveTab] = useState<'compose' | 'env'>('compose')
+  const [activeTab, setActiveTab] = useState<string>('compose')
 
   // Reset to compose if env tab becomes unavailable
   useEffect(() => {
-    if (activeTab === 'env' && !canViewEnv) {
+    if (activeTab !== 'compose' && (!canViewEnv || !(activeTab in envFiles))) {
       setActiveTab('compose')
     }
-  }, [activeTab, canViewEnv])
+  }, [activeTab, canViewEnv, envFiles])
 
   // Errors
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -155,7 +155,7 @@ export function StackEditor({
   const isCreateMode = selectedStackName === '__new__'
 
   // Derived state
-  const hasContentChanges = composeYaml !== originalCompose || envContent !== originalEnv
+  const hasContentChanges = composeYaml !== originalCompose || !envFilesEqual(envFiles, originalEnvFiles)
   const hasNameChange = stackName !== originalName && !isCreateMode
   const hasChanges = hasContentChanges || hasNameChange
   const isSubmitting =
@@ -195,9 +195,9 @@ export function StackEditor({
     setStackName('')
     setOriginalName('')
     setComposeYaml('')
-    setEnvContent('')
+    setEnvFiles({})
     setOriginalCompose('')
-    setOriginalEnv('')
+    setOriginalEnvFiles({})
     setHostId('')
     setErrors({})
     setIsEditingName(false)
@@ -217,15 +217,16 @@ export function StackEditor({
   useEffect(() => {
     if (selectedStack) {
       const compose = selectedStack.compose_yaml || ''
-      const env = selectedStack.env_content || ''
+      const files = selectedStack.env_files || {}
       setStackName(selectedStack.name)
       setOriginalName(selectedStack.name)
       setComposeYaml(compose)
-      setEnvContent(env)
+      setEnvFiles(files)
       setOriginalCompose(compose)
-      setOriginalEnv(env)
+      setOriginalEnvFiles(files)
       setErrors({})
       setIsEditingName(false)
+      setActiveTab('compose')
     }
   }, [selectedStack])
 
@@ -278,7 +279,7 @@ export function StackEditor({
         await createStack.mutateAsync({
           name: stackName.trim(),
           compose_yaml: composeYaml,
-          env_content: envContent.trim() || null,
+          env_files: envFiles,
         })
         toast.success(`Stack "${stackName}" created`)
         onStackChange(stackName.trim())
@@ -294,7 +295,7 @@ export function StackEditor({
         await updateStack.mutateAsync({
           name: targetName,
           compose_yaml: composeYaml,
-          env_content: envContent.trim() || null,
+          env_files: envFiles,
         })
 
         toast.success('Stack saved')
@@ -305,7 +306,7 @@ export function StackEditor({
 
       setOriginalName(stackName.trim())
       setOriginalCompose(composeYaml)
-      setOriginalEnv(envContent)
+      setOriginalEnvFiles(envFiles)
       setIsEditingName(false)
       return true
     } catch (error: unknown) {
@@ -605,7 +606,7 @@ export function StackEditor({
         {/* Content editor with tabs */}
         <div className="flex-1 flex flex-col overflow-hidden min-h-0">
           {/* Tab buttons */}
-          <div className="flex gap-1 mb-2 shrink-0">
+          <div className="flex gap-1 mb-2 shrink-0 flex-wrap">
             <Button
               type="button"
               variant={activeTab === 'compose' ? 'default' : 'ghost'}
@@ -614,16 +615,19 @@ export function StackEditor({
             >
               Compose
             </Button>
-            {canViewEnv && (
-              <Button
-                type="button"
-                variant={activeTab === 'env' ? 'default' : 'ghost'}
-                size="sm"
-                onClick={() => setActiveTab('env')}
-              >
-                Environment
-              </Button>
-            )}
+            {canViewEnv &&
+              Object.keys(envFiles).map((fname) => (
+                <Button
+                  key={fname}
+                  type="button"
+                  variant={activeTab === fname ? 'default' : 'ghost'}
+                  size="sm"
+                  className="font-mono"
+                  onClick={() => setActiveTab(fname)}
+                >
+                  {fname}
+                </Button>
+              ))}
           </div>
 
           {/* Tab content */}
@@ -639,11 +643,13 @@ export function StackEditor({
               />
             )}
 
-            {canViewEnv && activeTab === 'env' && (
+            {canViewEnv && activeTab !== 'compose' && activeTab in envFiles && (
               <ConfigurationEditor
                 type="env"
-                value={envContent}
-                onChange={setEnvContent}
+                value={envFiles[activeTab] ?? ''}
+                onChange={(value) =>
+                  setEnvFiles((prev) => ({ ...prev, [activeTab]: value }))
+                }
                 fillHeight
               />
             )}

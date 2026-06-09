@@ -335,7 +335,7 @@ async def deploy_stack(
         connection_type = host.connection_type
 
     # Read stack content
-    compose_yaml, env_content = await stack_storage.read_stack(request.stack_name)
+    compose_yaml, env_files = await stack_storage.read_stack(request.stack_name)
 
     # Generate transient deployment ID for progress tracking
     deployment_id = f"{request.host_id}:{request.stack_name}:{uuid.uuid4().hex[:8]}"
@@ -383,7 +383,7 @@ async def deploy_stack(
                     deployment_id=deployment_id,
                     compose_content=compose_yaml,
                     project_name=request.stack_name,
-                    env_file_content=env_content,
+                    env_files=env_files,
                     action=request.action,
                     remove_volumes=request.remove_volumes,
                     force_recreate=request.force_recreate,
@@ -431,7 +431,7 @@ async def deploy_stack(
                     compose_yaml=compose_yaml,
                     progress_callback=on_progress,
                     action=request.action,
-                    env_file_content=env_content,
+                    env_files=env_files,
                     remove_volumes=request.remove_volumes,
                     force_recreate=request.force_recreate,
                     pull_images=request.pull_images,

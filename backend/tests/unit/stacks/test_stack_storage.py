@@ -249,29 +249,30 @@ class TestReadStack:
 
     @pytest.mark.asyncio
     async def test_read_compose_only(self, temp_stacks_dir):
-        """Should read compose.yaml when no .env exists"""
+        """Should read compose.yaml and return empty env_files map when no .env exists"""
         stack_dir = temp_stacks_dir / "myapp"
         stack_dir.mkdir()
         (stack_dir / "compose.yaml").write_text("services:\n  web:\n    image: nginx")
 
-        compose, env = await read_stack("myapp")
+        compose, env_files = await read_stack("myapp")
 
         assert "nginx" in compose
-        assert env is None
+        assert env_files == {}
 
     @pytest.mark.asyncio
     async def test_read_compose_and_env(self, temp_stacks_dir):
-        """Should read both compose.yaml and .env"""
+        """Should read both compose.yaml and .env, returning env_files map"""
         stack_dir = temp_stacks_dir / "myapp"
         stack_dir.mkdir()
         (stack_dir / "compose.yaml").write_text("services:\n  web:\n    image: nginx")
         (stack_dir / ".env").write_text("PORT=8080\nDEBUG=true")
 
-        compose, env = await read_stack("myapp")
+        compose, env_files = await read_stack("myapp")
 
         assert "nginx" in compose
-        assert "PORT=8080" in env
-        assert "DEBUG=true" in env
+        assert ".env" in env_files
+        assert "PORT=8080" in env_files[".env"]
+        assert "DEBUG=true" in env_files[".env"]
 
     @pytest.mark.asyncio
     async def test_read_nonexistent_raises(self, temp_stacks_dir):
@@ -303,8 +304,8 @@ class TestWriteStack:
 
     @pytest.mark.asyncio
     async def test_write_compose_and_env(self, temp_stacks_dir):
-        """Should write both compose.yaml and .env"""
-        await write_stack("myapp", "services: {}", env_content="PORT=8080")
+        """Should write both compose.yaml and .env via env_files map"""
+        await write_stack("myapp", "services: {}", env_files={".env": "PORT=8080"})
 
         compose_path = temp_stacks_dir / "myapp" / "compose.yaml"
         env_path = temp_stacks_dir / "myapp" / ".env"
@@ -314,16 +315,17 @@ class TestWriteStack:
         assert "PORT=8080" in env_path.read_text()
 
     @pytest.mark.asyncio
-    async def test_write_removes_empty_env(self, temp_stacks_dir):
-        """Should remove .env if content is empty/whitespace"""
+    async def test_write_no_env_files_leaves_existing_env(self, temp_stacks_dir):
+        """write_stack with no env_files does not touch existing .env files"""
         stack_dir = temp_stacks_dir / "myapp"
         stack_dir.mkdir()
         env_path = stack_dir / ".env"
         env_path.write_text("OLD=value")
 
-        await write_stack("myapp", "services: {}", env_content="   ")
+        await write_stack("myapp", "services: {}")
 
-        assert not env_path.exists()
+        assert env_path.exists()
+        assert "OLD=value" in env_path.read_text()
 
     @pytest.mark.asyncio
     async def test_write_creates_directory(self, temp_stacks_dir):

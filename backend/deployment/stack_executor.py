@@ -40,7 +40,7 @@ async def execute_stack_deployment(
     Args:
         session: Database session
         deployment: Deployment instance
-        definition: Stack definition with compose_yaml and env_content
+        definition: Stack definition with compose_yaml and env_files
         docker_monitor: DockerMonitor instance (unused, kept for API compatibility)
         state_machine: DeploymentStateMachine instance
         update_progress: Async callback to update progress
@@ -53,9 +53,9 @@ async def execute_stack_deployment(
     """
     logger.info(f"Starting stack deployment {deployment.id}")
 
-    # Extract compose YAML and env file content
+    # Extract compose YAML and env files map
     compose_yaml = definition.get('compose_yaml')
-    env_content = definition.get('env_content')
+    env_files: Dict[str, str] = definition.get('env_files') or {}
 
     if not compose_yaml:
         raise RuntimeError("Stack deployment requires 'compose_yaml' in definition")
@@ -76,7 +76,7 @@ async def execute_stack_deployment(
         session=session,
         deployment=deployment,
         compose_yaml=compose_yaml,
-        env_content=env_content,
+        env_files=env_files,
         state_machine=state_machine,
         update_progress=update_progress,
         create_deployment_metadata=create_deployment_metadata,
@@ -89,7 +89,7 @@ async def _execute_via_go_service(
     session: Session,
     deployment: Deployment,
     compose_yaml: str,
-    env_content: Optional[str],
+    env_files: Dict[str, str],
     state_machine,
     update_progress: Callable,
     create_deployment_metadata: Callable,
@@ -133,7 +133,7 @@ async def _execute_via_go_service(
             compose_yaml=compose_yaml,
             progress_callback=on_progress,
             action="up",
-            env_file_content=env_content,
+            env_files=env_files,
             force_recreate=force_recreate,
             pull_images=pull_images,
             wait_for_healthy=True,

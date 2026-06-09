@@ -139,3 +139,30 @@ async def test_discovered_env_filenames_excludes_symlink_and_oversized(stacks_di
 
     result = stack_storage._discovered_env_filenames(stack_dir, compose)
     assert result == {".env.ok"}
+
+
+async def test_discovered_env_filenames_excludes_directory_and_fifo(stacks_dir):
+    import os as _os
+    compose = "services:\n  app:\n    image: x\n"
+    stack_dir = stacks_dir / "myapp"
+    stack_dir.mkdir()
+    (stack_dir / "compose.yaml").write_text(compose)
+    (stack_dir / "config.env").mkdir()                  # directory named like an env file -> excluded
+    _os.mkfifo(stack_dir / "pipe.env")                  # FIFO -> excluded (non-regular file)
+    (stack_dir / ".env.real").write_text("R=1\n")       # regular env file -> discovered
+
+    result = stack_storage._discovered_env_filenames(stack_dir, compose)
+    assert result == {".env.real"}
+
+
+async def test_discovered_env_filenames_handles_unparseable_compose(stacks_dir):
+    # Malformed compose: referenced/bind-source parsing must not throw; discovery
+    # still surfaces an env-named on-disk file.
+    compose = ": : not valid yaml : :"
+    stack_dir = stacks_dir / "myapp"
+    stack_dir.mkdir()
+    (stack_dir / "compose.yaml").write_text(compose)
+    (stack_dir / ".env.staging").write_text("S=1\n")
+
+    result = stack_storage._discovered_env_filenames(stack_dir, compose)
+    assert result == {".env.staging"}

@@ -699,3 +699,18 @@ class TestDeleteEnvFile:
 
         assert result is False
         assert (stack_dir / "compose.yaml").exists()
+
+    @pytest.mark.asyncio
+    async def test_refuses_non_env_named_unreferenced_file(self, temp_stacks_dir):
+        """A non-env-named file (potential bind-mount data) is never deletable,
+        even when unreferenced and sitting in the stack dir."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text("services: {}")
+        data = stack_dir / "notes.txt"
+        data.write_text("IMPORTANT")
+
+        result = await delete_env_file("myapp", "notes.txt")
+
+        assert result is False
+        assert data.read_text() == "IMPORTANT"

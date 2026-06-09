@@ -406,11 +406,12 @@ async def delete_stack_files(name: str) -> None:
 async def delete_env_file(name: str, filename: str) -> bool:
     """Delete a single managed env file from a stack dir.
 
-    Only removes a file in the stack's managed env-file set (the conventional
-    '.env' plus the bare same-dir filenames referenced by env_file: directives
-    in the compose). Never removes the compose file, bind-mount data, an
-    unreferenced file, a directory, or a symlink target. Returns True iff a
-    regular managed env file was removed. Raises ValueError on an unsafe
+    Only removes a file in the stack's managed env-file set: the conventional
+    '.env', the bare same-dir filenames referenced by env_file: directives, and
+    env-named files discovered on disk (the inactive files of an env-swap
+    workflow). Never removes the compose file, a compose-declared bind-mount
+    source, a non-env-named file, a directory, or a symlink target. Returns True
+    iff a regular managed env file was removed. Raises ValueError on an unsafe
     filename.
 
     Args:
@@ -435,8 +436,9 @@ async def delete_env_file(name: str, filename: str) -> bool:
         if compose_path is None:
             return False  # no compose -> nothing managed to delete
         if bare not in _managed_env_filenames(stack_path, compose_path.read_text()):
-            # Not a managed env file: the compose file itself, bind-mount data,
-            # or any same-dir file not named '.env'/referenced by env_file:.
+            # Not a managed env file: the compose file, a bind-mount source, a
+            # directory/symlink, or any same-dir file that is not '.env',
+            # env_file:-referenced, or an env-named discovered file.
             return False
         if target.parent != stack_path:       # containment, defense in depth
             return False

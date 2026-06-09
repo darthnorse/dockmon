@@ -295,6 +295,10 @@ class AgentDeploymentExecutor:
             ValueError: If compose content is invalid (e.g., has build: directive)
         """
         env_files = env_files or {}
+        # Old agents ignore env_files and read only env_file_content. Derive the
+        # legacy .env from the map so single-.env stacks still work on them.
+        if not env_file_content:
+            env_file_content = env_files.get(".env", "")
 
         # Block multi-env-file deploys on agents that predate the multi_env_files capability
         if len(env_files) > 1:

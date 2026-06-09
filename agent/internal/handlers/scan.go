@@ -334,11 +334,13 @@ type ReadComposeFileRequest struct {
 
 // ReadComposeFileResult is the response containing file content
 type ReadComposeFileResult struct {
-	Success    bool   `json:"success"`
-	Path       string `json:"path"`
-	Content    string `json:"content,omitempty"`
-	EnvContent string `json:"env_content,omitempty"` // .env file if exists
-	Error      string `json:"error,omitempty"`
+	Success         bool              `json:"success"`
+	Path            string            `json:"path"`
+	Content         string            `json:"content,omitempty"`
+	EnvContent      string            `json:"env_content,omitempty"`      // legacy: .env file if exists
+	EnvFiles        map[string]string `json:"env_files,omitempty"`        // filename -> content
+	SkippedEnvFiles []string          `json:"skipped_env_files,omitempty"` // out-of-dir refs not imported
+	Error           string            `json:"error,omitempty"`
 }
 
 // ReadComposeFile reads a compose file's content
@@ -404,24 +406,109 @@ func (h *ScanHandler) ReadComposeFile(ctx context.Context, req ReadComposeFileRe
 		}
 	}
 
-	// Try to read .env file in same directory
-	var envContent string
-	envPath := filepath.Join(filepath.Dir(req.Path), ".env")
-	if envData, err := os.ReadFile(envPath); err == nil {
-		envContent = string(envData)
-		h.log.WithField("env_path", envPath).Debug("Found .env file")
+	dir := filepath.Dir(req.Path)
+	envFiles := map[string]string{}
+	if data, err := os.ReadFile(filepath.Join(dir, ".env")); err == nil {
+		envFiles[".env"] = string(data)
+		h.log.WithField("env_path", filepath.Join(dir, ".env")).Debug("Found .env file")
+	}
+	captured, skipped := parseEnvFileRefs(content)
+	for _, name := range captured {
+		if data, err := os.ReadFile(filepath.Join(dir, name)); err == nil {
+			envFiles[name] = string(data)
+		} else {
+			// Referenced by compose but absent on disk: record the key with empty
+			// content so the importer still knows the reference exists.
+			envFiles[name] = ""
+		}
 	}
 
 	h.log.WithFields(logrus.Fields{
-		"path":        req.Path,
-		"size":        len(content),
-		"has_env":     envContent != "",
+		"path":     req.Path,
+		"size":     len(content),
+		"has_env":  envFiles[".env"] != "",
+		"env_refs": len(captured),
 	}).Info("Compose file read successfully")
 
 	return ReadComposeFileResult{
-		Success:    true,
-		Path:       req.Path,
-		Content:    string(content),
-		EnvContent: envContent,
+		Success:         true,
+		Path:            req.Path,
+		Content:         string(content),
+		EnvContent:      envFiles[".env"], // legacy field, kept for back-compat
+		EnvFiles:        envFiles,
+		SkippedEnvFiles: skipped,
 	}
+}
+
+// envSafe reports whether name is a bare same-directory filename (no path traversal).
+func envSafe(name string) bool {
+	if name == "" {
+		return false
+	}
+	name = strings.TrimPrefix(name, "./")
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	if strings.ContainsAny(name, "/\\\x00") {
+		return false
+	}
+	return name == filepath.Base(name)
+}
+
+// parseEnvFileRefs extracts service-level env_file: targets from a compose document.
+// Returns (captured bare same-dir names with leading "./" stripped, skipped out-of-dir refs).
+func parseEnvFileRefs(composeYAML []byte) (captured []string, skipped []string) {
+	var doc struct {
+		Services map[string]struct {
+			EnvFile yaml.Node `yaml:"env_file"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(composeYAML, &doc); err != nil {
+		return nil, nil
+	}
+	seen := map[string]bool{}
+	add := func(path string) {
+		if path == "" {
+			return
+		}
+		if envSafe(path) {
+			bare := strings.TrimPrefix(path, "./")
+			if !seen[bare] {
+				seen[bare] = true
+				captured = append(captured, bare)
+			}
+		} else {
+			skipped = append(skipped, path)
+		}
+	}
+	handleNode := func(n *yaml.Node) {
+		switch n.Kind {
+		case yaml.ScalarNode:
+			add(n.Value)
+		case yaml.SequenceNode:
+			for _, item := range n.Content {
+				if item.Kind == yaml.ScalarNode {
+					add(item.Value)
+				} else if item.Kind == yaml.MappingNode {
+					for i := 0; i+1 < len(item.Content); i += 2 {
+						if item.Content[i].Value == "path" {
+							add(item.Content[i+1].Value)
+						}
+					}
+				}
+			}
+		case yaml.MappingNode:
+			for i := 0; i+1 < len(n.Content); i += 2 {
+				if n.Content[i].Value == "path" {
+					add(n.Content[i+1].Value)
+				}
+			}
+		}
+	}
+	for _, svc := range doc.Services {
+		if svc.EnvFile.Kind != 0 {
+			handleNode(&svc.EnvFile)
+		}
+	}
+	return captured, skipped
 }

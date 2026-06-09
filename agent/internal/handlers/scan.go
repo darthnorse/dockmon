@@ -338,8 +338,8 @@ type ReadComposeFileResult struct {
 	Success         bool              `json:"success"`
 	Path            string            `json:"path"`
 	Content         string            `json:"content,omitempty"`
-	EnvContent      string            `json:"env_content,omitempty"`      // legacy: .env file if exists
-	EnvFiles        map[string]string `json:"env_files,omitempty"`        // filename -> content
+	EnvContent      string            `json:"env_content,omitempty"`       // legacy: .env file if exists
+	EnvFiles        map[string]string `json:"env_files,omitempty"`         // filename -> content
 	SkippedEnvFiles []string          `json:"skipped_env_files,omitempty"` // out-of-dir refs not imported
 	Error           string            `json:"error,omitempty"`
 }

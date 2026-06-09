@@ -35,15 +35,24 @@ export function envFilesEqual(
 }
 
 /**
+ * Strip a leading "./" so an env filename is the bare basename the stack stores.
+ * Mirrors the backend `normalize_env_filename`.
+ */
+export function normalizeEnvFileName(name: string): string {
+  return name.startsWith('./') ? name.slice(2) : name
+}
+
+/**
  * Validate an env-file name for the stack editor's "add env file" control.
- * Mirrors the backend `is_safe_env_filename`: a bare same-dir filename only,
- * tolerating a leading "./" (compose's same-dir form). Rejects empty names,
- * ".", "..", path separators, absolute paths, and whitespace-padded names.
- * Returns a user-facing error message, or null when the name is valid.
+ * Stricter than the backend `is_safe_env_filename`: it rejects the same unsafe
+ * forms (empty, ".", "..", path separators, absolute paths, leading/trailing
+ * whitespace) and additionally rejects internal spaces, which the backend
+ * tolerates but are undesirable in a filename. The backend remains the
+ * authoritative gate. Returns a user-facing error message, or null when valid.
  */
 export function validateEnvFileName(name: string): string | null {
   if (!name) return 'Filename is required'
-  const candidate = name.startsWith('./') ? name.slice(2) : name
+  const candidate = normalizeEnvFileName(name)
   if (!candidate || candidate === '.' || candidate === '..') {
     return 'Enter a valid filename (e.g. .env, .db.env)'
   }

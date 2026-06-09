@@ -70,11 +70,18 @@ import { DeploymentProgress } from './DeploymentProgress'
 import { PortConflictBanner } from './PortConflictBanner'
 import { validateStackName, MAX_STACK_NAME_LENGTH } from '../types'
 import type { DeployedHost, PortConflict } from '../types'
-import { handleApiError, getErrorMessage, envFilesEqual, validateEnvFileName } from '../utils'
+import { handleApiError, getErrorMessage, envFilesEqual, validateEnvFileName, normalizeEnvFileName } from '../utils'
 import { useAuth } from '@/features/auth/AuthContext'
 
 // Base path for stack storage (matches backend STACKS_DIR)
 const STACKS_BASE_PATH = '/app/data/stacks'
+
+/** Return a copy of an env-file map without `key` (immutable key removal). */
+function dropEnvFile(map: Record<string, string>, key: string): Record<string, string> {
+  const next = { ...map }
+  delete next[key]
+  return next
+}
 
 type DialogType = 'delete' | 'copy' | 'save-changes' | 'remove-confirm' | 'add-env-file' | 'remove-env-file' | null
 
@@ -513,7 +520,7 @@ export function StackEditor({
       setEnvFileNameError(validationError)
       return
     }
-    const fname = raw.startsWith('./') ? raw.slice(2) : raw
+    const fname = normalizeEnvFileName(raw)
     if (envTabNames.includes(fname)) {
       setEnvFileNameError('A tab for this file already exists')
       return
@@ -527,8 +534,7 @@ export function StackEditor({
   const handleRemoveEnvFile = async () => {
     const fname = envFileToRemove
     if (!fname) return
-    const isPersisted = Object.prototype.hasOwnProperty.call(originalEnvFiles, fname)
-    if (isPersisted) {
+    if (isEnvFileToRemovePersisted) {
       if (!selectedStackName || selectedStackName === '__new__') return
       try {
         await deleteEnvFile.mutateAsync({ name: selectedStackName, filename: fname })
@@ -538,17 +544,9 @@ export function StackEditor({
         setEnvFileToRemove(null)
         return
       }
-      setOriginalEnvFiles((prev) => {
-        const next = { ...prev }
-        delete next[fname]
-        return next
-      })
+      setOriginalEnvFiles((prev) => dropEnvFile(prev, fname))
     }
-    setEnvFiles((prev) => {
-      const next = { ...prev }
-      delete next[fname]
-      return next
-    })
+    setEnvFiles((prev) => dropEnvFile(prev, fname))
     if (activeTab === fname) setActiveTab('compose')
     setActiveDialog(null)
     setEnvFileToRemove(null)

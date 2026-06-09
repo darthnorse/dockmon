@@ -220,4 +220,18 @@ describe('StackEditor unreferenced env badge', () => {
     // Exactly one badge: .env and .db.env (referenced) do not get one.
     expect(screen.getAllByTitle(/not referenced by your compose/i)).toHaveLength(1)
   })
+
+  it('shows no unref badge in create mode, even for an added env file', async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 })
+    render(<StackEditor selectedStackName="__new__" hosts={[]} onStackChange={vi.fn()} />)
+
+    // Add a non-.env tab; in create mode it must NOT be badged (no running stack
+    // exists to reference anything yet), even though it isn't "referenced".
+    await user.click(screen.getByTitle('Add env file'))
+    await user.type(screen.getByLabelText('Filename'), '.db.env')
+    await user.click(screen.getByRole('button', { name: 'Add File' }))
+
+    expect(screen.getByRole('button', { name: '.db.env' })).toBeInTheDocument()
+    expect(screen.queryByTitle(/not referenced by your compose/i)).not.toBeInTheDocument()
+  })
 })

@@ -163,6 +163,10 @@ export function StackEditor({
   // Filenames the compose references (from the backend). Tabs not in this set
   // (and not the always-active .env) are unreferenced/discovered on disk —
   // editing them won't affect the running stack until env_file: points there.
+  // Intended edge behavior: an older backend omits referenced_env_files (-> empty
+  // set, so every non-.env tab on an existing stack is badged), and a freshly
+  // added unsaved tab is "unreferenced" until saved + referenced. The badge is
+  // suppressed entirely in create mode (see isUnreferenced below).
   const referencedEnvFiles = useMemo(
     () => new Set(selectedStack?.referenced_env_files ?? []),
     [selectedStack]

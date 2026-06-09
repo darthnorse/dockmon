@@ -263,14 +263,19 @@ def _discovered_env_filenames(stack_path: Path, compose_yaml: str) -> set:
     return discovered
 
 
-def _managed_env_filenames(compose_yaml: str) -> set:
-    """Deprecated shim — delegates to referenced_env_filenames.
+def _managed_env_filenames(stack_path: Path, compose_yaml: str) -> set:
+    """The full set of env files a stack manages and may delete: the
+    authoritative compose-referenced set UNION naming-discovered unreferenced
+    files on disk.
 
-    Task 5 replaces this with the directory-aware managed set
-    (referenced | discovered). Kept here only so delete_env_file keeps working
-    between commits.
+    This single set powers BOTH the editor tab set (read_stack) and the delete
+    allowlist (delete_env_file) — keeping them in lockstep by construction.
+    The referenced half is compose-derived (never directory enumeration), so
+    the delete path can never remove the compose file or bind-mount data; the
+    discovered half is bounded by the is_env_filename + bind-mount + same-dir +
+    symlink + size filters in _discovered_env_filenames.
     """
-    return referenced_env_filenames(compose_yaml)
+    return referenced_env_filenames(compose_yaml) | _discovered_env_filenames(stack_path, compose_yaml)
 
 
 async def read_stack(name: str) -> Tuple[str, Dict[str, str]]:
@@ -421,7 +426,7 @@ async def delete_env_file(name: str, filename: str) -> bool:
         compose_path = find_compose_file(stack_path)
         if compose_path is None:
             return False  # no compose -> nothing managed to delete
-        if bare not in _managed_env_filenames(compose_path.read_text()):
+        if bare not in _managed_env_filenames(stack_path, compose_path.read_text()):
             # Not a managed env file: the compose file itself, bind-mount data,
             # or any same-dir file not named '.env'/referenced by env_file:.
             return False

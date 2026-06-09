@@ -166,3 +166,57 @@ async def test_discovered_env_filenames_handles_unparseable_compose(stacks_dir):
 
     result = stack_storage._discovered_env_filenames(stack_dir, compose)
     assert result == {".env.staging"}
+
+
+async def test_delete_env_file_removes_discovered_unreferenced(stacks_dir):
+    # An unreferenced, env-named file is now deletable (delete follows visibility).
+    compose = "services:\n  app:\n    image: x\n"
+    await stack_storage.write_stack("myapp", compose, {}, create_only=True)
+    staging = stacks_dir / "myapp" / ".env.staging"
+    staging.write_text("S=1\n")
+
+    deleted = await stack_storage.delete_env_file("myapp", ".env.staging")
+    assert deleted is True
+    assert not staging.exists()
+
+
+async def test_delete_env_file_refuses_bind_mounted_data(stacks_dir):
+    # A *.env file the compose bind-mounts is data, not a managed env file.
+    compose = (
+        "services:\n"
+        "  app:\n"
+        "    image: x\n"
+        "    volumes:\n"
+        "      - ./bind.env:/etc/bind.env\n"
+    )
+    await stack_storage.write_stack("myapp", compose, {}, create_only=True)
+    bind = stacks_dir / "myapp" / "bind.env"
+    bind.write_text("DATA\n")
+
+    deleted = await stack_storage.delete_env_file("myapp", "bind.env")
+    assert deleted is False
+    assert bind.read_text() == "DATA\n"
+
+
+async def test_delete_env_file_refuses_compose_file(stacks_dir):
+    compose = "services:\n  app:\n    image: x\n"
+    await stack_storage.write_stack("myapp", compose, {}, create_only=True)
+    deleted = await stack_storage.delete_env_file("myapp", "compose.yaml")
+    assert deleted is False
+    assert (stacks_dir / "myapp" / "compose.yaml").exists()
+
+
+async def test_managed_set_is_superset_of_read_tabs_and_includes_discovered(stacks_dir):
+    # Lockstep: every editor tab is in the delete allowlist, and a discovered
+    # file is deletable.
+    compose = "services:\n  app:\n    image: x\n    env_file:\n      - .db.env\n"
+    await stack_storage.write_stack(
+        "myapp", compose, {".env": "A=1\n", ".db.env": "P=2\n"}, create_only=True
+    )
+    stack_path = stacks_dir / "myapp"
+    (stack_path / ".env.staging").write_text("S=3\n")
+
+    managed = stack_storage._managed_env_filenames(stack_path, compose)
+    _compose, env = await stack_storage.read_stack("myapp")
+    assert set(env.keys()) <= managed
+    assert ".env.staging" in managed

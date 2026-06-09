@@ -156,3 +156,42 @@ describe('StackEditor remove env file', () => {
     expect(screen.queryByTitle('Remove .env')).not.toBeInTheDocument()
   })
 })
+
+describe('StackEditor load-effect guard', () => {
+  it('does not reset editor state when the same stack refetches in the background', () => {
+    vi.mocked(useStacksModule.useStack).mockReturnValue({
+      data: { name: 'myapp', compose_yaml: 'services: {}\n', env_files: { '.db.env': 'A=1' }, deployed_to: [] },
+      isLoading: false,
+    } as any)
+    const { rerender } = render(<StackEditor selectedStackName="myapp" hosts={[]} onStackChange={vi.fn()} />)
+    expect(screen.getByRole('button', { name: '.db.env' })).toBeInTheDocument()
+
+    // Simulate a background refetch for the SAME stack returning a different env set.
+    vi.mocked(useStacksModule.useStack).mockReturnValue({
+      data: { name: 'myapp', compose_yaml: 'services: {}\n', env_files: {}, deployed_to: [] },
+      isLoading: false,
+    } as any)
+    rerender(<StackEditor selectedStackName="myapp" hosts={[]} onStackChange={vi.fn()} />)
+
+    // Guard: load effect must NOT re-run for the same identity; local state preserved.
+    expect(screen.getByRole('button', { name: '.db.env' })).toBeInTheDocument()
+  })
+
+  it('reloads editor state when switching to a different stack', () => {
+    vi.mocked(useStacksModule.useStack).mockReturnValue({
+      data: { name: 'myapp', compose_yaml: 'services: {}\n', env_files: { '.db.env': 'A=1' }, deployed_to: [] },
+      isLoading: false,
+    } as any)
+    const { rerender } = render(<StackEditor selectedStackName="myapp" hosts={[]} onStackChange={vi.fn()} />)
+    expect(screen.getByRole('button', { name: '.db.env' })).toBeInTheDocument()
+
+    vi.mocked(useStacksModule.useStack).mockReturnValue({
+      data: { name: 'other', compose_yaml: 'services: {}\n', env_files: { '.other.env': 'B=2' }, deployed_to: [] },
+      isLoading: false,
+    } as any)
+    rerender(<StackEditor selectedStackName="other" hosts={[]} onStackChange={vi.fn()} />)
+
+    expect(screen.queryByRole('button', { name: '.db.env' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '.other.env' })).toBeInTheDocument()
+  })
+})

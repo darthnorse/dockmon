@@ -209,8 +209,13 @@ export function StackEditor({
 
   const [showPortConfirm, setShowPortConfirm] = useState(false)
 
+  // Tracks which stack identity the editor state was last initialized from, so a
+  // background refetch of the SAME stack does not clobber unsaved edits.
+  const loadedStackNameRef = useRef<string | null>(null)
+
   // Reset form state
   const resetForm = useCallback(() => {
+    loadedStackNameRef.current = null
     setStackName('')
     setOriginalName('')
     setComposeYaml('')
@@ -235,9 +240,12 @@ export function StackEditor({
     }
   }, [selectedStackName, resetForm])
 
-  // Load stack content when selected
+  // Load stack content when a different stack is selected (first load / switch).
+  // Guarded by identity so a same-stack refetch (e.g. after an env-file delete
+  // invalidates the query) does not overwrite the user's unsaved edits.
   useEffect(() => {
-    if (selectedStack) {
+    if (selectedStack && loadedStackNameRef.current !== selectedStack.name) {
+      loadedStackNameRef.current = selectedStack.name
       const compose = selectedStack.compose_yaml || ''
       const files = selectedStack.env_files || {}
       setStackName(selectedStack.name)

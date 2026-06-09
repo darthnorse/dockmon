@@ -207,20 +207,26 @@ async def find_stack_by_name(name: str) -> Optional[str]:
     return await asyncio.to_thread(_find)
 
 
-def _managed_env_filenames(compose_yaml: str) -> set:
-    """The set of env filenames a stack manages, derived from its compose.
+def referenced_env_filenames(compose_yaml: str) -> set:
+    """Env filenames the compose references: '.env' plus every same-dir bare
+    filename named by an env_file: directive, minus any compose filename.
 
-    The conventional '.env' plus every same-dir bare filename named by an
-    env_file: directive. This is the authoritative allowlist for which files
-    delete_env_file may remove, and it is kept in lockstep with what read_stack
-    surfaces as env tabs. Deriving it from the compose (not directory
-    enumeration) is what keeps the delete path from ever removing the compose
-    file, bind-mount data, or any other non-env file in the stack directory.
+    Purely compose-derived (no directory access). This is the authoritative
+    'active' set: '.env' (auto-loaded by compose) and the env_file: targets.
+    The route returns it so the editor can badge tabs that are NOT in it.
     """
     captured, _skipped = parse_env_file_refs(compose_yaml)
-    # Exclude compose filenames so a compose that references its own filename
-    # under env_file: can never make the compose file deletable via this path.
     return {".env", *captured} - set(COMPOSE_FILENAMES)
+
+
+def _managed_env_filenames(compose_yaml: str) -> set:
+    """Deprecated shim — delegates to referenced_env_filenames.
+
+    Task 5 replaces this with the directory-aware managed set
+    (referenced | discovered). Kept here only so delete_env_file keeps working
+    between commits.
+    """
+    return referenced_env_filenames(compose_yaml)
 
 
 async def read_stack(name: str) -> Tuple[str, Dict[str, str]]:

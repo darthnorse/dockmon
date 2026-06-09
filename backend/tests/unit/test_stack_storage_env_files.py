@@ -77,3 +77,19 @@ async def test_symlinked_env_file_not_read(stacks_dir, tmp_path):
     _compose, env = await stack_storage.read_stack("myapp")
     assert ".secret.env" not in env, "Symlinked env file must not appear in env map"
     assert "LEAKED=yes" not in str(env), "Symlink target content must not leak"
+
+
+def test_referenced_env_filenames_is_dot_env_plus_refs_minus_compose():
+    compose = (
+        "services:\n"
+        "  app:\n"
+        "    image: x\n"
+        "    env_file:\n"
+        "      - .db.env\n"
+        "      - compose.yaml\n"   # a compose filename ref must never be managed
+    )
+    assert stack_storage.referenced_env_filenames(compose) == {".env", ".db.env"}
+
+
+def test_referenced_env_filenames_no_refs_is_just_dot_env():
+    assert stack_storage.referenced_env_filenames("services:\n  app:\n    image: x\n") == {".env"}

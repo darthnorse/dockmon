@@ -12,7 +12,7 @@ com.docker.compose.project labels, not from database records.
 
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, Field
@@ -26,7 +26,7 @@ from deployment.container_utils import scan_deployed_stacks
 from deployment.port_conflict import extract_ports_from_compose, find_port_conflicts
 from deployment.routes import get_docker_monitor
 from security.rate_limiting import rate_limit_stacks
-from utils.response_filtering import filter_stack_env_content
+from utils.response_filtering import filter_stack_env_files
 
 # Database manager for audit tracking (v2.3.0+)
 _db_manager = None
@@ -59,9 +59,9 @@ class StackCreate(BaseModel):
         ...,
         description="Docker Compose YAML content",
     )
-    env_content: Optional[str] = Field(
-        None,
-        description="Optional .env file content",
+    env_files: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Map of env filename -> content (e.g. {'.env': '...', '.db.env': '...'})",
     )
 
 
@@ -71,9 +71,9 @@ class StackUpdate(BaseModel):
         ...,
         description="Docker Compose YAML content",
     )
-    env_content: Optional[str] = Field(
-        None,
-        description="Optional .env file content (None to remove)",
+    env_files: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Map of env filename -> content (e.g. {'.env': '...', '.db.env': '...'})",
     )
 
 
@@ -117,7 +117,10 @@ class StackResponse(BaseModel):
     name: str
     deployed_to: List[DeployedHost] = Field(default_factory=list)
     compose_yaml: Optional[str] = None
-    env_content: Optional[str] = None
+    env_files: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Map of env filename -> content (e.g. {'.env': '...', '.db.env': '...'})",
+    )
 
 
 class ValidatePortsRequest(BaseModel):
@@ -185,7 +188,7 @@ async def get_stack(name: str, user=Depends(get_current_user)):
         raise HTTPException(status_code=404, detail=f"Stack '{name}' not found")
 
     # Read stack content
-    compose_yaml, env_content = await stack_storage.read_stack(name)
+    compose_yaml, env_files = await stack_storage.read_stack(name)
 
     # Get deployed_to info from containers
     monitor = get_docker_monitor()
@@ -199,14 +202,14 @@ async def get_stack(name: str, user=Depends(get_current_user)):
             for h in deployed_stacks[name].hosts
         ]
 
-    # Filter env_content for users without stacks.view_env capability
+    # Filter env_files for users without stacks.view_env capability
     can_view_env = check_auth_capability(user, Capabilities.STACKS_VIEW_ENV)
 
     return StackResponse(
         name=name,
         deployed_to=deployed_to,
         compose_yaml=compose_yaml,
-        env_content=filter_stack_env_content(env_content, can_view_env),
+        env_files=filter_stack_env_files(env_files, can_view_env),
     )
 
 
@@ -268,14 +271,14 @@ async def create_stack(request: StackCreate, http_request: Request, user=Depends
     """
     Create a new stack.
 
-    Creates stack directory with compose.yaml and optional .env file.
+    Creates stack directory with compose.yaml and optional env files.
     Stack name must be lowercase alphanumeric with hyphens/underscores.
     """
     try:
         await stack_storage.write_stack(
             name=request.name,
             compose_yaml=request.compose_yaml,
-            env_content=request.env_content,
+            env_files=request.env_files,
             create_only=True,
         )
     except ValueError as e:
@@ -300,7 +303,7 @@ async def create_stack(request: StackCreate, http_request: Request, user=Depends
         name=request.name,
         deployed_to=[],
         compose_yaml=request.compose_yaml,
-        env_content=request.env_content,
+        env_files=request.env_files,
     )
 
 
@@ -309,7 +312,7 @@ async def update_stack(name: str, request: StackUpdate, http_request: Request, u
     """
     Update a stack's content.
 
-    Overwrites compose.yaml and .env files.
+    Overwrites compose.yaml and any env files.
     """
     # Check if stack exists
     if not await stack_storage.stack_exists(name):
@@ -319,7 +322,7 @@ async def update_stack(name: str, request: StackUpdate, http_request: Request, u
         await stack_storage.write_stack(
             name=name,
             compose_yaml=request.compose_yaml,
-            env_content=request.env_content,
+            env_files=request.env_files,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -361,7 +364,7 @@ async def update_stack(name: str, request: StackUpdate, http_request: Request, u
         name=name,
         deployed_to=deployed_to,
         compose_yaml=request.compose_yaml,
-        env_content=request.env_content,
+        env_files=request.env_files,
     )
 
 
@@ -417,9 +420,9 @@ async def rename_stack(name: str, request: StackRename, http_request: Request, u
         session.commit()
 
     # Read content for response
-    compose_yaml, env_content = await stack_storage.read_stack(request.new_name)
+    compose_yaml, env_files = await stack_storage.read_stack(request.new_name)
 
-    # Filter env_content for users without stacks.view_env capability
+    # Filter env_files for users without stacks.view_env capability
     can_view_env = check_auth_capability(user, Capabilities.STACKS_VIEW_ENV)
 
     logger.info(f"User {display_name} renamed stack '{name}' to '{request.new_name}'")
@@ -429,7 +432,7 @@ async def rename_stack(name: str, request: StackRename, http_request: Request, u
         name=request.new_name,
         deployed_to=[],
         compose_yaml=compose_yaml,
-        env_content=filter_stack_env_content(env_content, can_view_env),
+        env_files=filter_stack_env_files(env_files, can_view_env),
     )
 
 
@@ -489,9 +492,9 @@ async def copy_stack_endpoint(name: str, request: StackCopy, http_request: Reque
         session.commit()
 
     # Read content for response
-    compose_yaml, env_content = await stack_storage.read_stack(request.dest_name)
+    compose_yaml, env_files = await stack_storage.read_stack(request.dest_name)
 
-    # Filter env_content for users without stacks.view_env capability
+    # Filter env_files for users without stacks.view_env capability
     can_view_env = check_auth_capability(user, Capabilities.STACKS_VIEW_ENV)
 
     logger.info(f"User {display_name} copied stack '{name}' to '{request.dest_name}'")
@@ -500,5 +503,5 @@ async def copy_stack_endpoint(name: str, request: StackCopy, http_request: Reque
         name=request.dest_name,
         deployed_to=[],
         compose_yaml=compose_yaml,
-        env_content=filter_stack_env_content(env_content, can_view_env),
+        env_files=filter_stack_env_files(env_files, can_view_env),
     )

@@ -60,25 +60,6 @@ def filter_container_inspect_env(
     return result
 
 
-def filter_stack_env_content(
-    env_content: Optional[str],
-    can_view_env: bool
-) -> Optional[str]:
-    """
-    Filter stack .env content for unauthorized users.
-
-    Args:
-        env_content: The .env file content
-        can_view_env: True if user has stacks.view_env capability
-
-    Returns:
-        env_content if authorized, None otherwise
-    """
-    if can_view_env:
-        return env_content
-    return None
-
-
 def filter_ws_container_message(
     message: Dict,
     can_view_env: bool

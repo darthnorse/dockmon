@@ -111,7 +111,9 @@ services:
     assert parse_bind_mount_sources(compose) == {"data.env", ".secret.env", "conf.env"}
 
 
-def test_parse_bind_mount_sources_ignores_abs_subdir_var_and_named_volume():
+def test_parse_bind_mount_sources_ignores_abs_subdir_and_named_volume():
+    # Absolute and subdir sources point outside the stack dir's top level (no
+    # discovered file can collide), and a long-form named volume has no path.
     compose = """
 services:
   app:
@@ -119,12 +121,43 @@ services:
     volumes:
       - /etc/host.env:/x
       - ./sub/dir.env:/y
-      - ${DATA}/var.env:/z
       - type: volume
         source: dbdata
         target: /data
 """
     assert parse_bind_mount_sources(compose) == set()
+
+
+def test_parse_bind_mount_sources_captures_var_prefixed_same_dir():
+    # ${PWD}/x and $HOME/x resolve to a same-dir file; the bare name must be
+    # excluded from discovery so the bind-mounted data file isn't surfaced.
+    compose = """
+services:
+  app:
+    image: x
+    volumes:
+      - ${PWD}/secret.env:/run/secret.env
+      - $HOME/app.env:/app/app.env
+"""
+    assert parse_bind_mount_sources(compose) == {"secret.env", "app.env"}
+
+
+def test_parse_bind_mount_sources_captures_toplevel_local_bind_device():
+    # A named volume that is really a local bind to a same-dir file.
+    compose = """
+services:
+  app:
+    image: x
+    volumes:
+      - runtime:/data
+volumes:
+  runtime:
+    driver_opts:
+      type: none
+      o: bind
+      device: ./runtime.env
+"""
+    assert "runtime.env" in parse_bind_mount_sources(compose)
 
 
 def test_parse_bind_mount_sources_malformed_returns_empty_set():

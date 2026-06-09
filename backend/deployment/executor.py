@@ -218,7 +218,9 @@ class DeploymentExecutor:
                 # 30-minute timeout for entire deployment
                 async with asyncio.timeout(1800):
                     # Read compose content from filesystem (v2.2.7+)
-                    compose_yaml, env_files = await stack_storage.read_stack(deployment.stack_name)
+                    compose_yaml, env_files = await stack_storage.read_stack(
+                        deployment.stack_name, include_discovered=False
+                    )
                     definition = {
                         'compose_yaml': compose_yaml,
                         'env_files': env_files,

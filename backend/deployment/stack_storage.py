@@ -278,14 +278,26 @@ def _managed_env_filenames(stack_path: Path, compose_yaml: str) -> set:
     return referenced_env_filenames(compose_yaml) | _discovered_env_filenames(stack_path, compose_yaml)
 
 
-async def read_stack(name: str) -> Tuple[str, Dict[str, str]]:
+async def read_stack(name: str, include_discovered: bool = True) -> Tuple[str, Dict[str, str]]:
     """
     Read a stack's compose file and its managed env files.
 
-    The env-file set is derived from the compose (not the directory): the
-    conventional '.env' (if present) plus every same-dir bare filename named by
-    an env_file: directive. Referenced-but-missing files read as ''. This keeps
-    bind-mount runtime data in the stack dir invisible.
+    The env-file set is: the conventional '.env' (if present on disk) plus every
+    same-dir bare filename named by an env_file: directive (referenced-but-missing
+    files read as ''). When include_discovered is True (the default, for the
+    editor) it ALSO surfaces env-named files on disk that the compose does NOT
+    reference -- the inactive files of an env-swap workflow -- filtered to exclude
+    bind-mount data, symlinks, and oversized files.
+
+    Deploy callers MUST pass include_discovered=False so an inactive, unreferenced
+    env file (e.g. .env.staging) is never shipped to the compose service / remote
+    agent and never trips the old-agent multi_env_files gate. Bind-mount runtime
+    data and the compose file are excluded either way.
+
+    Args:
+        name: Stack name.
+        include_discovered: Include naming-discovered unreferenced env files
+            (editor view). Deploy paths pass False for referenced-only content.
 
     Returns:
         (compose_yaml, env_files) where env_files maps filename -> content.
@@ -318,17 +330,25 @@ async def read_stack(name: str) -> Tuple[str, Dict[str, str]]:
             env_files[fname] = fpath.read_text() if fpath.is_file() else ""
 
         # Discovered: env-named files on disk not referenced by the compose
-        # (e.g. the inactive files in an env-swap workflow). The discovery set
-        # already filtered symlinks/size/bind-mounts; re-check is_symlink at read
-        # time so a scan->read swap can't make us follow a symlink (mirrors the
-        # env_file: loop above).
-        for fname in _discovered_env_filenames(stack_path, compose_yaml):
-            if fname in env_files:
-                continue
-            fpath = stack_path / fname
-            if fpath.is_symlink():
-                continue
-            env_files[fname] = fpath.read_text()
+        # (e.g. the inactive files in an env-swap workflow). Editor view only --
+        # deploy callers pass include_discovered=False so these never reach the
+        # compose service / agent. The discovery set already filtered
+        # symlinks/size/bind-mounts; re-check symlink, regular-file, and size at
+        # read time so a scan->read swap can't make us follow a symlink, block on
+        # a fifo, or slurp an oversized file (mirrors the env_file: loop above).
+        if include_discovered:
+            for fname in _discovered_env_filenames(stack_path, compose_yaml):
+                if fname in env_files:
+                    continue
+                fpath = stack_path / fname
+                if fpath.is_symlink():
+                    continue
+                try:
+                    if not fpath.is_file() or fpath.stat().st_size > MAX_ENV_FILE_BYTES:
+                        continue
+                except OSError:
+                    continue
+                env_files[fname] = fpath.read_text()
 
         return compose_yaml, env_files
 

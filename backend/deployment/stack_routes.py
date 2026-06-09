@@ -246,7 +246,8 @@ async def validate_stack_ports(
     and 409 if the host is unreachable.
     """
     try:
-        compose_yaml, _env = await stack_storage.read_stack(name)
+        # Only the compose is needed here; skip the directory scan for discovered files.
+        compose_yaml, _env = await stack_storage.read_stack(name, include_discovered=False)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Stack '{name}' not found")
 

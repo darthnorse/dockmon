@@ -5,6 +5,7 @@ This bounds an arbitrary-file-read on import and an arbitrary-file-write on
 deploy to the compose's own directory.
 """
 import os
+import re
 from typing import List, Tuple
 
 import yaml
@@ -116,18 +117,27 @@ def parse_env_file_refs(compose_yaml: str) -> Tuple[List[str], List[str]]:
     return sorted(captured), skipped
 
 
+# A single leading interpolation segment (${VAR}/ or $VAR/) on a bind source.
+# Compose resolves ${PWD}/x relative to the compose dir, so the bare basename is
+# still a same-dir file we must protect.
+_VAR_PREFIX_RE = re.compile(r"^(?:\$\{[^}/]+\}|\$[A-Za-z_][A-Za-z0-9_]*)/(.+)$")
+
+
 def parse_bind_mount_sources(compose_yaml: str) -> set:
     """Best-effort set of bare same-dir filenames used as bind-mount sources.
 
-    Scans every service's volumes: (short 'SOURCE:TARGET[:MODE]' and long
-    {source: ..., type: bind}) and returns the sources that are bare same-dir
-    filenames (per is_safe_env_filename), normalized. Absolute paths, subdir
-    paths, ${VAR}-interpolated sources, and explicit named volumes are ignored.
+    Scans each service's volumes: (short 'SOURCE:TARGET[:MODE]' and long
+    {source: ..., type: bind}) and the top-level volumes: map (local bind
+    volumes via driver_opts.device), returning sources that resolve to a bare
+    same-dir filename (per is_safe_env_filename), normalized. A leading ${VAR}/
+    or $VAR/ interpolation prefix is stripped first, so a same-dir source written
+    as ${PWD}/app.env is still recognized. Absolute and subdir paths (which point
+    outside the stack dir's top level, so no discovered file can collide) and
+    named volumes are ignored. Malformed YAML -> set().
 
-    This is a defensive exclusion for env-file discovery: don't surface a data
-    file that the compose bind-mounts. It is intentionally NOT a complete
-    volume parser (over-capturing a coincidentally-named short-syntax named
-    volume only hides an env tab, the safe direction). Malformed YAML -> set().
+    This is a defensive exclusion for env-file discovery: don't surface (or let
+    delete) a data file the compose bind-mounts. Over-capturing a
+    coincidentally-named source only hides an env tab -- the safe direction.
     """
     try:
         doc = yaml.safe_load(compose_yaml)
@@ -135,26 +145,43 @@ def parse_bind_mount_sources(compose_yaml: str) -> set:
         return set()
     if not isinstance(doc, dict):
         return set()
-    services = doc.get("services")
-    if not isinstance(services, dict):
-        return set()
 
     sources: set = set()
-    for svc in services.values():
-        if not isinstance(svc, dict):
-            continue
-        vols = svc.get("volumes")
-        if not isinstance(vols, list):
-            continue
-        for vol in vols:
-            src = None
-            if isinstance(vol, str):
-                # short syntax: SOURCE:TARGET[:MODE] -> SOURCE is the first field
-                src = vol.split(":", 1)[0]
-            elif isinstance(vol, dict):
-                # long syntax: only bind mounts have a path source
-                if vol.get("type", "bind") == "bind":
-                    src = vol.get("source")
-            if isinstance(src, str) and is_safe_env_filename(src):
-                sources.add(normalize_env_filename(src))
+
+    def add_source(src) -> None:
+        if not isinstance(src, str) or not src:
+            return
+        # Reduce a ${PWD}/app.env style source to the bare 'app.env' it names.
+        m = _VAR_PREFIX_RE.match(src)
+        candidate = m.group(1) if m else src
+        if is_safe_env_filename(candidate):
+            sources.add(normalize_env_filename(candidate))
+
+    services = doc.get("services")
+    if isinstance(services, dict):
+        for svc in services.values():
+            if not isinstance(svc, dict):
+                continue
+            vols = svc.get("volumes")
+            if not isinstance(vols, list):
+                continue
+            for vol in vols:
+                if isinstance(vol, str):
+                    # short syntax: SOURCE:TARGET[:MODE] -> SOURCE is first field
+                    add_source(vol.split(":", 1)[0])
+                elif isinstance(vol, dict):
+                    # long syntax: only bind mounts have a path source
+                    if vol.get("type", "bind") == "bind":
+                        add_source(vol.get("source"))
+
+    # Top-level local bind volumes: a named volume that is really a bind to a
+    # same-dir file (volumes.<name>.driver_opts.device: ./runtime.env).
+    top_volumes = doc.get("volumes")
+    if isinstance(top_volumes, dict):
+        for vol in top_volumes.values():
+            if isinstance(vol, dict):
+                opts = vol.get("driver_opts")
+                if isinstance(opts, dict):
+                    add_source(opts.get("device"))
+
     return sources

@@ -261,3 +261,52 @@ async def test_managed_set_is_superset_of_read_tabs_and_includes_discovered(stac
     _compose, env = await stack_storage.read_stack("myapp")
     assert set(env.keys()) <= managed
     assert ".env.staging" in managed
+
+
+async def test_read_stack_include_discovered_false_excludes_unreferenced(stacks_dir):
+    # Deploy reads (include_discovered=False) must NOT surface env-swap orphans,
+    # so inactive env files aren't shipped to remote agents / don't trip the
+    # old-agent multi_env_files gate. The editor read (default) still shows them.
+    compose = "services:\n  app:\n    image: x\n    env_file:\n      - .env.dev\n"
+    await stack_storage.write_stack("myapp", compose, {".env.dev": "D=1\n"}, create_only=True)
+    (stacks_dir / "myapp" / ".env.staging").write_text("S=2\n")  # discovered orphan
+
+    _c, editor_env = await stack_storage.read_stack("myapp")  # default include_discovered=True
+    assert ".env.staging" in editor_env
+
+    _c2, deploy_env = await stack_storage.read_stack("myapp", include_discovered=False)
+    assert deploy_env == {".env.dev": "D=1\n"}
+    assert ".env.staging" not in deploy_env
+
+
+async def test_var_prefixed_bind_mount_data_not_surfaced_or_deletable(stacks_dir):
+    # A same-dir env file bind-mounted via ${PWD} is data, not a managed env
+    # file: it must not be discovered as a tab nor deletable, while a genuine
+    # env-swap orphan alongside it still is.
+    compose = (
+        "services:\n  app:\n    image: x\n"
+        "    volumes:\n      - ${PWD}/secret.env:/run/secret.env\n"
+    )
+    stack_dir = stacks_dir / "myapp"
+    stack_dir.mkdir()
+    (stack_dir / "compose.yaml").write_text(compose)
+    (stack_dir / "secret.env").write_text("DATA\n")     # bind-mounted -> hidden
+    (stack_dir / ".env.staging").write_text("S=1\n")    # genuine discovered env
+
+    assert stack_storage._discovered_env_filenames(stack_dir, compose) == {".env.staging"}
+    assert await stack_storage.delete_env_file("myapp", "secret.env") is False
+    assert (stack_dir / "secret.env").read_text() == "DATA\n"
+
+
+async def test_read_stack_reskips_oversized_discovered_file(stacks_dir, monkeypatch):
+    # Simulate a scan->grow race: discovery 'returned' big.env, but at read time
+    # it exceeds the cap. read_stack must re-check size and skip it (not slurp it).
+    from utils.env_files import MAX_ENV_FILE_BYTES
+
+    compose = "services:\n  app:\n    image: x\n"
+    await stack_storage.write_stack("myapp", compose, {}, create_only=True)
+    (stacks_dir / "myapp" / "big.env").write_text("X" * (MAX_ENV_FILE_BYTES + 1))
+    monkeypatch.setattr(stack_storage, "_discovered_env_filenames", lambda sp, cy: {"big.env"})
+
+    _compose, env = await stack_storage.read_stack("myapp")
+    assert "big.env" not in env

@@ -336,8 +336,11 @@ async def deploy_stack(
         host_name = host.name
         connection_type = host.connection_type
 
-    # Read stack content
-    compose_yaml, env_files = await stack_storage.read_stack(request.stack_name)
+    # Read stack content (deploy path: referenced env files only — never ship
+    # discovered, unreferenced env files to the compose service / agent)
+    compose_yaml, env_files = await stack_storage.read_stack(
+        request.stack_name, include_discovered=False
+    )
 
     # Generate transient deployment ID for progress tracking
     deployment_id = f"{request.host_id}:{request.stack_name}:{uuid.uuid4().hex[:8]}"

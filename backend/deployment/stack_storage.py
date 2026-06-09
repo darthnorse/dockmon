@@ -319,11 +319,16 @@ async def read_stack(name: str) -> Tuple[str, Dict[str, str]]:
 
         # Discovered: env-named files on disk not referenced by the compose
         # (e.g. the inactive files in an env-swap workflow). The discovery set
-        # already guarantees a regular, non-symlink, size-capped file.
+        # already filtered symlinks/size/bind-mounts; re-check is_symlink at read
+        # time so a scan->read swap can't make us follow a symlink (mirrors the
+        # env_file: loop above).
         for fname in _discovered_env_filenames(stack_path, compose_yaml):
             if fname in env_files:
                 continue
-            env_files[fname] = (stack_path / fname).read_text()
+            fpath = stack_path / fname
+            if fpath.is_symlink():
+                continue
+            env_files[fname] = fpath.read_text()
 
         return compose_yaml, env_files
 

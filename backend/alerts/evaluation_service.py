@@ -25,6 +25,12 @@ from utils.keys import make_composite_key, parse_composite_key
 logger = logging.getLogger(__name__)
 
 
+# Container lifecycle states that count as "recovered" when re-verifying a stopped or
+# unhealthy alert. 'restarting' is deliberately excluded: a container stuck in a
+# restart-policy crash loop reports 'restarting' indefinitely and should keep alerting.
+RECOVERED_STATES = ("running",)
+
+
 def calculate_next_retry(attempt_count: int) -> datetime:
     """
     Calculate next retry time with exponential backoff.
@@ -455,6 +461,19 @@ class AlertEvaluationService:
         except Exception as e:
             logger.error(f"Error checking blackout transitions: {e}", exc_info=True)
 
+    def _find_original_container(self, alert: AlertV2, containers):
+        """Find the alert's original container by its short ID.
+
+        Matches on both short_id AND host_id to prevent cross-host confusion in
+        multi-host setups. Returns None if the container no longer exists.
+        """
+        _, container_short_id = parse_composite_key(alert.scope_id)
+        return next(
+            (c for c in containers
+             if c.short_id == container_short_id and c.host_id == alert.host_id),
+            None,
+        )
+
     def _find_replacement_container(self, alert: AlertV2, containers):
         """Find a same-name, same-host container indicating in-place recreation.
 
@@ -492,13 +511,8 @@ class AlertEvaluationService:
                     logger.warning(f"Cannot verify container state - monitor not available")
                     return True  # Default to sending notification if we can't verify
 
-                # Get current container state from monitor
-                # CRITICAL: Match by both short_id AND host_id to prevent cross-host confusion in multi-host setups
-                # Parse composite scope_id to extract short container ID
-                _, container_short_id = parse_composite_key(alert.scope_id)
                 containers = await self.monitor.get_containers()
-                container = next((c for c in containers
-                                if c.short_id == container_short_id and c.host_id == alert.host_id), None)
+                container = self._find_original_container(alert, containers)
 
                 if not container:
                     # Original container ID no longer exists. Distinguish an in-place
@@ -506,7 +520,7 @@ class AlertEvaluationService:
                     # redeploy, or backup) from a genuine deletion.
                     replacement = self._find_replacement_container(alert, containers)
                     if replacement:
-                        if replacement.state.lower() in ["running", "restarting"]:
+                        if replacement.state.lower() in RECOVERED_STATES:
                             logger.info(
                                 f"Alert {alert.id}: Container '{alert.container_name}' recreated "
                                 f"and {replacement.state} - condition cleared"
@@ -522,12 +536,12 @@ class AlertEvaluationService:
                     )
                     return True
 
-                # Check if container is running
-                if container.state.lower() in ["running", "restarting"]:
+                # Container is back up - condition cleared
+                if container.state.lower() in RECOVERED_STATES:
                     logger.info(f"Alert {alert.id}: Container now {container.state} - condition cleared")
                     return False
 
-                # Container still stopped/exited - condition still true
+                # Container still stopped/exited/restarting - condition still true
                 logger.info(f"Alert {alert.id}: Container still {container.state} - condition valid")
                 return True
 
@@ -536,26 +550,20 @@ class AlertEvaluationService:
                 if not self.monitor:
                     return True
 
-                # CRITICAL: Match by both short_id AND host_id to prevent cross-host confusion
-                # Parse composite scope_id to extract short container ID
-                _, container_short_id = parse_composite_key(alert.scope_id)
                 containers = await self.monitor.get_containers()
-                container = next((c for c in containers
-                                if c.short_id == container_short_id and c.host_id == alert.host_id), None)
+                container = self._find_original_container(alert, containers)
 
                 if not container:
-                    # Original container ID gone. A same-name, same-host replacement means
-                    # the container was recreated in place (update/redeploy), so this old-ID
-                    # unhealthy alert is stale - resolve it. Container.state only carries
-                    # Docker's lifecycle state (running/exited/...), never a health value, so
-                    # any live replacement clears the stale alert; if the replacement is
-                    # genuinely unhealthy, Docker's health_status event re-fires a fresh alert
-                    # under the new container ID.
+                    # Recreated in place (same name+host, new ID) - the old-ID unhealthy
+                    # alert is stale. Resolve only if the replacement is back up; a dead
+                    # replacement emits no health event to re-alert, so keep the alert. A
+                    # still-unhealthy running replacement re-alerts under its new ID via
+                    # Docker's health_status event.
                     replacement = self._find_replacement_container(alert, containers)
-                    if replacement:
+                    if replacement and replacement.state.lower() in RECOVERED_STATES:
                         logger.info(
                             f"Alert {alert.id}: Container '{alert.container_name}' recreated "
-                            f"({replacement.state}) - resolving stale unhealthy alert"
+                            f"and {replacement.state} - resolving stale unhealthy alert"
                         )
                         return False
                     return True

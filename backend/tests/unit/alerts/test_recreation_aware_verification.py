@@ -60,12 +60,19 @@ async def test_recreated_running_clears_condition(db):
     assert await service._verify_alert_condition(_alert()) is False
 
 
-async def test_recreated_restarting_clears_condition(db):
+# --- container_stopped: regression guards ---
+
+async def test_recreated_restarting_keeps_alert(db):
+    # 'restarting' at verification time is a crash loop, not recovery - keep alerting.
     service = _service(db, [_container(NEW_ID, "nextcloud", "restarting")])
-    assert await service._verify_alert_condition(_alert()) is False
+    assert await service._verify_alert_condition(_alert()) is True
 
 
-# --- container_stopped: regression guards (pass before AND after) ---
+async def test_original_present_and_restarting_keeps_alert(db):
+    # Original container still present but stuck restarting (crash loop) - keep.
+    service = _service(db, [_container(OLD_ID, "nextcloud", "restarting")])
+    assert await service._verify_alert_condition(_alert()) is True
+
 
 async def test_recreated_but_replacement_exited_keeps_alert(db):
     service = _service(db, [_container(NEW_ID, "nextcloud", "exited")])
@@ -100,13 +107,21 @@ async def test_missing_container_name_keeps_alert(db):
 
 
 # --- unhealthy ---
-# Container.state carries no health value (only running/exited/...), so a live
-# same-name replacement clears the stale old-ID alert; a genuinely unhealthy
-# replacement re-alerts under its own ID via Docker health_status events.
+# Container.state carries no health value (only running/exited/...). A recreated
+# replacement that is back up clears the stale old-ID alert; if it is not running,
+# keep the alert. A still-unhealthy running replacement re-alerts under its own ID
+# via Docker health_status events.
 
 async def test_unhealthy_recreated_replacement_clears_condition(db):
     service = _service(db, [_container(NEW_ID, "nextcloud", "running")])
     assert await service._verify_alert_condition(_alert(kind="unhealthy")) is False
+
+
+async def test_unhealthy_recreated_replacement_not_running_keeps_alert(db):
+    # Recreated but the replacement is exited/dead - no health event will re-alert,
+    # so keep the unhealthy alert (mirrors the container_stopped branch).
+    service = _service(db, [_container(NEW_ID, "nextcloud", "exited")])
+    assert await service._verify_alert_condition(_alert(kind="unhealthy")) is True
 
 
 async def test_unhealthy_gone_without_replacement_keeps_alert(db):

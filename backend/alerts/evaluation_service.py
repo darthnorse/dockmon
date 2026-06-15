@@ -544,13 +544,18 @@ class AlertEvaluationService:
                                 if c.short_id == container_short_id and c.host_id == alert.host_id), None)
 
                 if not container:
-                    # Recreation check: a same-name, same-host replacement that is no
-                    # longer unhealthy means the condition cleared.
+                    # Original container ID gone. A same-name, same-host replacement means
+                    # the container was recreated in place (update/redeploy), so this old-ID
+                    # unhealthy alert is stale - resolve it. Container.state only carries
+                    # Docker's lifecycle state (running/exited/...), never a health value, so
+                    # any live replacement clears the stale alert; if the replacement is
+                    # genuinely unhealthy, Docker's health_status event re-fires a fresh alert
+                    # under the new container ID.
                     replacement = self._find_replacement_container(alert, containers)
-                    if replacement and replacement.state.lower() != "unhealthy":
+                    if replacement:
                         logger.info(
                             f"Alert {alert.id}: Container '{alert.container_name}' recreated "
-                            f"and {replacement.state} - no longer unhealthy"
+                            f"({replacement.state}) - resolving stale unhealthy alert"
                         )
                         return False
                     return True

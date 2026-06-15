@@ -100,12 +100,15 @@ async def test_missing_container_name_keeps_alert(db):
 
 
 # --- unhealthy ---
+# Container.state carries no health value (only running/exited/...), so a live
+# same-name replacement clears the stale old-ID alert; a genuinely unhealthy
+# replacement re-alerts under its own ID via Docker health_status events.
 
-async def test_unhealthy_recreated_healthy_clears_condition(db):
+async def test_unhealthy_recreated_replacement_clears_condition(db):
     service = _service(db, [_container(NEW_ID, "nextcloud", "running")])
     assert await service._verify_alert_condition(_alert(kind="unhealthy")) is False
 
 
-async def test_unhealthy_recreated_still_unhealthy_keeps_alert(db):
-    service = _service(db, [_container(NEW_ID, "nextcloud", "unhealthy")])
+async def test_unhealthy_gone_without_replacement_keeps_alert(db):
+    service = _service(db, [_container("cccccccccccc", "other", "running")])
     assert await service._verify_alert_condition(_alert(kind="unhealthy")) is True

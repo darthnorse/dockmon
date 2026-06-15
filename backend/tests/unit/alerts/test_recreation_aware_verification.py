@@ -97,3 +97,15 @@ async def test_missing_container_name_keeps_alert(db):
     alert.container_name = None
     service = _service(db, [_container(NEW_ID, "nextcloud", "running")])
     assert await service._verify_alert_condition(alert) is True
+
+
+# --- unhealthy ---
+
+async def test_unhealthy_recreated_healthy_clears_condition(db):
+    service = _service(db, [_container(NEW_ID, "nextcloud", "running")])
+    assert await service._verify_alert_condition(_alert(kind="unhealthy")) is False
+
+
+async def test_unhealthy_recreated_still_unhealthy_keeps_alert(db):
+    service = _service(db, [_container(NEW_ID, "nextcloud", "unhealthy")])
+    assert await service._verify_alert_condition(_alert(kind="unhealthy")) is True

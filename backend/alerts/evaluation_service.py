@@ -544,6 +544,15 @@ class AlertEvaluationService:
                                 if c.short_id == container_short_id and c.host_id == alert.host_id), None)
 
                 if not container:
+                    # Recreation check: a same-name, same-host replacement that is no
+                    # longer unhealthy means the condition cleared.
+                    replacement = self._find_replacement_container(alert, containers)
+                    if replacement and replacement.state.lower() != "unhealthy":
+                        logger.info(
+                            f"Alert {alert.id}: Container '{alert.container_name}' recreated "
+                            f"and {replacement.state} - no longer unhealthy"
+                        )
+                        return False
                     return True
 
                 if container.state.lower() == "unhealthy":

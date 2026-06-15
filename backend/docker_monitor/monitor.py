@@ -554,7 +554,7 @@ class DockerMonitor:
                             # Agent hosts have url="agent://" which is not a valid Docker URL
                             if host.connection_type != "agent":
                                 is_local = host.url.startswith("unix://")
-                                await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus, is_local)
+                                await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus, host.total_memory, is_local)
                                 logger.info(f"Registered {host.name} ({host.id[:8]}) with stats service")
 
                                 await stats_client.add_event_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
@@ -1192,7 +1192,7 @@ class DockerMonitor:
                         if host.connection_type != "agent":
                             # Re-register with stats service (automatically closes old client)
                             is_local = host.url.startswith("unix://")
-                            await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus, is_local)
+                            await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus, host.total_memory, is_local)
                             logger.info(f"Re-registered {host.name} ({host.id[:8]}) with stats service")
 
                             # Remove and re-add event monitoring
@@ -1653,7 +1653,7 @@ class DockerMonitor:
 
                 # Register with stats service
                 is_local = host.url.startswith("unix://")
-                await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key, num_cpus, is_local)
+                await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key, num_cpus, host.total_memory, is_local)
                 logger.info(f"Registered host {host.name} ({host_id[:8]}) with stats service")
 
                 # Register with event service
@@ -1821,7 +1821,7 @@ class DockerMonitor:
                             # We use is_agent_fed() to distinguish - it tracks if agent is actively sending stats
                             if (host.connection_type == 'agent' and host.status == 'online' and
                                     self.stats_history.is_agent_fed(host_id)):
-                                sparklines = self.stats_history.get_sparklines(host_id, num_points=30)
+                                sparklines = self.stats_history.get_sparklines(host_id)
                                 # Systemd agent is actively sending stats - use them (accurate host-level stats)
                                 host_sparklines[host_id] = sparklines
                                 # Calculate mem_bytes from containers for display purposes
@@ -1892,11 +1892,13 @@ class DockerMonitor:
                                     host_id=host_id,
                                     cpu=total_cpu,
                                     mem=mem_percent,
-                                    net=net_bytes_per_sec
+                                    net=net_bytes_per_sec,
+                                    memory_used_bytes=total_mem_bytes,
+                                    memory_limit_bytes=total_mem_limit
                                 )
 
-                                # Get sparklines for this host (last 30 points)
-                                host_sparklines[host_id] = self.stats_history.get_sparklines(host_id, num_points=30)
+                                # Get the live rolling window for this host.
+                                host_sparklines[host_id] = self.stats_history.get_sparklines(host_id)
 
                         broadcast_data["host_metrics"] = host_metrics
                         broadcast_data["host_sparklines"] = host_sparklines
@@ -1920,11 +1922,13 @@ class DockerMonitor:
                                 container_key=container_key,
                                 cpu=cpu_val,
                                 mem=mem_val,
-                                net=net_val
+                                net=net_val,
+                                memory_used_bytes=container.memory_usage,
+                                memory_limit_bytes=container.memory_limit
                             )
 
                         # Always get sparklines (even for stopped containers) to maintain consistency
-                        sparklines = self.container_stats_history.get_sparklines(container_key, num_points=30)
+                        sparklines = self.container_stats_history.get_sparklines(container_key)
                         container_sparklines[container_key] = sparklines
 
                     broadcast_data["container_sparklines"] = container_sparklines

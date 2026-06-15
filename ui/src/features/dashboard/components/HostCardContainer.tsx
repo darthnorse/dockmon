@@ -50,6 +50,7 @@ export function HostCardContainer({ host, onHostClick, onViewDetails, onEditHost
     // Sparklines from WebSocket
     ...(sparklines && {
       sparklines: {
+        timestamps: sparklines.timestamps,
         cpu: sparklines.cpu,
         mem: sparklines.mem,
         net: sparklines.net,

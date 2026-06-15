@@ -17,9 +17,9 @@ logger = logging.getLogger(__name__)
 # EMA smoothing factor (α = 0.3) as per specs
 EMA_ALPHA = 0.3
 
-# Keep 90 seconds of history at 2-second intervals = 45 data points
-# But we'll store 50 to be safe
-MAX_HISTORY_POINTS = 50
+# Keep 10 minutes of live history at 2-second intervals.
+MAX_HISTORY_POINTS = 300
+DEFAULT_SPARKLINE_POINTS = MAX_HISTORY_POINTS
 
 
 @dataclass
@@ -29,6 +29,8 @@ class HostStatsPoint:
     cpu_percent: float
     mem_percent: float
     net_bytes_per_sec: float
+    memory_used_bytes: Optional[int] = None
+    memory_limit_bytes: Optional[int] = None
 
 
 @dataclass
@@ -38,6 +40,8 @@ class ContainerStatsPoint:
     cpu_percent: float
     mem_percent: float
     net_bytes_per_sec: float
+    memory_used_bytes: Optional[int] = None
+    memory_limit_bytes: Optional[int] = None
 
 
 class StatsHistoryBuffer:
@@ -62,7 +66,9 @@ class StatsHistoryBuffer:
         # host_id -> last update timestamp
         self._agent_fed_hosts: Dict[str, datetime] = {}
 
-    def add_stats(self, host_id: str, cpu: float, mem: float, net: float):
+    def add_stats(self, host_id: str, cpu: float, mem: float, net: float,
+                  memory_used_bytes: Optional[int] = None,
+                  memory_limit_bytes: Optional[int] = None):
         """
         Add a new stats point with EMA smoothing
 
@@ -71,6 +77,8 @@ class StatsHistoryBuffer:
             cpu: CPU usage percentage
             mem: Memory usage percentage
             net: Network bytes per second
+            memory_used_bytes: Memory usage in bytes
+            memory_limit_bytes: Memory limit in bytes
         """
         # Initialize history buffer if needed
         if host_id not in self._history:
@@ -96,7 +104,9 @@ class StatsHistoryBuffer:
             timestamp=datetime.now(timezone.utc),
             cpu_percent=cpu,
             mem_percent=mem,
-            net_bytes_per_sec=net
+            net_bytes_per_sec=net,
+            memory_used_bytes=memory_used_bytes,
+            memory_limit_bytes=memory_limit_bytes
         )
 
         # Add smoothed point to history
@@ -104,42 +114,50 @@ class StatsHistoryBuffer:
             timestamp=datetime.now(timezone.utc),
             cpu_percent=smoothed_cpu,
             mem_percent=smoothed_mem,
-            net_bytes_per_sec=smoothed_net
+            net_bytes_per_sec=smoothed_net,
+            memory_used_bytes=memory_used_bytes,
+            memory_limit_bytes=memory_limit_bytes
         )
 
         self._history[host_id].append(point)
 
-    def get_sparklines(self, host_id: str, num_points: int = 30) -> Dict[str, List[float]]:
+    def get_sparklines(self, host_id: str, num_points: int = DEFAULT_SPARKLINE_POINTS) -> Dict[str, List[float]]:
         """
         Get sparkline data for a host
 
         Args:
             host_id: Host identifier
-            num_points: Number of data points to return (default 30 for UI)
+            num_points: Number of data points to return
 
         Returns:
-            Dict with 'cpu', 'mem', 'net' arrays
+            Dict with 'timestamps', 'cpu', 'mem', 'net' arrays
         """
         if host_id not in self._history or len(self._history[host_id]) == 0:
             # No history yet - return empty arrays
             return {
+                "timestamps": [],
                 "cpu": [],
                 "mem": [],
-                "net": []
+                "net": [],
+                "memory_used_bytes": [],
+                "memory_limit_bytes": []
             }
 
         history = list(self._history[host_id])
 
         # Guard against invalid num_points
         if num_points <= 0:
-            num_points = 30  # Use default
+            num_points = DEFAULT_SPARKLINE_POINTS
 
         # If we have fewer points than requested, return what we have
         if len(history) <= num_points:
             return {
+                "timestamps": [p.timestamp.timestamp() for p in history],
                 "cpu": [p.cpu_percent for p in history],
                 "mem": [p.mem_percent for p in history],
-                "net": [p.net_bytes_per_sec for p in history]
+                "net": [p.net_bytes_per_sec for p in history],
+                "memory_used_bytes": [p.memory_used_bytes for p in history],
+                "memory_limit_bytes": [p.memory_limit_bytes for p in history]
             }
 
         # Sample evenly from history to get requested number of points
@@ -148,9 +166,12 @@ class StatsHistoryBuffer:
         indices = [int(i * step) for i in range(num_points)]
 
         return {
+            "timestamps": [history[i].timestamp.timestamp() for i in indices],
             "cpu": [history[i].cpu_percent for i in indices],
             "mem": [history[i].mem_percent for i in indices],
-            "net": [history[i].net_bytes_per_sec for i in indices]
+            "net": [history[i].net_bytes_per_sec for i in indices],
+            "memory_used_bytes": [history[i].memory_used_bytes for i in indices],
+            "memory_limit_bytes": [history[i].memory_limit_bytes for i in indices]
         }
 
     def cleanup_old_data(self, max_age_seconds: int = 300):
@@ -239,7 +260,9 @@ class ContainerStatsHistoryBuffer:
         # Last raw values for EMA calculation
         self._last_raw: Dict[str, ContainerStatsPoint] = {}
 
-    def add_stats(self, container_key: str, cpu: float, mem: float, net: float):
+    def add_stats(self, container_key: str, cpu: float, mem: float, net: float,
+                  memory_used_bytes: Optional[int] = None,
+                  memory_limit_bytes: Optional[int] = None):
         """
         Add a new stats point with EMA smoothing
 
@@ -248,6 +271,8 @@ class ContainerStatsHistoryBuffer:
             cpu: CPU usage percentage
             mem: Memory usage percentage
             net: Network bytes per second
+            memory_used_bytes: Memory usage in bytes
+            memory_limit_bytes: Memory limit in bytes
         """
         # Initialize history buffer if needed
         if container_key not in self._history:
@@ -273,7 +298,9 @@ class ContainerStatsHistoryBuffer:
             timestamp=datetime.now(timezone.utc),
             cpu_percent=cpu,
             mem_percent=mem,
-            net_bytes_per_sec=net
+            net_bytes_per_sec=net,
+            memory_used_bytes=memory_used_bytes,
+            memory_limit_bytes=memory_limit_bytes
         )
 
         # Add smoothed point to history
@@ -281,42 +308,50 @@ class ContainerStatsHistoryBuffer:
             timestamp=datetime.now(timezone.utc),
             cpu_percent=smoothed_cpu,
             mem_percent=smoothed_mem,
-            net_bytes_per_sec=smoothed_net
+            net_bytes_per_sec=smoothed_net,
+            memory_used_bytes=memory_used_bytes,
+            memory_limit_bytes=memory_limit_bytes
         )
 
         self._history[container_key].append(point)
 
-    def get_sparklines(self, container_key: str, num_points: int = 30) -> Dict[str, List[float]]:
+    def get_sparklines(self, container_key: str, num_points: int = DEFAULT_SPARKLINE_POINTS) -> Dict[str, List[float]]:
         """
         Get sparkline data for a container
 
         Args:
             container_key: Container identifier (composite key: host_id:container_id)
-            num_points: Number of data points to return (default 30 for UI)
+            num_points: Number of data points to return
 
         Returns:
-            Dict with 'cpu', 'mem', 'net' arrays
+            Dict with 'timestamps', 'cpu', 'mem', 'net' arrays
         """
         if container_key not in self._history or len(self._history[container_key]) == 0:
             # No history yet - return empty arrays
             return {
+                "timestamps": [],
                 "cpu": [],
                 "mem": [],
-                "net": []
+                "net": [],
+                "memory_used_bytes": [],
+                "memory_limit_bytes": []
             }
 
         history = list(self._history[container_key])
 
         # Guard against invalid num_points
         if num_points <= 0:
-            num_points = 30  # Use default
+            num_points = DEFAULT_SPARKLINE_POINTS
 
         # If we have fewer points than requested, return what we have
         if len(history) <= num_points:
             return {
+                "timestamps": [p.timestamp.timestamp() for p in history],
                 "cpu": [p.cpu_percent for p in history],
                 "mem": [p.mem_percent for p in history],
-                "net": [p.net_bytes_per_sec for p in history]
+                "net": [p.net_bytes_per_sec for p in history],
+                "memory_used_bytes": [p.memory_used_bytes for p in history],
+                "memory_limit_bytes": [p.memory_limit_bytes for p in history]
             }
 
         # Sample evenly from history to get requested number of points
@@ -324,9 +359,12 @@ class ContainerStatsHistoryBuffer:
         indices = [int(i * step) for i in range(num_points)]
 
         return {
+            "timestamps": [history[i].timestamp.timestamp() for i in indices],
             "cpu": [history[i].cpu_percent for i in indices],
             "mem": [history[i].mem_percent for i in indices],
-            "net": [history[i].net_bytes_per_sec for i in indices]
+            "net": [history[i].net_bytes_per_sec for i in indices],
+            "memory_used_bytes": [history[i].memory_used_bytes for i in indices],
+            "memory_limit_bytes": [history[i].memory_limit_bytes for i in indices]
         }
 
     def cleanup_old_data(self, max_age_seconds: int = 300):

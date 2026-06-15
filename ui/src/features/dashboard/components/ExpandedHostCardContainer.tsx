@@ -104,6 +104,7 @@ export function ExpandedHostCardContainer({ host, onHostClick, onViewDetails, on
       // Sparklines from WebSocket (only when visible for performance)
       ...(isVisible && sparklines && {
         sparklines: {
+          timestamps: sparklines.timestamps,
           cpu: sparklines.cpu,
           mem: sparklines.mem,
           net: sparklines.net,

@@ -38,6 +38,7 @@ import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
 import { debug } from '@/lib/debug'
 import { formatBytes, formatNetworkRate } from '@/lib/utils/formatting'
 import { isSafeUrl } from '@/lib/utils/urlSanitize'
+import { LIVE_TIME_WINDOW } from '@/lib/statsConfig'
 
 export interface ExpandedHostData {
   id: string
@@ -57,6 +58,7 @@ export interface ExpandedHostData {
 
   // Sparklines
   sparklines?: {
+    timestamps: number[]
     cpu: number[]
     mem: number[]
     net: number[]
@@ -318,8 +320,10 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
             <div className="flex-1">
               <ResponsiveMiniChart
                 data={host.sparklines!.cpu}
+                timestamps={host.sparklines!.timestamps}
                 color="cpu"
                 height={32}
+                timeWindow={LIVE_TIME_WINDOW}
                 label={`${host.name} CPU usage`}
               />
             </div>
@@ -334,8 +338,10 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
             <div className="flex-1">
               <ResponsiveMiniChart
                 data={host.sparklines!.mem}
+                timestamps={host.sparklines!.timestamps}
                 color="memory"
                 height={32}
+                timeWindow={LIVE_TIME_WINDOW}
                 label={`${host.name} Memory usage`}
               />
             </div>
@@ -351,8 +357,10 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
               {hasValidNetworkData ? (
                 <ResponsiveMiniChart
                   data={host.sparklines!.net}
+                  timestamps={host.sparklines!.timestamps}
                   color="network"
                   height={32}
+                  timeWindow={LIVE_TIME_WINDOW}
                   label={`${host.name} Network I/O`}
                 />
               ) : (

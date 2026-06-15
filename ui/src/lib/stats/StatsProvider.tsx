@@ -185,7 +185,7 @@ export function useHostMetrics(hostId: string | undefined): HostMetrics | null {
  * Get sparkline data for a specific host
  *
  * @param hostId - The host ID to get sparklines for
- * @returns Sparklines (cpu, mem, net arrays) or null if not available
+ * @returns Sparklines (timestamps, cpu, mem, net arrays) or null if not available
  */
 export function useHostSparklines(hostId: string | undefined): Sparklines | null {
   const { hostSparklines } = useStatsContext()
@@ -354,7 +354,7 @@ export function useContainer(compositeKey: string | null | undefined): Container
  * Get sparkline data for a specific container
  *
  * @param compositeKey - The composite key in format "{host_id}:{container_id}"
- * @returns Sparklines (cpu, mem, net arrays) or null if not available
+ * @returns Sparklines (timestamps, cpu, mem, net arrays) or null if not available
  */
 export function useContainerSparklines(compositeKey: string | null | undefined): Sparklines | null {
   const { containerSparklines } = useStatsContext()

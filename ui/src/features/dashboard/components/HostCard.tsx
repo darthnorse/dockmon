@@ -22,6 +22,7 @@ import { useUserPreferences, useUpdatePreferences, useSimplifiedWorkflow } from 
 import { useContainerModal } from '@/providers'
 import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
 import { formatBytes, formatNetworkRate } from '@/lib/utils/formatting'
+import { LIVE_TIME_WINDOW } from '@/lib/statsConfig'
 
 export interface HostCardData {
   id: string
@@ -39,8 +40,9 @@ export interface HostCardData {
     net_bytes_per_sec: number
   }
 
-  // Historical data for sparklines (last 30-40 data points)
+  // Live rolling-window data for sparklines
   sparklines?: {
+    timestamps: number[]
     cpu: number[]
     mem: number[]
     net: number[]
@@ -272,8 +274,10 @@ export function HostCard({ host, onHostClick, onViewDetails, onEditHost }: HostC
             <div className="flex-1">
               <ResponsiveMiniChart
                 data={host.sparklines!.cpu}
+                timestamps={host.sparklines!.timestamps}
                 color="cpu"
                 height={32}
+                timeWindow={LIVE_TIME_WINDOW}
                 label={`${host.name} CPU usage`}
               />
             </div>
@@ -288,8 +292,10 @@ export function HostCard({ host, onHostClick, onViewDetails, onEditHost }: HostC
             <div className="flex-1">
               <ResponsiveMiniChart
                 data={host.sparklines!.mem}
+                timestamps={host.sparklines!.timestamps}
                 color="memory"
                 height={32}
+                timeWindow={LIVE_TIME_WINDOW}
                 label={`${host.name} Memory usage`}
               />
             </div>
@@ -305,8 +311,10 @@ export function HostCard({ host, onHostClick, onViewDetails, onEditHost }: HostC
               {hasValidNetworkData ? (
                 <ResponsiveMiniChart
                   data={host.sparklines!.net}
+                  timestamps={host.sparklines!.timestamps}
                   color="network"
                   height={32}
+                  timeWindow={LIVE_TIME_WINDOW}
                   label={`${host.name} Network I/O`}
                 />
               ) : (

@@ -29,10 +29,12 @@ function ResponsiveMiniChartInner({
   showAxes,
   timeWindow,
   formatTooltipTime,
+  formatTooltipValue,
+  formatYAxisTick,
 }: ResponsiveMiniChartProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [containerWidth, setContainerWidth] = useState<number>(minWidth)
-  const resizeTimeoutRef = useRef<NodeJS.Timeout>()
+  const resizeTimeoutRef = useRef<ReturnType<typeof globalThis.setTimeout>>()
 
   useEffect(() => {
     const container = containerRef.current
@@ -52,9 +54,9 @@ function ResponsiveMiniChartInner({
     // Debounced so rapid parent resizes don't thrash uPlot.
     const handleResize = (entries: ResizeObserverEntry[]) => {
       if (resizeTimeoutRef.current) {
-        clearTimeout(resizeTimeoutRef.current)
+        globalThis.clearTimeout(resizeTimeoutRef.current)
       }
-      resizeTimeoutRef.current = setTimeout(() => {
+      resizeTimeoutRef.current = globalThis.setTimeout(() => {
         for (const entry of entries) {
           const width = entry.contentRect.width
           if (width > 0) {
@@ -75,7 +77,7 @@ function ResponsiveMiniChartInner({
     return () => {
       resizeObserver.disconnect()
       if (resizeTimeoutRef.current) {
-        clearTimeout(resizeTimeoutRef.current)
+        globalThis.clearTimeout(resizeTimeoutRef.current)
       }
     }
   }, [minWidth, maxWidth, debounceMs])
@@ -92,6 +94,8 @@ function ResponsiveMiniChartInner({
         label={label}
         timeWindow={timeWindow}
         formatTooltipTime={formatTooltipTime}
+        formatTooltipValue={formatTooltipValue}
+        formatYAxisTick={formatYAxisTick}
       />
     </div>
   )

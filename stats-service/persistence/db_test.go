@@ -298,6 +298,42 @@ func TestQueryContainerHistory_ReturnsRows(t *testing.T) {
 	}
 }
 
+func TestQueryContainerHistory_ScansBlendedMemoryBytes(t *testing.T) {
+	path := makeFixtureDB(t)
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Write().Exec(`INSERT INTO docker_hosts (id,name) VALUES ('h1','h1')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Write().Exec(`INSERT INTO container_stats_history
+		(container_id, host_id, timestamp, resolution, cpu_percent, memory_usage, memory_limit, network_bps)
+		VALUES (?,?,?,?,?,?,?,?)`,
+		"h1:abc123abc123", "h1", int64(1_000_000), "8h",
+		float64(1), float64(234104422.4), float64(536870912), float64(100)); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := db.QueryContainerHistory(
+		context.Background(),
+		"h1:abc123abc123", "8h", 1_000_000, 1_000_000,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if rows[0].MemUsed == nil || *rows[0].MemUsed != 234104422 {
+		t.Errorf("MemUsed=%v, want 234104422", rows[0].MemUsed)
+	}
+	if rows[0].MemLimit == nil || *rows[0].MemLimit != 536870912 {
+		t.Errorf("MemLimit=%v, want 536870912", rows[0].MemLimit)
+	}
+}
+
 func TestQueryContainerHistory_EmptyResult(t *testing.T) {
 	// No rows in the table — the query should return an empty slice (not an
 	// error) so the handler can gap-fill a pure-null response.

@@ -12,6 +12,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"slices"
 	"strings"
@@ -203,14 +204,25 @@ func (db *DB) QueryContainerHistory(
 	var out []HistoryRow
 	for rows.Next() {
 		var r HistoryRow
+		var memUsed, memLimit sql.NullFloat64
 		if err := rows.Scan(
-			&r.Timestamp, &r.CPU, &r.MemPercent, &r.MemUsed, &r.MemLimit, &r.NetBps,
+			&r.Timestamp, &r.CPU, &r.MemPercent, &memUsed, &memLimit, &r.NetBps,
 		); err != nil {
 			return nil, fmt.Errorf("scan container history: %w", err)
 		}
+		r.MemUsed = int64PtrFromFloat(memUsed)
+		r.MemLimit = int64PtrFromFloat(memLimit)
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+func int64PtrFromFloat(v sql.NullFloat64) *int64 {
+	if !v.Valid {
+		return nil
+	}
+	rounded := int64(math.Round(v.Float64))
+	return &rounded
 }
 
 // QueryHostHistory returns rows for one host in [fromUnix, toUnix].

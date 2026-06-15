@@ -24,13 +24,26 @@ function maxSlotsFor(range: HistoricalRange, intervalSeconds: number): number {
   return Math.ceil(windowSeconds / safeInterval) + MERGE_SLOT_HEADROOM
 }
 
+function latestFilledTimestamp(data: StatsHistoryResponse): number | undefined {
+  for (let i = data.timestamps.length - 1; i >= 0; i--) {
+    if (data.cpu[i] != null || data.mem[i] != null || data.net_bps[i] != null) {
+      return data.timestamps[i]
+    }
+  }
+  return undefined
+}
+
+function mergeValue<T>(current: T | null | undefined, next: T | null | undefined): T | null {
+  return next == null ? (current ?? null) : next
+}
+
 /**
  * Merge a `since`-poll response into cached data.
  *
- * Contract: the server returns buckets with timestamp > `since`. This function
- * defensively drops any timestamp already present in the cache (insurance
- * against server-contract drift) and trims the leading edge of the series so
- * the length stays within the range's expected slot count.
+ * The stats-service may include a trailing bucket for "now" before that bucket
+ * has been written, represented as nulls. A later poll can return the same
+ * timestamp with real values. Replace those overlap nulls instead of treating
+ * timestamps as append-only, otherwise chart gaps persist until a full reload.
  */
 export function mergeHistoryDelta(
   cached: StatsHistoryResponse,
@@ -38,19 +51,8 @@ export function mergeHistoryDelta(
   range: HistoricalRange,
 ): StatsHistoryResponse {
   const lastCached = cached.timestamps[cached.timestamps.length - 1] ?? -Infinity
-  const keepIndices: number[] = []
-  for (let i = 0; i < next.timestamps.length; i++) {
-    const ts = next.timestamps[i]
-    if (ts !== undefined && ts > lastCached) keepIndices.push(i)
-  }
-  if (keepIndices.length === 0) {
-    // Nothing new; just refresh metadata (server_time, to).
-    return { ...cached, server_time: next.server_time, to: next.to }
-  }
-
-  // keepIndices only contains valid indices from next.timestamps, so arr[i]
-  // is never undefined — the `as T` silences noUncheckedIndexedAccess.
-  const pick = <T>(arr: T[]): T[] => keepIndices.map((i) => arr[i] as T)
+  const indexByTimestamp = new Map<number, number>()
+  cached.timestamps.forEach((ts, i) => indexByTimestamp.set(ts, i))
 
   const merged: StatsHistoryResponse = {
     ...cached,
@@ -59,21 +61,54 @@ export function mergeHistoryDelta(
     // Prefer the server-fresh interval; protects trim math if stats-service
     // points_per_view is changed mid-session.
     interval_seconds: next.interval_seconds,
-    timestamps: [...cached.timestamps, ...pick(next.timestamps)],
-    cpu:     [...cached.cpu,     ...pick(next.cpu)],
-    mem:     [...cached.mem,     ...pick(next.mem)],
-    net_bps: [...cached.net_bps, ...pick(next.net_bps)],
+    timestamps: [...cached.timestamps],
+    cpu: [...cached.cpu],
+    mem: [...cached.mem],
+    net_bps: [...cached.net_bps],
   }
 
-  // Symmetric gating so a column that appears later in the cache's lifetime
-  // is preserved. exactOptionalPropertyTypes forbids explicit undefined, so
-  // we only touch the key when at least one side has it. Length-based guard
-  // (not truthy) because `[]` is truthy in JS but carries no data.
   for (const key of OPTIONAL_COLUMNS) {
     const cachedCol = cached[key]
     const nextCol = next[key]
     if ((cachedCol?.length ?? 0) > 0 || (nextCol?.length ?? 0) > 0) {
-      merged[key] = [...(cachedCol ?? []), ...(nextCol ? pick(nextCol) : [])]
+      merged[key] = [...(cachedCol ?? [])]
+    }
+  }
+
+  for (let i = 0; i < next.timestamps.length; i++) {
+    const ts = next.timestamps[i]
+    if (ts === undefined) continue
+
+    const existingIndex = indexByTimestamp.get(ts)
+    if (existingIndex !== undefined) {
+      merged.cpu[existingIndex] = mergeValue(merged.cpu[existingIndex], next.cpu[i])
+      merged.mem[existingIndex] = mergeValue(merged.mem[existingIndex], next.mem[i])
+      merged.net_bps[existingIndex] = mergeValue(merged.net_bps[existingIndex], next.net_bps[i])
+
+      for (const key of OPTIONAL_COLUMNS) {
+        const col = merged[key]
+        const nextCol = next[key]
+        if (col && nextCol) {
+          col[existingIndex] = mergeValue(col[existingIndex], nextCol[i])
+        }
+      }
+      continue
+    }
+
+    if (ts <= lastCached) continue
+
+    indexByTimestamp.set(ts, merged.timestamps.length)
+    merged.timestamps.push(ts)
+    merged.cpu.push(next.cpu[i] ?? null)
+    merged.mem.push(next.mem[i] ?? null)
+    merged.net_bps.push(next.net_bps[i] ?? null)
+
+    for (const key of OPTIONAL_COLUMNS) {
+      const col = merged[key]
+      const nextCol = next[key]
+      if (col && nextCol) {
+        col.push(nextCol[i] ?? null)
+      }
     }
   }
 
@@ -113,7 +148,7 @@ export function useStatsHistory(
     refetchInterval: POLL_INTERVAL_MS,
     queryFn: async () => {
       const cached = queryClient.getQueryData<StatsHistoryResponse>(queryKey)
-      const lastTs = cached?.timestamps[cached.timestamps.length - 1]
+      const lastTs = cached ? latestFilledTimestamp(cached) : undefined
       const params: Record<string, string | number> =
         cached && lastTs !== undefined
           ? { range, since: lastTs }

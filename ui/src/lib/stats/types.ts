@@ -13,9 +13,12 @@ export interface HostMetrics {
 }
 
 export interface Sparklines {
+  timestamps: number[]
   cpu: number[]
   mem: number[]
   net: number[]
+  memory_used_bytes?: (number | null)[]
+  memory_limit_bytes?: (number | null)[]
 }
 
 /**

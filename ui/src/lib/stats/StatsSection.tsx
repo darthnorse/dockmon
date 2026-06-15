@@ -10,9 +10,12 @@ interface Props {
   hostId: string
   containerId?: string
   liveData: {
+    timestamps?: number[] | undefined
     cpu: (number | null)[]
     mem: (number | null)[]
     net: (number | null)[]
+    memoryUsed?: (number | null)[] | undefined
+    memoryLimit?: (number | null)[] | undefined
     cpuValue?: string | undefined
     memValue?: string | undefined
     netValue?: string | undefined
@@ -37,7 +40,9 @@ export function StatsSection({ hostId, containerId, liveData }: Props) {
           cpu={liveData.cpu}
           mem={liveData.mem}
           net={liveData.net}
-          timestamps={[]}
+          memoryUsed={liveData.memoryUsed}
+          memoryLimit={liveData.memoryLimit}
+          timestamps={liveData.timestamps ?? []}
           timeWindow={LIVE_TIME_WINDOW}
           cpuValue={liveData.cpuValue}
           memValue={liveData.memValue}
@@ -98,6 +103,8 @@ function HistoricalCharts({
       cpu={data.cpu}
       mem={data.mem}
       net={data.net_bps}
+      memoryUsed={data.memory_used_bytes}
+      memoryLimit={data.memory_limit_bytes}
       timestamps={data.timestamps}
       timeWindow={data.tier_seconds}
       cpuValue={formatPercent(data.cpu)}

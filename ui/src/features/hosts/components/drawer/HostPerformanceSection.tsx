@@ -23,9 +23,12 @@ export function HostPerformanceSection({ hostId }: HostPerformanceSectionProps) 
       <StatsSection
         hostId={hostId}
         liveData={{
+          timestamps: sparklines?.timestamps,
           cpu: sparklines?.cpu ?? [],
           mem: sparklines?.mem ?? [],
           net: sparklines?.net ?? [],
+          memoryUsed: sparklines?.memory_used_bytes,
+          memoryLimit: sparklines?.memory_limit_bytes,
           cpuValue:
             metrics?.cpu_percent !== undefined
               ? `${metrics.cpu_percent.toFixed(1)}%`

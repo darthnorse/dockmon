@@ -5048,7 +5048,7 @@ async def get_dashboard_hosts(
 
     Returns hosts grouped by tag (if group_by specified) with:
     - Current stats (CPU, Memory, Network)
-    - Sparkline data (last 30-40 data points)
+    - Sparkline data (live rolling window)
     - Top 3 containers by CPU
     - Container count, alerts, updates
     """
@@ -5082,13 +5082,20 @@ async def get_dashboard_hosts(
             total_mem_used = sum(c.memory_usage or 0 for c in running_containers) / (1024 * 1024 * 1024)  # Convert to GB
 
             # Get real sparkline data from stats history buffer (Phase 4c)
-            # Uses EMA smoothing (α = 0.3) and maintains 60-90s of history
+            # Uses EMA smoothing (α = 0.3) and maintains the live rolling window
             # Only use sparklines for online hosts to avoid showing stale data
             if host.status == 'online':
-                sparklines = monitor.stats_history.get_sparklines(host.id, num_points=30)
+                sparklines = monitor.stats_history.get_sparklines(host.id)
             else:
                 # Offline hosts get empty sparklines (no stale data)
-                sparklines = {"cpu": [], "mem": [], "net": []}
+                sparklines = {
+                    "timestamps": [],
+                    "cpu": [],
+                    "mem": [],
+                    "net": [],
+                    "memory_used_bytes": [],
+                    "memory_limit_bytes": [],
+                }
 
             # Get actual host total memory (convert from bytes to GB)
             # FIX: Use real host memory instead of hard-coded 16 GB
@@ -6043,7 +6050,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
                 for container in containers_data:
                     # Use composite key with SHORT ID: host_id:container_id (12 chars)
                     container_key = make_composite_key(container.host_id, container.short_id)
-                    sparklines = monitor.container_stats_history.get_sparklines(container_key, num_points=30)
+                    sparklines = monitor.container_stats_history.get_sparklines(container_key)
                     container_sparklines[container_key] = sparklines
                 broadcast_data["container_sparklines"] = container_sparklines
 

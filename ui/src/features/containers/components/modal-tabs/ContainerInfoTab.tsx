@@ -466,9 +466,12 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
               hostId={container.host_id || ''}
               containerId={containerShortId}
               liveData={{
+                timestamps: sparklines?.timestamps,
                 cpu: cpuData,
                 mem: memData,
                 net: netData,
+                memoryUsed: sparklines?.memory_used_bytes,
+                memoryLimit: sparklines?.memory_limit_bytes,
                 cpuValue:
                   container.cpu_percent !== null && container.cpu_percent !== undefined
                     ? `${container.cpu_percent.toFixed(1)}%`

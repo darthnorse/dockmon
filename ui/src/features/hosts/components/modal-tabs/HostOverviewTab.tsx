@@ -327,14 +327,20 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
             <StatsSection
               hostId={hostId}
               liveData={{
+                timestamps: sparklines?.timestamps,
                 cpu: sparklines?.cpu ?? [],
                 mem: sparklines?.mem ?? [],
                 net: sparklines?.net ?? [],
+                memoryUsed: sparklines?.memory_used_bytes,
+                memoryLimit: sparklines?.memory_limit_bytes,
                 cpuValue:
                   metrics?.cpu_percent !== undefined
                     ? `${metrics.cpu_percent.toFixed(1)}%`
                     : undefined,
-                memValue: metrics?.mem_bytes ? formatBytes(metrics.mem_bytes) : undefined,
+                memValue:
+                  metrics?.mem_percent !== undefined
+                    ? `${metrics.mem_percent.toFixed(1)}%`
+                    : undefined,
                 netValue:
                   metrics?.net_bytes_per_sec !== undefined
                     ? formatNetworkRate(metrics.net_bytes_per_sec)

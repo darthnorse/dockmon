@@ -294,9 +294,12 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
           hostId={container.host_id || ''}
           containerId={container.id}
           liveData={{
+            timestamps: sparklines?.timestamps,
             cpu: cpuData,
             mem: memData,
             net: netData,
+            memoryUsed: sparklines?.memory_used_bytes,
+            memoryLimit: sparklines?.memory_limit_bytes,
             cpuValue: `${container.cpu_percent?.toFixed(1) || '0.0'}%`,
             memValue: formatBytes(container.memory_usage),
             netValue:

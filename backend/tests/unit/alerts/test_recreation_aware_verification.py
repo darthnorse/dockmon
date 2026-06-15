@@ -127,3 +127,11 @@ async def test_unhealthy_recreated_replacement_not_running_keeps_alert(db):
 async def test_unhealthy_gone_without_replacement_keeps_alert(db):
     service = _service(db, [_container("cccccccccccc", "other", "running")])
     assert await service._verify_alert_condition(_alert(kind="unhealthy")) is True
+
+
+async def test_unhealthy_present_container_keeps_alert(db):
+    # Original container still present. state carries no health value, and recovery is
+    # event-driven (a 'healthy' event auto-resolves), so verification keeps the alert
+    # rather than silently resolving it from a state that can never read 'unhealthy'.
+    service = _service(db, [_container(OLD_ID, "nextcloud", "running")])
+    assert await service._verify_alert_condition(_alert(kind="unhealthy")) is True

@@ -568,11 +568,12 @@ class AlertEvaluationService:
                         return False
                     return True
 
-                if container.state.lower() == "unhealthy":
-                    return True
-                else:
-                    logger.info(f"Alert {alert.id}: Container now {container.state} - no longer unhealthy")
-                    return False
+                # Container still present. We cannot judge health from state (it carries
+                # only lifecycle values like running/exited, never a health value), and we
+                # do not need to: an unhealthy alert recovers via the event-driven clear (a
+                # 'healthy' health_status event auto-resolves it). Keep the alert here - the
+                # notification gate's transient-suppression job is already done by events.
+                return True
 
             # For metric-based alerts (CPU, memory), re-check current metric value
             elif alert.kind in ["cpu_high", "memory_high"] and alert.scope_type == "container":

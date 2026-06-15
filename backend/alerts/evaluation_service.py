@@ -25,9 +25,8 @@ from utils.keys import make_composite_key, parse_composite_key
 logger = logging.getLogger(__name__)
 
 
-# Container lifecycle states that count as "recovered" when re-verifying a stopped or
-# unhealthy alert. 'restarting' is deliberately excluded: a container stuck in a
-# restart-policy crash loop reports 'restarting' indefinitely and should keep alerting.
+# Lifecycle states treated as "recovered" when re-verifying a stopped/unhealthy alert.
+# 'restarting' is excluded so crash-looping containers keep alerting.
 RECOVERED_STATES = ("running",)
 
 
@@ -462,11 +461,8 @@ class AlertEvaluationService:
             logger.error(f"Error checking blackout transitions: {e}", exc_info=True)
 
     def _find_original_container(self, alert: AlertV2, containers):
-        """Find the alert's original container by its short ID.
-
-        Matches on both short_id AND host_id to prevent cross-host confusion in
-        multi-host setups. Returns None if the container no longer exists.
-        """
+        """Find the alert's original container by short ID, scoped to its host
+        (host_id match avoids cross-host confusion in multi-host setups)."""
         _, container_short_id = parse_composite_key(alert.scope_id)
         return next(
             (c for c in containers
@@ -477,13 +473,9 @@ class AlertEvaluationService:
     def _find_replacement_container(self, alert: AlertV2, containers):
         """Find a same-name, same-host container indicating in-place recreation.
 
-        When a container is recreated (update, compose redeploy, backup), it keeps
-        its name but gets a new Docker ID, so a lookup by the alert's original short
-        ID fails. Docker enforces unique container names per daemon, so matching on
-        (container_name, host_id) identifies at most one live container.
-
-        Returns the replacement container, or None if no same-named container exists
-        on the alert's host (genuine deletion, or host unreachable).
+        A recreated container keeps its name but gets a new ID, so the original
+        short-ID lookup misses it. Names are unique per daemon, so (name, host_id)
+        matches at most one container. Returns None when nothing matches.
         """
         if not alert.container_name:
             return None
@@ -515,9 +507,7 @@ class AlertEvaluationService:
                 container = self._find_original_container(alert, containers)
 
                 if not container:
-                    # Original container ID no longer exists. Distinguish an in-place
-                    # recreation (new ID, same name, same host - e.g. update, compose
-                    # redeploy, or backup) from a genuine deletion.
+                    # Original ID gone: tell an in-place recreation from a real deletion.
                     replacement = self._find_replacement_container(alert, containers)
                     if replacement:
                         if replacement.state.lower() in RECOVERED_STATES:
@@ -554,11 +544,9 @@ class AlertEvaluationService:
                 container = self._find_original_container(alert, containers)
 
                 if not container:
-                    # Recreated in place (same name+host, new ID) - the old-ID unhealthy
-                    # alert is stale. Resolve only if the replacement is back up; a dead
-                    # replacement emits no health event to re-alert, so keep the alert. A
-                    # still-unhealthy running replacement re-alerts under its new ID via
-                    # Docker's health_status event.
+                    # Recreated in place: clear the stale old-ID alert only if the
+                    # replacement is back up. A dead replacement keeps it (no health
+                    # event would re-fire under the new ID).
                     replacement = self._find_replacement_container(alert, containers)
                     if replacement and replacement.state.lower() in RECOVERED_STATES:
                         logger.info(
@@ -568,11 +556,8 @@ class AlertEvaluationService:
                         return False
                     return True
 
-                # Container still present. We cannot judge health from state (it carries
-                # only lifecycle values like running/exited, never a health value), and we
-                # do not need to: an unhealthy alert recovers via the event-driven clear (a
-                # 'healthy' health_status event auto-resolves it). Keep the alert here - the
-                # notification gate's transient-suppression job is already done by events.
+                # state carries no health value; recovery is event-driven (a 'healthy'
+                # event auto-resolves), so keep the alert here.
                 return True
 
             # For metric-based alerts (CPU, memory), re-check current metric value

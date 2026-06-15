@@ -53,7 +53,7 @@ def _service(db, containers):
     return AlertEvaluationService(db=db, monitor=monitor)
 
 
-# --- container_stopped: NEW behavior (these FAIL before implementation) ---
+# --- container_stopped: a recovered container clears the alert ---
 
 async def test_recreated_running_clears_condition(db):
     service = _service(db, [_container(NEW_ID, "nextcloud", "running")])
@@ -107,10 +107,8 @@ async def test_missing_container_name_keeps_alert(db):
 
 
 # --- unhealthy ---
-# Container.state carries no health value (only running/exited/...). A recreated
-# replacement that is back up clears the stale old-ID alert; if it is not running,
-# keep the alert. A still-unhealthy running replacement re-alerts under its own ID
-# via Docker health_status events.
+# state carries no health value, so recovery is event-driven; a recreated replacement
+# clears the stale old-ID alert only when it is back up.
 
 async def test_unhealthy_recreated_replacement_clears_condition(db):
     service = _service(db, [_container(NEW_ID, "nextcloud", "running")])
@@ -130,8 +128,7 @@ async def test_unhealthy_gone_without_replacement_keeps_alert(db):
 
 
 async def test_unhealthy_present_container_keeps_alert(db):
-    # Original container still present. state carries no health value, and recovery is
-    # event-driven (a 'healthy' event auto-resolves), so verification keeps the alert
-    # rather than silently resolving it from a state that can never read 'unhealthy'.
+    # Present container: state can never read 'unhealthy', so keep the alert (recovery
+    # is event-driven) rather than silently resolving.
     service = _service(db, [_container(OLD_ID, "nextcloud", "running")])
     assert await service._verify_alert_condition(_alert(kind="unhealthy")) is True

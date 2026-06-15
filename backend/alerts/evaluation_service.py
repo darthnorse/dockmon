@@ -455,6 +455,25 @@ class AlertEvaluationService:
         except Exception as e:
             logger.error(f"Error checking blackout transitions: {e}", exc_info=True)
 
+    def _find_replacement_container(self, alert: AlertV2, containers):
+        """Find a same-name, same-host container indicating in-place recreation.
+
+        When a container is recreated (update, compose redeploy, backup), it keeps
+        its name but gets a new Docker ID, so a lookup by the alert's original short
+        ID fails. Docker enforces unique container names per daemon, so matching on
+        (container_name, host_id) identifies at most one live container.
+
+        Returns the replacement container, or None if no same-named container exists
+        on the alert's host (genuine deletion, or host unreachable).
+        """
+        if not alert.container_name:
+            return None
+        return next(
+            (c for c in containers
+             if c.name == alert.container_name and c.host_id == alert.host_id),
+            None,
+        )
+
     async def _verify_alert_condition(self, alert: AlertV2) -> bool:
         """
         Verify that an alert's condition is still true before sending delayed notification.
@@ -482,8 +501,25 @@ class AlertEvaluationService:
                                 if c.short_id == container_short_id and c.host_id == alert.host_id), None)
 
                 if not container:
-                    # Container no longer exists - still consider this a valid alert
-                    logger.info(f"Alert {alert.id}: Container no longer found - keeping alert")
+                    # Original container ID no longer exists. Distinguish an in-place
+                    # recreation (new ID, same name, same host - e.g. update, compose
+                    # redeploy, or backup) from a genuine deletion.
+                    replacement = self._find_replacement_container(alert, containers)
+                    if replacement:
+                        if replacement.state.lower() in ["running", "restarting"]:
+                            logger.info(
+                                f"Alert {alert.id}: Container '{alert.container_name}' recreated "
+                                f"and {replacement.state} - condition cleared"
+                            )
+                            return False
+                        logger.info(
+                            f"Alert {alert.id}: Container '{alert.container_name}' recreated "
+                            f"but {replacement.state} - condition valid"
+                        )
+                        return True
+                    logger.info(
+                        f"Alert {alert.id}: Container no longer found, no replacement - keeping alert"
+                    )
                     return True
 
                 # Check if container is running

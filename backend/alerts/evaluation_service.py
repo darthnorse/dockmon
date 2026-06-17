@@ -25,6 +25,11 @@ from utils.keys import make_composite_key, parse_composite_key
 logger = logging.getLogger(__name__)
 
 
+# Lifecycle states treated as "recovered" when re-verifying a stopped/unhealthy alert.
+# 'restarting' is excluded so crash-looping containers keep alerting.
+RECOVERED_STATES = ("running",)
+
+
 def calculate_next_retry(attempt_count: int) -> datetime:
     """
     Calculate next retry time with exponential backoff.
@@ -455,6 +460,31 @@ class AlertEvaluationService:
         except Exception as e:
             logger.error(f"Error checking blackout transitions: {e}", exc_info=True)
 
+    def _find_original_container(self, alert: AlertV2, containers):
+        """Find the alert's original container by short ID, scoped to its host
+        (host_id match avoids cross-host confusion in multi-host setups)."""
+        _, container_short_id = parse_composite_key(alert.scope_id)
+        return next(
+            (c for c in containers
+             if c.short_id == container_short_id and c.host_id == alert.host_id),
+            None,
+        )
+
+    def _find_replacement_container(self, alert: AlertV2, containers):
+        """Find a same-name, same-host container indicating in-place recreation.
+
+        A recreated container keeps its name but gets a new ID, so the original
+        short-ID lookup misses it. Names are unique per daemon, so (name, host_id)
+        matches at most one container. Returns None when nothing matches.
+        """
+        if not alert.container_name:
+            return None
+        return next(
+            (c for c in containers
+             if c.name == alert.container_name and c.host_id == alert.host_id),
+            None,
+        )
+
     async def _verify_alert_condition(self, alert: AlertV2) -> bool:
         """
         Verify that an alert's condition is still true before sending delayed notification.
@@ -473,25 +503,35 @@ class AlertEvaluationService:
                     logger.warning(f"Cannot verify container state - monitor not available")
                     return True  # Default to sending notification if we can't verify
 
-                # Get current container state from monitor
-                # CRITICAL: Match by both short_id AND host_id to prevent cross-host confusion in multi-host setups
-                # Parse composite scope_id to extract short container ID
-                _, container_short_id = parse_composite_key(alert.scope_id)
                 containers = await self.monitor.get_containers()
-                container = next((c for c in containers
-                                if c.short_id == container_short_id and c.host_id == alert.host_id), None)
+                container = self._find_original_container(alert, containers)
 
                 if not container:
-                    # Container no longer exists - still consider this a valid alert
-                    logger.info(f"Alert {alert.id}: Container no longer found - keeping alert")
+                    # Original ID gone: tell an in-place recreation from a real deletion.
+                    replacement = self._find_replacement_container(alert, containers)
+                    if replacement:
+                        if replacement.state.lower() in RECOVERED_STATES:
+                            logger.info(
+                                f"Alert {alert.id}: Container '{alert.container_name}' recreated "
+                                f"and {replacement.state} - condition cleared"
+                            )
+                            return False
+                        logger.info(
+                            f"Alert {alert.id}: Container '{alert.container_name}' recreated "
+                            f"but {replacement.state} - condition valid"
+                        )
+                        return True
+                    logger.info(
+                        f"Alert {alert.id}: Container no longer found, no replacement - keeping alert"
+                    )
                     return True
 
-                # Check if container is running
-                if container.state.lower() in ["running", "restarting"]:
+                # Container is back up - condition cleared
+                if container.state.lower() in RECOVERED_STATES:
                     logger.info(f"Alert {alert.id}: Container now {container.state} - condition cleared")
                     return False
 
-                # Container still stopped/exited - condition still true
+                # Container still stopped/exited/restarting - condition still true
                 logger.info(f"Alert {alert.id}: Container still {container.state} - condition valid")
                 return True
 
@@ -500,21 +540,25 @@ class AlertEvaluationService:
                 if not self.monitor:
                     return True
 
-                # CRITICAL: Match by both short_id AND host_id to prevent cross-host confusion
-                # Parse composite scope_id to extract short container ID
-                _, container_short_id = parse_composite_key(alert.scope_id)
                 containers = await self.monitor.get_containers()
-                container = next((c for c in containers
-                                if c.short_id == container_short_id and c.host_id == alert.host_id), None)
+                container = self._find_original_container(alert, containers)
 
                 if not container:
+                    # Recreated in place: clear the stale old-ID alert only if the
+                    # replacement is back up. A dead replacement keeps it (no health
+                    # event would re-fire under the new ID).
+                    replacement = self._find_replacement_container(alert, containers)
+                    if replacement and replacement.state.lower() in RECOVERED_STATES:
+                        logger.info(
+                            f"Alert {alert.id}: Container '{alert.container_name}' recreated "
+                            f"and {replacement.state} - resolving stale unhealthy alert"
+                        )
+                        return False
                     return True
 
-                if container.state.lower() == "unhealthy":
-                    return True
-                else:
-                    logger.info(f"Alert {alert.id}: Container now {container.state} - no longer unhealthy")
-                    return False
+                # state carries no health value; recovery is event-driven (a 'healthy'
+                # event auto-resolves), so keep the alert here.
+                return True
 
             # For metric-based alerts (CPU, memory), re-check current metric value
             elif alert.kind in ["cpu_high", "memory_high"] and alert.scope_type == "container":

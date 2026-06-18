@@ -80,18 +80,46 @@ class AgentConnectionManager:
 
         logger.info(f"Agent {agent_id} connected. Total agents: {len(self.connections)}")
 
-    async def unregister_connection(self, agent_id: str):
+    async def unregister_connection(self, agent_id: str, websocket: Optional[WebSocket] = None) -> bool:
         """
         Unregister an agent WebSocket connection.
 
+        Modes:
+        - Identity-gated (websocket provided): tear down only if `websocket` is
+          still the agent's currently-registered socket. On reconnect the new
+          socket registers before the superseded socket's teardown runs, so a
+          teardown from a stale socket must NOT evict the live connection or mark
+          the agent offline. Returns True only if it removed the active connection.
+        - Forced (websocket omitted): unconditionally remove the agent and mark it
+          offline. Used when a host is deleted.
+
         Args:
             agent_id: Agent UUID
+            websocket: The connection being torn down, for identity-gated cleanup.
+                       Omit to force removal regardless of the current connection.
+
+        Returns:
+            bool: True if the agent's active connection was removed by this call.
         """
         async with self._connection_lock:
-            if agent_id in self.connections:
+            current = self.connections.get(agent_id)
+            if websocket is not None and current is not websocket:
+                # Superseded by a newer connection - leave the live socket alone.
+                logger.info(
+                    f"Ignoring stale disconnect for agent {agent_id}: "
+                    f"superseded by a newer connection"
+                )
+                return False
+            removed = current is not None
+            if removed:
                 del self.connections[agent_id]
 
-        # Update agent status in database (short-lived session)
+        # Update agent status in database (short-lived session).
+        # Runs after releasing _connection_lock. Ordering-safe against a concurrent
+        # reconnect's "online" write only because the session is synchronous: with no
+        # await between the lock release and commit, each register/unregister status
+        # write is atomic relative to other tasks and ordered by lock acquisition.
+        # Fold this into the lock if the DB layer ever becomes async.
         with self.db_manager.get_session() as session:
             agent = session.query(Agent).filter_by(id=agent_id).first()
             if agent:
@@ -100,6 +128,7 @@ class AgentConnectionManager:
                 session.commit()
 
         logger.info(f"Agent {agent_id} disconnected. Total agents: {len(self.connections)}")
+        return removed
 
     async def send_command(self, agent_id: str, command: dict) -> bool:
         """

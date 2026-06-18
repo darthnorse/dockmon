@@ -844,6 +844,15 @@ class DockerMonitor:
                         await agent_connection_manager.unregister_connection(agent_id)
                         logger.info(f"Disconnected agent {agent_id[:8]}... for host {host_name}")
 
+                        # Force-removed agents no longer tear down via their socket
+                        # handler (its identity-gated unregister now no-ops), so close
+                        # any open web-shell sessions for the agent here.
+                        try:
+                            from agent.shell_manager import get_shell_manager
+                            await get_shell_manager().close_sessions_for_agent(agent_id)
+                        except Exception as e:
+                            logger.warning(f"Error closing shell sessions for agent {agent_id[:8]}: {e}")
+
                         # Invalidate the agent's token in stats-service so the next
                         # reconnect attempt fails fast instead of waiting for the
                         # 5-minute token cache TTL. Non-fatal on failure.
@@ -963,6 +972,14 @@ class DockerMonitor:
                         if agent:
                             await agent_connection_manager.unregister_connection(agent.id)
                             logger.info(f"Disconnected agent {agent.id[:8]}... for host {host_name}")
+
+                            # Force-removed agents no longer tear down via their socket
+                            # handler, so close any open web-shell sessions here.
+                            try:
+                                from agent.shell_manager import get_shell_manager
+                                await get_shell_manager().close_sessions_for_agent(agent.id)
+                            except Exception as e:
+                                logger.warning(f"Error closing shell sessions for agent {agent.id[:8]}: {e}")
 
                 # Delete from database
                 self.db.delete_host(host_id)

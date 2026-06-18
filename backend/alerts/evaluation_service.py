@@ -19,6 +19,7 @@ from sqlalchemy.orm import joinedload
 
 from database import DatabaseManager, AlertRuleV2, AlertV2, DockerHostDB
 from alerts.engine import AlertEngine, EvaluationContext
+from agent.connection_manager import agent_connection_manager
 from event_logger import EventLogger, EventContext, EventCategory, EventType, EventSeverity
 from utils.keys import make_composite_key, parse_composite_key
 
@@ -1540,6 +1541,18 @@ class AlertEvaluationService:
             # Host disconnected → cancel any pending clears for host_disconnected
             # (Issue #96 - alert_clear_delay_seconds: if host disconnects again while clear is pending, cancel it)
             elif event_type == "disconnection":
+                # Reconnect-race guard: if the agent has already reconnected by the
+                # time we process this disconnect, the host is actually up. The event
+                # bus interleaves the old socket's disconnect with the new socket's
+                # connect, so a superseded teardown's disconnect can be evaluated
+                # after the reconnect already cleared host_down. Dropping it here
+                # (checked at processing time, after any reconnect) prevents a stuck
+                # false host_down. Only agent disconnects carry agent_id.
+                agent_id = event_data.get("agent_id")
+                if agent_id and agent_connection_manager.is_connected(agent_id):
+                    logger.info(f"Ignoring stale host disconnect for {host_name}: agent reconnected")
+                    return
+
                 cancelled = self.engine.cancel_pending_clears_for_scope(
                     scope_type="host",
                     scope_id=host_id,

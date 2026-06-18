@@ -180,8 +180,21 @@ class AgentWebSocketHandler:
                 pass
 
         finally:
-            # Emit HOST_DISCONNECTED event via EventBus (before cleanup)
-            if self.monitor and self.host_id and self.authenticated:
+            # Tear down THIS connection first. unregister_connection only removes
+            # the registry/DB state when this websocket is still the agent's active
+            # socket; a superseded socket (the agent reconnected on a new socket)
+            # is a no-op. removed_active gates the host-down side effects below so a
+            # stale teardown cannot mark a live host as disconnected.
+            removed_active = False
+            if self.agent_id:
+                removed_active = await agent_connection_manager.unregister_connection(
+                    self.agent_id, self.websocket
+                )
+
+            # Emit HOST_DISCONNECTED only when this teardown removed the live
+            # connection and nothing has reconnected since.
+            if (removed_active and self.monitor and self.host_id and self.authenticated
+                    and not agent_connection_manager.is_connected(self.agent_id)):
                 try:
                     event = Event(
                         event_type=EventType.HOST_DISCONNECTED,
@@ -197,19 +210,16 @@ class AgentWebSocketHandler:
                 except Exception as e:
                     logger.warning(f"Failed to emit HOST_DISCONNECTED event: {e}")
 
-            # Close any shell sessions for this agent
-            if self.agent_id:
+            # Close shell sessions only when the agent has no live connection. A
+            # superseded or mid-reconnect socket must not tear down the shells owned
+            # by the agent's current connection, so re-check is_connected here: a
+            # reconnect that landed during the disconnect emit keeps its shells.
+            if self.agent_id and not agent_connection_manager.is_connected(self.agent_id):
                 try:
                     from agent.shell_manager import get_shell_manager
                     await get_shell_manager().close_sessions_for_agent(self.agent_id)
                 except Exception as e:
                     logger.warning(f"Error closing shell sessions for agent: {e}")
-
-            # Clean up connection
-            if self.agent_id:
-                await agent_connection_manager.unregister_connection(
-                    self.agent_id
-                )
 
     async def authenticate(self, message: dict) -> dict:
         """

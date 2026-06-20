@@ -1,7 +1,16 @@
 package handlers
 
 import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 
 	dockerTypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -228,5 +237,204 @@ func TestCloneContainerConfig_UserOverrideOfImageEnvPreserved(t *testing.T) {
 	}
 	if !foundOverride {
 		t.Errorf("expected user override LOG_LEVEL=debug preserved, got %v", newConfig.Env)
+	}
+}
+
+// TestReplaceBinary_SameFilesystemRename: same-filesystem swap is a plain rename.
+func TestReplaceBinary_SameFilesystemRename(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "agent-new")
+	dst := filepath.Join(dir, "dockmon-agent")
+
+	if err := os.WriteFile(src, []byte("NEW"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("OLD"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := replaceBinary(src, dst, os.Rename); err != nil {
+		t.Fatalf("replaceBinary returned error: %v", err)
+	}
+
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "NEW" {
+		t.Errorf("dst content = %q, want %q", got, "NEW")
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("expected src removed after rename, stat err = %v", err)
+	}
+}
+
+// TestReplaceBinary_CrossDeviceFallback: EXDEV rename falls back to a copy that
+// sets the executable bit, drops the staged file, and leaves no temp behind (#230).
+func TestReplaceBinary_CrossDeviceFallback(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "agent-new")
+	dst := filepath.Join(dir, "dockmon-agent")
+
+	if err := os.WriteFile(src, []byte("NEWBINARY"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("OLD"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	exdev := func(_, _ string) error {
+		return &os.LinkError{Op: "rename", Err: syscall.EXDEV}
+	}
+
+	if err := replaceBinary(src, dst, exdev); err != nil {
+		t.Fatalf("replaceBinary returned error on EXDEV fallback: %v", err)
+	}
+
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "NEWBINARY" {
+		t.Errorf("dst content = %q, want %q", got, "NEWBINARY")
+	}
+
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0755 {
+		t.Errorf("dst mode = %v, want 0755", info.Mode().Perm())
+	}
+
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("expected staged src removed after fallback, stat err = %v", err)
+	}
+
+	// dst should be the only file left - no orphaned temp.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != "dockmon-agent" {
+			t.Errorf("unexpected leftover file in target dir: %q", e.Name())
+		}
+	}
+}
+
+// TestReplaceBinary_NonEXDEVErrorPropagates: a non-EXDEV rename error propagates
+// as-is and leaves dst untouched (no copy fallback).
+func TestReplaceBinary_NonEXDEVErrorPropagates(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "agent-new")
+	dst := filepath.Join(dir, "dockmon-agent")
+
+	if err := os.WriteFile(src, []byte("NEW"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("OLD"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	denied := func(_, _ string) error {
+		return &os.LinkError{Op: "rename", Err: syscall.EACCES}
+	}
+
+	err := replaceBinary(src, dst, denied)
+	if !errors.Is(err, syscall.EACCES) {
+		t.Fatalf("expected EACCES to propagate, got %v", err)
+	}
+
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "OLD" {
+		t.Errorf("dst should be untouched on non-EXDEV error, got %q", got)
+	}
+}
+
+// TestPerformNativeSelfUpdate_CleansStagedBinaryOnFailure: an abort after staging
+// but before the lock file is written removes the staged .dockmon-agent.new.
+func TestPerformNativeSelfUpdate_CleansStagedBinaryOnFailure(t *testing.T) {
+	// The staged file lands next to the running binary; compute the same path.
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stagedPath := filepath.Join(filepath.Dir(exe), ".dockmon-agent.new")
+	t.Cleanup(func() { _ = os.Remove(stagedPath) })
+
+	// Serve a fake binary so the download succeeds and creates the staged file.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("FAKEBINARY"))
+	}))
+	defer srv.Close()
+
+	// A regular file as dataDir makes the later lock-file write fail (ENOTDIR).
+	dataFile := filepath.Join(t.TempDir(), "data-is-a-file")
+	if err := os.WriteFile(dataFile, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	log := logrus.New()
+	log.SetOutput(io.Discard)
+	h := &SelfUpdateHandler{
+		log:       log,
+		dataDir:   dataFile,
+		sendEvent: func(string, interface{}) error { return nil },
+	}
+
+	err = h.performNativeSelfUpdate(context.Background(), SelfUpdateRequest{
+		Version:   "9.9.9",
+		BinaryURL: srv.URL,
+	})
+	if err == nil {
+		t.Fatal("expected performNativeSelfUpdate to fail on unwritable data dir")
+	}
+
+	if _, statErr := os.Stat(stagedPath); !os.IsNotExist(statErr) {
+		t.Errorf("staged binary should be removed after aborted update, stat err = %v", statErr)
+	}
+}
+
+// TestApplyNativeUpdate_NoFatalWhenBackupMissingAndDstIntact: a failed swap with
+// no backup must not escalate to log.Fatal - the original binary is still intact.
+func TestApplyNativeUpdate_NoFatalWhenBackupMissingAndDstIntact(t *testing.T) {
+	tmp := t.TempDir()
+
+	// New binary exists so applyNativeUpdate gets past its existence check...
+	newBin := filepath.Join(tmp, "agent-new")
+	if err := os.WriteFile(newBin, []byte("NEW"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// ...but old binary's dir is missing, so backup copy and rename both fail.
+	oldBin := filepath.Join(tmp, "missing-dir", "dockmon-agent")
+
+	lockPath := filepath.Join(tmp, "update.lock")
+
+	fatalCalled := false
+	log := logrus.New()
+	log.SetOutput(io.Discard)
+	log.ExitFunc = func(int) { fatalCalled = true } // capture Fatal instead of exiting
+	h := &SelfUpdateHandler{log: log}
+
+	if err := h.writeLockFile(lockPath, &UpdateLockFile{
+		Version:       "9.9.9",
+		NewBinaryPath: newBin,
+		OldBinaryPath: oldBin,
+		Timestamp:     time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := h.applyNativeUpdate(lockPath)
+	if err == nil {
+		t.Fatal("expected applyNativeUpdate to fail when the swap target dir is missing")
+	}
+	if fatalCalled {
+		t.Error("applyNativeUpdate escalated to log.Fatal despite the original binary being intact")
 	}
 }

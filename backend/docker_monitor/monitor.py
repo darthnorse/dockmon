@@ -554,7 +554,7 @@ class DockerMonitor:
                             # Agent hosts have url="agent://" which is not a valid Docker URL
                             if host.connection_type != "agent":
                                 is_local = host.url.startswith("unix://")
-                                await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus, is_local)
+                                await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus, host.total_memory, is_local)
                                 logger.info(f"Registered {host.name} ({host.id[:8]}) with stats service")
 
                                 await stats_client.add_event_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
@@ -1209,7 +1209,7 @@ class DockerMonitor:
                         if host.connection_type != "agent":
                             # Re-register with stats service (automatically closes old client)
                             is_local = host.url.startswith("unix://")
-                            await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus, is_local)
+                            await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus, host.total_memory, is_local)
                             logger.info(f"Re-registered {host.name} ({host.id[:8]}) with stats service")
 
                             # Remove and re-add event monitoring
@@ -1660,17 +1660,18 @@ class DockerMonitor:
                 continue
 
             try:
-                # Get TLS certificates and num_cpus from database
+                # Get TLS certificates, num_cpus, and total_memory from database
                 with self.db.get_session() as session:
                     db_host = session.query(DockerHostDB).filter_by(id=host_id).first()
                     tls_ca = db_host.tls_ca if db_host else None
                     tls_cert = db_host.tls_cert if db_host else None
                     tls_key = db_host.tls_key if db_host else None
                     num_cpus = db_host.num_cpus if db_host else None
+                    total_memory = db_host.total_memory if db_host else None
 
                 # Register with stats service
                 is_local = host.url.startswith("unix://")
-                await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key, num_cpus, is_local)
+                await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key, num_cpus, total_memory, is_local)
                 logger.info(f"Registered host {host.name} ({host_id[:8]}) with stats service")
 
                 # Register with event service

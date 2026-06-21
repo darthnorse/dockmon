@@ -347,7 +347,7 @@ func main() {
 			return
 		}
 
-		jsonResponse(w,stats)
+		jsonResponse(w, stats)
 	}))
 
 	// Get all container stats (for debugging) - PROTECTED
@@ -475,6 +475,7 @@ func main() {
 			TLSCert     string `json:"tls_cert,omitempty"`
 			TLSKey      string `json:"tls_key,omitempty"`
 			NumCPUs     int    `json:"num_cpus,omitempty"`
+			TotalMemory uint64 `json:"total_memory,omitempty"`
 			IsLocal     bool   `json:"is_local,omitempty"`
 		}
 
@@ -497,6 +498,11 @@ func main() {
 		// Store number of CPUs for host CPU aggregation
 		if req.NumCPUs > 0 {
 			cache.SetHostNumCPUs(req.HostID, req.NumCPUs)
+		}
+
+		// Store Docker-visible host memory for host memory aggregation
+		if req.TotalMemory > 0 {
+			cache.SetHostMemory(req.HostID, req.TotalMemory)
 		}
 
 		// Mark host as local for /host/proc reading
@@ -628,7 +634,7 @@ func main() {
 			events = eventCache.GetAllRecentEvents(50)
 		}
 
-		jsonResponse(w,events)
+		jsonResponse(w, events)
 	}))
 
 	// WebSocket endpoint for event streaming - PROTECTED

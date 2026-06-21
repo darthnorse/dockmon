@@ -15,8 +15,8 @@ export type HistoricalRange = Exclude<TimeRange, 'live'>
  *
  * Column-major arrays: each array is parallel to `timestamps`.
  * Nulls in the data arrays represent missing buckets (chart gaps).
- * `memory_used_bytes`, `memory_limit_bytes`, `container_count` are only
- * populated for host-history responses.
+ * `memory_used_bytes` and `memory_limit_bytes` are optional companion columns
+ * for richer memory labels; `container_count` is host-only.
  */
 export interface StatsHistoryResponse {
   tier: HistoricalRange

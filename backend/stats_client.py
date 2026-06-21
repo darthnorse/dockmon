@@ -114,7 +114,7 @@ class StatsServiceClient:
                 return False
         return False
 
-    async def add_docker_host(self, host_id: str, host_name: str, host_address: str, tls_ca: str = None, tls_cert: str = None, tls_key: str = None, num_cpus: int = None, is_local: bool = False) -> bool:
+    async def add_docker_host(self, host_id: str, host_name: str, host_address: str, tls_ca: str = None, tls_cert: str = None, tls_key: str = None, num_cpus: int = None, total_memory: int = None, is_local: bool = False) -> bool:
         """Register a Docker host with the stats service"""
         for attempt in range(2):
             try:
@@ -134,6 +134,10 @@ class StatsServiceClient:
                 # Add num_cpus for proper host CPU aggregation
                 if num_cpus and num_cpus > 0:
                     payload["num_cpus"] = num_cpus
+
+                # Add Docker-visible memory for proper host memory aggregation
+                if total_memory and total_memory > 0:
+                    payload["total_memory"] = total_memory
 
                 # Mark as local host for /host/proc reading (Issue #129)
                 if is_local:

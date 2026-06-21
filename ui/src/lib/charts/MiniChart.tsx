@@ -2,12 +2,12 @@
  * MiniChart — uPlot-backed sparkline with two operating modes:
  *
  * - **Index mode** (default): live sparkline driven by an array of values.
- *   X-axis is index-based with relative "seconds ago" labels. Used by every
- *   dashboard / drawer card today.
+ *   X-axis is index-based with relative "seconds ago" labels. Used only as a
+ *   fallback when live sparklines do not include timestamps.
  * - **Timestamp mode**: pass `timestamps` (unix seconds) alongside the data
  *   array. X-axis becomes absolute time, nulls in `data` render as gaps,
  *   `timeWindow` locks the X-axis to a rolling [now - timeWindow, now] view.
- *   Used for historical views over arbitrary ranges.
+ *   Used for historical views and timestamped live sparklines.
  *
  * Tens of MiniChart instances can be visible at once on the dashboard, so the
  * named export is wrapped in `React.memo` and uPlot data updates flow through
@@ -23,6 +23,7 @@ import { formatRelativeTime, formatYAxisValue } from './formatters'
 // Color palette matching design system. Single source of truth: any UI element
 // that visually represents a metric (chart line, icon, swatch) MUST source its
 // color from here so the icon and the line can never disagree.
+// eslint-disable-next-line react-refresh/only-export-components
 export const CHART_COLORS = {
   cpu: '#F59E0B',     // Amber
   memory: '#3B82F6',  // Blue
@@ -46,7 +47,7 @@ export interface MiniChartProps {
   label?: string | undefined
   /** Show axes and enhanced features (default: false for compact sparklines) */
   showAxes?: boolean | undefined
-  /** Fixed rolling time window in seconds. When provided with timestamps, X-axis is locked to [now - timeWindow, now]. */
+  /** Fixed rolling time window in seconds for timestamp mode. */
   timeWindow?: number | undefined
   /**
    * Tooltip time formatter for timestamp mode. Receives unix seconds, returns
@@ -55,7 +56,14 @@ export interface MiniChartProps {
    * reference** (use `useCallback`) — a new identity per render forces uPlot
    * to rebuild on every WS tick.
    */
+  // eslint-disable-next-line no-unused-vars
   formatTooltipTime?: ((unixSec: number) => string) | undefined
+  /** Optional formatter for values shown in the hover tooltip. */
+  // eslint-disable-next-line no-unused-vars
+  formatTooltipValue?: ((value: number, index: number) => string | string[]) | undefined
+  /** Optional formatter for Y-axis tick labels. */
+  // eslint-disable-next-line no-unused-vars
+  formatYAxisTick?: ((value: number) => string) | undefined
 }
 
 /**
@@ -118,6 +126,8 @@ function MiniChartInner({
   showAxes = false,
   timeWindow,
   formatTooltipTime,
+  formatTooltipValue,
+  formatYAxisTick,
 }: MiniChartProps) {
   const chartRef = useRef<HTMLDivElement>(null)
   const plotRef = useRef<uPlot | null>(null)
@@ -126,7 +136,7 @@ function MiniChartInner({
     x: number
     y: number
     time: string
-    value: string
+    value: string | string[]
   }>({
     show: false,
     x: 0,
@@ -274,7 +284,7 @@ function MiniChartInner({
       {
         // Y-axis (values)
         show: showAxes,
-        space: 40,
+        space: formatYAxisTick ? 64 : 40,
         stroke: '#64748b',
         grid: {
           show: showAxes,
@@ -330,6 +340,9 @@ function MiniChartInner({
           return ticks
         },
         values: (_u: uPlot, vals: number[]) => {
+          if (formatYAxisTick) {
+            return vals.map((v: number) => formatYAxisTick(v))
+          }
           return vals.map((v: number) => formatYAxisValue(v, isPercentage))
         },
         font: '11px system-ui, -apple-system, sans-serif',
@@ -388,7 +401,7 @@ function MiniChartInner({
         // Render gaps at null values (for downtime / missing data in historical views)
         spanGaps: false,
         points: {
-          show: showAxes, // Only show points in enhanced mode
+          show: false,
           size: 4,
           stroke: CHART_COLORS[color],
           fill: '#ffffff',
@@ -398,6 +411,10 @@ function MiniChartInner({
           // Format tooltip value based on metric type.
           // With spanGaps: false, uPlot passes null at gap points.
           if (v == null) return '—'
+          if (formatTooltipValue) {
+            const formatted = formatTooltipValue(v, -1)
+            return Array.isArray(formatted) ? formatted.join(' ') : formatted
+          }
           if (isPercentage) {
             return `${v.toFixed(1)}%`
           }
@@ -438,8 +455,10 @@ function MiniChartInner({
             timeLabel = secondsAgo === 0 ? 'now' : `${formatRelativeTime(secondsAgo)} ago`
           }
 
-          let valueLabel: string
-          if (isPercentage) {
+          let valueLabel: string | string[]
+          if (formatTooltipValue) {
+            valueLabel = formatTooltipValue(yVal, idx)
+          } else if (isPercentage) {
             valueLabel = `${yVal.toFixed(1)}%`
           } else {
             valueLabel = formatYAxisValue(yVal, false)
@@ -459,7 +478,7 @@ function MiniChartInner({
         },
       ],
     },
-  }), [width, height, color, label, isPercentage, isCpu, hasTimestamps, timeWindow, showAxes, formatTooltipTime, setTooltip])
+  }), [width, height, color, label, isPercentage, isCpu, hasTimestamps, timeWindow, showAxes, formatTooltipTime, formatTooltipValue, formatYAxisTick, setTooltip])
 
   // Tracks whether we've ever had a populated chart, so we only rebuild on the
   // empty→populated transition (and on opts/color changes), not on every data
@@ -542,7 +561,21 @@ function MiniChartInner({
             boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
           }}
         >
-          <div style={{ fontWeight: '600', marginBottom: '2px' }}>{tooltip.value}</div>
+          {Array.isArray(tooltip.value) ? (
+            tooltip.value.map((line, index) => (
+              <div
+                key={`${line}-${index}`}
+                style={{
+                  fontWeight: index === 0 ? '600' : '400',
+                  marginBottom: index === tooltip.value.length - 1 ? '2px' : '1px',
+                }}
+              >
+                {line}
+              </div>
+            ))
+          ) : (
+            <div style={{ fontWeight: '600', marginBottom: '2px' }}>{tooltip.value}</div>
+          )}
           <div style={{ fontSize: '11px', opacity: 0.8 }}>{tooltip.time}</div>
         </div>
       )}

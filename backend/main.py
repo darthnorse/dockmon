@@ -3463,6 +3463,8 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "stats_persistence_enabled": getattr(settings, 'stats_persistence_enabled', False),
         "stats_retention_days": getattr(settings, 'stats_retention_days', 30),
         "stats_points_per_view": getattr(settings, 'stats_points_per_view', 500),
+        # Live chart window (v2.4.x+) — backend-only, NOT pushed to stats-service
+        "live_chart_window_seconds": getattr(settings, 'live_chart_window_seconds', 600),
     }
 
 @app.post("/api/settings", tags=["system"], dependencies=[Depends(require_capability("settings.manage"))])
@@ -3596,6 +3598,8 @@ async def update_settings(
         "stats_persistence_enabled": getattr(updated, 'stats_persistence_enabled', False),
         "stats_retention_days": getattr(updated, 'stats_retention_days', 30),
         "stats_points_per_view": getattr(updated, 'stats_points_per_view', 500),
+        # Live chart window (v2.4.x+) — backend-only, NOT pushed to stats-service
+        "live_chart_window_seconds": getattr(updated, 'live_chart_window_seconds', 600),
     }
 
 

@@ -750,6 +750,12 @@ class GlobalSettings(Base):
     stats_retention_days = Column(Integer, nullable=False, server_default='30', default=30)  # 1..30
     stats_points_per_view = Column(Integer, nullable=False, server_default='500', default=500)  # 100..2000
 
+    # Live chart window (v2.4.x+). How far back the detail-view live chart
+    # reaches; bounds the in-memory live buffer per entity via age-trim, so a
+    # higher value uses more server RAM. Default 600s (10 min); range 60..1800.
+    # Backend + frontend only -- NOT pushed to the Go stats-service.
+    live_chart_window_seconds = Column(Integer, nullable=False, server_default='600', default=600)  # 60..1800
+
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 class ContainerUpdate(Base):
@@ -1649,6 +1655,16 @@ class DatabaseManager:
                     session.execute(text("ALTER TABLE global_settings ADD COLUMN alert_template_update TEXT"))
                     session.commit()
                     logger.info("Added alert_template_update column to global_settings table")
+
+                # Live chart window (v2.4.x+): how far back the detail-view live
+                # chart reaches. Default 600s (10 min) so upgrades are seamless.
+                # MUST run before the ORM query below (the model includes this
+                # column, so an ORM load against a DB lacking it would abort the
+                # whole migration block before the raw ALTER could add it).
+                if 'live_chart_window_seconds' not in settings_column_names:
+                    session.execute(text("ALTER TABLE global_settings ADD COLUMN live_chart_window_seconds INTEGER NOT NULL DEFAULT 600"))
+                    session.commit()
+                    logger.info("Added live_chart_window_seconds column to global_settings table")
 
                 # Migration: Drop deprecated container_history table
                 # This table has been replaced by the EventLog table
@@ -3570,6 +3586,9 @@ class DatabaseManager:
                     # survive a backend restart.
                     'stats_persistence_enabled', 'stats_retention_days',
                     'stats_points_per_view',
+                    # Live chart window (v2.4.x+): backend-only, NOT pushed to
+                    # the stats-service; persisted here so it survives restart.
+                    'live_chart_window_seconds',
                 }
 
                 for key, value in updates.items():

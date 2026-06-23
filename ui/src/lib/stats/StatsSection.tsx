@@ -61,30 +61,20 @@ function LiveCharts({
   const live = useLiveHistory(hostId, containerId)
   const windowSeconds = live.windowSeconds
 
-  if (live.data && live.data.timestamps.length > 0) {
-    const d = live.data
-    return (
-      <StatsCharts
-        cpu={d.cpu}
-        mem={d.mem}
-        net={d.net}
-        memoryUsed={d.memory_used_bytes}
-        memoryLimit={d.memory_limit_bytes}
-        timestamps={d.timestamps}
-        timeWindow={windowSeconds}
-        cpuValue={liveData.cpuValue}
-        memValue={liveData.memValue}
-        netValue={liveData.netValue}
-      />
-    )
-  }
+  // Use the windowed extended series once it has loaded; until then (or if it's
+  // empty) fall back to the lean broadcast sparkline so the chart is never
+  // blank. memoryUsed/memoryLimit are undefined on the fallback, so StatsCharts
+  // renders the mem chart in percent mode just as before.
+  const d = live.data && live.data.timestamps.length > 0 ? live.data : null
 
   return (
     <StatsCharts
-      cpu={liveData.cpu}
-      mem={liveData.mem}
-      net={liveData.net}
-      timestamps={[]}
+      cpu={d?.cpu ?? liveData.cpu}
+      mem={d?.mem ?? liveData.mem}
+      net={d?.net ?? liveData.net}
+      memoryUsed={d?.memory_used_bytes}
+      memoryLimit={d?.memory_limit_bytes}
+      timestamps={d?.timestamps ?? []}
       timeWindow={windowSeconds}
       cpuValue={liveData.cpuValue}
       memValue={liveData.memValue}

@@ -46,11 +46,13 @@ def live_window_points(live_window_seconds: int, polling_interval: float) -> int
     """Number of buffered points spanning the configured live-chart window.
 
     window/interval points, capped at LIVE_BUFFER_MAX_POINTS so a long window
-    plus a fast poll can never request more than the buffer can hold. A
+    plus a fast poll can never request more than the buffer can hold, and
+    clamped to >=1 so a window smaller than one poll still returns the newest
+    point (not 0, which _sample would expand back to the broadcast default). A
     zero/None polling interval falls back to 1 so this can't divide by zero.
     """
     interval = polling_interval or 1
-    return min(int(live_window_seconds / interval), LIVE_BUFFER_MAX_POINTS)
+    return max(1, min(int(live_window_seconds / interval), LIVE_BUFFER_MAX_POINTS))
 
 
 @dataclass
@@ -78,17 +80,22 @@ class ContainerStatsPoint:
 
 
 def _sample(history: Optional[deque], num_points: int) -> list:
-    """Evenly sample up to num_points from a history deque (newest order kept)."""
+    """Return the most recent num_points from a history deque (oldest..newest).
+
+    The TAIL, not an even spread across the whole buffer: the buffer can now
+    hold the full configured live window (age-trimmed, up to LIVE_BUFFER_MAX_POINTS),
+    so even-sampling would make the broadcast's 30 points span the entire window
+    (e.g. ~10 min) with a stale newest point -- silently changing the dashboard
+    cards the broadcast feeds. Taking the tail keeps the broadcast a recent
+    ~num_points window that always includes the newest point, and gives the live
+    endpoint exactly its configured window (num_points = window / polling).
+    """
     if not history:
         return []
     points = list(history)
     if num_points <= 0:
         num_points = BROADCAST_POINTS
-    if len(points) <= num_points:
-        return points
-    # Sample evenly so sparklines look smooth regardless of history length.
-    step = len(points) / num_points
-    return [points[int(i * step)] for i in range(num_points)]
+    return points[-num_points:]
 
 
 def _build_sparklines(sampled: list, include_extended: bool) -> Dict[str, List]:

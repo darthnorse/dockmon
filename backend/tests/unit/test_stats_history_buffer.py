@@ -144,6 +144,44 @@ class TestLiveWindowPoints:
         # Defensive: a 0/None interval must not raise.
         assert live_window_points(600, 0) == min(600, LIVE_BUFFER_MAX_POINTS)
 
+    def test_clamped_to_at_least_one_point(self):
+        # A window smaller than one poll must still request >=1 point, not 0
+        # (0 would make _sample fall back to the 30-point broadcast default,
+        # ignoring the tiny window).
+        assert live_window_points(60, 120) == 1
+
+
+class TestBroadcastSampling:
+    """The broadcast must show the most RECENT num_points, not an even spread
+    across the whole (now window-sized) buffer. Regression guard for the
+    dashboard-cards-stay-unchanged invariant."""
+
+    def test_broadcast_returns_recent_tail_including_newest(self):
+        # With the buffer age-trimmed to the live window it can hold far more
+        # than 30 points. The 30-point broadcast must be the most-recent tail
+        # (a live ~1-min view) and MUST include the newest point -- not 30
+        # points spread across ~10 min with a stale newest sample.
+        buf = StatsHistoryBuffer()
+        for i in range(300):
+            buf.add_stats("h1", cpu=float(i), mem=1.0, net=1.0)
+        full = buf.get_sparklines("h1", num_points=300)   # all 300 points
+        broadcast = buf.get_sparklines("h1", num_points=30)
+        assert len(broadcast["cpu"]) == 30
+        # Newest sample present (even-sampling dropped the last ~9 points).
+        assert broadcast["cpu"][-1] == full["cpu"][-1]
+        # Exactly the most-recent 30, contiguous.
+        assert broadcast["cpu"] == full["cpu"][-30:]
+
+    def test_container_broadcast_returns_recent_tail(self):
+        buf = ContainerStatsHistoryBuffer()
+        key = "h1:abc123abc123"
+        for i in range(300):
+            buf.add_stats(key, cpu=float(i), mem=1.0, net=1.0)
+        full = buf.get_sparklines(key, num_points=300)
+        broadcast = buf.get_sparklines(key, num_points=30)
+        assert broadcast["cpu"] == full["cpu"][-30:]
+        assert broadcast["cpu"][-1] == full["cpu"][-1]
+
 
 class TestCleanupAgeTrim:
     """Reviving cleanup_old_data: age-trim bounds buffer size by the window."""

@@ -11,6 +11,7 @@ import {
   useStatsMetadata,
 } from './StatsProvider'
 import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
+import { latestNonNull } from './columnUtils'
 import type { LiveStatsResponse } from './historyTypes'
 
 /** A single newest-tick appended to the live series from the WS broadcast. */
@@ -74,12 +75,6 @@ function liveEndpoint(hostId: string, containerId: string | undefined): string {
     : `/hosts/${hostId}/stats/live`
 }
 
-/** Last value of a broadcast sparkline array, or null when empty. */
-function lastOf(arr: number[] | undefined): number | null {
-  if (!arr || arr.length === 0) return null
-  return arr[arr.length - 1] ?? null
-}
-
 export interface UseLiveHistoryResult {
   data: LiveStatsResponse | undefined
   isLoading: boolean
@@ -111,8 +106,10 @@ export function useLiveHistory(
 
   // One-time fetch of the window. The broadcast keeps it fresh afterwards, so
   // there is no refetch interval; the query refetches only on a fresh open.
+  // windowSeconds is part of the key so changing the setting reseeds from a
+  // correctly-sized backend response instead of reusing the old-window series.
   const { data: initial, isLoading, isError } = useQuery<LiveStatsResponse>({
-    queryKey: ['stats-live', hostId, containerId ?? '__host__'],
+    queryKey: ['stats-live', hostId, containerId ?? '__host__', windowSeconds],
     enabled,
     staleTime: Infinity,
     refetchOnWindowFocus: false,
@@ -144,9 +141,9 @@ export function useLiveHistory(
     if (containerId) {
       tick = {
         timestamp: ts,
-        cpu: lastOf(containerSpark?.cpu) ?? containerStats?.cpu_percent ?? null,
-        mem: lastOf(containerSpark?.mem) ?? containerStats?.memory_percent ?? null,
-        net: lastOf(containerSpark?.net) ?? containerStats?.net_bytes_per_sec ?? null,
+        cpu: latestNonNull(containerSpark?.cpu) ?? containerStats?.cpu_percent ?? null,
+        mem: latestNonNull(containerSpark?.mem) ?? containerStats?.memory_percent ?? null,
+        net: latestNonNull(containerSpark?.net) ?? containerStats?.net_bytes_per_sec ?? null,
         memory_used_bytes: containerStats?.memory_usage ?? null,
         memory_limit_bytes: containerStats?.memory_limit ?? null,
       }
@@ -156,9 +153,9 @@ export function useLiveHistory(
       const lastLimit = series.memory_limit_bytes[series.memory_limit_bytes.length - 1] ?? null
       tick = {
         timestamp: ts,
-        cpu: lastOf(hostSpark?.cpu) ?? hostMetrics?.cpu_percent ?? null,
-        mem: lastOf(hostSpark?.mem) ?? hostMetrics?.mem_percent ?? null,
-        net: lastOf(hostSpark?.net) ?? hostMetrics?.net_bytes_per_sec ?? null,
+        cpu: latestNonNull(hostSpark?.cpu) ?? hostMetrics?.cpu_percent ?? null,
+        mem: latestNonNull(hostSpark?.mem) ?? hostMetrics?.mem_percent ?? null,
+        net: latestNonNull(hostSpark?.net) ?? hostMetrics?.net_bytes_per_sec ?? null,
         memory_used_bytes: hostMetrics?.mem_bytes ?? null,
         memory_limit_bytes: lastLimit,
       }

@@ -1,23 +1,25 @@
 import { StatsCharts } from '@/lib/charts/StatsCharts'
-import { LIVE_TIME_WINDOW } from '@/lib/statsConfig'
 import { formatNetworkRate } from '@/lib/utils/formatting'
 import { StatsTimeRangeSelector } from './StatsTimeRangeSelector'
 import { useLastSelectedRange } from './useLastSelectedRange'
 import { useStatsHistory } from './useStatsHistory'
+import { useLiveHistory } from './useLiveHistory'
 import { latestNonNull, formatMemorySummary } from './columnUtils'
 import type { HistoricalRange } from './historyTypes'
+
+interface LiveData {
+  cpu: (number | null)[]
+  mem: (number | null)[]
+  net: (number | null)[]
+  cpuValue?: string | undefined
+  memValue?: string | undefined
+  netValue?: string | undefined
+}
 
 interface Props {
   hostId: string
   containerId?: string
-  liveData: {
-    cpu: (number | null)[]
-    mem: (number | null)[]
-    net: (number | null)[]
-    cpuValue?: string | undefined
-    memValue?: string | undefined
-    netValue?: string | undefined
-  }
+  liveData: LiveData
 }
 
 /**
@@ -34,20 +36,50 @@ export function StatsSection({ hostId, containerId, liveData }: Props) {
         <StatsTimeRangeSelector value={range} onChange={setRange} />
       </div>
       {range === 'live' ? (
-        <StatsCharts
-          cpu={liveData.cpu}
-          mem={liveData.mem}
-          net={liveData.net}
-          timestamps={[]}
-          timeWindow={LIVE_TIME_WINDOW}
-          cpuValue={liveData.cpuValue}
-          memValue={liveData.memValue}
-          netValue={liveData.netValue}
-        />
+        <LiveCharts hostId={hostId} containerId={containerId} liveData={liveData} />
       ) : (
         <HistoricalCharts hostId={hostId} containerId={containerId} range={range} />
       )}
     </div>
+  )
+}
+
+/**
+ * Detail-view Live chart. Fetches the configured window once from the live
+ * endpoint (extended series: absolute time + memory bytes) and keeps it current
+ * by appending the newest broadcast tick. Falls back to the lean broadcast
+ * sparkline (index mode, no memory labels) while the one-time fetch is in
+ * flight, so the chart is never blank on open.
+ */
+function LiveCharts({
+  hostId, containerId, liveData,
+}: {
+  hostId: string
+  containerId: string | undefined
+  liveData: LiveData
+}) {
+  const live = useLiveHistory(hostId, containerId)
+  const windowSeconds = live.windowSeconds
+
+  // Use the windowed extended series once it has loaded; until then (or if it's
+  // empty) fall back to the lean broadcast sparkline so the chart is never
+  // blank. memoryUsed/memoryLimit are undefined on the fallback, so StatsCharts
+  // renders the mem chart in percent mode just as before.
+  const d = live.data && live.data.timestamps.length > 0 ? live.data : null
+
+  return (
+    <StatsCharts
+      cpu={d?.cpu ?? liveData.cpu}
+      mem={d?.mem ?? liveData.mem}
+      net={d?.net ?? liveData.net}
+      memoryUsed={d?.memory_used_bytes}
+      memoryLimit={d?.memory_limit_bytes}
+      timestamps={d?.timestamps ?? []}
+      timeWindow={windowSeconds}
+      cpuValue={liveData.cpuValue}
+      memValue={liveData.memValue}
+      netValue={liveData.netValue}
+    />
   )
 }
 

@@ -28,7 +28,11 @@ from event_logger import EventLogger
 from event_bus import Event, EventType as BusEventType, get_event_bus
 from stats_client import get_stats_client
 from docker_monitor.stats_manager import StatsManager
-from docker_monitor.stats_history import StatsHistoryBuffer, ContainerStatsHistoryBuffer
+from docker_monitor.stats_history import (
+    StatsHistoryBuffer,
+    ContainerStatsHistoryBuffer,
+    live_buffer_max_age_seconds,
+)
 from docker_monitor.container_discovery import ContainerDiscovery
 from docker_monitor.state_manager import StateManager
 from docker_monitor.operations import ContainerOperations
@@ -1905,12 +1909,17 @@ class DockerMonitor:
                                     "net_bytes_per_sec": net_bytes_per_sec
                                 }
 
-                                # Feed stats history buffer for sparklines
+                                # Feed stats history buffer for sparklines.
+                                # Memory bytes are buffered for the detail-view
+                                # live chart only; the broadcast get_sparklines
+                                # call below stays lean (no memory in payload).
                                 self.stats_history.add_stats(
                                     host_id=host_id,
                                     cpu=total_cpu,
                                     mem=mem_percent,
-                                    net=net_bytes_per_sec
+                                    net=net_bytes_per_sec,
+                                    memory_used_bytes=total_mem_bytes,
+                                    memory_limit_bytes=total_mem_limit
                                 )
 
                                 # Get sparklines for this host (last 30 points)
@@ -1934,11 +1943,15 @@ class DockerMonitor:
                             mem_val = container.memory_percent if container.memory_percent is not None else 0
                             net_val = container.net_bytes_per_sec if container.net_bytes_per_sec is not None else 0
 
+                            # Memory bytes feed the detail-view live chart only;
+                            # the broadcast get_sparklines call below stays lean.
                             self.container_stats_history.add_stats(
                                 container_key=container_key,
                                 cpu=cpu_val,
                                 mem=mem_val,
-                                net=net_val
+                                net=net_val,
+                                memory_used_bytes=container.memory_usage,
+                                memory_limit_bytes=container.memory_limit
                             )
 
                         # Always get sparklines (even for stopped containers) to maintain consistency
@@ -1958,6 +1971,17 @@ class DockerMonitor:
                         "type": "containers_update",
                         "data": broadcast_data
                     }, filter_containers=True)
+
+                # Trim live buffers by age each tick so per-entity RAM stays
+                # bounded to ~the configured live-chart window. Runs every tick,
+                # including with no viewers, so buffers shrink back after viewers
+                # leave. broadcast floor keeps a tiny window from starving cards.
+                max_age = live_buffer_max_age_seconds(
+                    getattr(self.settings, 'live_chart_window_seconds', 600),
+                    self.settings.polling_interval
+                )
+                self.stats_history.cleanup_old_data(max_age)
+                self.container_stats_history.cleanup_old_data(max_age)
 
             except Exception as e:
                 logger.error(f"Error in monitoring loop: {e}")

@@ -33,3 +33,22 @@ export interface StatsHistoryResponse {
   memory_limit_bytes?: (number | null)[]
   container_count?: (number | null)[]
 }
+
+/**
+ * Response body shape returned by the on-demand live endpoints:
+ * - GET /api/hosts/{host_id}/stats/live
+ * - GET /api/hosts/{host_id}/containers/{container_id}/stats/live
+ *
+ * The EXTENDED in-memory sparkline for ONE entity: column-major arrays all
+ * parallel to `timestamps` (unix seconds). `net` is bytes/sec; `mem` is percent;
+ * the memory byte columns carry absolute snapshots for byte labels. Distinct
+ * from the lean broadcast sparkline (cpu/mem/net only, index mode).
+ */
+export interface LiveStatsResponse {
+  timestamps: number[]
+  cpu: (number | null)[]
+  mem: (number | null)[]
+  net: (number | null)[]
+  memory_used_bytes: (number | null)[]
+  memory_limit_bytes: (number | null)[]
+}

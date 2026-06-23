@@ -740,11 +740,15 @@ class AgentWebSocketHandler:
                 cpu = stats.get("cpu_percent", 0.0)
                 mem = stats.get("memory_percent", 0.0)  # Agent sends "memory_percent" not "mem_percent"
 
+                # Memory bytes feed the detail-view live chart only; the broadcast
+                # get_sparklines call stays lean (no memory in payload).
                 self.monitor.container_stats_history.add_stats(
                     container_key=container_key,
                     cpu=cpu,
                     mem=mem,
-                    net=net_bytes_per_sec  # Use calculated rate, not cumulative total
+                    net=net_bytes_per_sec,  # Use calculated rate, not cumulative total
+                    memory_used_bytes=stats.get("memory_usage"),
+                    memory_limit_bytes=stats.get("memory_limit")
                 )
 
             # Cache latest full stats for REST API endpoints (not just sparkline data)

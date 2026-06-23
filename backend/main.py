@@ -78,6 +78,7 @@ from auth.utils import get_auditable_user_info
 from websocket.connection import ConnectionManager, DateTimeEncoder
 from websocket.rate_limiter import ws_rate_limiter
 from docker_monitor.monitor import DockerMonitor
+from docker_monitor.stats_history import live_window_points
 from batch_manager import BatchJobManager
 from utils.keys import make_composite_key
 from utils.encryption import encrypt_password, decrypt_password
@@ -1139,6 +1140,56 @@ async def get_container_stats_history(
         )
     except (StatsServiceClient.HistoryUpstreamError, aiohttp.ClientError) as e:
         raise _map_history_upstream_error(e)
+
+
+def _live_window_num_points() -> int:
+    """Points a live endpoint serves, derived from the configured window.
+
+    window/polling, capped at the buffer ceiling. Read from monitor.settings
+    so a runtime settings change is honored on the next fetch.
+    """
+    settings = monitor.settings
+    return live_window_points(
+        getattr(settings, "live_chart_window_seconds", 600),
+        getattr(settings, "polling_interval", 2),
+    )
+
+
+@app.get(
+    "/api/hosts/{host_id}/stats/live",
+    tags=["hosts"],
+    dependencies=[Depends(require_capability("hosts.view"))],
+)
+async def get_host_stats_live(host_id: str):
+    """Extended live sparklines for ONE host, read from the in-memory buffer.
+
+    On-demand series for the detail-view live chart: timestamps + raw memory
+    bytes, windowed to live_chart_window_seconds. Reads the same buffer the
+    broadcast samples, but the broadcast stays lean -- this is the only
+    extended path. Unknown/offline host -> empty arrays (no stale data).
+    """
+    return monitor.stats_history.get_sparklines(
+        host_id,
+        num_points=_live_window_num_points(),
+        include_extended=True,
+    )
+
+
+@app.get(
+    "/api/hosts/{host_id}/containers/{container_id}/stats/live",
+    tags=["containers"],
+    dependencies=[Depends(require_capability("containers.view"))],
+)
+async def get_container_stats_live(host_id: str, container_id: str):
+    """Extended live sparklines for ONE container, from the in-memory buffer."""
+    # Defense-in-depth: normalize container_id at endpoint entry (CLAUDE.md).
+    container_id = normalize_container_id(container_id)
+    container_key = make_composite_key(host_id, container_id)
+    return monitor.container_stats_history.get_sparklines(
+        container_key,
+        num_points=_live_window_num_points(),
+        include_extended=True,
+    )
 
 
 @app.get("/api/hosts/{host_id}/agent", tags=["hosts"], dependencies=[Depends(require_capability("agents.view"))])
@@ -3463,6 +3514,8 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "stats_persistence_enabled": getattr(settings, 'stats_persistence_enabled', False),
         "stats_retention_days": getattr(settings, 'stats_retention_days', 30),
         "stats_points_per_view": getattr(settings, 'stats_points_per_view', 500),
+        # Live chart window (v2.4.x+) — backend-only, NOT pushed to stats-service
+        "live_chart_window_seconds": getattr(settings, 'live_chart_window_seconds', 600),
     }
 
 @app.post("/api/settings", tags=["system"], dependencies=[Depends(require_capability("settings.manage"))])
@@ -3596,6 +3649,8 @@ async def update_settings(
         "stats_persistence_enabled": getattr(updated, 'stats_persistence_enabled', False),
         "stats_retention_days": getattr(updated, 'stats_retention_days', 30),
         "stats_points_per_view": getattr(updated, 'stats_points_per_view', 500),
+        # Live chart window (v2.4.x+) — backend-only, NOT pushed to stats-service
+        "live_chart_window_seconds": getattr(updated, 'live_chart_window_seconds', 600),
     }
 
 

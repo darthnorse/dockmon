@@ -27,6 +27,21 @@ BROADCAST_POINTS = 30
 LIVE_BUFFER_MAX_POINTS = 1800
 
 
+def live_buffer_max_age_seconds(live_window_seconds: int, polling_interval: float) -> int:
+    """Age threshold for trimming live buffers each monitoring tick.
+
+    Holds ~live_window_seconds of points so the buffer (and thus RAM) scales
+    with the configured live-chart window -- this is what makes the "higher
+    window = more server memory" help text truthful.
+
+    Never trims below what the broadcast's BROADCAST_POINTS sparkline needs at
+    the current polling interval, so a tiny live window can't starve the
+    dashboard cards (the broadcast floor).
+    """
+    broadcast_floor = BROADCAST_POINTS * polling_interval
+    return int(max(live_window_seconds, broadcast_floor))
+
+
 @dataclass
 class HostStatsPoint:
     """Single stats data point for a host"""

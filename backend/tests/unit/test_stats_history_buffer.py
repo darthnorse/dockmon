@@ -14,9 +14,11 @@ from datetime import datetime, timedelta, timezone
 
 from docker_monitor.stats_history import (
     BROADCAST_POINTS,
+    LIVE_BUFFER_MAX_POINTS,
     ContainerStatsHistoryBuffer,
     StatsHistoryBuffer,
     live_buffer_max_age_seconds,
+    live_window_points,
 )
 
 
@@ -124,6 +126,23 @@ class TestLiveBufferMaxAge:
         result = live_buffer_max_age_seconds(600, 2.5)
         assert result == 600
         assert isinstance(result, int)
+
+
+class TestLiveWindowPoints:
+    """How many buffered points the live endpoint requests for the window."""
+
+    def test_points_equal_window_over_interval(self):
+        # 600s window at 2s polling -> 300 points.
+        assert live_window_points(600, 2) == 300
+
+    def test_capped_at_buffer_ceiling(self):
+        # A long window + fast poll can't exceed the buffer's safety ceiling.
+        assert live_window_points(1800, 1) == LIVE_BUFFER_MAX_POINTS
+        assert live_window_points(1800, 0.5) == LIVE_BUFFER_MAX_POINTS
+
+    def test_zero_interval_does_not_divide_by_zero(self):
+        # Defensive: a 0/None interval must not raise.
+        assert live_window_points(600, 0) == min(600, LIVE_BUFFER_MAX_POINTS)
 
 
 class TestCleanupAgeTrim:

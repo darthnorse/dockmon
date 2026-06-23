@@ -42,6 +42,17 @@ def live_buffer_max_age_seconds(live_window_seconds: int, polling_interval: floa
     return int(max(live_window_seconds, broadcast_floor))
 
 
+def live_window_points(live_window_seconds: int, polling_interval: float) -> int:
+    """Number of buffered points spanning the configured live-chart window.
+
+    window/interval points, capped at LIVE_BUFFER_MAX_POINTS so a long window
+    plus a fast poll can never request more than the buffer can hold. A
+    zero/None polling interval falls back to 1 so this can't divide by zero.
+    """
+    interval = polling_interval or 1
+    return min(int(live_window_seconds / interval), LIVE_BUFFER_MAX_POINTS)
+
+
 @dataclass
 class HostStatsPoint:
     """Single stats data point for a host"""

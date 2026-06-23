@@ -1229,17 +1229,7 @@ class NotificationService:
             is_blackout, window_name = self.blackout_manager.is_in_blackout_window()
             if is_blackout:
                 logger.info(f"Suppressed alert '{alert.title}' during blackout window '{window_name}' - will re-evaluate when blackout ends")
-
-                # Mark alert as suppressed (prevents retry loop)
-                # Alert will be re-evaluated when blackout ends
-                with self.db.get_session() as session:
-                    alert_to_suppress = session.query(AlertV2).filter(AlertV2.id == alert.id).first()
-                    if alert_to_suppress:
-                        alert_to_suppress.suppressed_by_blackout = True
-                        # Keep notified_at as NULL so it can be sent when blackout ends
-                        session.commit()
-                        logger.info(f"Marked alert {alert.id} as suppressed - condition will be verified when blackout window ends")
-
+                self.blackout_manager.suppress_alert(alert.id)
                 return False
 
             # Get enabled channels

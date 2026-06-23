@@ -122,9 +122,6 @@ class AlertEvaluationService:
         self._pending_event_alerts_task: Optional[asyncio.Task] = None
         self._resolve_loop_task: Optional[asyncio.Task] = None
 
-        # Track blackout state for transition detection
-        self._last_blackout_state = False
-
     async def start(self):
         """Start the alert evaluation service"""
         if self._running:
@@ -403,60 +400,49 @@ class AlertEvaluationService:
             if not self.notification_service:
                 return
 
-            # Get current blackout state
-            is_blackout, window_name = self.notification_service.blackout_manager.is_in_blackout_window()
+            # Deliver/clear suppressed alerts whenever NOT in a blackout, so a window
+            # shorter than this loop's tick can't strand them on a missed edge.
+            is_blackout, _ = self.notification_service.blackout_manager.is_in_blackout_window()
+            if is_blackout:
+                return
 
-            # Detect transition from blackout to non-blackout
-            if self._last_blackout_state and not is_blackout:
-                logger.info("Blackout window ended - processing suppressed alerts")
+            with self.db.get_session() as session:
+                suppressed_alerts = session.query(AlertV2).options(
+                    joinedload(AlertV2.rule)
+                ).filter(
+                    AlertV2.suppressed_by_blackout == True
+                ).all()
 
-                # Find ALL suppressed alerts (both open and resolved)
-                # We need to clear the flag on all of them to prevent issues when alerts reopen later
-                with self.db.get_session() as session:
-                    suppressed_alerts = session.query(AlertV2).options(
-                        joinedload(AlertV2.rule)
-                    ).filter(
-                        AlertV2.suppressed_by_blackout == True
-                    ).all()
+            if not suppressed_alerts:
+                return
 
-                    if suppressed_alerts:
-                        logger.info(f"Found {len(suppressed_alerts)} suppressed alerts to process")
+            logger.info(f"Processing {len(suppressed_alerts)} suppressed alert(s) after blackout")
 
-                # Process each suppressed alert outside the session
-                for alert in suppressed_alerts:
-                    try:
-                        # Only process and potentially send notifications for OPEN alerts
-                        if alert.state == "open":
-                            # Re-verify the alert condition
-                            if await self._verify_alert_condition(alert):
-                                # Condition still true - send notification
-                                logger.info(f"Alert {alert.id} ({alert.title}) still active - sending notification")
-                                await self._send_notification(alert)
-                            else:
-                                # Condition cleared during blackout - auto-resolve silently
-                                logger.info(f"Alert {alert.id} ({alert.title}) cleared during blackout - auto-resolving")
-                                with self.db.get_session() as session:
-                                    alert_to_resolve = session.query(AlertV2).filter(AlertV2.id == alert.id).first()
-                                    if alert_to_resolve and alert_to_resolve.state == "open":
-                                        self.engine._resolve_alert(
-                                            alert_to_resolve,
-                                            "Auto-resolved: condition cleared during blackout window"
-                                        )
-                                        session.commit()
+            for alert in suppressed_alerts:
+                try:
+                    if alert.state == "open":
+                        if await self._verify_alert_condition(alert):
+                            logger.info(f"Alert {alert.id} ({alert.title}) still active - sending notification")
+                            await self._send_notification(alert)
+                        else:
+                            logger.info(f"Alert {alert.id} ({alert.title}) cleared during blackout - auto-resolving")
+                            with self.db.get_session() as session:
+                                alert_to_resolve = session.query(AlertV2).filter(AlertV2.id == alert.id).first()
+                                if alert_to_resolve and alert_to_resolve.state == "open":
+                                    self.engine._resolve_alert(
+                                        alert_to_resolve,
+                                        "Auto-resolved: condition cleared during blackout window"
+                                    )
+                                    session.commit()
 
-                        # Clear suppression flag on ALL suppressed alerts (open, resolved, etc.)
-                        # This ensures the flag doesn't persist if the alert is reopened later
-                        with self.db.get_session() as session:
-                            alert_to_clear = session.query(AlertV2).filter(AlertV2.id == alert.id).first()
-                            if alert_to_clear:
-                                alert_to_clear.suppressed_by_blackout = False
-                                session.commit()
-                                logger.debug(f"Cleared suppression flag on alert {alert.id} (state={alert.state})")
-                    except Exception as e:
-                        logger.error(f"Error processing suppressed alert {alert.id}: {e}", exc_info=True)
-
-            # Update state for next check
-            self._last_blackout_state = is_blackout
+                    # Clear the flag on ALL suppressed alerts so it doesn't persist if reopened.
+                    with self.db.get_session() as session:
+                        alert_to_clear = session.query(AlertV2).filter(AlertV2.id == alert.id).first()
+                        if alert_to_clear:
+                            alert_to_clear.suppressed_by_blackout = False
+                            session.commit()
+                except Exception as e:
+                    logger.error(f"Error processing suppressed alert {alert.id}: {e}", exc_info=True)
 
         except Exception as e:
             logger.error(f"Error checking blackout transitions: {e}", exc_info=True)
@@ -661,6 +647,15 @@ class AlertEvaluationService:
             if not rule:
                 logger.warning(f"Cannot send notification - rule not found for alert {alert.id}")
                 return
+
+            # Suppress during blackout before any event-logging or retry accounting.
+            blackout_manager = getattr(self.notification_service, "blackout_manager", None)
+            if blackout_manager:
+                is_blackout, window_name = blackout_manager.is_in_blackout_window()
+                if is_blackout:
+                    logger.info(f"Suppressed alert '{alert.title}' during blackout window '{window_name}' - deferring to blackout end")
+                    blackout_manager.suppress_alert(alert.id)
+                    return
 
             # Log event to event log system
             if self.event_logger:

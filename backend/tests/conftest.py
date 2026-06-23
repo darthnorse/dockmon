@@ -34,7 +34,8 @@ import docker
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from database import Base
+import database as database_module
+from database import Base, DatabaseManager
 from event_bus import EventBus
 
 logger = logging.getLogger(__name__)
@@ -191,6 +192,24 @@ def db_engine():
     engine.dispose()
     os.close(db_fd)
     os.unlink(db_path)
+
+
+@pytest.fixture
+def db(tmp_path):
+    """Real DatabaseManager on a temp file (full schema + migrations).
+
+    Shared by tests that exercise services against a real DB (e.g. blackout
+    suppression / transition handling).
+    """
+    db_path = str(tmp_path / "test.db")
+    database_module._database_manager_instance = None
+    db_manager = DatabaseManager(db_path=db_path)
+    try:
+        yield db_manager
+    finally:
+        if hasattr(db_manager, "engine"):
+            db_manager.engine.dispose()
+        database_module._database_manager_instance = None
 
 
 @pytest.fixture

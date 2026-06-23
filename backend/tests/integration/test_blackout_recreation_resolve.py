@@ -11,26 +11,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import database as database_module
 from alerts.evaluation_service import AlertEvaluationService
-from database import AlertV2, DatabaseManager
+from database import AlertV2
 
 HOST = "7be442c9-24bc-4047-b33a-41bbf51ea2f9"
 OLD_ID = "aaaaaaaaaaaa"
 NEW_ID = "bbbbbbbbbbbb"
-
-
-@pytest.fixture
-def db(tmp_path):
-    db_path = str(tmp_path / "test.db")
-    database_module._database_manager_instance = None
-    db_manager = DatabaseManager(db_path=db_path)
-    try:
-        yield db_manager
-    finally:
-        if hasattr(db_manager, "engine"):
-            db_manager.engine.dispose()
-        database_module._database_manager_instance = None
 
 
 async def test_blackout_end_resolves_recreated_container_without_notifying(db):
@@ -68,7 +54,6 @@ async def test_blackout_end_resolves_recreated_container_without_notifying(db):
     service = AlertEvaluationService(
         db=db, monitor=monitor, notification_service=notification_service
     )
-    service._last_blackout_state = True  # was in blackout, now ended
     service._send_notification = AsyncMock()
 
     await service._check_blackout_transitions()
@@ -80,4 +65,39 @@ async def test_blackout_end_resolves_recreated_container_without_notifying(db):
     with db.get_session() as session:
         refreshed = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
         assert refreshed.state == "resolved"
+        assert refreshed.suppressed_by_blackout is False
+
+
+async def test_blackout_recovery_is_level_based_not_edge_gated(db):
+    """A window shorter than the 30s transition tick can flag an alert without the
+    loop ever observing the blackout. Recovery must still fire whenever not in a
+    blackout, not depend on a blackout->non-blackout edge."""
+    alert_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    with db.get_session() as session:
+        session.add(AlertV2(
+            id=alert_id,
+            dedup_key=f"container_stopped|container:{HOST}:{OLD_ID}",
+            scope_type="container", scope_id=f"{HOST}:{OLD_ID}",
+            kind="container_stopped", severity="warning", state="open",
+            title="Container Stopped - x", message="stopped",
+            first_seen=now, last_seen=now, host_id=HOST,
+            container_name="x", suppressed_by_blackout=True,
+        ))
+        session.commit()
+
+    blackout_manager = types.SimpleNamespace(is_in_blackout_window=lambda: (False, None))
+    notification_service = types.SimpleNamespace(blackout_manager=blackout_manager)
+    service = AlertEvaluationService(
+        db=db, monitor=None, notification_service=notification_service
+    )
+    service._verify_alert_condition = AsyncMock(return_value=True)  # still active
+    service._send_notification = AsyncMock()
+
+    # No prior blackout was ever observed; the old edge-gated code would skip entirely.
+    await service._check_blackout_transitions()
+
+    service._send_notification.assert_awaited_once()
+    with db.get_session() as session:
+        refreshed = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
         assert refreshed.suppressed_by_blackout is False

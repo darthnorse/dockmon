@@ -21,6 +21,14 @@ const SESSION_TIMEOUT_OPTIONS = [
   { value: '0', label: 'Never' },
 ]
 
+// Live chart window presets (seconds). Default 600 (10 min); capped at 30 min.
+const LIVE_CHART_WINDOW_OPTIONS = [
+  { value: '300', label: '5 minutes' },
+  { value: '600', label: '10 minutes' },
+  { value: '900', label: '15 minutes' },
+  { value: '1800', label: '30 minutes' },
+]
+
 export function SystemSettings() {
   const { hasCapability } = useAuth()
   const canManage = hasCapability('settings.manage')
@@ -439,6 +447,52 @@ export function SystemSettings() {
             />
             <p className="mt-1 text-xs text-gray-400">
               How long to keep resolved alerts. Resolved alerts older than this are automatically deleted during nightly maintenance. Set to 0 to keep alerts forever. (0-730 days)
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Live charts */}
+      <div>
+        <div className="mb-4">
+          <h3 className="text-lg font-semibold text-white">Live charts</h3>
+          <p className="text-xs text-gray-400 mt-1">
+            Real-time CPU, memory, and network charts. Works independently of stats persistence below.
+          </p>
+        </div>
+        <div className="space-y-4">
+          <div>
+            <label htmlFor="live-chart-window" className="block text-sm font-medium text-gray-300 mb-2">
+              Live window
+            </label>
+            <Select
+              value={String(settings?.live_chart_window_seconds ?? 600)}
+              onValueChange={async (v) => {
+                const value = Number(v)
+                try {
+                  await updateSettings.mutateAsync({ live_chart_window_seconds: value })
+                  toast.success('Live chart window updated')
+                } catch (error) {
+                  toast.error('Failed to update live chart window')
+                }
+              }}
+            >
+              <SelectTrigger id="live-chart-window" className="w-full max-w-xs">
+                <SelectValue>
+                  {LIVE_CHART_WINDOW_OPTIONS.find(o => o.value === String(settings?.live_chart_window_seconds ?? 600))?.label ?? '10 minutes'}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {LIVE_CHART_WINDOW_OPTIONS.map(o => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="mt-1 text-xs text-gray-400">
+              How far back the live chart reaches when you open a host or container. Higher values use more
+              server memory (it keeps this much live data buffered for every monitored container) and apply
+              only to the opened detail view; dashboard cards are unaffected. Opening a detail view also
+              fetches a little more data and renders a denser chart.
             </p>
           </div>
         </div>

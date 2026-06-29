@@ -2355,7 +2355,7 @@ async def check_container_update(
 
     Returns the same format as get_container_update_status.
     """
-    from updates.update_checker import get_update_checker
+    from updates.update_checker import get_update_checker, LOCAL_IMAGE_STATUS
 
     # Normalize to short ID
     short_id = container_id[:12] if len(container_id) > 12 else container_id
@@ -2367,6 +2367,20 @@ async def check_container_update(
     # Issue #101: bypass_cache=True ensures manual checks always query registry
     # This fixes stale update info when images are rapidly rebuilt
     result = await checker.check_single_container(host_id, short_id, bypass_cache=True)
+
+    if result and result.get("status") == LOCAL_IMAGE_STATUS:
+        # No resolvable registry digest: most likely built locally, so informational (not the 503 below).
+        # Registries 401/403 on missing images, so we can't be sure it isn't a private image needing auth.
+        return {
+            "status": LOCAL_IMAGE_STATUS,
+            "update_available": False,
+            "current_image": result.get("current_image"),
+            "current_digest": None,
+            "latest_image": None,
+            "latest_digest": None,
+            "floating_tag_mode": None,
+            "message": "DockMon couldn't find this image in a registry - it was most likely built locally. If it comes from a private registry, check that registry credentials are configured.",
+        }
 
     if not result:
         # Check failed (e.g., registry auth error, network issue)

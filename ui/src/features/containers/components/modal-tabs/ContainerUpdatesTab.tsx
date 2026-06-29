@@ -99,11 +99,17 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
     setLastCheckTime(now)
 
     try {
-      await checkUpdate.mutateAsync({
+      const result = await checkUpdate.mutateAsync({
         hostId: container.host_id,
         containerId: containerShortId,
       })
-      toast.success('Update check complete')
+      if (result?.status === 'local_image') {
+        toast.info('Nothing to check', {
+          description: result.message || "DockMon couldn't find this image in a registry - it was most likely built locally. If it's from a private registry, check that registry credentials are configured.",
+        })
+      } else {
+        toast.success('Update check complete')
+      }
       // Query will auto-invalidate via the mutation's onSuccess
     } catch (error) {
       toast.error('Failed to check for updates', {

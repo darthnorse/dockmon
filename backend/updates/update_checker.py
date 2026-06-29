@@ -34,6 +34,10 @@ from utils.async_docker import async_docker_call
 
 logger = logging.getLogger(__name__)
 
+# Marker for "no resolvable digest + no local RepoDigests": most likely built locally.
+# (Registries 401/403 on missing images, so a private image needing auth looks the same.)
+LOCAL_IMAGE_STATUS = "local_image"
+
 
 class UpdateChecker:
     """
@@ -142,6 +146,11 @@ class UpdateChecker:
                 # Check for update
                 update_info = await self._check_container_update(container)
 
+                # Likely-local image (no resolvable digest): nothing to store.
+                if update_info and update_info.get("status") == LOCAL_IMAGE_STATUS:
+                    logger.debug(f"Skipping container with no resolvable registry digest (likely built locally): {container['name']}")
+                    continue
+
                 if update_info:
                     # Capture old digest BEFORE updating database
                     previous_digest = self._get_previous_digest(container)
@@ -187,6 +196,11 @@ class UpdateChecker:
 
         # Check for update
         update_info = await self._check_container_update(container, bypass_cache=bypass_cache)
+
+        # Likely-local image (no resolvable digest): nothing to store or emit.
+        if update_info and update_info.get("status") == LOCAL_IMAGE_STATUS:
+            logger.info(f"No resolvable registry digest for {container['name']} (likely built locally)")
+            return update_info
 
         if update_info:
             # Capture old digest BEFORE updating database
@@ -259,6 +273,15 @@ class UpdateChecker:
                     logger.warning(f"[{container['name']}] Registry fallback failed: {e}")
 
         if not current_digest:
+            # No digest + no local RepoDigests on a non-pinned ref => most likely built locally.
+            # (Registries 401/403 on missing images, so a private image needing auth is indistinguishable.)
+            image_ref = container.get("image") or ""
+            repo_digests = container.get("repo_digests")
+            has_local_digests = isinstance(repo_digests, list) and len(repo_digests) > 0
+            if not has_local_digests and "@" not in image_ref:
+                logger.info(f"[{container['name']}] No resolvable registry digest - treating as locally built (may instead be a private registry image)")
+                return {"status": LOCAL_IMAGE_STATUS, "current_image": image}
+
             logger.warning(f"Could not get current digest for {container['name']}")
             return None
 

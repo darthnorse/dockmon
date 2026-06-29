@@ -140,6 +140,45 @@ class TestLocalImageDetection:
 
         assert result is None, "explicit-registry unresolvable must stay None (503), not local_image"
 
+    @pytest.mark.asyncio
+    async def test_path2_transient_failure_returns_none_not_marker(self):
+        """A transient registry failure (429/timeout) on a bare-name image must stay
+        retryable (None), NOT persist as 'built locally' and clobber a pending update."""
+        from updates.registry_adapter import TransientRegistryError
+        checker = _make_checker()
+        checker._get_container_image_digest = AsyncMock(return_value="sha256:current")  # has digest -> path 2
+        checker.registry.resolve_tag = AsyncMock(side_effect=TransientRegistryError("rate limited"))
+
+        container = {
+            "host_id": "host-123",
+            "id": "abc123def456",
+            "name": "postgres",
+            "image": "postgres:16",  # bare name (would be 'local' on a DEFINITIVE failure)
+        }
+
+        result = await checker._check_container_update(container, bypass_cache=True)
+
+        assert result is None, "transient failure must stay retryable (None), not local_image"
+
+    @pytest.mark.asyncio
+    async def test_path1_transient_fallback_failure_returns_none_not_marker(self):
+        """A transient failure during the no-digest registry fallback also stays None."""
+        from updates.registry_adapter import TransientRegistryError
+        checker = _make_checker()
+        checker._get_container_image_digest = AsyncMock(return_value=None)  # no digest -> path 1 fallback
+        checker.registry.resolve_tag = AsyncMock(side_effect=TransientRegistryError("timeout"))
+
+        container = {
+            "host_id": "host-123",
+            "id": "abc123def456",
+            "name": "postgres",
+            "image": "postgres:16",
+        }
+
+        result = await checker._check_container_update(container, bypass_cache=True)
+
+        assert result is None, "transient fallback failure must stay retryable (None), not local_image"
+
 
 class TestLooksUnresolvableLocal:
     """The host-based heuristic that splits 'local build' from 'real registry'."""

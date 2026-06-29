@@ -22,7 +22,7 @@ CACHE_TTL_LATEST = int(os.getenv('DOCKMON_CACHE_TTL_LATEST', 30 * 60))  # 30 min
 CACHE_TTL_PINNED = int(os.getenv('DOCKMON_CACHE_TTL_PINNED', 24 * 3600))  # 24 hours
 CACHE_TTL_FLOATING = int(os.getenv('DOCKMON_CACHE_TTL_FLOATING', 6 * 3600))  # 6 hours
 CACHE_TTL_DEFAULT = int(os.getenv('DOCKMON_CACHE_TTL_DEFAULT', 6 * 3600))  # 6 hours
-from updates.registry_adapter import get_registry_adapter
+from updates.registry_adapter import get_registry_adapter, TransientRegistryError
 from updates.changelog_resolver import resolve_changelog_url
 from event_bus import Event, EventType, get_event_bus
 from updates.types import MANIFEST_LIST_TYPES, match_platform_manifest
@@ -275,6 +275,10 @@ class UpdateChecker:
                     if current_result:
                         current_digest = current_result["digest"]
                         logger.info(f"[{container['name']}] Got current digest from registry: {current_digest[:16]}...")
+                except TransientRegistryError:
+                    # Retryable (timeout/429/5xx) - don't fall through to local classification
+                    logger.warning(f"[{container['name']}] Transient registry failure - will retry next check")
+                    return None
                 except Exception as e:
                     logger.warning(f"[{container['name']}] Registry fallback failed: {e}")
 
@@ -321,7 +325,12 @@ class UpdateChecker:
                     pass
         else:
             # Cache miss - call registry
-            latest_result = await self.registry.resolve_tag(floating_tag, auth=auth)
+            try:
+                latest_result = await self.registry.resolve_tag(floating_tag, auth=auth)
+            except TransientRegistryError:
+                # Retryable failure - do NOT mark local (would clobber a real pending update)
+                logger.warning(f"[{container['name']}] Transient registry failure resolving {floating_tag} - will retry next check")
+                return None
             if not latest_result:
                 logger.warning(f"Could not resolve floating tag: {floating_tag}")
                 # Same classification as the no-digest path.

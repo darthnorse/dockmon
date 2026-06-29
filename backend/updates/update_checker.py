@@ -279,12 +279,9 @@ class UpdateChecker:
                     logger.warning(f"[{container['name']}] Registry fallback failed: {e}")
 
         if not current_digest:
-            # No resolvable digest. A bare/compose-style ref (no explicit registry host)
-            # is most likely built locally; an explicit-registry ref that won't resolve
-            # is a real auth/registry problem (keep the generic 503).
+            # Unresolvable + no explicit registry host => most likely built locally.
             if self._looks_unresolvable_local(image):
-                logger.info(f"[{container['name']}] No resolvable registry digest - treating as locally built (may instead be a private registry image)")
-                return {"status": LOCAL_IMAGE_STATUS, "current_image": image}
+                return self._local_image_marker(container, image)
 
             logger.warning(f"Could not get current digest for {container['name']}")
             return None
@@ -327,11 +324,9 @@ class UpdateChecker:
             latest_result = await self.registry.resolve_tag(floating_tag, auth=auth)
             if not latest_result:
                 logger.warning(f"Could not resolve floating tag: {floating_tag}")
-                # Same classification as the no-digest path: an image with no explicit
-                # registry host that won't resolve is most likely a local build, not auth.
+                # Same classification as the no-digest path.
                 if self._looks_unresolvable_local(image):
-                    logger.info(f"[{container['name']}] No resolvable registry digest - treating as locally built (may instead be a private registry image)")
-                    return {"status": LOCAL_IMAGE_STATUS, "current_image": image}
+                    return self._local_image_marker(container, image)
                 return None
 
             latest_digest = latest_result["digest"]
@@ -450,18 +445,25 @@ class UpdateChecker:
             "changelog_checked_at": changelog_checked_at,
         }
 
+    def _local_image_marker(self, container: Dict, image: str) -> Dict:
+        """Marker for an unresolvable image treated as locally built (logged once)."""
+        logger.info(f"[{container['name']}] No resolvable registry digest - treating as locally built (may instead be a private registry image)")
+        return {"status": LOCAL_IMAGE_STATUS, "current_image": image}
+
     def _looks_unresolvable_local(self, image_ref: str) -> bool:
         """True when an unresolvable image is most likely a local build.
 
-        No digest pin and no explicit registry host (ghcr.io/..., reg:5000/...) means a
-        bare/compose-style name that, when the registry can't resolve it, is almost
+        No digest pin and no explicit registry host (ghcr.io/..., localhost/..., reg:5000/...)
+        means a bare/compose-style name that, when the registry can't resolve it, is almost
         certainly built locally. Explicit-host or digest-pinned refs are treated as real
         registry images, so a resolution failure there stays a registry/auth error.
         """
         if not image_ref or "@" in image_ref:
             return False
         first_segment = image_ref.split("/", 1)[0]
-        has_explicit_host = "/" in image_ref and ("." in first_segment or ":" in first_segment)
+        has_explicit_host = "/" in image_ref and (
+            "." in first_segment or ":" in first_segment or first_segment == "localhost"
+        )
         return not has_explicit_host
 
     def _extract_digest_from_repo_digests(self, repo_digests: List[str]) -> Optional[str]:
@@ -908,10 +910,12 @@ class UpdateChecker:
             record.check_status = LOCAL_IMAGE_STATUS
             record.update_available = False
             # Drop stale registry data from any prior resolvable check so the row
-            # carries no phantom update target alongside the local marker.
+            # carries no phantom update target alongside the local marker. current_digest
+            # is cleared too, matching new local rows and the check-update API response.
             record.latest_image = None
             record.latest_digest = None
             record.latest_version = None
+            record.current_digest = ""
             record.current_image = container.get("image") or record.current_image
             record.last_checked_at = now
             if container.get("name"):

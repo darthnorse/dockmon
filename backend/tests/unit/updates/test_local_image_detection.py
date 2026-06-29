@@ -155,6 +155,8 @@ class TestLooksUnresolvableLocal:
         ("ghcr.io/org/app", False, "explicit host, no tag"),
         ("registry.lan:5000/app", False, "explicit host with port"),
         ("localhost:5000/app", False, "localhost registry has a port colon"),
+        ("localhost/app:tag", False, "localhost is a registry host even without a port"),
+        ("my.company/app", False, "dotted first segment is a registry host"),
         ("quay.io/ns/app:1.2", False, "explicit host"),
         ("nginx@sha256:abc", False, "digest-pinned"),
         ("ghcr.io/org/app@sha256:abc", False, "digest-pinned with host"),
@@ -308,6 +310,7 @@ class TestLocalImagePersistence:
             assert rec.latest_image is None
             assert rec.latest_digest is None
             assert rec.latest_version is None
+            assert rec.current_digest == "", "current_digest cleared to match the check-update API"
 
     @pytest.mark.asyncio
     async def test_periodic_check_marks_local_and_clears_phantom_update(self, db):

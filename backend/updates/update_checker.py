@@ -279,12 +279,10 @@ class UpdateChecker:
                     logger.warning(f"[{container['name']}] Registry fallback failed: {e}")
 
         if not current_digest:
-            # No digest + no local RepoDigests on a non-pinned ref => most likely built locally.
-            # (Registries 401/403 on missing images, so a private image needing auth is indistinguishable.)
-            image_ref = container.get("image") or ""
-            repo_digests = container.get("repo_digests")
-            has_local_digests = isinstance(repo_digests, list) and len(repo_digests) > 0
-            if not has_local_digests and "@" not in image_ref:
+            # No resolvable digest. A bare/compose-style ref (no explicit registry host)
+            # is most likely built locally; an explicit-registry ref that won't resolve
+            # is a real auth/registry problem (keep the generic 503).
+            if self._looks_unresolvable_local(image):
                 logger.info(f"[{container['name']}] No resolvable registry digest - treating as locally built (may instead be a private registry image)")
                 return {"status": LOCAL_IMAGE_STATUS, "current_image": image}
 
@@ -329,6 +327,11 @@ class UpdateChecker:
             latest_result = await self.registry.resolve_tag(floating_tag, auth=auth)
             if not latest_result:
                 logger.warning(f"Could not resolve floating tag: {floating_tag}")
+                # Same classification as the no-digest path: an image with no explicit
+                # registry host that won't resolve is most likely a local build, not auth.
+                if self._looks_unresolvable_local(image):
+                    logger.info(f"[{container['name']}] No resolvable registry digest - treating as locally built (may instead be a private registry image)")
+                    return {"status": LOCAL_IMAGE_STATUS, "current_image": image}
                 return None
 
             latest_digest = latest_result["digest"]
@@ -446,6 +449,20 @@ class UpdateChecker:
             "changelog_source": changelog_source,
             "changelog_checked_at": changelog_checked_at,
         }
+
+    def _looks_unresolvable_local(self, image_ref: str) -> bool:
+        """True when an unresolvable image is most likely a local build.
+
+        No digest pin and no explicit registry host (ghcr.io/..., reg:5000/...) means a
+        bare/compose-style name that, when the registry can't resolve it, is almost
+        certainly built locally. Explicit-host or digest-pinned refs are treated as real
+        registry images, so a resolution failure there stays a registry/auth error.
+        """
+        if not image_ref or "@" in image_ref:
+            return False
+        first_segment = image_ref.split("/", 1)[0]
+        has_explicit_host = "/" in image_ref and ("." in first_segment or ":" in first_segment)
+        return not has_explicit_host
 
     def _extract_digest_from_repo_digests(self, repo_digests: List[str]) -> Optional[str]:
         """Extract sha256 digest from RepoDigests list.

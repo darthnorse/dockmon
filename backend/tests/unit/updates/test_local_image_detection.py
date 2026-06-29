@@ -98,6 +98,73 @@ class TestLocalImageDetection:
         # The registry fallback must not run for a digest reference.
         checker.registry.resolve_tag.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_floating_tag_unresolvable_local_build_returns_marker(self):
+        """Local build WITH a digest (containerd/agent) whose tag can't resolve => local, not 503.
+
+        This is the streammon case: _get_container_image_digest returns a digest
+        (so the no-digest path is skipped), then the floating tag fails to resolve.
+        A bare/compose-style name (no registry host) must be flagged local.
+        """
+        checker = _make_checker()
+        checker._get_container_image_digest = AsyncMock(return_value="sha256:localbuild")
+        checker.registry.resolve_tag = AsyncMock(return_value=None)  # tag not in any registry
+
+        container = {
+            "host_id": "host-123",
+            "id": "abc123def456",
+            "name": "streammon",
+            "image": "streammon-streammon",  # no explicit registry host
+        }
+
+        result = await checker._check_container_update(container, bypass_cache=True)
+
+        assert result is not None, "compose/local image must not collapse to a generic 503"
+        assert result.get("status") == "local_image"
+
+    @pytest.mark.asyncio
+    async def test_no_current_digest_explicit_registry_returns_none(self):
+        """An explicit-registry image we can't resolve stays generic (503), not 'local'."""
+        checker = _make_checker()
+        checker._get_container_image_digest = AsyncMock(return_value=None)
+        checker.registry.resolve_tag = AsyncMock(return_value=None)
+
+        container = {
+            "host_id": "host-123",
+            "id": "abc123def456",
+            "name": "private-app",
+            "image": "ghcr.io/org/private-app:latest",  # explicit registry host
+        }
+
+        result = await checker._check_container_update(container, bypass_cache=True)
+
+        assert result is None, "explicit-registry unresolvable must stay None (503), not local_image"
+
+
+class TestLooksUnresolvableLocal:
+    """The host-based heuristic that splits 'local build' from 'real registry'."""
+
+    @pytest.mark.parametrize("image_ref,expected,reason", [
+        ("streammon-streammon", True, "compose-style bare name"),
+        ("dockmon-dockmon:latest", True, "bare name with tag"),
+        ("myapp", True, "single bare name"),
+        ("myapp:latest", True, "tag colon is not a registry port (no slash)"),
+        ("library/nginx", True, "docker.io default, no explicit host"),
+        ("user/repo:tag", True, "docker.io user repo, no explicit host"),
+        ("ghcr.io/org/app:latest", False, "explicit host (dot)"),
+        ("ghcr.io/org/app", False, "explicit host, no tag"),
+        ("registry.lan:5000/app", False, "explicit host with port"),
+        ("localhost:5000/app", False, "localhost registry has a port colon"),
+        ("quay.io/ns/app:1.2", False, "explicit host"),
+        ("nginx@sha256:abc", False, "digest-pinned"),
+        ("ghcr.io/org/app@sha256:abc", False, "digest-pinned with host"),
+        ("", False, "empty"),
+        (None, False, "none"),
+    ])
+    def test_classification(self, image_ref, expected, reason):
+        checker = UpdateChecker(db=None, monitor=None)
+        assert checker._looks_unresolvable_local(image_ref) is expected, reason
+
 
 class TestCheckSingleContainerPassThrough:
     """check_single_container must surface the local marker without persisting anything."""

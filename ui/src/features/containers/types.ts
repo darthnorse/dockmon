@@ -51,7 +51,7 @@ export interface ContainerAction {
 
 export interface ContainerUpdateStatus {
   // 'local_image' = built locally, not tracked in any registry (nothing to check)
-  status?: 'ok' | 'local_image'
+  status?: 'local_image' | null
   message?: string
   update_available: boolean
   current_image: string | null

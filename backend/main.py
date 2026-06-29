@@ -2234,6 +2234,7 @@ async def get_container_update_status(
         if not record:
             # No update check performed yet
             return {
+                "status": None,
                 "update_available": False,
                 "current_image": None,
                 "current_digest": None,
@@ -2255,6 +2256,7 @@ async def get_container_update_status(
             }
 
         return {
+            "status": record.check_status,
             "update_available": record.update_available,
             "current_image": record.current_image,
             "current_digest": record.current_digest[:12] if record.current_digest else None,

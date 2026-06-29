@@ -775,6 +775,8 @@ class ContainerUpdate(Base):
     latest_image = Column(Text, nullable=True)
     latest_digest = Column(Text, nullable=True)
     update_available = Column(Boolean, default=False, nullable=False)
+    # Non-update check outcome: NULL = normal, 'local_image' = built locally (no registry digest)
+    check_status = Column(Text, nullable=True)
 
     # Version information (from OCI labels)
     current_version = Column(Text, nullable=True)  # org.opencontainers.image.version from current image

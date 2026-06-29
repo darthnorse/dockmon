@@ -117,11 +117,162 @@ class TestCheckSingleContainerPassThrough:
         checker._get_container_async = AsyncMock(return_value=container)
         checker._check_container_update = AsyncMock(return_value=marker)
         checker._store_update_info = MagicMock()
+        checker._store_local_image_info = MagicMock()
         checker._get_previous_digest = MagicMock(return_value=None)
         checker._create_update_event = AsyncMock()
 
         result = await checker.check_single_container("host-123", "abc123def456", bypass_cache=True)
 
         assert result == marker
+        # The normal update store + event must be skipped...
         checker._store_update_info.assert_not_called()
         checker._create_update_event.assert_not_called()
+        # ...but the lightweight local-image marker is persisted.
+        checker._store_local_image_info.assert_called_once()
+
+
+class TestLocalImagePersistence:
+    """A local-image check must persist a row so the UI reflects it after refresh."""
+
+    HOST_ID = "7be442c9-24bc-4047-b33a-41bbf51ea2f9"
+
+    def _seed_host(self, db):
+        from database import DockerHostDB
+        with db.get_session() as s:
+            s.add(DockerHostDB(
+                id=self.HOST_ID, name="h",
+                url="unix:///var/run/docker.sock", is_active=True,
+            ))
+            s.commit()
+
+    @pytest.mark.asyncio
+    async def test_check_single_container_persists_local_image_row(self, db):
+        """check_single_container stamps a ContainerUpdate row for a local image."""
+        from database import ContainerUpdate
+        self._seed_host(db)
+
+        checker = UpdateChecker(db=db, monitor=MagicMock())
+        container = {
+            "host_id": self.HOST_ID,
+            "id": "abc123def456",
+            "name": "local-app",
+            "image": "local-app:latest",
+        }
+        checker._get_container_async = AsyncMock(return_value=container)
+        checker._check_container_update = AsyncMock(
+            return_value={"status": "local_image", "current_image": "local-app:latest"}
+        )
+
+        result = await checker.check_single_container(self.HOST_ID, "abc123def456", bypass_cache=True)
+
+        assert result.get("status") == "local_image"
+        composite = f"{self.HOST_ID}:abc123def456"
+        with db.get_session() as s:
+            rec = s.query(ContainerUpdate).filter_by(container_id=composite).first()
+            assert rec is not None, "local-image check must persist a row"
+            assert rec.check_status == "local_image"
+            assert rec.update_available is False
+            assert rec.last_checked_at is not None, "Last checked must be stamped"
+            assert rec.current_image == "local-app:latest"
+
+    def test_store_update_info_clears_check_status(self, db):
+        """A subsequent normal check clears a stale local_image flag."""
+        from database import ContainerUpdate
+        self._seed_host(db)
+        composite = f"{self.HOST_ID}:abc123def456"
+        with db.get_session() as s:
+            s.add(ContainerUpdate(
+                container_id=composite, host_id=self.HOST_ID,
+                current_image="local-app:latest", current_digest="",
+                update_available=False, check_status="local_image",
+                floating_tag_mode="exact",
+            ))
+            s.commit()
+
+        checker = UpdateChecker(db=db, monitor=MagicMock())
+        container = {"host_id": self.HOST_ID, "id": "abc123def456", "name": "local-app", "image": "local-app:latest"}
+        update_info = {
+            "current_image": "local-app:latest",
+            "current_digest": "sha256:now-resolvable",
+            "latest_image": "local-app:latest",
+            "latest_digest": "sha256:now-resolvable",
+            "update_available": False,
+            "registry_url": "docker.io",
+            "platform": "linux/amd64",
+            "floating_tag_mode": "exact",
+            "current_version": None,
+            "latest_version": None,
+            "changelog_url": None,
+            "changelog_source": None,
+            "changelog_checked_at": None,
+        }
+
+        checker._store_update_info(container, update_info)
+
+        with db.get_session() as s:
+            rec = s.query(ContainerUpdate).filter_by(container_id=composite).first()
+            assert rec.check_status is None, "normal store must clear the local_image flag"
+
+    def test_store_local_image_info_clears_stale_registry_fields(self, db):
+        """A tracked container that becomes local must shed its stale update target."""
+        from database import ContainerUpdate
+        self._seed_host(db)
+        composite = f"{self.HOST_ID}:abc123def456"
+        # Pre-existing row from when the image WAS registry-resolvable, with a
+        # pending update (the exact state that would otherwise show a phantom update).
+        with db.get_session() as s:
+            s.add(ContainerUpdate(
+                container_id=composite, host_id=self.HOST_ID,
+                current_image="myapp:latest", current_digest="sha256:old",
+                latest_image="myapp:latest", latest_digest="sha256:new",
+                latest_version="2.0.0", update_available=True,
+                floating_tag_mode="exact",
+            ))
+            s.commit()
+
+        checker = UpdateChecker(db=db, monitor=MagicMock())
+        container = {"host_id": self.HOST_ID, "id": "abc123def456", "name": "myapp", "image": "myapp:latest"}
+        checker._store_local_image_info(container)
+
+        with db.get_session() as s:
+            rec = s.query(ContainerUpdate).filter_by(container_id=composite).first()
+            assert rec.check_status == "local_image"
+            assert rec.update_available is False, "phantom update must be cleared"
+            assert rec.latest_image is None
+            assert rec.latest_digest is None
+            assert rec.latest_version is None
+
+    @pytest.mark.asyncio
+    async def test_periodic_check_marks_local_and_clears_phantom_update(self, db):
+        """The nightly sweep persists the local marker and clears a stale pending update."""
+        from database import ContainerUpdate
+        self._seed_host(db)
+        composite = f"{self.HOST_ID}:abc123def456"
+        # Tracked row with a pending update; the image then becomes locally-built.
+        with db.get_session() as s:
+            s.add(ContainerUpdate(
+                container_id=composite, host_id=self.HOST_ID,
+                current_image="myapp:latest", current_digest="sha256:old",
+                latest_image="myapp:latest", latest_digest="sha256:new",
+                update_available=True, floating_tag_mode="exact",
+            ))
+            s.commit()
+
+        checker = UpdateChecker(db=db, monitor=MagicMock())
+        container = {
+            "host_id": self.HOST_ID, "id": "abc123def456",
+            "name": "myapp", "image": "myapp:latest", "labels": {},
+        }
+        checker._get_all_containers = AsyncMock(return_value=[container])
+        checker._check_container_update = AsyncMock(
+            return_value={"status": "local_image", "current_image": "myapp:latest"}
+        )
+
+        stats = await checker.check_all_containers()
+
+        with db.get_session() as s:
+            rec = s.query(ContainerUpdate).filter_by(container_id=composite).first()
+            assert rec.check_status == "local_image"
+            assert rec.update_available is False, "nightly sweep must clear the phantom update"
+            assert rec.latest_image is None
+        assert stats["checked"] >= 1

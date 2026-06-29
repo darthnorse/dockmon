@@ -7,7 +7,7 @@
 
 import { memo, useState, useEffect } from 'react'
 import { useAuth } from '@/features/auth/AuthContext'
-import { Package, RefreshCw, Check, AlertCircle, Download, Shield, ExternalLink, Edit2, X } from 'lucide-react'
+import { Package, RefreshCw, Check, AlertCircle, Download, Shield, ExternalLink, Edit2, X, Box } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -358,6 +358,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
   }
 
   const hasUpdate = updateStatus?.update_available
+  const isLocalImage = updateStatus?.status === 'local_image'
   const lastChecked = updateStatus?.last_checked_at
     ? formatDateTime(updateStatus.last_checked_at, timeFormat)
     : 'Not Checked'
@@ -374,7 +375,17 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
       {/* Header with status */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          {hasUpdate ? (
+          {isLocalImage ? (
+            <>
+              <Box className="h-8 w-8 text-muted-foreground" />
+              <div>
+                <h3 className="text-lg font-semibold">Built Locally</h3>
+                <p className="text-sm text-muted-foreground">
+                  This image isn't tracked in a registry, so there are no updates to check
+                </p>
+              </div>
+            </>
+          ) : hasUpdate ? (
             <>
               <Package className="h-8 w-8 text-amber-500" />
               <div>

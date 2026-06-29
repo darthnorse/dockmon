@@ -146,9 +146,13 @@ class UpdateChecker:
                 # Check for update
                 update_info = await self._check_container_update(container)
 
-                # Likely-local image (no resolvable digest): nothing to store.
+                # Likely-local image (no resolvable digest): persist the marker so
+                # the badge shows after the nightly sweep AND any stale pending-update
+                # state is cleared (prevents a phantom update / erroneous auto-update).
                 if update_info and update_info.get("status") == LOCAL_IMAGE_STATUS:
-                    logger.debug(f"Skipping container with no resolvable registry digest (likely built locally): {container['name']}")
+                    logger.debug(f"Marking locally-built container (no resolvable registry digest): {container['name']}")
+                    self._store_local_image_info(container)
+                    stats["checked"] += 1
                     continue
 
                 if update_info:
@@ -197,9 +201,11 @@ class UpdateChecker:
         # Check for update
         update_info = await self._check_container_update(container, bypass_cache=bypass_cache)
 
-        # Likely-local image (no resolvable digest): nothing to store or emit.
+        # Likely-local image (no resolvable digest): persist a marker so the UI
+        # reflects it after refresh, but no normal update record or event.
         if update_info and update_info.get("status") == LOCAL_IMAGE_STATUS:
             logger.info(f"No resolvable registry digest for {container['name']} (likely built locally)")
+            self._store_local_image_info(container)
             return update_info
 
         if update_info:
@@ -794,6 +800,7 @@ class UpdateChecker:
                 record.latest_image = update_info["latest_image"]
                 record.latest_digest = update_info["latest_digest"]
                 record.update_available = update_info["update_available"]
+                record.check_status = None  # clear any stale 'local_image' flag
                 record.registry_url = update_info["registry_url"]
                 record.platform = update_info["platform"]
                 record.last_checked_at = datetime.now(timezone.utc)
@@ -850,6 +857,7 @@ class UpdateChecker:
                     record.latest_image = update_info["latest_image"]
                     record.latest_digest = update_info["latest_digest"]
                     record.update_available = update_info["update_available"]
+                    record.check_status = None  # clear any stale 'local_image' flag
                     record.registry_url = update_info["registry_url"]
                     record.platform = update_info["platform"]
                     record.last_checked_at = datetime.now(timezone.utc)
@@ -866,6 +874,65 @@ class UpdateChecker:
                 else:
                     # Record vanished between operations - extremely unlikely
                     logger.warning(f"Record vanished during race condition handling for {composite_key}")
+                    raise
+
+    def _store_local_image_info(self, container: Dict):
+        """Persist a lightweight 'built locally' marker (no registry digest).
+
+        Stamps last_checked_at + check_status so the UI shows a stable
+        "nothing to check" state after refresh. Preserves user settings on an
+        existing row; uses a current_digest="" placeholder for new rows.
+        """
+        container_id = normalize_container_id(container['id'])
+        composite_key = make_composite_key(container['host_id'], container_id)
+        now = datetime.now(timezone.utc)
+
+        def apply_marker(record):
+            record.check_status = LOCAL_IMAGE_STATUS
+            record.update_available = False
+            # Drop stale registry data from any prior resolvable check so the row
+            # carries no phantom update target alongside the local marker.
+            record.latest_image = None
+            record.latest_digest = None
+            record.latest_version = None
+            record.current_image = container.get("image") or record.current_image
+            record.last_checked_at = now
+            if container.get("name"):
+                record.container_name = container["name"]
+
+        with self.db.get_session() as session:
+            record = session.query(ContainerUpdate).filter_by(
+                container_id=composite_key
+            ).first()
+
+            if record:
+                apply_marker(record)
+            else:
+                record = ContainerUpdate(
+                    container_id=composite_key,
+                    host_id=container["host_id"],
+                    container_name=container.get("name"),
+                    current_image=container.get("image") or "",
+                    current_digest="",  # local image has no registry digest
+                    update_available=False,
+                    check_status=LOCAL_IMAGE_STATUS,
+                    last_checked_at=now,
+                )
+                session.add(record)
+
+            try:
+                session.commit()
+            except IntegrityError:
+                # Rare concurrent insert: re-query and stamp the winner with the full marker
+                session.rollback()
+                record = session.query(ContainerUpdate).filter_by(
+                    container_id=composite_key
+                ).first()
+                if record:
+                    apply_marker(record)
+                    session.commit()
+                else:
+                    logger.warning(f"Record vanished during race handling for {composite_key}")
                     raise
 
     async def _create_update_event(

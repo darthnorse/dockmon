@@ -188,9 +188,14 @@ func (s *Service) Deploy(ctx context.Context, req DeployRequest) (result *Deploy
 		return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to write compose file: %v", err))
 	}
 
-	// Write or remove .env file based on content
-	// WriteStackEnvFile removes existing .env when called with empty content
-	if _, err := WriteStackEnvFile(stacksDir, req.ProjectName, req.EnvFileContent); err != nil {
+	// Write env files to the stack dir before loading the project so compose-go
+	// can resolve env_file: references. EnvFiles (the full map) wins; fall back
+	// to the legacy single EnvFileContent for older callers.
+	if len(req.EnvFiles) > 0 {
+		if err := WriteStackEnvFiles(stacksDir, req.ProjectName, req.EnvFiles); err != nil {
+			return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to write env files: %v", err))
+		}
+	} else if _, err := WriteStackEnvFile(stacksDir, req.ProjectName, req.EnvFileContent); err != nil {
 		return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to write .env file: %v", err))
 	}
 

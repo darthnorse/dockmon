@@ -23,6 +23,13 @@ from updates.types import MANIFEST_LIST_TYPES, match_platform_manifest
 logger = logging.getLogger(__name__)
 
 
+class TransientRegistryError(Exception):
+    """A registry request failed for a retryable reason (timeout, network, 429
+    rate-limit, 5xx) - as opposed to a definitive response (401/403/404) meaning the
+    image genuinely isn't accessible. Lets callers avoid misreading a transient blip
+    as 'image not in any registry'."""
+
+
 class RegistryCache:
     """Simple in-memory cache with TTL for registry responses"""
 
@@ -193,6 +200,8 @@ class RegistryAdapter:
                 logger.info(f"Resolved {image_ref} → {digest[:16]}...")
                 return result
 
+        except TransientRegistryError:
+            raise  # let callers distinguish transient (retryable) from definitive failures
         except Exception as e:
             logger.error(f"Failed to resolve {image_ref}: {e}")
 
@@ -710,17 +719,24 @@ class RegistryAdapter:
 
                         return digest, manifest
 
+                    elif response.status == 429:
+                        logger.warning(f"Rate limited by registry: {manifest_url}")
+                        raise TransientRegistryError(f"rate limited (429): {manifest_url}")
+                    elif response.status >= 500:
+                        logger.warning(f"Registry server error {response.status} for {manifest_url}")
+                        raise TransientRegistryError(f"server error {response.status}: {manifest_url}")
                     elif response.status == 401:
                         logger.error(f"Authentication failed for {manifest_url}")
                     elif response.status == 404:
                         logger.error(f"Image not found: {manifest_url}")
-                    elif response.status == 429:
-                        logger.warning(f"Rate limited by registry: {manifest_url}")
                     else:
                         logger.error(f"Registry returned {response.status} for {manifest_url}")
 
-        except asyncio.TimeoutError:
-            logger.error(f"Timeout fetching manifest: {manifest_url}")
+        except TransientRegistryError:
+            raise
+        except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+            logger.error(f"Transient error fetching manifest {manifest_url}: {e}")
+            raise TransientRegistryError(f"network/timeout: {manifest_url}")
         except Exception as e:
             logger.error(f"Error fetching manifest: {e}")
 

@@ -180,8 +180,21 @@ class AgentWebSocketHandler:
                 pass
 
         finally:
-            # Emit HOST_DISCONNECTED event via EventBus (before cleanup)
-            if self.monitor and self.host_id and self.authenticated:
+            # Tear down THIS connection first. unregister_connection only removes
+            # the registry/DB state when this websocket is still the agent's active
+            # socket; a superseded socket (the agent reconnected on a new socket)
+            # is a no-op. removed_active gates the host-down side effects below so a
+            # stale teardown cannot mark a live host as disconnected.
+            removed_active = False
+            if self.agent_id:
+                removed_active = await agent_connection_manager.unregister_connection(
+                    self.agent_id, self.websocket
+                )
+
+            # Emit HOST_DISCONNECTED only when this teardown removed the live
+            # connection and nothing has reconnected since.
+            if (removed_active and self.monitor and self.host_id and self.authenticated
+                    and not agent_connection_manager.is_connected(self.agent_id)):
                 try:
                     event = Event(
                         event_type=EventType.HOST_DISCONNECTED,
@@ -197,19 +210,16 @@ class AgentWebSocketHandler:
                 except Exception as e:
                     logger.warning(f"Failed to emit HOST_DISCONNECTED event: {e}")
 
-            # Close any shell sessions for this agent
-            if self.agent_id:
+            # Close shell sessions only when the agent has no live connection. A
+            # superseded or mid-reconnect socket must not tear down the shells owned
+            # by the agent's current connection, so re-check is_connected here: a
+            # reconnect that landed during the disconnect emit keeps its shells.
+            if self.agent_id and not agent_connection_manager.is_connected(self.agent_id):
                 try:
                     from agent.shell_manager import get_shell_manager
                     await get_shell_manager().close_sessions_for_agent(self.agent_id)
                 except Exception as e:
                     logger.warning(f"Error closing shell sessions for agent: {e}")
-
-            # Clean up connection
-            if self.agent_id:
-                await agent_connection_manager.unregister_connection(
-                    self.agent_id
-                )
 
     async def authenticate(self, message: dict) -> dict:
         """
@@ -730,11 +740,15 @@ class AgentWebSocketHandler:
                 cpu = stats.get("cpu_percent", 0.0)
                 mem = stats.get("memory_percent", 0.0)  # Agent sends "memory_percent" not "mem_percent"
 
+                # Memory bytes feed the detail-view live chart only; the broadcast
+                # get_sparklines call stays lean (no memory in payload).
                 self.monitor.container_stats_history.add_stats(
                     container_key=container_key,
                     cpu=cpu,
                     mem=mem,
-                    net=net_bytes_per_sec  # Use calculated rate, not cumulative total
+                    net=net_bytes_per_sec,  # Use calculated rate, not cumulative total
+                    memory_used_bytes=stats.get("memory_usage"),
+                    memory_limit_bytes=stats.get("memory_limit")
                 )
 
             # Cache latest full stats for REST API endpoints (not just sparkline data)

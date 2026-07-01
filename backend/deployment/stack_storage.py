@@ -13,9 +13,18 @@ import re
 import shutil
 import tempfile
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import aiofiles
+
+from utils.env_files import (
+    is_safe_env_filename,
+    normalize_env_filename,
+    parse_env_file_refs,
+    is_env_filename,
+    parse_bind_mount_sources,
+    MAX_ENV_FILE_BYTES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -205,44 +214,145 @@ async def find_stack_by_name(name: str) -> Optional[str]:
     return await asyncio.to_thread(_find)
 
 
-async def read_stack(name: str) -> Tuple[str, Optional[str]]:
-    """
-    Read compose file and .env for a stack.
+def referenced_env_filenames(compose_yaml: str) -> set:
+    """Env filenames the compose references: '.env' plus every same-dir bare
+    filename named by an env_file: directive, minus any compose filename.
 
-    Supports compose.yaml, compose.yml, docker-compose.yaml, docker-compose.yml.
+    Purely compose-derived (no directory access). This is the authoritative
+    'active' set: '.env' (auto-loaded by compose) and the env_file: targets.
+    The route returns it so the editor can badge tabs that are NOT in it.
+    """
+    captured, _skipped = parse_env_file_refs(compose_yaml)
+    return {".env", *captured} - set(COMPOSE_FILENAMES)
+
+
+def _discovered_env_filenames(stack_path: Path, compose_yaml: str) -> set:
+    """On-disk env files NOT currently referenced by the compose.
+
+    Top-level bare files in the stack dir whose name follows an env naming
+    convention (is_env_filename) and that are not: already in the
+    compose-referenced set, a compose file, a compose-declared bind-mount
+    source, a symlink, a non-regular file, or larger than MAX_ENV_FILE_BYTES.
+
+    This is what lets an env-swap workflow (.env.dev / .env.staging /
+    .env.prod) keep editing the files that aren't the currently-referenced one,
+    without surfacing bind-mount runtime data (which lives in subdirs, is
+    declared in volumes:, or isn't env-named).
+    """
+    referenced = referenced_env_filenames(compose_yaml)
+    bind_sources = parse_bind_mount_sources(compose_yaml)
+    discovered: set = set()
+    try:
+        entries = list(os.scandir(stack_path))
+    except OSError:
+        return discovered
+    for entry in entries:
+        name = entry.name
+        if name in referenced or name in COMPOSE_FILENAMES or name in bind_sources:
+            continue
+        if not is_env_filename(name) or not is_safe_env_filename(name):
+            continue
+        try:
+            if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                continue
+            if entry.stat(follow_symlinks=False).st_size > MAX_ENV_FILE_BYTES:
+                continue
+        except OSError:
+            continue
+        discovered.add(name)
+    return discovered
+
+
+def _managed_env_filenames(stack_path: Path, compose_yaml: str) -> set:
+    """The delete allowlist: the compose-referenced set UNION naming-discovered
+    unreferenced files on disk.
+
+    A superset of read_stack's editor-tab set (every deletable file is one the
+    editor can surface), kept in lockstep with it because both are derived from
+    the same referenced_env_filenames / _discovered_env_filenames helpers — they
+    cannot silently drift. The referenced half is compose-derived (never
+    directory enumeration), so the delete path can never remove the compose file
+    or bind-mount data; the discovered half is bounded by the is_env_filename +
+    bind-mount + same-dir + symlink + size filters in _discovered_env_filenames.
+    """
+    return referenced_env_filenames(compose_yaml) | _discovered_env_filenames(stack_path, compose_yaml)
+
+
+async def read_stack(name: str, include_discovered: bool = True) -> Tuple[str, Dict[str, str]]:
+    """
+    Read a stack's compose file and its managed env files.
+
+    The env-file set is: the conventional '.env' (if present on disk) plus every
+    same-dir bare filename named by an env_file: directive (referenced-but-missing
+    files read as ''). When include_discovered is True (the default, for the
+    editor) it ALSO surfaces env-named files on disk that the compose does NOT
+    reference -- the inactive files of an env-swap workflow -- filtered to exclude
+    bind-mount data, symlinks, and oversized files.
+
+    Deploy callers MUST pass include_discovered=False so an inactive, unreferenced
+    env file (e.g. .env.staging) is never shipped to the compose service / remote
+    agent and never trips the old-agent multi_env_files gate. Bind-mount runtime
+    data and the compose file are excluded either way.
 
     Args:
-        name: Stack name
+        name: Stack name.
+        include_discovered: Include naming-discovered unreferenced env files
+            (editor view). Deploy paths pass False for referenced-only content.
 
     Returns:
-        Tuple of (compose_yaml, env_content or None)
+        (compose_yaml, env_files) where env_files maps filename -> content.
 
     Raises:
-        FileNotFoundError: If stack doesn't exist (no compose file found)
+        FileNotFoundError: If no compose file exists for the stack.
     """
     stack_path = get_stack_path(name)
-    env_path = stack_path / ".env"
 
-    # Check existence async (for NFS compatibility)
-    def _find_files():
+    def _read() -> Tuple[str, Dict[str, str]]:
         compose_path = find_compose_file(stack_path)
-        env_exists = env_path.exists()
-        return compose_path, env_exists
+        if compose_path is None:
+            raise FileNotFoundError(f"Stack '{name}' not found (no compose file)")
+        compose_yaml = compose_path.read_text()
 
-    compose_path, env_exists = await asyncio.to_thread(_find_files)
+        env_files: Dict[str, str] = {}
+        dot_env = stack_path / ".env"
+        if dot_env.is_file() and not dot_env.is_symlink():
+            env_files[".env"] = dot_env.read_text()
 
-    if compose_path is None:
-        raise FileNotFoundError(f"Stack '{name}' not found (no compose file)")
+        captured, _skipped = parse_env_file_refs(compose_yaml)
+        for fname in captured:
+            if not is_safe_env_filename(fname):
+                continue
+            if fname in env_files:
+                continue
+            fpath = stack_path / fname
+            if fpath.is_symlink():
+                continue
+            env_files[fname] = fpath.read_text() if fpath.is_file() else ""
 
-    async with aiofiles.open(compose_path, 'r') as f:
-        compose_yaml = await f.read()
+        # Discovered: env-named files on disk not referenced by the compose
+        # (e.g. the inactive files in an env-swap workflow). Editor view only --
+        # deploy callers pass include_discovered=False so these never reach the
+        # compose service / agent. The discovery set already filtered
+        # symlinks/size/bind-mounts; re-check symlink, regular-file, and size at
+        # read time so a scan->read swap can't make us follow a symlink, block on
+        # a fifo, or slurp an oversized file (mirrors the env_file: loop above).
+        if include_discovered:
+            for fname in _discovered_env_filenames(stack_path, compose_yaml):
+                if fname in env_files:
+                    continue
+                fpath = stack_path / fname
+                if fpath.is_symlink():
+                    continue
+                try:
+                    if not fpath.is_file() or fpath.stat().st_size > MAX_ENV_FILE_BYTES:
+                        continue
+                except OSError:
+                    continue
+                env_files[fname] = fpath.read_text()
 
-    env_content = None
-    if env_exists:
-        async with aiofiles.open(env_path, 'r') as f:
-            env_content = await f.read()
+        return compose_yaml, env_files
 
-    return compose_yaml, env_content
+    return await asyncio.to_thread(_read)
 
 
 async def _atomic_write_file(target_path: Path, content: str) -> None:
@@ -261,27 +371,28 @@ async def _atomic_write_file(target_path: Path, content: str) -> None:
 async def write_stack(
     name: str,
     compose_yaml: str,
-    env_content: Optional[str] = None,
-    create_only: bool = False
+    env_files: Optional[Dict[str, str]] = None,
+    create_only: bool = False,
 ) -> None:
     """
-    Write compose.yaml and .env for a stack.
+    Write a stack's compose file and its env files.
 
-    Creates directory if needed. Uses atomic write pattern.
-
-    Args:
-        name: Stack name (validated)
-        compose_yaml: Compose file content
-        env_content: Optional .env file content
-        create_only: If True, fail if stack already exists (race-safe creation)
+    Writes ONLY compose.yaml and the provided env files (creating or
+    overwriting them). Never deletes or touches any other file in the stack
+    directory, protecting relative bind-mount data and leaving unreferenced
+    env files as harmless, invisible orphans.
 
     Raises:
-        ValueError: If name is invalid or stack exists (when create_only=True)
+        ValueError: If the stack name or any env filename is invalid, or (with
+            create_only) the stack already exists.
     """
     validate_stack_name(name)
-    stack_path = get_stack_path(name)
+    env_files = env_files or {}
+    for fname in env_files:
+        if not is_safe_env_filename(fname):
+            raise ValueError(f"Unsafe env filename: {fname!r}")
 
-    # For create_only, use atomic directory creation to prevent race conditions
+    stack_path = get_stack_path(name)
     if create_only:
         try:
             stack_path.mkdir(parents=True, exist_ok=False)
@@ -290,21 +401,12 @@ async def write_stack(
     else:
         stack_path.mkdir(parents=True, exist_ok=True)
 
-    # Write compose.yaml atomically
     await _atomic_write_file(stack_path / "compose.yaml", compose_yaml)
+    for fname, content in env_files.items():
+        bare = normalize_env_filename(fname)
+        await _atomic_write_file(stack_path / bare, content)
 
-    # Handle .env file
-    env_path = stack_path / ".env"
-    if env_content and env_content.strip():
-        await _atomic_write_file(env_path, env_content)
-    else:
-        # Remove .env if it exists and new content is empty
-        def _remove_env_if_exists():
-            if env_path.exists():
-                env_path.unlink()
-        await asyncio.to_thread(_remove_env_if_exists)
-
-    logger.debug(f"Wrote stack '{name}' to {stack_path}")
+    logger.debug(f"Wrote stack '{name}' ({len(env_files)} env file(s)) to {stack_path}")
 
 
 async def delete_stack_files(name: str) -> None:
@@ -324,6 +426,56 @@ async def delete_stack_files(name: str) -> None:
             logger.info(f"Deleted stack '{name}' from {stack_path}")
 
     await asyncio.to_thread(_delete)
+
+
+async def delete_env_file(name: str, filename: str) -> bool:
+    """Delete a single managed env file from a stack dir.
+
+    Only removes a file in the stack's managed env-file set: the conventional
+    '.env', the bare same-dir filenames referenced by env_file: directives, and
+    env-named files discovered on disk (the inactive files of an env-swap
+    workflow). Never removes the compose file, a compose-declared bind-mount
+    source, a non-env-named file, a directory, or a symlink target. Returns True
+    iff a regular managed env file was removed. Raises ValueError on an unsafe
+    filename.
+
+    Args:
+        name: Stack name
+        filename: Env filename to delete (e.g. '.env', '.db.env', './app.env')
+
+    Returns:
+        True if a regular managed env file was deleted, False otherwise
+
+    Raises:
+        ValueError: If stack name is invalid or filename is unsafe
+    """
+    validate_stack_name(name)
+    if not is_safe_env_filename(filename):
+        raise ValueError(f"Unsafe env filename: {filename!r}")
+    bare = normalize_env_filename(filename)
+    stack_path = get_stack_path(name)
+    target = stack_path / bare
+
+    def _delete() -> bool:
+        compose_path = find_compose_file(stack_path)
+        if compose_path is None:
+            return False  # no compose -> nothing managed to delete
+        if bare not in _managed_env_filenames(stack_path, compose_path.read_text()):
+            # Not a managed env file: the compose file, a bind-mount source, a
+            # directory/symlink, or any same-dir file that is not '.env',
+            # env_file:-referenced, or an env-named discovered file.
+            return False
+        if target.parent != stack_path:       # containment, defense in depth
+            return False
+        if target.is_symlink() or target.is_dir():
+            return False
+        if not target.is_file():
+            return False
+        target.unlink()
+        logger.info(f"Deleted env file '{bare}' from stack '{name}'")
+        return True
+
+    return await asyncio.to_thread(_delete)
 
 
 async def copy_stack(source_name: str, dest_name: str) -> None:

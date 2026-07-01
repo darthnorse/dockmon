@@ -66,6 +66,7 @@ import {
   Container,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { toast } from 'sonner'
 import { useAuth } from '@/features/auth/AuthContext'
 
 type ImportStep = 'input' | 'select-name' | 'stack-exists' | 'success'
@@ -75,6 +76,18 @@ interface ImportStackModalProps {
   isOpen: boolean
   onClose: () => void
   onSuccess?: (deployments: Deployment[]) => void
+}
+
+/**
+ * Warn (non-blocking) about env files the backend skipped because they resolve
+ * outside the stack directory. `prefix` labels the stack name in batch imports.
+ */
+function warnSkippedEnvFiles(skipped: string[] | undefined, prefix?: string): void {
+  if (!skipped || skipped.length === 0) return
+  const where = prefix ? `${prefix}: ` : ''
+  toast.warning(
+    `${where}Env file(s) outside the stack directory were not imported: ${skipped.join(', ')}`
+  )
 }
 
 export function ImportStackModal({
@@ -101,6 +114,8 @@ export function ImportStackModal({
   const [composeFiles, setComposeFiles] = useState<ComposeFileInfo[]>([])
   const [selectedFilePath, setSelectedFilePath] = useState('')
   const [selectedFilePaths, setSelectedFilePaths] = useState<Set<string>>(new Set())
+  // Full env_files map of the singly-previewed browse file; the single import sends this whole map
+  const [selectedEnvFiles, setSelectedEnvFiles] = useState<Record<string, string>>({})
 
   // Batch import state
   const [isBatchImporting, setIsBatchImporting] = useState(false)
@@ -209,6 +224,7 @@ export function ImportStackModal({
     setComposeFiles([])
     setSelectedFilePath('')
     setSelectedFilePaths(new Set())
+    setSelectedEnvFiles({})
 
     // Parse additional paths (comma or newline separated)
     const extraPaths = additionalPaths
@@ -254,6 +270,12 @@ export function ImportStackModal({
   const handleSelectComposeFile = async (path: string) => {
     setSelectedFilePath(path)
     setError(null)
+    // Clear state carried from a previously-selected file so a failed read never
+    // leaves the prior file's content/env visible against the new selection.
+    setComposeContent('')
+    setEnvContent('')
+    setShowEnvField(false)
+    setSelectedEnvFiles({})
 
     const file = composeFiles.find((f) => f.path === path)
     if (!file) return
@@ -267,10 +289,11 @@ export function ImportStackModal({
 
       if (result.success) {
         setComposeContent(result.content || '')
-        if (result.env_content) {
-          setEnvContent(result.env_content)
-          setShowEnvField(true)
-        }
+        // Capture the full env_files map so the single import carries every file, not just .env.
+        // Browse mode uses selectedEnvFiles directly; the .env textarea (envContent/showEnvField)
+        // is paste-mode only, so it is intentionally not populated here.
+        setSelectedEnvFiles(result.env_files ?? {})
+        warnSkippedEnvFiles(result.skipped_env_files)
       } else {
         setError(result.error || 'Failed to read file')
       }
@@ -348,9 +371,10 @@ export function ImportStackModal({
         if (file?.project_name) {
           request.project_name = file.project_name
         }
-        if (readResult.env_content) {
-          request.env_content = readResult.env_content
+        if (readResult.env_files && Object.keys(readResult.env_files).length > 0) {
+          request.env_files = readResult.env_files
         }
+        warnSkippedEnvFiles(readResult.skipped_env_files, displayName)
 
         const result = await importDeployment.mutateAsync(request)
 
@@ -401,7 +425,13 @@ export function ImportStackModal({
       const request: ImportDeploymentRequest = {
         compose_content: contentToImport,
       }
-      if (envContent) request.env_content = envContent
+      // Browse mode captures the selected file's full env_files map; paste mode
+      // only has the single .env textarea.
+      if (method === 'browse' && Object.keys(selectedEnvFiles).length > 0) {
+        request.env_files = selectedEnvFiles
+      } else if (method !== 'browse' && envContent.trim()) {
+        request.env_files = { '.env': envContent }
+      }
       if (options?.projectName) request.project_name = options.projectName
       if (options?.overwriteStack) request.overwrite_stack = true
       if (options?.useExistingStack) request.use_existing_stack = true
@@ -506,6 +536,7 @@ export function ImportStackModal({
     setComposeFiles([])
     setSelectedFilePath('')
     setSelectedFilePaths(new Set())
+    setSelectedEnvFiles({})
     setIsBatchImporting(false)
     setBatchImportProgress({ current: 0, total: 0 })
     setSelectedRunningProject(null)

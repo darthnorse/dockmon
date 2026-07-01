@@ -26,6 +26,7 @@ from deployment.stack_storage import (
     read_stack,
     write_stack,
     delete_stack_files,
+    delete_env_file,
     copy_stack,
     rename_stack_files,
     list_stacks,
@@ -249,29 +250,30 @@ class TestReadStack:
 
     @pytest.mark.asyncio
     async def test_read_compose_only(self, temp_stacks_dir):
-        """Should read compose.yaml when no .env exists"""
+        """Should read compose.yaml and return empty env_files map when no .env exists"""
         stack_dir = temp_stacks_dir / "myapp"
         stack_dir.mkdir()
         (stack_dir / "compose.yaml").write_text("services:\n  web:\n    image: nginx")
 
-        compose, env = await read_stack("myapp")
+        compose, env_files = await read_stack("myapp")
 
         assert "nginx" in compose
-        assert env is None
+        assert env_files == {}
 
     @pytest.mark.asyncio
     async def test_read_compose_and_env(self, temp_stacks_dir):
-        """Should read both compose.yaml and .env"""
+        """Should read both compose.yaml and .env, returning env_files map"""
         stack_dir = temp_stacks_dir / "myapp"
         stack_dir.mkdir()
         (stack_dir / "compose.yaml").write_text("services:\n  web:\n    image: nginx")
         (stack_dir / ".env").write_text("PORT=8080\nDEBUG=true")
 
-        compose, env = await read_stack("myapp")
+        compose, env_files = await read_stack("myapp")
 
         assert "nginx" in compose
-        assert "PORT=8080" in env
-        assert "DEBUG=true" in env
+        assert ".env" in env_files
+        assert "PORT=8080" in env_files[".env"]
+        assert "DEBUG=true" in env_files[".env"]
 
     @pytest.mark.asyncio
     async def test_read_nonexistent_raises(self, temp_stacks_dir):
@@ -303,8 +305,8 @@ class TestWriteStack:
 
     @pytest.mark.asyncio
     async def test_write_compose_and_env(self, temp_stacks_dir):
-        """Should write both compose.yaml and .env"""
-        await write_stack("myapp", "services: {}", env_content="PORT=8080")
+        """Should write both compose.yaml and .env via env_files map"""
+        await write_stack("myapp", "services: {}", env_files={".env": "PORT=8080"})
 
         compose_path = temp_stacks_dir / "myapp" / "compose.yaml"
         env_path = temp_stacks_dir / "myapp" / ".env"
@@ -314,16 +316,17 @@ class TestWriteStack:
         assert "PORT=8080" in env_path.read_text()
 
     @pytest.mark.asyncio
-    async def test_write_removes_empty_env(self, temp_stacks_dir):
-        """Should remove .env if content is empty/whitespace"""
+    async def test_write_no_env_files_leaves_existing_env(self, temp_stacks_dir):
+        """write_stack with no env_files does not touch existing .env files"""
         stack_dir = temp_stacks_dir / "myapp"
         stack_dir.mkdir()
         env_path = stack_dir / ".env"
         env_path.write_text("OLD=value")
 
-        await write_stack("myapp", "services: {}", env_content="   ")
+        await write_stack("myapp", "services: {}")
 
-        assert not env_path.exists()
+        assert env_path.exists()
+        assert "OLD=value" in env_path.read_text()
 
     @pytest.mark.asyncio
     async def test_write_creates_directory(self, temp_stacks_dir):
@@ -519,3 +522,195 @@ class TestListStacks:
         stacks = await list_stacks()
 
         assert stacks == []
+
+
+class TestDeleteEnvFile:
+    """Test single env-file deletion from a stack directory."""
+
+    @pytest.mark.asyncio
+    async def test_deletes_existing_file(self, temp_stacks_dir):
+        """Returns True and removes the env file; compose.yaml and sibling env files untouched."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text("services: {}")
+        (stack_dir / ".db.env").write_text("DB_PASS=secret")
+        target = stack_dir / ".env"
+        target.write_text("PORT=8080")
+
+        result = await delete_env_file("myapp", ".env")
+
+        assert result is True
+        assert not target.exists()
+        # Sibling files must be untouched
+        assert (stack_dir / "compose.yaml").read_text() == "services: {}"
+        assert (stack_dir / ".db.env").read_text() == "DB_PASS=secret"
+
+    @pytest.mark.asyncio
+    async def test_missing_file_returns_false(self, temp_stacks_dir):
+        """Returns False (no exception) when the file does not exist."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text("services: {}")
+
+        result = await delete_env_file("myapp", ".env")
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_unsafe_filename_raises_value_error(self, temp_stacks_dir):
+        """Raises ValueError for any filename that fails is_safe_env_filename."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text("services: {}")
+
+        for bad_name in ("../x", "a/b.env", "", ".."):
+            with pytest.raises(ValueError):
+                await delete_env_file("myapp", bad_name)
+
+    @pytest.mark.asyncio
+    async def test_directory_returns_false(self, temp_stacks_dir):
+        """Returns False and leaves the directory untouched (bind-mount guard)."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        # Reference 'data' so it clears the managed-env-file allowlist; the
+        # is_dir() guard is then what protects the directory from deletion.
+        (stack_dir / "compose.yaml").write_text(
+            "services:\n  app:\n    image: x\n    env_file:\n      - data\n"
+        )
+        data_dir = stack_dir / "data"
+        data_dir.mkdir()
+        sentinel = data_dir / "important.db"
+        sentinel.write_text("bind-mount data")
+
+        result = await delete_env_file("myapp", "data")
+
+        assert result is False
+        assert data_dir.is_dir()
+        assert sentinel.read_text() == "bind-mount data"
+
+    @pytest.mark.asyncio
+    async def test_validates_stack_name(self, temp_stacks_dir):
+        """Should reject an invalid stack name."""
+        with pytest.raises(ValueError, match="lowercase"):
+            await delete_env_file("Bad Name!", ".env")
+
+    @pytest.mark.asyncio
+    async def test_deletes_dot_slash_prefixed_name(self, temp_stacks_dir):
+        """A './'-prefixed filename resolves to the same bare file and is deleted."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text(
+            "services:\n  app:\n    image: x\n    env_file:\n      - app.env\n"
+        )
+        (stack_dir / "app.env").write_text("A=1")
+
+        assert await delete_env_file("myapp", "./app.env") is True
+        assert not (stack_dir / "app.env").exists()
+
+    @pytest.mark.asyncio
+    async def test_symlink_returns_false_target_untouched(self, tmp_path, temp_stacks_dir):
+        """Returns False for a symlink; the symlink target's content is not destroyed."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        # Reference '.secret.env' so it clears the managed-env-file allowlist;
+        # the is_symlink() guard is then what refuses to follow it.
+        (stack_dir / "compose.yaml").write_text(
+            "services:\n  app:\n    image: x\n    env_file:\n      - .secret.env\n"
+        )
+
+        # Create a sensitive file OUTSIDE the stack directory
+        outside = tmp_path / "outside_secret.txt"
+        outside.write_text("sensitive content")
+
+        # Create a symlink inside the stack dir pointing at the outside file
+        symlink = stack_dir / ".secret.env"
+        symlink.symlink_to(outside)
+
+        result = await delete_env_file("myapp", ".secret.env")
+
+        assert result is False
+        # The outside file must still exist with its original content (the security property)
+        assert outside.exists()
+        assert outside.read_text() == "sensitive content"
+
+    @pytest.mark.asyncio
+    async def test_deletes_compose_referenced_env_file(self, temp_stacks_dir):
+        """A compose-referenced env file is managed and can be deleted."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text(
+            "services:\n  db:\n    image: x\n    env_file:\n      - .db.env\n"
+        )
+        (stack_dir / ".db.env").write_text("DB_PASS=secret")
+
+        assert await delete_env_file("myapp", ".db.env") is True
+        assert not (stack_dir / ".db.env").exists()
+
+    @pytest.mark.asyncio
+    async def test_refuses_to_delete_compose_file(self, temp_stacks_dir):
+        """The compose file is not a managed env file and must never be deleted."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text("services: {}")
+
+        result = await delete_env_file("myapp", "compose.yaml")
+
+        assert result is False
+        assert (stack_dir / "compose.yaml").exists()
+
+    @pytest.mark.asyncio
+    async def test_refuses_unreferenced_data_file(self, temp_stacks_dir):
+        """A bind-mounted data file (not '.env', not env_file-referenced) is never deleted."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text("services: {}")
+        data = stack_dir / "database.sqlite"
+        data.write_text("IMPORTANT DATA")
+
+        result = await delete_env_file("myapp", "database.sqlite")
+
+        assert result is False
+        assert data.read_text() == "IMPORTANT DATA"
+
+    @pytest.mark.asyncio
+    async def test_deletes_discovered_env_file(self, temp_stacks_dir):
+        """An env-named file not referenced by compose is discovered and deletable."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text("services: {}")
+        discovered = stack_dir / ".stray.env"
+        discovered.write_text("X=1")
+
+        result = await delete_env_file("myapp", ".stray.env")
+
+        assert result is True
+        assert not discovered.exists()
+
+    @pytest.mark.asyncio
+    async def test_refuses_self_referenced_compose_file(self, temp_stacks_dir):
+        """A compose that names a compose filename under env_file: still cannot delete it."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text(
+            "services:\n  app:\n    image: x\n    env_file:\n      - compose.yaml\n"
+        )
+
+        result = await delete_env_file("myapp", "compose.yaml")
+
+        assert result is False
+        assert (stack_dir / "compose.yaml").exists()
+
+    @pytest.mark.asyncio
+    async def test_refuses_non_env_named_unreferenced_file(self, temp_stacks_dir):
+        """A non-env-named file (potential bind-mount data) is never deletable,
+        even when unreferenced and sitting in the stack dir."""
+        stack_dir = temp_stacks_dir / "myapp"
+        stack_dir.mkdir()
+        (stack_dir / "compose.yaml").write_text("services: {}")
+        data = stack_dir / "notes.txt"
+        data.write_text("IMPORTANT")
+
+        result = await delete_env_file("myapp", "notes.txt")
+
+        assert result is False
+        assert data.read_text() == "IMPORTANT"

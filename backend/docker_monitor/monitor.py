@@ -28,7 +28,11 @@ from event_logger import EventLogger
 from event_bus import Event, EventType as BusEventType, get_event_bus
 from stats_client import get_stats_client
 from docker_monitor.stats_manager import StatsManager
-from docker_monitor.stats_history import StatsHistoryBuffer, ContainerStatsHistoryBuffer
+from docker_monitor.stats_history import (
+    StatsHistoryBuffer,
+    ContainerStatsHistoryBuffer,
+    live_buffer_max_age_seconds,
+)
 from docker_monitor.container_discovery import ContainerDiscovery
 from docker_monitor.state_manager import StateManager
 from docker_monitor.operations import ContainerOperations
@@ -554,7 +558,7 @@ class DockerMonitor:
                             # Agent hosts have url="agent://" which is not a valid Docker URL
                             if host.connection_type != "agent":
                                 is_local = host.url.startswith("unix://")
-                                await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus, is_local)
+                                await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus, host.total_memory, is_local)
                                 logger.info(f"Registered {host.name} ({host.id[:8]}) with stats service")
 
                                 await stats_client.add_event_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
@@ -844,6 +848,15 @@ class DockerMonitor:
                         await agent_connection_manager.unregister_connection(agent_id)
                         logger.info(f"Disconnected agent {agent_id[:8]}... for host {host_name}")
 
+                        # Force-removed agents no longer tear down via their socket
+                        # handler (its identity-gated unregister now no-ops), so close
+                        # any open web-shell sessions for the agent here.
+                        try:
+                            from agent.shell_manager import get_shell_manager
+                            await get_shell_manager().close_sessions_for_agent(agent_id)
+                        except Exception as e:
+                            logger.warning(f"Error closing shell sessions for agent {agent_id[:8]}: {e}")
+
                         # Invalidate the agent's token in stats-service so the next
                         # reconnect attempt fails fast instead of waiting for the
                         # 5-minute token cache TTL. Non-fatal on failure.
@@ -963,6 +976,14 @@ class DockerMonitor:
                         if agent:
                             await agent_connection_manager.unregister_connection(agent.id)
                             logger.info(f"Disconnected agent {agent.id[:8]}... for host {host_name}")
+
+                            # Force-removed agents no longer tear down via their socket
+                            # handler, so close any open web-shell sessions here.
+                            try:
+                                from agent.shell_manager import get_shell_manager
+                                await get_shell_manager().close_sessions_for_agent(agent.id)
+                            except Exception as e:
+                                logger.warning(f"Error closing shell sessions for agent {agent.id[:8]}: {e}")
 
                 # Delete from database
                 self.db.delete_host(host_id)
@@ -1192,7 +1213,7 @@ class DockerMonitor:
                         if host.connection_type != "agent":
                             # Re-register with stats service (automatically closes old client)
                             is_local = host.url.startswith("unix://")
-                            await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus, is_local)
+                            await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus, host.total_memory, is_local)
                             logger.info(f"Re-registered {host.name} ({host.id[:8]}) with stats service")
 
                             # Remove and re-add event monitoring
@@ -1643,17 +1664,18 @@ class DockerMonitor:
                 continue
 
             try:
-                # Get TLS certificates and num_cpus from database
+                # Get TLS certificates, num_cpus, and total_memory from database
                 with self.db.get_session() as session:
                     db_host = session.query(DockerHostDB).filter_by(id=host_id).first()
                     tls_ca = db_host.tls_ca if db_host else None
                     tls_cert = db_host.tls_cert if db_host else None
                     tls_key = db_host.tls_key if db_host else None
                     num_cpus = db_host.num_cpus if db_host else None
+                    total_memory = db_host.total_memory if db_host else None
 
                 # Register with stats service
                 is_local = host.url.startswith("unix://")
-                await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key, num_cpus, is_local)
+                await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key, num_cpus, total_memory, is_local)
                 logger.info(f"Registered host {host.name} ({host_id[:8]}) with stats service")
 
                 # Register with event service
@@ -1887,12 +1909,17 @@ class DockerMonitor:
                                     "net_bytes_per_sec": net_bytes_per_sec
                                 }
 
-                                # Feed stats history buffer for sparklines
+                                # Feed stats history buffer for sparklines.
+                                # Memory bytes are buffered for the detail-view
+                                # live chart only; the broadcast get_sparklines
+                                # call below stays lean (no memory in payload).
                                 self.stats_history.add_stats(
                                     host_id=host_id,
                                     cpu=total_cpu,
                                     mem=mem_percent,
-                                    net=net_bytes_per_sec
+                                    net=net_bytes_per_sec,
+                                    memory_used_bytes=total_mem_bytes,
+                                    memory_limit_bytes=total_mem_limit
                                 )
 
                                 # Get sparklines for this host (last 30 points)
@@ -1916,11 +1943,15 @@ class DockerMonitor:
                             mem_val = container.memory_percent if container.memory_percent is not None else 0
                             net_val = container.net_bytes_per_sec if container.net_bytes_per_sec is not None else 0
 
+                            # Memory bytes feed the detail-view live chart only;
+                            # the broadcast get_sparklines call below stays lean.
                             self.container_stats_history.add_stats(
                                 container_key=container_key,
                                 cpu=cpu_val,
                                 mem=mem_val,
-                                net=net_val
+                                net=net_val,
+                                memory_used_bytes=container.memory_usage,
+                                memory_limit_bytes=container.memory_limit
                             )
 
                         # Always get sparklines (even for stopped containers) to maintain consistency
@@ -1940,6 +1971,17 @@ class DockerMonitor:
                         "type": "containers_update",
                         "data": broadcast_data
                     }, filter_containers=True)
+
+                # Trim live buffers by age each tick so per-entity RAM stays
+                # bounded to ~the configured live-chart window. Runs every tick,
+                # including with no viewers, so buffers shrink back after viewers
+                # leave. broadcast floor keeps a tiny window from starving cards.
+                max_age = live_buffer_max_age_seconds(
+                    getattr(self.settings, 'live_chart_window_seconds', 600),
+                    self.settings.polling_interval
+                )
+                self.stats_history.cleanup_old_data(max_age)
+                self.container_stats_history.cleanup_old_data(max_age)
 
             except Exception as e:
                 logger.error(f"Error in monitoring loop: {e}")

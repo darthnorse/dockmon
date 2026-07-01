@@ -8,32 +8,32 @@ import (
 
 // ContainerStats holds real-time stats for a single container
 type ContainerStats struct {
-	ContainerID     string    `json:"container_id"`
-	ContainerName   string    `json:"container_name"`
-	HostID          string    `json:"host_id"`
-	CPUPercent      float64   `json:"cpu_percent"`
-	MemoryUsage     uint64    `json:"memory_usage"`
-	MemoryLimit     uint64    `json:"memory_limit"`
-	MemoryPercent   float64   `json:"memory_percent"`
-	NetworkRx       uint64    `json:"network_rx"`
-	NetworkTx       uint64    `json:"network_tx"`
-	NetBytesPerSec  float64   `json:"net_bytes_per_sec"`  // Calculated network rate
-	DiskRead        uint64    `json:"disk_read"`
-	DiskWrite       uint64    `json:"disk_write"`
-	LastUpdate      time.Time `json:"last_update"`
+	ContainerID    string    `json:"container_id"`
+	ContainerName  string    `json:"container_name"`
+	HostID         string    `json:"host_id"`
+	CPUPercent     float64   `json:"cpu_percent"`
+	MemoryUsage    uint64    `json:"memory_usage"`
+	MemoryLimit    uint64    `json:"memory_limit"`
+	MemoryPercent  float64   `json:"memory_percent"`
+	NetworkRx      uint64    `json:"network_rx"`
+	NetworkTx      uint64    `json:"network_tx"`
+	NetBytesPerSec float64   `json:"net_bytes_per_sec"` // Calculated network rate
+	DiskRead       uint64    `json:"disk_read"`
+	DiskWrite      uint64    `json:"disk_write"`
+	LastUpdate     time.Time `json:"last_update"`
 }
 
 // HostStats holds aggregated stats for a host
 type HostStats struct {
-	HostID            string    `json:"host_id"`
-	CPUPercent        float64   `json:"cpu_percent"`
-	MemoryPercent     float64   `json:"memory_percent"`
-	MemoryUsedBytes   uint64    `json:"memory_used_bytes"`
-	MemoryLimitBytes  uint64    `json:"memory_limit_bytes"`
-	NetworkRxBytes    uint64    `json:"network_rx_bytes"`
-	NetworkTxBytes    uint64    `json:"network_tx_bytes"`
-	ContainerCount    int       `json:"container_count"`
-	LastUpdate        time.Time `json:"last_update"`
+	HostID           string    `json:"host_id"`
+	CPUPercent       float64   `json:"cpu_percent"`
+	MemoryPercent    float64   `json:"memory_percent"`
+	MemoryUsedBytes  uint64    `json:"memory_used_bytes"`
+	MemoryLimitBytes uint64    `json:"memory_limit_bytes"`
+	NetworkRxBytes   uint64    `json:"network_rx_bytes"`
+	NetworkTxBytes   uint64    `json:"network_tx_bytes"`
+	ContainerCount   int       `json:"container_count"`
+	LastUpdate       time.Time `json:"last_update"`
 }
 
 // networkBaseline tracks previous network values for rate calculation
@@ -45,11 +45,12 @@ type networkBaseline struct {
 // StatsCache is a thread-safe cache for container and host stats
 type StatsCache struct {
 	mu             sync.RWMutex
-	containerStats map[string]*ContainerStats     // key: composite key (hostID:containerID)
-	hostStats      map[string]*HostStats          // key: hostID
-	lastNetStats   map[string]*networkBaseline    // key: composite key (hostID:containerID)
-	hostNumCPUs    map[string]int                 // key: hostID -> number of CPUs on host
-	localHosts     map[string]bool                // key: hostID -> true if local host
+	containerStats map[string]*ContainerStats  // key: composite key (hostID:containerID)
+	hostStats      map[string]*HostStats       // key: hostID
+	lastNetStats   map[string]*networkBaseline // key: composite key (hostID:containerID)
+	hostNumCPUs    map[string]int              // key: hostID -> number of CPUs on host
+	hostMemory     map[string]uint64           // key: hostID -> total memory available to Docker
+	localHosts     map[string]bool             // key: hostID -> true if local host
 }
 
 // NewStatsCache creates a new stats cache
@@ -59,6 +60,7 @@ func NewStatsCache() *StatsCache {
 		hostStats:      make(map[string]*HostStats),
 		lastNetStats:   make(map[string]*networkBaseline),
 		hostNumCPUs:    make(map[string]int),
+		hostMemory:     make(map[string]uint64),
 		localHosts:     make(map[string]bool),
 	}
 }
@@ -78,6 +80,20 @@ func (c *StatsCache) GetHostNumCPUs(hostID string) int {
 		return numCPUs
 	}
 	return 1 // Default to 1 to avoid division by zero
+}
+
+// SetHostMemory stores the total memory available to Docker for a host.
+func (c *StatsCache) SetHostMemory(hostID string, totalMemory uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.hostMemory[hostID] = totalMemory
+}
+
+// GetHostMemory retrieves the total memory available to Docker for a host.
+func (c *StatsCache) GetHostMemory(hostID string) uint64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.hostMemory[hostID]
 }
 
 // SetHostLocal marks a host as local (for /host/proc reading)
@@ -240,6 +256,9 @@ func (c *StatsCache) RemoveHostStats(hostID string) {
 
 	// Remove host num_cpus
 	delete(c.hostNumCPUs, hostID)
+
+	// Remove host memory
+	delete(c.hostMemory, hostID)
 
 	// Remove local host flag
 	delete(c.localHosts, hostID)

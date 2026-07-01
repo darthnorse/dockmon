@@ -218,10 +218,12 @@ class DeploymentExecutor:
                 # 30-minute timeout for entire deployment
                 async with asyncio.timeout(1800):
                     # Read compose content from filesystem (v2.2.7+)
-                    compose_yaml, env_content = await stack_storage.read_stack(deployment.stack_name)
+                    compose_yaml, env_files = await stack_storage.read_stack(
+                        deployment.stack_name, include_discovered=False
+                    )
                     definition = {
                         'compose_yaml': compose_yaml,
-                        'env_content': env_content,
+                        'env_files': env_files,
                     }
 
                     # Check if this is an agent-based host
@@ -234,7 +236,7 @@ class DeploymentExecutor:
                             host_id=deployment.host_id,
                             compose_yaml=compose_yaml,
                             stack_name=deployment.stack_name,
-                            env_content=env_content,
+                            env_files=env_files,
                             force_recreate=force_recreate,
                             pull_images=pull_images
                         )
@@ -350,7 +352,7 @@ class DeploymentExecutor:
         host_id: str,
         compose_yaml: str,
         stack_name: str,
-        env_content: Optional[str] = None,
+        env_files: Optional[Dict[str, str]] = None,
         force_recreate: bool = False,
         pull_images: bool = False
     ) -> bool:
@@ -365,7 +367,7 @@ class DeploymentExecutor:
             host_id: Docker host UUID
             compose_yaml: Compose content from filesystem
             stack_name: Stack name (used as compose project name)
-            env_content: Optional .env file content
+            env_files: Optional map of env filename to content
             force_recreate: Force recreate containers even if unchanged
             pull_images: Pull latest images before starting
 
@@ -401,7 +403,7 @@ class DeploymentExecutor:
             deployment_id=deployment_id,
             compose_content=compose_yaml,
             project_name=stack_name,
-            env_file_content=env_content,
+            env_files=env_files or {},
             force_recreate=force_recreate,
             pull_images=pull_images
         )

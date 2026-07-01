@@ -63,6 +63,8 @@ export interface GlobalSettings {
   stats_persistence_enabled?: boolean
   stats_retention_days?: number
   stats_points_per_view?: number
+  // Live chart window (v2.4.x+): detail-view live chart reach, in seconds.
+  live_chart_window_seconds?: number
 }
 
 export interface TemplateVariable {

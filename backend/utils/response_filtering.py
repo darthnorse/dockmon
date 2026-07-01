@@ -60,25 +60,6 @@ def filter_container_inspect_env(
     return result
 
 
-def filter_stack_env_content(
-    env_content: Optional[str],
-    can_view_env: bool
-) -> Optional[str]:
-    """
-    Filter stack .env content for unauthorized users.
-
-    Args:
-        env_content: The .env file content
-        can_view_env: True if user has stacks.view_env capability
-
-    Returns:
-        env_content if authorized, None otherwise
-    """
-    if can_view_env:
-        return env_content
-    return None
-
-
 def filter_ws_container_message(
     message: Dict,
     can_view_env: bool
@@ -110,6 +91,19 @@ def filter_ws_container_message(
                 c_dict.pop("env", None)
 
     return filtered_message
+
+
+def filter_stack_env_files(
+    env_files: Optional[Dict[str, str]],
+    can_view_env: bool,
+) -> Dict[str, str]:
+    """Return the env-file map only if the caller may view env content.
+
+    Without stacks.view_env, returns an empty map (the compose is still served).
+    """
+    if not env_files or not can_view_env:
+        return {}
+    return env_files
 
 
 def container_to_dict(container: Any) -> Dict:

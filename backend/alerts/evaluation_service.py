@@ -19,10 +19,16 @@ from sqlalchemy.orm import joinedload
 
 from database import DatabaseManager, AlertRuleV2, AlertV2, DockerHostDB
 from alerts.engine import AlertEngine, EvaluationContext
+from agent.connection_manager import agent_connection_manager
 from event_logger import EventLogger, EventContext, EventCategory, EventType, EventSeverity
 from utils.keys import make_composite_key, parse_composite_key
 
 logger = logging.getLogger(__name__)
+
+
+# Lifecycle states treated as "recovered" when re-verifying a stopped/unhealthy alert.
+# 'restarting' is excluded so crash-looping containers keep alerting.
+RECOVERED_STATES = ("running",)
 
 
 def calculate_next_retry(attempt_count: int) -> datetime:
@@ -115,9 +121,6 @@ class AlertEvaluationService:
         self._blackout_task: Optional[asyncio.Task] = None
         self._pending_event_alerts_task: Optional[asyncio.Task] = None
         self._resolve_loop_task: Optional[asyncio.Task] = None
-
-        # Track blackout state for transition detection
-        self._last_blackout_state = False
 
     async def start(self):
         """Start the alert evaluation service"""
@@ -397,63 +400,77 @@ class AlertEvaluationService:
             if not self.notification_service:
                 return
 
-            # Get current blackout state
-            is_blackout, window_name = self.notification_service.blackout_manager.is_in_blackout_window()
+            # Deliver/clear suppressed alerts whenever NOT in a blackout, so a window
+            # shorter than this loop's tick can't strand them on a missed edge.
+            is_blackout, _ = self.notification_service.blackout_manager.is_in_blackout_window()
+            if is_blackout:
+                return
 
-            # Detect transition from blackout to non-blackout
-            if self._last_blackout_state and not is_blackout:
-                logger.info("Blackout window ended - processing suppressed alerts")
+            with self.db.get_session() as session:
+                suppressed_alerts = session.query(AlertV2).options(
+                    joinedload(AlertV2.rule)
+                ).filter(
+                    AlertV2.suppressed_by_blackout == True
+                ).all()
 
-                # Find ALL suppressed alerts (both open and resolved)
-                # We need to clear the flag on all of them to prevent issues when alerts reopen later
-                with self.db.get_session() as session:
-                    suppressed_alerts = session.query(AlertV2).options(
-                        joinedload(AlertV2.rule)
-                    ).filter(
-                        AlertV2.suppressed_by_blackout == True
-                    ).all()
+            if not suppressed_alerts:
+                return
 
-                    if suppressed_alerts:
-                        logger.info(f"Found {len(suppressed_alerts)} suppressed alerts to process")
+            logger.info(f"Processing {len(suppressed_alerts)} suppressed alert(s) after blackout")
 
-                # Process each suppressed alert outside the session
-                for alert in suppressed_alerts:
-                    try:
-                        # Only process and potentially send notifications for OPEN alerts
-                        if alert.state == "open":
-                            # Re-verify the alert condition
-                            if await self._verify_alert_condition(alert):
-                                # Condition still true - send notification
-                                logger.info(f"Alert {alert.id} ({alert.title}) still active - sending notification")
-                                await self._send_notification(alert)
-                            else:
-                                # Condition cleared during blackout - auto-resolve silently
-                                logger.info(f"Alert {alert.id} ({alert.title}) cleared during blackout - auto-resolving")
-                                with self.db.get_session() as session:
-                                    alert_to_resolve = session.query(AlertV2).filter(AlertV2.id == alert.id).first()
-                                    if alert_to_resolve and alert_to_resolve.state == "open":
-                                        self.engine._resolve_alert(
-                                            alert_to_resolve,
-                                            "Auto-resolved: condition cleared during blackout window"
-                                        )
-                                        session.commit()
+            for alert in suppressed_alerts:
+                try:
+                    if alert.state == "open":
+                        if await self._verify_alert_condition(alert):
+                            logger.info(f"Alert {alert.id} ({alert.title}) still active - sending notification")
+                            await self._send_notification(alert)
+                        else:
+                            logger.info(f"Alert {alert.id} ({alert.title}) cleared during blackout - auto-resolving")
+                            with self.db.get_session() as session:
+                                alert_to_resolve = session.query(AlertV2).filter(AlertV2.id == alert.id).first()
+                                if alert_to_resolve and alert_to_resolve.state == "open":
+                                    self.engine._resolve_alert(
+                                        alert_to_resolve,
+                                        "Auto-resolved: condition cleared during blackout window"
+                                    )
+                                    session.commit()
 
-                        # Clear suppression flag on ALL suppressed alerts (open, resolved, etc.)
-                        # This ensures the flag doesn't persist if the alert is reopened later
-                        with self.db.get_session() as session:
-                            alert_to_clear = session.query(AlertV2).filter(AlertV2.id == alert.id).first()
-                            if alert_to_clear:
-                                alert_to_clear.suppressed_by_blackout = False
-                                session.commit()
-                                logger.debug(f"Cleared suppression flag on alert {alert.id} (state={alert.state})")
-                    except Exception as e:
-                        logger.error(f"Error processing suppressed alert {alert.id}: {e}", exc_info=True)
-
-            # Update state for next check
-            self._last_blackout_state = is_blackout
+                    # Clear the flag on ALL suppressed alerts so it doesn't persist if reopened.
+                    with self.db.get_session() as session:
+                        alert_to_clear = session.query(AlertV2).filter(AlertV2.id == alert.id).first()
+                        if alert_to_clear:
+                            alert_to_clear.suppressed_by_blackout = False
+                            session.commit()
+                except Exception as e:
+                    logger.error(f"Error processing suppressed alert {alert.id}: {e}", exc_info=True)
 
         except Exception as e:
             logger.error(f"Error checking blackout transitions: {e}", exc_info=True)
+
+    def _find_original_container(self, alert: AlertV2, containers):
+        """Find the alert's original container by short ID, scoped to its host
+        (host_id match avoids cross-host confusion in multi-host setups)."""
+        _, container_short_id = parse_composite_key(alert.scope_id)
+        return next(
+            (c for c in containers
+             if c.short_id == container_short_id and c.host_id == alert.host_id),
+            None,
+        )
+
+    def _find_replacement_container(self, alert: AlertV2, containers):
+        """Find a same-name, same-host container indicating in-place recreation.
+
+        A recreated container keeps its name but gets a new ID, so the original
+        short-ID lookup misses it. Names are unique per daemon, so (name, host_id)
+        matches at most one container. Returns None when nothing matches.
+        """
+        if not alert.container_name:
+            return None
+        return next(
+            (c for c in containers
+             if c.name == alert.container_name and c.host_id == alert.host_id),
+            None,
+        )
 
     async def _verify_alert_condition(self, alert: AlertV2) -> bool:
         """
@@ -473,25 +490,35 @@ class AlertEvaluationService:
                     logger.warning(f"Cannot verify container state - monitor not available")
                     return True  # Default to sending notification if we can't verify
 
-                # Get current container state from monitor
-                # CRITICAL: Match by both short_id AND host_id to prevent cross-host confusion in multi-host setups
-                # Parse composite scope_id to extract short container ID
-                _, container_short_id = parse_composite_key(alert.scope_id)
                 containers = await self.monitor.get_containers()
-                container = next((c for c in containers
-                                if c.short_id == container_short_id and c.host_id == alert.host_id), None)
+                container = self._find_original_container(alert, containers)
 
                 if not container:
-                    # Container no longer exists - still consider this a valid alert
-                    logger.info(f"Alert {alert.id}: Container no longer found - keeping alert")
+                    # Original ID gone: tell an in-place recreation from a real deletion.
+                    replacement = self._find_replacement_container(alert, containers)
+                    if replacement:
+                        if replacement.state.lower() in RECOVERED_STATES:
+                            logger.info(
+                                f"Alert {alert.id}: Container '{alert.container_name}' recreated "
+                                f"and {replacement.state} - condition cleared"
+                            )
+                            return False
+                        logger.info(
+                            f"Alert {alert.id}: Container '{alert.container_name}' recreated "
+                            f"but {replacement.state} - condition valid"
+                        )
+                        return True
+                    logger.info(
+                        f"Alert {alert.id}: Container no longer found, no replacement - keeping alert"
+                    )
                     return True
 
-                # Check if container is running
-                if container.state.lower() in ["running", "restarting"]:
+                # Container is back up - condition cleared
+                if container.state.lower() in RECOVERED_STATES:
                     logger.info(f"Alert {alert.id}: Container now {container.state} - condition cleared")
                     return False
 
-                # Container still stopped/exited - condition still true
+                # Container still stopped/exited/restarting - condition still true
                 logger.info(f"Alert {alert.id}: Container still {container.state} - condition valid")
                 return True
 
@@ -500,21 +527,25 @@ class AlertEvaluationService:
                 if not self.monitor:
                     return True
 
-                # CRITICAL: Match by both short_id AND host_id to prevent cross-host confusion
-                # Parse composite scope_id to extract short container ID
-                _, container_short_id = parse_composite_key(alert.scope_id)
                 containers = await self.monitor.get_containers()
-                container = next((c for c in containers
-                                if c.short_id == container_short_id and c.host_id == alert.host_id), None)
+                container = self._find_original_container(alert, containers)
 
                 if not container:
+                    # Recreated in place: clear the stale old-ID alert only if the
+                    # replacement is back up. A dead replacement keeps it (no health
+                    # event would re-fire under the new ID).
+                    replacement = self._find_replacement_container(alert, containers)
+                    if replacement and replacement.state.lower() in RECOVERED_STATES:
+                        logger.info(
+                            f"Alert {alert.id}: Container '{alert.container_name}' recreated "
+                            f"and {replacement.state} - resolving stale unhealthy alert"
+                        )
+                        return False
                     return True
 
-                if container.state.lower() == "unhealthy":
-                    return True
-                else:
-                    logger.info(f"Alert {alert.id}: Container now {container.state} - no longer unhealthy")
-                    return False
+                # state carries no health value; recovery is event-driven (a 'healthy'
+                # event auto-resolves), so keep the alert here.
+                return True
 
             # For metric-based alerts (CPU, memory), re-check current metric value
             elif alert.kind in ["cpu_high", "memory_high"] and alert.scope_type == "container":
@@ -616,6 +647,15 @@ class AlertEvaluationService:
             if not rule:
                 logger.warning(f"Cannot send notification - rule not found for alert {alert.id}")
                 return
+
+            # Suppress during blackout before any event-logging or retry accounting.
+            blackout_manager = getattr(self.notification_service, "blackout_manager", None)
+            if blackout_manager:
+                is_blackout, window_name = blackout_manager.is_in_blackout_window()
+                if is_blackout:
+                    logger.info(f"Suppressed alert '{alert.title}' during blackout window '{window_name}' - deferring to blackout end")
+                    blackout_manager.suppress_alert(alert.id)
+                    return
 
             # Log event to event log system
             if self.event_logger:
@@ -1496,6 +1536,18 @@ class AlertEvaluationService:
             # Host disconnected → cancel any pending clears for host_disconnected
             # (Issue #96 - alert_clear_delay_seconds: if host disconnects again while clear is pending, cancel it)
             elif event_type == "disconnection":
+                # Reconnect-race guard: if the agent has already reconnected by the
+                # time we process this disconnect, the host is actually up. The event
+                # bus interleaves the old socket's disconnect with the new socket's
+                # connect, so a superseded teardown's disconnect can be evaluated
+                # after the reconnect already cleared host_down. Dropping it here
+                # (checked at processing time, after any reconnect) prevents a stuck
+                # false host_down. Only agent disconnects carry agent_id.
+                agent_id = event_data.get("agent_id")
+                if agent_id and agent_connection_manager.is_connected(agent_id):
+                    logger.info(f"Ignoring stale host disconnect for {host_name}: agent reconnected")
+                    return
+
                 cancelled = self.engine.cancel_pending_clears_for_scope(
                     scope_type="host",
                     scope_id=host_id,

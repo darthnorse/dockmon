@@ -222,8 +222,12 @@ func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerSt
 		cpuPercent = totalCPU // Fallback if numCPUs not set
 	}
 
-	if totalMemLimit > 0 {
-		memPercent = (float64(totalMemUsage) / float64(totalMemLimit)) * 100.0
+	hostMemLimit := a.cache.GetHostMemory(hostID)
+	if hostMemLimit == 0 {
+		hostMemLimit = totalMemLimit
+	}
+	if hostMemLimit > 0 {
+		memPercent = (float64(totalMemUsage) / float64(hostMemLimit)) * 100.0
 	}
 
 	// Round to 1 decimal place - using shared package
@@ -235,7 +239,7 @@ func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerSt
 		CPUPercent:       cpuPercent,
 		MemoryPercent:    memPercent,
 		MemoryUsedBytes:  totalMemUsage,
-		MemoryLimitBytes: totalMemLimit,
+		MemoryLimitBytes: hostMemLimit,
 		NetworkRxBytes:   totalNetRx,
 		NetworkTxBytes:   totalNetTx,
 		ContainerCount:   validContainers,

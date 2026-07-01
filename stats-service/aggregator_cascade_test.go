@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	dockerpkg "github.com/darthnorse/dockmon-shared/docker"
 	"github.com/dockmon/stats-service/persistence"
 )
 
@@ -49,6 +50,39 @@ func TestAggregator_FeedsCascade(t *testing.T) {
 	// container samples by checking state size via the test-only helper.
 	if got := cascade.StateSize(); got != 2 {
 		t.Errorf("cascade state size=%d, want 2 (1 container + 1 host)", got)
+	}
+}
+
+func TestAggregator_HostMemoryUsesDockerHostLimit(t *testing.T) {
+	cache := NewStatsCache()
+	const hostLimit = uint64(6 * 1024 * 1024 * 1024)
+	const containerUsage = uint64(1024 * 1024 * 1024)
+	const containerLimit = uint64(16 * 1024 * 1024 * 1024)
+	cache.SetHostMemory("host-1", hostLimit)
+	cache.UpdateContainerStats(&ContainerStats{
+		ContainerID:   "aaaaaaaaaaaa",
+		HostID:        "host-1",
+		MemoryUsage:   containerUsage,
+		MemoryLimit:   containerLimit,
+		MemoryPercent: 6.25,
+	})
+
+	agg := &Aggregator{
+		cache:             cache,
+		streamManager:     stubStreamManager{},
+		aggregateInterval: time.Second,
+		hostProcReader:    NewHostProcReader(),
+	}
+
+	got := agg.aggregateHostStats("host-1", []*ContainerStats{
+		cache.containerStats["host-1:aaaaaaaaaaaa"],
+	})
+	if got.MemoryLimitBytes != hostLimit {
+		t.Fatalf("MemoryLimitBytes=%d, want Docker host limit %d", got.MemoryLimitBytes, hostLimit)
+	}
+	wantPercent := dockerpkg.RoundToDecimal(float64(containerUsage)/float64(hostLimit)*100, 1)
+	if got.MemoryPercent != wantPercent {
+		t.Fatalf("MemoryPercent=%v, want %v", got.MemoryPercent, wantPercent)
 	}
 }
 

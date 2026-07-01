@@ -22,7 +22,7 @@ CACHE_TTL_LATEST = int(os.getenv('DOCKMON_CACHE_TTL_LATEST', 30 * 60))  # 30 min
 CACHE_TTL_PINNED = int(os.getenv('DOCKMON_CACHE_TTL_PINNED', 24 * 3600))  # 24 hours
 CACHE_TTL_FLOATING = int(os.getenv('DOCKMON_CACHE_TTL_FLOATING', 6 * 3600))  # 6 hours
 CACHE_TTL_DEFAULT = int(os.getenv('DOCKMON_CACHE_TTL_DEFAULT', 6 * 3600))  # 6 hours
-from updates.registry_adapter import get_registry_adapter
+from updates.registry_adapter import get_registry_adapter, TransientRegistryError
 from updates.changelog_resolver import resolve_changelog_url
 from event_bus import Event, EventType, get_event_bus
 from updates.types import MANIFEST_LIST_TYPES, match_platform_manifest
@@ -33,6 +33,10 @@ from utils.image_ref import extract_image_repository
 from utils.async_docker import async_docker_call
 
 logger = logging.getLogger(__name__)
+
+# Marker for "no resolvable digest + no local RepoDigests": most likely built locally.
+# (Registries 401/403 on missing images, so a private image needing auth looks the same.)
+LOCAL_IMAGE_STATUS = "local_image"
 
 
 class UpdateChecker:
@@ -142,6 +146,15 @@ class UpdateChecker:
                 # Check for update
                 update_info = await self._check_container_update(container)
 
+                # Likely-local image (no resolvable digest): persist the marker so
+                # the badge shows after the nightly sweep AND any stale pending-update
+                # state is cleared (prevents a phantom update / erroneous auto-update).
+                if update_info and update_info.get("status") == LOCAL_IMAGE_STATUS:
+                    logger.debug(f"Marking locally-built container (no resolvable registry digest): {container['name']}")
+                    self._store_local_image_info(container)
+                    stats["checked"] += 1
+                    continue
+
                 if update_info:
                     # Capture old digest BEFORE updating database
                     previous_digest = self._get_previous_digest(container)
@@ -187,6 +200,13 @@ class UpdateChecker:
 
         # Check for update
         update_info = await self._check_container_update(container, bypass_cache=bypass_cache)
+
+        # Likely-local image (no resolvable digest): persist a marker so the UI
+        # reflects it after refresh, but no normal update record or event.
+        if update_info and update_info.get("status") == LOCAL_IMAGE_STATUS:
+            logger.info(f"No resolvable registry digest for {container['name']} (likely built locally)")
+            self._store_local_image_info(container)
+            return update_info
 
         if update_info:
             # Capture old digest BEFORE updating database
@@ -255,10 +275,18 @@ class UpdateChecker:
                     if current_result:
                         current_digest = current_result["digest"]
                         logger.info(f"[{container['name']}] Got current digest from registry: {current_digest[:16]}...")
+                except TransientRegistryError:
+                    # Retryable (timeout/429/5xx) - don't fall through to local classification
+                    logger.warning(f"[{container['name']}] Transient registry failure - will retry next check")
+                    return None
                 except Exception as e:
                     logger.warning(f"[{container['name']}] Registry fallback failed: {e}")
 
         if not current_digest:
+            # Unresolvable + no explicit registry host => most likely built locally.
+            if self._looks_unresolvable_local(image):
+                return self._local_image_marker(container, image)
+
             logger.warning(f"Could not get current digest for {container['name']}")
             return None
 
@@ -297,9 +325,17 @@ class UpdateChecker:
                     pass
         else:
             # Cache miss - call registry
-            latest_result = await self.registry.resolve_tag(floating_tag, auth=auth)
+            try:
+                latest_result = await self.registry.resolve_tag(floating_tag, auth=auth)
+            except TransientRegistryError:
+                # Retryable failure - do NOT mark local (would clobber a real pending update)
+                logger.warning(f"[{container['name']}] Transient registry failure resolving {floating_tag} - will retry next check")
+                return None
             if not latest_result:
                 logger.warning(f"Could not resolve floating tag: {floating_tag}")
+                # Same classification as the no-digest path.
+                if self._looks_unresolvable_local(image):
+                    return self._local_image_marker(container, image)
                 return None
 
             latest_digest = latest_result["digest"]
@@ -417,6 +453,27 @@ class UpdateChecker:
             "changelog_source": changelog_source,
             "changelog_checked_at": changelog_checked_at,
         }
+
+    def _local_image_marker(self, container: Dict, image: str) -> Dict:
+        """Marker for an unresolvable image treated as locally built (logged once)."""
+        logger.info(f"[{container['name']}] No resolvable registry digest - treating as locally built (may instead be a private registry image)")
+        return {"status": LOCAL_IMAGE_STATUS, "current_image": image}
+
+    def _looks_unresolvable_local(self, image_ref: str) -> bool:
+        """True when an unresolvable image is most likely a local build.
+
+        No digest pin and no explicit registry host (ghcr.io/..., localhost/..., reg:5000/...)
+        means a bare/compose-style name that, when the registry can't resolve it, is almost
+        certainly built locally. Explicit-host or digest-pinned refs are treated as real
+        registry images, so a resolution failure there stays a registry/auth error.
+        """
+        if not image_ref or "@" in image_ref:
+            return False
+        first_segment = image_ref.split("/", 1)[0]
+        has_explicit_host = "/" in image_ref and (
+            "." in first_segment or ":" in first_segment or first_segment == "localhost"
+        )
+        return not has_explicit_host
 
     def _extract_digest_from_repo_digests(self, repo_digests: List[str]) -> Optional[str]:
         """Extract sha256 digest from RepoDigests list.
@@ -771,6 +828,7 @@ class UpdateChecker:
                 record.latest_image = update_info["latest_image"]
                 record.latest_digest = update_info["latest_digest"]
                 record.update_available = update_info["update_available"]
+                record.check_status = None  # clear any stale 'local_image' flag
                 record.registry_url = update_info["registry_url"]
                 record.platform = update_info["platform"]
                 record.last_checked_at = datetime.now(timezone.utc)
@@ -827,6 +885,7 @@ class UpdateChecker:
                     record.latest_image = update_info["latest_image"]
                     record.latest_digest = update_info["latest_digest"]
                     record.update_available = update_info["update_available"]
+                    record.check_status = None  # clear any stale 'local_image' flag
                     record.registry_url = update_info["registry_url"]
                     record.platform = update_info["platform"]
                     record.last_checked_at = datetime.now(timezone.utc)
@@ -843,6 +902,67 @@ class UpdateChecker:
                 else:
                     # Record vanished between operations - extremely unlikely
                     logger.warning(f"Record vanished during race condition handling for {composite_key}")
+                    raise
+
+    def _store_local_image_info(self, container: Dict):
+        """Persist a lightweight 'built locally' marker (no registry digest).
+
+        Stamps last_checked_at + check_status so the UI shows a stable
+        "nothing to check" state after refresh. Preserves user settings on an
+        existing row; uses a current_digest="" placeholder for new rows.
+        """
+        container_id = normalize_container_id(container['id'])
+        composite_key = make_composite_key(container['host_id'], container_id)
+        now = datetime.now(timezone.utc)
+
+        def apply_marker(record):
+            record.check_status = LOCAL_IMAGE_STATUS
+            record.update_available = False
+            # Drop stale registry data from any prior resolvable check so the row
+            # carries no phantom update target alongside the local marker. current_digest
+            # is cleared too, matching new local rows and the check-update API response.
+            record.latest_image = None
+            record.latest_digest = None
+            record.latest_version = None
+            record.current_digest = ""
+            record.current_image = container.get("image") or record.current_image
+            record.last_checked_at = now
+            if container.get("name"):
+                record.container_name = container["name"]
+
+        with self.db.get_session() as session:
+            record = session.query(ContainerUpdate).filter_by(
+                container_id=composite_key
+            ).first()
+
+            if record:
+                apply_marker(record)
+            else:
+                record = ContainerUpdate(
+                    container_id=composite_key,
+                    host_id=container["host_id"],
+                    container_name=container.get("name"),
+                    current_image=container.get("image") or "",
+                    current_digest="",  # local image has no registry digest
+                    update_available=False,
+                    check_status=LOCAL_IMAGE_STATUS,
+                    last_checked_at=now,
+                )
+                session.add(record)
+
+            try:
+                session.commit()
+            except IntegrityError:
+                # Rare concurrent insert: re-query and stamp the winner with the full marker
+                session.rollback()
+                record = session.query(ContainerUpdate).filter_by(
+                    container_id=composite_key
+                ).first()
+                if record:
+                    apply_marker(record)
+                    session.commit()
+                else:
+                    logger.warning(f"Record vanished during race handling for {composite_key}")
                     raise
 
     async def _create_update_event(

@@ -21,6 +21,7 @@ import {
   Rocket,
   RefreshCw,
   Square,
+  Plus,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -59,6 +60,7 @@ import {
   useRenameStack,
   useDeleteStack,
   useCopyStack,
+  useDeleteEnvFile,
 } from '../hooks/useStacks'
 import { useStackAction } from '../hooks/useDeployments'
 import type { StackAction } from '../hooks/useDeployments'
@@ -68,13 +70,20 @@ import { DeploymentProgress } from './DeploymentProgress'
 import { PortConflictBanner } from './PortConflictBanner'
 import { validateStackName, MAX_STACK_NAME_LENGTH } from '../types'
 import type { DeployedHost, PortConflict } from '../types'
-import { handleApiError, getErrorMessage } from '../utils'
+import { handleApiError, getErrorMessage, envFilesEqual, validateEnvFileName, normalizeEnvFileName } from '../utils'
 import { useAuth } from '@/features/auth/AuthContext'
 
 // Base path for stack storage (matches backend STACKS_DIR)
 const STACKS_BASE_PATH = '/app/data/stacks'
 
-type DialogType = 'delete' | 'copy' | 'save-changes' | 'remove-confirm' | null
+/** Return a copy of an env-file map without `key` (immutable key removal). */
+function dropEnvFile(map: Record<string, string>, key: string): Record<string, string> {
+  const next = { ...map }
+  delete next[key]
+  return next
+}
+
+type DialogType = 'delete' | 'copy' | 'save-changes' | 'remove-confirm' | 'add-env-file' | 'remove-env-file' | null
 
 interface PendingActionState {
   action: StackAction
@@ -106,6 +115,7 @@ export function StackEditor({
   const deleteStack = useDeleteStack()
   const copyStack = useCopyStack()
   const stackAction = useStackAction()
+  const deleteEnvFile = useDeleteEnvFile()
 
   // Fetch selected stack content
   const { data: selectedStack, isLoading: stackLoading } = useStack(selectedStackName)
@@ -114,12 +124,12 @@ export function StackEditor({
   const [stackName, setStackName] = useState('')
   const [originalName, setOriginalName] = useState('')
   const [composeYaml, setComposeYaml] = useState('')
-  const [envContent, setEnvContent] = useState('')
+  const [envFiles, setEnvFiles] = useState<Record<string, string>>({})
   const [isEditingName, setIsEditingName] = useState(false)
 
   // Track original content for change detection
   const [originalCompose, setOriginalCompose] = useState('')
-  const [originalEnv, setOriginalEnv] = useState('')
+  const [originalEnvFiles, setOriginalEnvFiles] = useState<Record<string, string>>({})
 
   // Deploy state
   const [hostId, setHostId] = useState('')
@@ -133,17 +143,38 @@ export function StackEditor({
   // Dialog state
   const [activeDialog, setActiveDialog] = useState<DialogType>(null)
   const [copyDestName, setCopyDestName] = useState('')
+  const [newEnvFileName, setNewEnvFileName] = useState('')
+  const [envFileNameError, setEnvFileNameError] = useState<string | null>(null)
   const [pendingAction, setPendingAction] = useState<PendingActionState | null>(null)
+  const [envFileToRemove, setEnvFileToRemove] = useState<string | null>(null)
 
   // Tab state
-  const [activeTab, setActiveTab] = useState<'compose' | 'env'>('compose')
+  const [activeTab, setActiveTab] = useState<string>('compose')
 
-  // Reset to compose if env tab becomes unavailable
+  // Env-file tabs shown when the user can view env: always offer a default .env
+  // plus any env files the stack already has. A .env that isn't in envFiles stays
+  // virtual (empty) until edited, so it never trips change detection nor writes
+  // an empty file on save.
+  const envTabNames = useMemo(
+    () => (canViewEnv ? Array.from(new Set(['.env', ...Object.keys(envFiles)])) : []),
+    [canViewEnv, envFiles]
+  )
+
+  // Filenames the compose references (from the backend); a tab not in this set
+  // is unreferenced/discovered and gets the "unref" badge. Empty when an older
+  // backend omits the field — which then badges every non-.env tab on an
+  // existing stack (acceptable degradation).
+  const referencedEnvFiles = useMemo(
+    () => new Set(selectedStack?.referenced_env_files ?? []),
+    [selectedStack]
+  )
+
+  // Reset to compose if the active env tab is no longer available
   useEffect(() => {
-    if (activeTab === 'env' && !canViewEnv) {
+    if (activeTab !== 'compose' && !envTabNames.includes(activeTab)) {
       setActiveTab('compose')
     }
-  }, [activeTab, canViewEnv])
+  }, [activeTab, envTabNames])
 
   // Errors
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -155,16 +186,20 @@ export function StackEditor({
   const isCreateMode = selectedStackName === '__new__'
 
   // Derived state
-  const hasContentChanges = composeYaml !== originalCompose || envContent !== originalEnv
+  const hasContentChanges = composeYaml !== originalCompose || !envFilesEqual(envFiles, originalEnvFiles)
   const hasNameChange = stackName !== originalName && !isCreateMode
   const hasChanges = hasContentChanges || hasNameChange
+  const isEnvFileToRemovePersisted =
+    envFileToRemove != null &&
+    Object.prototype.hasOwnProperty.call(originalEnvFiles, envFileToRemove)
   const isSubmitting =
     createStack.isPending ||
     updateStack.isPending ||
     renameStack.isPending ||
     deleteStack.isPending ||
     copyStack.isPending ||
-    stackAction.isPending
+    stackAction.isPending ||
+    deleteEnvFile.isPending
 
   // Sort hosts alphabetically
   const sortedHosts = useMemo(
@@ -190,19 +225,27 @@ export function StackEditor({
 
   const [showPortConfirm, setShowPortConfirm] = useState(false)
 
+  // Tracks which stack identity the editor state was last initialized from, so a
+  // background refetch of the SAME stack does not clobber unsaved edits.
+  const loadedStackNameRef = useRef<string | null>(null)
+
   // Reset form state
   const resetForm = useCallback(() => {
+    loadedStackNameRef.current = null
     setStackName('')
     setOriginalName('')
     setComposeYaml('')
-    setEnvContent('')
+    setEnvFiles({})
     setOriginalCompose('')
-    setOriginalEnv('')
+    setOriginalEnvFiles({})
     setHostId('')
     setErrors({})
     setIsEditingName(false)
     setActiveDialog(null)
     setCopyDestName('')
+    setNewEnvFileName('')
+    setEnvFileNameError(null)
+    setEnvFileToRemove(null)
     setActiveTab('compose')
   }, [])
 
@@ -213,19 +256,23 @@ export function StackEditor({
     }
   }, [selectedStackName, resetForm])
 
-  // Load stack content when selected
+  // Load stack content when a different stack is selected (first load / switch).
+  // Guarded by identity so a same-stack refetch (e.g. after an env-file delete
+  // invalidates the query) does not overwrite the user's unsaved edits.
   useEffect(() => {
-    if (selectedStack) {
+    if (selectedStack && loadedStackNameRef.current !== selectedStack.name) {
+      loadedStackNameRef.current = selectedStack.name
       const compose = selectedStack.compose_yaml || ''
-      const env = selectedStack.env_content || ''
+      const files = selectedStack.env_files || {}
       setStackName(selectedStack.name)
       setOriginalName(selectedStack.name)
       setComposeYaml(compose)
-      setEnvContent(env)
+      setEnvFiles(files)
       setOriginalCompose(compose)
-      setOriginalEnv(env)
+      setOriginalEnvFiles(files)
       setErrors({})
       setIsEditingName(false)
+      setActiveTab('compose')
     }
   }, [selectedStack])
 
@@ -278,7 +325,7 @@ export function StackEditor({
         await createStack.mutateAsync({
           name: stackName.trim(),
           compose_yaml: composeYaml,
-          env_content: envContent.trim() || null,
+          env_files: envFiles,
         })
         toast.success(`Stack "${stackName}" created`)
         onStackChange(stackName.trim())
@@ -294,7 +341,7 @@ export function StackEditor({
         await updateStack.mutateAsync({
           name: targetName,
           compose_yaml: composeYaml,
-          env_content: envContent.trim() || null,
+          env_files: envFiles,
         })
 
         toast.success('Stack saved')
@@ -305,7 +352,7 @@ export function StackEditor({
 
       setOriginalName(stackName.trim())
       setOriginalCompose(composeYaml)
-      setOriginalEnv(envContent)
+      setOriginalEnvFiles(envFiles)
       setIsEditingName(false)
       return true
     } catch (error: unknown) {
@@ -467,6 +514,53 @@ export function StackEditor({
     setActiveDialog('copy')
   }
 
+  // Open the add-env-file dialog
+  const openAddEnvFileDialog = () => {
+    setNewEnvFileName('')
+    setEnvFileNameError(null)
+    setActiveDialog('add-env-file')
+  }
+
+  // Add a new (empty) env file tab after validating its name
+  const handleAddEnvFile = () => {
+    const raw = newEnvFileName.trim()
+    const validationError = validateEnvFileName(raw)
+    if (validationError) {
+      setEnvFileNameError(validationError)
+      return
+    }
+    const fname = normalizeEnvFileName(raw)
+    if (envTabNames.includes(fname)) {
+      setEnvFileNameError('A tab for this file already exists')
+      return
+    }
+    setEnvFiles((prev) => ({ ...prev, [fname]: '' }))
+    setActiveTab(fname)
+    setActiveDialog(null)
+  }
+
+  // Remove an env file tab (persisted or unsaved)
+  const handleRemoveEnvFile = async () => {
+    const fname = envFileToRemove
+    if (!fname) return
+    if (isEnvFileToRemovePersisted) {
+      if (!selectedStackName || selectedStackName === '__new__') return
+      try {
+        await deleteEnvFile.mutateAsync({ name: selectedStackName, filename: fname })
+      } catch (error: unknown) {
+        handleApiError(error, 'remove env file')
+        setActiveDialog(null)
+        setEnvFileToRemove(null)
+        return
+      }
+      setOriginalEnvFiles((prev) => dropEnvFile(prev, fname))
+    }
+    setEnvFiles((prev) => dropEnvFile(prev, fname))
+    if (activeTab === fname) setActiveTab('compose')
+    setActiveDialog(null)
+    setEnvFileToRemove(null)
+  }
+
   // Reset deployment progress state (used by both back and complete actions)
   const resetDeploymentState = () => {
     setIsDeploying(false)
@@ -605,7 +699,7 @@ export function StackEditor({
         {/* Content editor with tabs */}
         <div className="flex-1 flex flex-col overflow-hidden min-h-0">
           {/* Tab buttons */}
-          <div className="flex gap-1 mb-2 shrink-0">
+          <div className="flex gap-1 mb-2 shrink-0 flex-wrap">
             <Button
               type="button"
               variant={activeTab === 'compose' ? 'default' : 'ghost'}
@@ -614,14 +708,60 @@ export function StackEditor({
             >
               Compose
             </Button>
+            {canViewEnv &&
+              envTabNames.map((fname) => {
+                const removable = Object.prototype.hasOwnProperty.call(envFiles, fname)
+                const isUnreferenced =
+                  !isCreateMode && fname !== '.env' && !referencedEnvFiles.has(fname)
+                return (
+                  <div key={fname} className="flex items-center">
+                    <Button
+                      type="button"
+                      variant={activeTab === fname ? 'default' : 'ghost'}
+                      size="sm"
+                      className="font-mono"
+                      onClick={() => setActiveTab(fname)}
+                    >
+                      {fname}
+                    </Button>
+                    {isUnreferenced && (
+                      <span
+                        className="ml-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                        title="Not referenced by your compose — edits won't affect the running stack until an env_file: directive points here."
+                      >
+                        unref
+                      </span>
+                    )}
+                    {removable && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 -ml-1"
+                        disabled={!canEdit || deleteEnvFile.isPending}
+                        title={`Remove ${fname}`}
+                        onClick={() => {
+                          setEnvFileToRemove(fname)
+                          setActiveDialog('remove-env-file')
+                        }}
+                      >
+                        <X className="h-3 w-3" />
+                      </Button>
+                    )}
+                  </div>
+                )
+              })}
             {canViewEnv && (
               <Button
                 type="button"
-                variant={activeTab === 'env' ? 'default' : 'ghost'}
+                variant="ghost"
                 size="sm"
-                onClick={() => setActiveTab('env')}
+                onClick={openAddEnvFileDialog}
+                disabled={!canEdit}
+                title="Add env file"
+                className="px-2"
               >
-                Environment
+                <Plus className="h-4 w-4" />
               </Button>
             )}
           </div>
@@ -639,11 +779,13 @@ export function StackEditor({
               />
             )}
 
-            {canViewEnv && activeTab === 'env' && (
+            {canViewEnv && activeTab !== 'compose' && envTabNames.includes(activeTab) && (
               <ConfigurationEditor
                 type="env"
-                value={envContent}
-                onChange={setEnvContent}
+                value={envFiles[activeTab] ?? ''}
+                onChange={(value) =>
+                  setEnvFiles((prev) => ({ ...prev, [activeTab]: value }))
+                }
                 fillHeight
               />
             )}
@@ -881,6 +1023,64 @@ export function StackEditor({
         </DialogContent>
       </Dialog>
 
+      {/* Add Env File Dialog */}
+      <Dialog
+        open={activeDialog === 'add-env-file'}
+        onOpenChange={(open) => !open && setActiveDialog(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add Env File</DialogTitle>
+            <DialogDescription>
+              Add an environment file to this stack. Reference it from your compose
+              with <code className="bg-muted px-1 rounded">env_file:</code> to load it
+              into a service.
+            </DialogDescription>
+          </DialogHeader>
+
+          <fieldset disabled={!canEdit} className="space-y-4 disabled:opacity-60">
+            <div className="space-y-2 py-2">
+              <Label htmlFor="new-env-file-name">Filename</Label>
+              <Input
+                id="new-env-file-name"
+                value={newEnvFileName}
+                onChange={(e) => {
+                  setNewEnvFileName(e.target.value)
+                  setEnvFileNameError(null)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    handleAddEnvFile()
+                  }
+                }}
+                placeholder=".db.env"
+                className={cn('font-mono', envFileNameError && 'border-destructive')}
+                autoFocus
+              />
+              {envFileNameError ? (
+                <p className="text-xs text-destructive">{envFileNameError}</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  A bare filename in the stack directory (no slashes), e.g. .env or .db.env
+                </p>
+              )}
+            </div>
+          </fieldset>
+
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setActiveDialog(null)}>
+              Cancel
+            </Button>
+            <fieldset disabled={!canEdit} className="disabled:opacity-60">
+              <Button onClick={handleAddEnvFile} disabled={!newEnvFileName.trim()}>
+                Add File
+              </Button>
+            </fieldset>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Remove Confirmation */}
       <AlertDialog
         open={activeDialog === 'remove-confirm'}
@@ -929,6 +1129,59 @@ export function StackEditor({
             <fieldset disabled={!canEdit || !canDeploy} className="disabled:opacity-60">
               <AlertDialogAction onClick={handleSaveAndDeploy}>
                 Save & Deploy
+              </AlertDialogAction>
+            </fieldset>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Remove Env File Confirmation */}
+      <AlertDialog
+        open={activeDialog === 'remove-env-file'}
+        onOpenChange={(open) => {
+          if (!open) {
+            setActiveDialog(null)
+            setEnvFileToRemove(null)
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {isEnvFileToRemovePersisted ? 'Delete env file' : 'Remove env file'}
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                {isEnvFileToRemovePersisted ? (
+                  <>
+                    <p>
+                      Delete &ldquo;<strong className="font-mono">{envFileToRemove}</strong>&rdquo; from
+                      this stack? This permanently removes the file from the stack directory.
+                    </p>
+                    <p className="text-amber-500">
+                      If your compose references this file with{' '}
+                      <code className="bg-muted px-1 rounded">env_file:</code>, remove that line
+                      too, or it will reappear empty and deploys may fail.
+                    </p>
+                  </>
+                ) : (
+                  <p>
+                    Remove &ldquo;<strong className="font-mono">{envFileToRemove}</strong>&rdquo;? It hasn&apos;t
+                    been saved yet.
+                  </p>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <fieldset disabled={!canEdit} className="disabled:opacity-60">
+              <AlertDialogAction
+                onClick={handleRemoveEnvFile}
+                disabled={deleteEnvFile.isPending}
+                className={isEnvFileToRemovePersisted ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90' : undefined}
+              >
+                {deleteEnvFile.isPending ? 'Deleting...' : isEnvFileToRemovePersisted ? 'Delete file' : 'Remove file'}
               </AlertDialogAction>
             </fieldset>
           </AlertDialogFooter>

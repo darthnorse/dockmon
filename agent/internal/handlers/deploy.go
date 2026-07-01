@@ -26,6 +26,7 @@ type DeployComposeRequest struct {
 	ProjectName         string                       `json:"project_name"`
 	ComposeContent      string                       `json:"compose_content"`
 	EnvFileContent      string                       `json:"env_file_content,omitempty"` // Raw .env file content
+	EnvFiles            map[string]string            `json:"env_files,omitempty"`        // filename -> content
 	Action              string                       `json:"action"`                     // "up", "down", "restart"
 	RemoveVolumes       bool                         `json:"remove_volumes"`             // Only for "down" action, default false
 	ForceRecreate       bool                         `json:"force_recreate,omitempty"`   // Force recreate containers
@@ -110,6 +111,7 @@ func (h *DeployHandler) DeployCompose(ctx context.Context, req DeployComposeRequ
 		ProjectName:         req.ProjectName,
 		ComposeYAML:         req.ComposeContent,
 		EnvFileContent:      req.EnvFileContent,
+		EnvFiles:            req.EnvFiles,
 		Profiles:            req.Profiles,
 		Action:              req.Action,
 		RemoveVolumes:       req.RemoveVolumes,

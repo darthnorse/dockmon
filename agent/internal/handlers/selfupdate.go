@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -78,10 +79,10 @@ type UpdateLockFile struct {
 // PerformSelfUpdate performs self-update based on deployment mode
 func (h *SelfUpdateHandler) PerformSelfUpdate(ctx context.Context, req SelfUpdateRequest) error {
 	h.log.WithFields(logrus.Fields{
-		"version":       req.Version,
-		"image":         req.Image,
-		"binary_url":    req.BinaryURL,
-		"container_id":  h.myContainerID,
+		"version":        req.Version,
+		"image":          req.Image,
+		"binary_url":     req.BinaryURL,
+		"container_id":   h.myContainerID,
 		"container_mode": h.myContainerID != "",
 	}).Info("Starting self-update")
 
@@ -257,55 +258,60 @@ func (h *SelfUpdateHandler) performNativeSelfUpdate(ctx context.Context, req Sel
 		"binary_url": req.BinaryURL,
 	}).Info("Performing native binary self-update")
 
-	// Step 1: Download new binary
+	// Step 1: Stage the new binary next to the live binary so the swap is an
+	// in-filesystem rename (cross-filesystem rename fails with EXDEV).
+	currentBinaryPath, err := os.Executable()
+	if err != nil {
+		h.sendProgressError("prepare", err)
+		return fmt.Errorf("failed to detect current binary path: %w", err)
+	}
+	newBinaryPath := filepath.Join(filepath.Dir(currentBinaryPath), ".dockmon-agent.new")
+
+	// Remove the staged binary on any abort before the lock file is written.
+	updateCommitted := false
+	defer func() {
+		if !updateCommitted {
+			if rmErr := os.Remove(newBinaryPath); rmErr != nil && !os.IsNotExist(rmErr) {
+				h.log.WithError(rmErr).Warn("Failed to remove staged binary after aborted update")
+			}
+		}
+	}()
+
+	// Step 2: Download new binary
 	h.sendProgress("download", fmt.Sprintf("Downloading version %s", req.Version))
 
-	newBinaryPath := filepath.Join(h.dataDir, "agent-new")
 	if err := h.downloadBinary(ctx, req.BinaryURL, newBinaryPath); err != nil {
 		h.sendProgressError("download", err)
 		return fmt.Errorf("failed to download binary: %w", err)
 	}
 
-	// Step 2: Verify checksum if provided
+	// Step 3: Verify checksum if provided
 	if req.Checksum != "" {
 		h.sendProgress("verify", "Verifying checksum")
 
 		actualChecksum, err := h.computeFileChecksum(newBinaryPath)
 		if err != nil {
 			h.sendProgressError("verify", err)
-			if rmErr := os.Remove(newBinaryPath); rmErr != nil {
-				h.log.WithError(rmErr).Warn("Failed to remove new binary after checksum error")
-			}
 			return fmt.Errorf("failed to compute checksum: %w", err)
 		}
 
 		if actualChecksum != req.Checksum {
 			err := fmt.Errorf("checksum mismatch: expected %s, got %s", req.Checksum, actualChecksum)
 			h.sendProgressError("verify", err)
-			if rmErr := os.Remove(newBinaryPath); rmErr != nil {
-				h.log.WithError(rmErr).Warn("Failed to remove new binary after checksum mismatch")
-			}
 			return err
 		}
 
 		h.log.Info("Checksum verified successfully")
 	}
 
-	// Step 3: Make binary executable
+	// Step 4: Make binary executable
 	if err := os.Chmod(newBinaryPath, 0755); err != nil {
 		h.sendProgressError("chmod", err)
 		return fmt.Errorf("failed to make binary executable: %w", err)
 	}
 
-	// Step 4: Detect current binary path and write update lock file
+	// Step 5: Write update lock file
 	h.sendProgress("prepare", "Preparing update coordination")
-
-	// Detect current binary path dynamically (works for both container and systemd)
-	currentBinaryPath, err := os.Executable()
-	if err != nil {
-		h.sendProgressError("prepare", err)
-		return fmt.Errorf("failed to detect current binary path: %w", err)
-	}
 
 	lockFile := UpdateLockFile{
 		Version:       req.Version,
@@ -319,6 +325,7 @@ func (h *SelfUpdateHandler) performNativeSelfUpdate(ctx context.Context, req Sel
 		h.sendProgressError("prepare", err)
 		return fmt.Errorf("failed to write lock file: %w", err)
 	}
+	updateCommitted = true
 
 	h.sendProgress("complete", "Update prepared, agent will restart")
 
@@ -384,17 +391,23 @@ func (h *SelfUpdateHandler) applyNativeUpdate(lockFilePath string) error {
 
 	// Backup old binary
 	backupPath := lockFile.OldBinaryPath + ".backup"
+	backupCreated := false
 	if err := h.copyFile(lockFile.OldBinaryPath, backupPath); err != nil {
 		h.log.WithError(err).Warn("Failed to backup old binary")
 		// Continue anyway
+	} else {
+		backupCreated = true
 	}
 
 	// Replace old binary with new binary
-	if err := os.Rename(lockFile.NewBinaryPath, lockFile.OldBinaryPath); err != nil {
-		h.log.WithError(err).Error("Failed to replace binary")
-		// Try to restore backup
-		if backupErr := os.Rename(backupPath, lockFile.OldBinaryPath); backupErr != nil {
-			h.log.WithError(backupErr).Fatal("Failed to restore backup, agent may be broken!")
+	if err := replaceBinaryAtomic(lockFile.NewBinaryPath, lockFile.OldBinaryPath); err != nil {
+		// The original binary is untouched on failure, so keep running it; restore
+		// the backup only if one was made, and never exit fatally here.
+		h.log.WithError(err).Error("Failed to replace binary; keeping existing binary")
+		if backupCreated {
+			if backupErr := os.Rename(backupPath, lockFile.OldBinaryPath); backupErr != nil {
+				h.log.WithError(backupErr).Error("Failed to restore backup binary")
+			}
 		}
 		if rmErr := os.Remove(lockFilePath); rmErr != nil {
 			h.log.WithError(rmErr).Warn("Failed to remove lock file after replace error")
@@ -698,6 +711,72 @@ func (h *SelfUpdateHandler) downloadBinary(ctx context.Context, url, dest string
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
+	return nil
+}
+
+// replaceBinaryAtomic replaces dst with src via an atomic rename, falling back
+// to a copy when src and dst are on different filesystems (rename returns EXDEV).
+func replaceBinaryAtomic(src, dst string) error {
+	return replaceBinary(src, dst, os.Rename)
+}
+
+// replaceBinary is the testable core of replaceBinaryAtomic; the rename function
+// is injected so tests can simulate an EXDEV rename.
+func replaceBinary(src, dst string, rename func(string, string) error) error {
+	err := rename(src, dst)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, syscall.EXDEV) {
+		return err
+	}
+	return copyReplace(src, dst)
+}
+
+// copyReplace replaces dst with src across filesystems by copying to a temp file
+// in dst's directory then atomically renaming it into place, so a crash never
+// leaves a torn binary at the live path. The staged src is removed on success.
+func copyReplace(src, dst string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".dockmon-agent-swap-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file for cross-device swap: %w", err)
+	}
+	tmpPath := tmp.Name()
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	srcFile, err := os.Open(src)
+	if err != nil {
+		tmp.Close()
+		return fmt.Errorf("failed to open staged binary: %w", err)
+	}
+	defer srcFile.Close()
+
+	if _, err := io.Copy(tmp, srcFile); err != nil {
+		tmp.Close()
+		return fmt.Errorf("failed to copy binary across filesystems: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("failed to flush copied binary: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to close copied binary: %w", err)
+	}
+	if err := os.Chmod(tmpPath, 0755); err != nil {
+		return fmt.Errorf("failed to set permissions on copied binary: %w", err)
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		return fmt.Errorf("failed to move copied binary into place: %w", err)
+	}
+	committed = true
+
+	// Staged binary is now live at dst; drop the source copy (best-effort).
+	_ = os.Remove(src)
 	return nil
 }
 

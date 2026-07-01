@@ -50,6 +50,9 @@ export interface ContainerAction {
 }
 
 export interface ContainerUpdateStatus {
+  // 'local_image' = built locally, not tracked in any registry (nothing to check)
+  status?: 'local_image' | null
+  message?: string
   update_available: boolean
   current_image: string | null
   current_digest: string | null
@@ -57,7 +60,7 @@ export interface ContainerUpdateStatus {
   latest_image: string | null
   latest_digest: string | null
   latest_version?: string | null
-  floating_tag_mode: 'exact' | 'patch' | 'minor' | 'latest'
+  floating_tag_mode: 'exact' | 'patch' | 'minor' | 'latest' | null
   last_checked_at: string | null
   auto_update_enabled?: boolean
   update_policy?: 'allow' | 'warn' | 'block' | null

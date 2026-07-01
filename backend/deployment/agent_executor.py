@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
 from database import (
+    Agent,
     Deployment,
     DeploymentContainer,
     DeploymentMetadata,
@@ -32,6 +33,19 @@ from agent.command_executor import get_agent_command_executor, RetryPolicy
 from utils.registry_credentials import get_all_registry_credentials
 
 logger = logging.getLogger(__name__)
+
+
+def agent_supports_multi_env_files(agent: Optional[Agent]) -> bool:
+    """True if the agent advertised the multi_env_files capability."""
+    if agent is None:
+        return False
+    caps = agent.capabilities
+    if isinstance(caps, str):
+        try:
+            caps = json.loads(caps)
+        except (ValueError, TypeError):
+            return False
+    return bool(isinstance(caps, dict) and caps.get("multi_env_files"))
 
 
 def validate_compose_for_agent(compose_content: str) -> tuple[bool, Optional[str]]:
@@ -229,6 +243,11 @@ class AgentDeploymentExecutor:
             raise ValueError(f"No agent registered for host {host_id}")
         return agent_id
 
+    def _get_agent_record(self, host_id: str):
+        """Return the Agent ORM record for a host (or None)."""
+        with self.db.get_session() as session:
+            return session.query(Agent).filter_by(host_id=host_id).first()
+
     async def deploy(
         self,
         host_id: str,
@@ -236,6 +255,7 @@ class AgentDeploymentExecutor:
         compose_content: str,
         project_name: str,
         env_file_content: Optional[str] = None,
+        env_files: Optional[dict[str, str]] = None,
         profiles: Optional[list[str]] = None,
         action: str = "up",
         remove_volumes: bool = False,
@@ -259,6 +279,7 @@ class AgentDeploymentExecutor:
             compose_content: Docker Compose YAML content
             project_name: Compose project name
             env_file_content: Optional raw .env file content (written to temp dir for env_file: .env)
+            env_files: Optional map of filename -> content for stacks referencing multiple env files
             profiles: Optional list of compose profiles to activate
             action: Compose action - "up", "down", or "restart" (default: "up")
             remove_volumes: Remove volumes on down (default: False)
@@ -273,6 +294,28 @@ class AgentDeploymentExecutor:
         Raises:
             ValueError: If compose content is invalid (e.g., has build: directive)
         """
+        env_files = env_files or {}
+        # Old agents ignore env_files and read only env_file_content. Derive the
+        # legacy .env from the map so single-.env stacks still work on them.
+        if not env_file_content:
+            env_file_content = env_files.get(".env", "")
+
+        # Block deploys on agents that predate the multi_env_files capability.
+        # Old agents only receive the single legacy .env via env_file_content.
+        # Any managed file other than .env requires the multi_env_files capability.
+        if set(env_files) - {".env"}:
+            agent = self._get_agent_record(host_id)
+            if not agent_supports_multi_env_files(agent):
+                msg = (
+                    "This host's agent is too old to deploy stacks with multiple "
+                    "env files. Update the agent to the latest version."
+                )
+                logger.error(f"Deployment {deployment_id} blocked: {msg}")
+                await self._report_deployment_status(
+                    deployment_id, "failed", msg, error=msg
+                )
+                return False
+
         # Skip validation for "down" - no need to check build directives
         if action != "down":
             is_valid, error = validate_compose_for_agent(compose_content)
@@ -311,6 +354,7 @@ class AgentDeploymentExecutor:
                 "project_name": project_name,
                 "compose_content": compose_content,
                 "env_file_content": env_file_content or "",
+                "env_files": env_files,
                 "action": action,
                 "remove_volumes": remove_volumes,
                 "profiles": profiles or [],

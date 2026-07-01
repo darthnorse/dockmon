@@ -68,7 +68,7 @@ from models.request_models import (
     AutoRestartRequest, DesiredStateRequest, AlertRuleCreate, AlertRuleUpdate,
     NotificationChannelCreate, NotificationChannelUpdate, EventLogFilter, BatchJobCreate,
     ContainerTagUpdate, HostTagUpdate, HttpHealthCheckConfig, GenerateTokenRequest,
-    RenameContainerRequest
+    RenameContainerRequest, CreateNetworkRequest
 )
 from audit.audit_logger import AuditAction, AuditEntityType, log_audit, log_container_action, log_host_change, log_settings_change, get_client_info
 from security.audit import security_audit
@@ -78,6 +78,7 @@ from auth.utils import get_auditable_user_info
 from websocket.connection import ConnectionManager, DateTimeEncoder
 from websocket.rate_limiter import ws_rate_limiter
 from docker_monitor.monitor import DockerMonitor
+from docker_monitor.stats_history import live_window_points
 from batch_manager import BatchJobManager
 from utils.keys import make_composite_key
 from utils.encryption import encrypt_password, decrypt_password
@@ -86,6 +87,8 @@ from utils.base_path import get_base_path
 from utils.response_filtering import filter_container_env, filter_container_inspect_env, filter_ws_container_message
 from utils.host_ips import deserialize_host_ips
 from utils.client_ip import get_client_ip_ws
+from utils.networks import BUILTIN_NETWORKS, format_network, create_network_local
+from utils.timestamps import normalize_docker_timestamp
 import aiohttp
 from stats_client import get_stats_client, StatsServiceClient
 from updates.container_validator import ContainerValidator, ValidationResult
@@ -1139,6 +1142,56 @@ async def get_container_stats_history(
         raise _map_history_upstream_error(e)
 
 
+def _live_window_num_points() -> int:
+    """Points a live endpoint serves, derived from the configured window.
+
+    window/polling, capped at the buffer ceiling. Read from monitor.settings
+    so a runtime settings change is honored on the next fetch.
+    """
+    settings = monitor.settings
+    return live_window_points(
+        getattr(settings, "live_chart_window_seconds", 600),
+        getattr(settings, "polling_interval", 2),
+    )
+
+
+@app.get(
+    "/api/hosts/{host_id}/stats/live",
+    tags=["hosts"],
+    dependencies=[Depends(require_capability("hosts.view"))],
+)
+async def get_host_stats_live(host_id: str):
+    """Extended live sparklines for ONE host, read from the in-memory buffer.
+
+    On-demand series for the detail-view live chart: timestamps + raw memory
+    bytes, windowed to live_chart_window_seconds. Reads the same buffer the
+    broadcast samples, but the broadcast stays lean -- this is the only
+    extended path. Unknown/offline host -> empty arrays (no stale data).
+    """
+    return monitor.stats_history.get_sparklines(
+        host_id,
+        num_points=_live_window_num_points(),
+        include_extended=True,
+    )
+
+
+@app.get(
+    "/api/hosts/{host_id}/containers/{container_id}/stats/live",
+    tags=["containers"],
+    dependencies=[Depends(require_capability("containers.view"))],
+)
+async def get_container_stats_live(host_id: str, container_id: str):
+    """Extended live sparklines for ONE container, from the in-memory buffer."""
+    # Defense-in-depth: normalize container_id at endpoint entry (CLAUDE.md).
+    container_id = normalize_container_id(container_id)
+    container_key = make_composite_key(host_id, container_id)
+    return monitor.container_stats_history.get_sparklines(
+        container_key,
+        num_points=_live_window_num_points(),
+        include_extended=True,
+    )
+
+
 @app.get("/api/hosts/{host_id}/agent", tags=["hosts"], dependencies=[Depends(require_capability("agents.view"))])
 async def get_host_agent_info(host_id: str, current_user: dict = Depends(get_current_user)):
     """
@@ -1366,11 +1419,7 @@ async def list_host_images(host_id: str, current_user: dict = Depends(get_curren
             short_id = normalize_image_id(image.short_id) if image.short_id else normalize_image_id(image.id)
             containers_using = image_usage.get(short_id, [])
 
-            # Parse created timestamp - strip timezone offset and add Z suffix
-            created = image.attrs.get('Created', '')
-            if created and not created.endswith('Z'):
-                # Handle both +HH:MM and -HH:MM timezone offsets
-                created = re.sub(r'[+-]\d{2}:\d{2}$', 'Z', created)
+            created = normalize_docker_timestamp(image.attrs.get('Created', ''))
 
             tags = image.tags or []
             result.append({
@@ -1443,10 +1492,6 @@ async def prune_host_images(host_id: str, request: Request, current_user: dict =
         raise HTTPException(status_code=500, detail="Failed to prune images")
 
 
-# Built-in Docker networks that cannot be deleted
-BUILTIN_NETWORKS = frozenset(['bridge', 'host', 'none'])
-
-
 @app.get("/api/hosts/{host_id}/networks", tags=["hosts"], dependencies=[Depends(require_capability("containers.view"))])
 async def list_host_networks(host_id: str, current_user: dict = Depends(get_current_user)):
     """
@@ -1482,45 +1527,7 @@ async def list_host_networks(host_id: str, current_user: dict = Depends(get_curr
         # Get all networks
         networks = await async_docker_call(client.networks.list)
 
-        # Format response
-        result = []
-        for network in networks:
-            attrs = network.attrs or {}
-            short_id = network.short_id if hasattr(network, 'short_id') and network.short_id else network.id[:12]
-
-            # Parse created timestamp - strip timezone offset and add Z suffix
-            created = attrs.get('Created', '')
-            if created and not created.endswith('Z'):
-                # Handle both +HH:MM and -HH:MM timezone offsets
-                # Format: 2026-01-03T17:11:27.020018176-07:00
-                created = re.sub(r'[+-]\d{2}:\d{2}$', 'Z', created)
-
-            # Get connected containers
-            containers_info = attrs.get('Containers') or {}
-            containers = []
-            for container_id, container_data in containers_info.items():
-                containers.append({
-                    'id': container_id[:12],
-                    'name': container_data.get('Name', '').lstrip('/')
-                })
-
-            # Extract IPAM subnet info
-            ipam = attrs.get('IPAM', {}) or {}
-            ipam_config = ipam.get('Config', []) or []
-            subnet = ipam_config[0].get('Subnet', '') if ipam_config else ''
-
-            result.append({
-                'id': short_id,
-                'name': network.name,
-                'driver': attrs.get('Driver', ''),
-                'scope': attrs.get('Scope', 'local'),
-                'created': created,
-                'internal': attrs.get('Internal', False),
-                'subnet': subnet,
-                'containers': containers,
-                'container_count': len(containers),
-                'is_builtin': network.name in BUILTIN_NETWORKS,
-            })
+        result = [format_network(network) for network in networks]
 
         # Sort by name
         result.sort(key=lambda x: x['name'])
@@ -1530,6 +1537,66 @@ async def list_host_networks(host_id: str, current_user: dict = Depends(get_curr
     except Exception as e:
         logger.error(f"Error listing networks for host {host_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to list networks")
+
+
+@app.post("/api/hosts/{host_id}/networks", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
+async def create_host_network(
+    host_id: str,
+    body: CreateNetworkRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Create a Docker network on a host.
+
+    Body:
+        name: Network name (required)
+        driver: Network driver (only "bridge" is supported; default bridge)
+        subnet: Optional CIDR (e.g. 172.20.0.0/16)
+        gateway: Optional gateway IP (requires subnet, must be within it)
+        internal: Restrict external connectivity (default False)
+
+    Returns:
+        The created network in the same shape as the list endpoint.
+
+    Raises:
+        404: Host or agent not found
+        409: A network with that name already exists
+        500: Docker API failure
+    """
+    # Route through agent if the host uses one
+    agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+    if agent_id:
+        logger.info(f"Routing create_network for host {host_id} through agent {agent_id}")
+        result = await monitor.operations.agent_operations.create_network(
+            host_id,
+            name=body.name,
+            driver=body.driver,
+            subnet=body.subnet or "",
+            gateway=body.gateway or "",
+            internal=body.internal,
+        )
+        _safe_audit(current_user, log_host_change, AuditAction.CREATE, host_id, _get_host_name(host_id), request, details={'resource': 'network', 'network_name': body.name})
+        return result
+
+    # Legacy path: Direct Docker socket access
+    client = monitor.clients.get(host_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    result = await create_network_local(
+        client,
+        body.name,
+        body.driver,
+        body.subnet or "",
+        body.gateway or "",
+        body.internal,
+    )
+
+    logger.info(f"Created network '{body.name}' on host {host_id}")
+    _safe_audit(current_user, log_host_change, AuditAction.CREATE, host_id, _get_host_name(host_id), request, details={'resource': 'network', 'network_name': body.name})
+
+    return result
 
 
 @app.delete("/api/hosts/{host_id}/networks/{network_id}", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
@@ -1724,10 +1791,7 @@ async def list_host_volumes(host_id: str, current_user: dict = Depends(get_curre
             attrs = volume.attrs or {}
             name = volume.name
 
-            # Parse created timestamp - strip timezone offset and add Z suffix
-            created = attrs.get('CreatedAt', '')
-            if created and not created.endswith('Z'):
-                created = re.sub(r'[+-]\d{2}:\d{2}$', 'Z', created)
+            created = normalize_docker_timestamp(attrs.get('CreatedAt', ''))
 
             containers_using = volume_usage.get(name, [])
 
@@ -2170,6 +2234,7 @@ async def get_container_update_status(
         if not record:
             # No update check performed yet
             return {
+                "status": None,
                 "update_available": False,
                 "current_image": None,
                 "current_digest": None,
@@ -2191,6 +2256,7 @@ async def get_container_update_status(
             }
 
         return {
+            "status": record.check_status,
             "update_available": record.update_available,
             "current_image": record.current_image,
             "current_digest": record.current_digest[:12] if record.current_digest else None,
@@ -2291,7 +2357,7 @@ async def check_container_update(
 
     Returns the same format as get_container_update_status.
     """
-    from updates.update_checker import get_update_checker
+    from updates.update_checker import get_update_checker, LOCAL_IMAGE_STATUS
 
     # Normalize to short ID
     short_id = container_id[:12] if len(container_id) > 12 else container_id
@@ -2303,6 +2369,20 @@ async def check_container_update(
     # Issue #101: bypass_cache=True ensures manual checks always query registry
     # This fixes stale update info when images are rapidly rebuilt
     result = await checker.check_single_container(host_id, short_id, bypass_cache=True)
+
+    if result and result.get("status") == LOCAL_IMAGE_STATUS:
+        # No resolvable registry digest: most likely built locally, so informational (not the 503 below).
+        # Registries 401/403 on missing images, so we can't be sure it isn't a private image needing auth.
+        return {
+            "status": LOCAL_IMAGE_STATUS,
+            "update_available": False,
+            "current_image": result.get("current_image"),
+            "current_digest": None,
+            "latest_image": None,
+            "latest_digest": None,
+            "floating_tag_mode": None,
+            "message": "DockMon couldn't find this image in a registry - it was most likely built locally. If it comes from a private registry, check that registry credentials are configured.",
+        }
 
     if not result:
         # Check failed (e.g., registry auth error, network issue)
@@ -3450,6 +3530,8 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
         "stats_persistence_enabled": getattr(settings, 'stats_persistence_enabled', False),
         "stats_retention_days": getattr(settings, 'stats_retention_days', 30),
         "stats_points_per_view": getattr(settings, 'stats_points_per_view', 500),
+        # Live chart window (v2.4.x+) — backend-only, NOT pushed to stats-service
+        "live_chart_window_seconds": getattr(settings, 'live_chart_window_seconds', 600),
     }
 
 @app.post("/api/settings", tags=["system"], dependencies=[Depends(require_capability("settings.manage"))])
@@ -3583,6 +3665,8 @@ async def update_settings(
         "stats_persistence_enabled": getattr(updated, 'stats_persistence_enabled', False),
         "stats_retention_days": getattr(updated, 'stats_retention_days', 30),
         "stats_points_per_view": getattr(updated, 'stats_points_per_view', 500),
+        # Live chart window (v2.4.x+) — backend-only, NOT pushed to stats-service
+        "live_chart_window_seconds": getattr(updated, 'live_chart_window_seconds', 600),
     }
 
 

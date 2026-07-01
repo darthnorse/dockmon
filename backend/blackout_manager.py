@@ -7,7 +7,7 @@ import asyncio
 import logging
 from datetime import datetime, time, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
-from database import DatabaseManager
+from database import AlertV2, DatabaseManager
 from utils.async_docker import async_docker_call
 
 logger = logging.getLogger(__name__)
@@ -79,6 +79,14 @@ class BlackoutManager:
         except Exception as e:
             logger.error(f"Error checking blackout window: {e}")
             return False, None
+
+    def suppress_alert(self, alert_id: str) -> None:
+        """Flag an alert as suppressed by a blackout window (deferred to window end)."""
+        with self.db.get_session() as session:
+            alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
+            if alert:
+                alert.suppressed_by_blackout = True
+                session.commit()
 
     async def start_monitoring(self, notification_service, monitor, connection_manager=None):
         """Start monitoring for blackout window transitions

@@ -43,7 +43,8 @@ export interface Stack {
   name: string                  // Stack name (lowercase alphanumeric, hyphens, underscores)
   deployed_to: DeployedHost[]   // Hosts where this stack is running (from container labels)
   compose_yaml?: string         // Docker Compose YAML content (optional in list, present in detail)
-  env_content?: string | null   // Optional .env file content
+  env_files?: Record<string, string>   // filename -> content (e.g. { ".env": "...", ".db.env": "..." })
+  referenced_env_files?: string[]   // filenames the compose references; tabs not in this list are unreferenced/discovered
 }
 
 /**
@@ -60,7 +61,7 @@ export interface StackListItem {
 export interface CreateStackRequest {
   name: string
   compose_yaml: string
-  env_content?: string | null
+  env_files?: Record<string, string>
 }
 
 /**
@@ -68,7 +69,7 @@ export interface CreateStackRequest {
  */
 export interface UpdateStackRequest {
   compose_yaml: string
-  env_content?: string | null
+  env_files?: Record<string, string>
 }
 
 /**
@@ -174,7 +175,7 @@ export interface KnownStack {
  */
 export interface ImportDeploymentRequest {
   compose_content: string
-  env_content?: string
+  env_files?: Record<string, string>
   project_name?: string
   host_id?: string
   overwrite_stack?: boolean
@@ -233,7 +234,8 @@ export interface ReadComposeFileResponse {
   success: boolean
   path: string
   content?: string
-  env_content?: string
+  env_files?: Record<string, string>
+  skipped_env_files?: string[]   // refs outside the stack dir, not imported
   error?: string
 }
 

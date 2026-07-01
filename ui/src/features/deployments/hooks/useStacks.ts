@@ -106,6 +106,24 @@ export function useDeleteStack() {
 }
 
 /**
+ * Delete a single env file from a stack (real filesystem delete, server-side).
+ */
+export function useDeleteEnvFile() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ name, filename }: { name: string; filename: string }) => {
+      return apiClient.delete<{ deleted: boolean }>(
+        `/stacks/${encodeURIComponent(name)}/env-files/${encodeURIComponent(filename)}`
+      )
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['stacks', variables.name] })
+    },
+  })
+}
+
+/**
  * Rename a stack
  *
  * Renames the stack directory on the filesystem and updates all

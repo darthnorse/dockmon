@@ -1,22 +1,25 @@
 import { StatsCharts } from '@/lib/charts/StatsCharts'
-import { LIVE_TIME_WINDOW } from '@/lib/statsConfig'
-import { formatBytes, formatNetworkRate } from '@/lib/utils/formatting'
+import { formatNetworkRate } from '@/lib/utils/formatting'
 import { StatsTimeRangeSelector } from './StatsTimeRangeSelector'
 import { useLastSelectedRange } from './useLastSelectedRange'
 import { useStatsHistory } from './useStatsHistory'
-import type { HistoricalRange, StatsHistoryResponse } from './historyTypes'
+import { useLiveHistory } from './useLiveHistory'
+import { latestNonNull, formatMemorySummary } from './columnUtils'
+import type { HistoricalRange } from './historyTypes'
+
+interface LiveData {
+  cpu: (number | null)[]
+  mem: (number | null)[]
+  net: (number | null)[]
+  cpuValue?: string | undefined
+  memValue?: string | undefined
+  netValue?: string | undefined
+}
 
 interface Props {
   hostId: string
   containerId?: string
-  liveData: {
-    cpu: (number | null)[]
-    mem: (number | null)[]
-    net: (number | null)[]
-    cpuValue?: string | undefined
-    memValue?: string | undefined
-    netValue?: string | undefined
-  }
+  liveData: LiveData
 }
 
 /**
@@ -33,20 +36,50 @@ export function StatsSection({ hostId, containerId, liveData }: Props) {
         <StatsTimeRangeSelector value={range} onChange={setRange} />
       </div>
       {range === 'live' ? (
-        <StatsCharts
-          cpu={liveData.cpu}
-          mem={liveData.mem}
-          net={liveData.net}
-          timestamps={[]}
-          timeWindow={LIVE_TIME_WINDOW}
-          cpuValue={liveData.cpuValue}
-          memValue={liveData.memValue}
-          netValue={liveData.netValue}
-        />
+        <LiveCharts hostId={hostId} containerId={containerId} liveData={liveData} />
       ) : (
         <HistoricalCharts hostId={hostId} containerId={containerId} range={range} />
       )}
     </div>
+  )
+}
+
+/**
+ * Detail-view Live chart. Fetches the configured window once from the live
+ * endpoint (extended series: absolute time + memory bytes) and keeps it current
+ * by appending the newest broadcast tick. Falls back to the lean broadcast
+ * sparkline (index mode, no memory labels) while the one-time fetch is in
+ * flight, so the chart is never blank on open.
+ */
+function LiveCharts({
+  hostId, containerId, liveData,
+}: {
+  hostId: string
+  containerId: string | undefined
+  liveData: LiveData
+}) {
+  const live = useLiveHistory(hostId, containerId)
+  const windowSeconds = live.windowSeconds
+
+  // Use the windowed extended series once it has loaded; until then (or if it's
+  // empty) fall back to the lean broadcast sparkline so the chart is never
+  // blank. memoryUsed/memoryLimit are undefined on the fallback, so StatsCharts
+  // renders the mem chart in percent mode just as before.
+  const d = live.data && live.data.timestamps.length > 0 ? live.data : null
+
+  return (
+    <StatsCharts
+      cpu={d?.cpu ?? liveData.cpu}
+      mem={d?.mem ?? liveData.mem}
+      net={d?.net ?? liveData.net}
+      memoryUsed={d?.memory_used_bytes}
+      memoryLimit={d?.memory_limit_bytes}
+      timestamps={d?.timestamps ?? []}
+      timeWindow={windowSeconds}
+      cpuValue={liveData.cpuValue}
+      memValue={liveData.memValue}
+      netValue={liveData.netValue}
+    />
   )
 }
 
@@ -98,10 +131,12 @@ function HistoricalCharts({
       cpu={data.cpu}
       mem={data.mem}
       net={data.net_bps}
+      memoryUsed={data.memory_used_bytes}
+      memoryLimit={data.memory_limit_bytes}
       timestamps={data.timestamps}
       timeWindow={data.tier_seconds}
       cpuValue={formatPercent(data.cpu)}
-      memValue={formatMemValue(data)}
+      memValue={formatMemorySummary(data.mem, data.memory_used_bytes, data.memory_limit_bytes)}
       netValue={formatNetValue(data.net_bps)}
       footer={footer}
     />
@@ -116,37 +151,4 @@ function formatPercent(arr: (number | null)[]): string | undefined {
 function formatNetValue(arr: (number | null)[]): string | undefined {
   const v = latestNonNull(arr)
   return v === undefined ? undefined : formatNetworkRate(v)
-}
-
-function formatMemValue(data: StatsHistoryResponse): string | undefined {
-  // Pick the latest bucket where mem% is non-null and read used/limit from
-  // that SAME index — otherwise used and limit can come from different
-  // buckets and display a nonsensical ratio (e.g., used > limit) when a
-  // container's memory_limit was reconfigured mid-window.
-  const i = latestNonNullIndex(data.mem)
-  if (i < 0) return undefined
-  const pct = data.mem[i] as number
-  const pctStr = `${Math.round(pct * 10) / 10}%`
-  const used = data.memory_used_bytes?.[i] ?? null
-  const limit = data.memory_limit_bytes?.[i] ?? null
-  if (used === null) return pctStr
-  if (limit !== null && limit > 0) {
-    return `${pctStr} (${formatBytes(used)} / ${formatBytes(limit)})`
-  }
-  return `${pctStr} (${formatBytes(used)})`
-}
-
-function latestNonNull(arr: (number | null)[] | undefined): number | undefined {
-  if (!arr) return undefined
-  const i = latestNonNullIndex(arr)
-  return i < 0 ? undefined : (arr[i] as number)
-}
-
-function latestNonNullIndex(arr: (number | null)[] | undefined): number {
-  if (!arr) return -1
-  for (let i = arr.length - 1; i >= 0; i--) {
-    const v = arr[i]
-    if (v !== null && v !== undefined) return i
-  }
-  return -1
 }

@@ -27,6 +27,7 @@ from auth.api_key_auth import get_current_user_or_api_key as get_current_user, r
 from audit.audit_logger import AuditAction, log_stack_change
 from auth.utils import get_auditable_user_info
 from utils.keys import parse_composite_key
+from utils.env_files import is_safe_env_filename, parse_env_file_refs
 from agent.command_executor import get_agent_command_executor, RetryPolicy
 from agent.manager import AgentManager
 from deployment.compose_client import ComposeClient, ComposeServiceError, ComposeServiceUnavailable
@@ -35,6 +36,8 @@ from deployment.agent_executor import get_agent_deployment_executor
 
 logger = logging.getLogger(__name__)
 
+# Maximum size for env files read during import (1 MB)
+MAX_ENV_FILE_SIZE = 1024 * 1024  # cap for env files and the compose on local import
 
 # Create router
 router = APIRouter(prefix="/api/deployments", tags=["deployments"])
@@ -154,7 +157,7 @@ class KnownStack(BaseModel):
 class ImportDeploymentRequest(BaseModel):
     """Request to import an existing compose stack."""
     compose_content: str = Field(..., description="Docker Compose YAML content")
-    env_content: Optional[str] = Field(None, description="Optional .env file content")
+    env_files: Dict[str, str] = Field(default_factory=dict, description="Map of env filename -> content")
     project_name: Optional[str] = Field(None, description="Stack name (required if compose has no name: field)")
     host_id: Optional[str] = Field(None, description="Host ID for import when no running containers found")
     overwrite_stack: bool = Field(False, description="If true, overwrite existing stack content")
@@ -212,6 +215,8 @@ class ReadComposeFileResponse(BaseModel):
     path: str
     content: Optional[str] = None
     env_content: Optional[str] = None
+    env_files: Dict[str, str] = Field(default_factory=dict)
+    skipped_env_files: List[str] = Field(default_factory=list)
     error: Optional[str] = None
 
 
@@ -331,8 +336,11 @@ async def deploy_stack(
         host_name = host.name
         connection_type = host.connection_type
 
-    # Read stack content
-    compose_yaml, env_content = await stack_storage.read_stack(request.stack_name)
+    # Read stack content (deploy path: referenced env files only — never ship
+    # discovered, unreferenced env files to the compose service / agent)
+    compose_yaml, env_files = await stack_storage.read_stack(
+        request.stack_name, include_discovered=False
+    )
 
     # Generate transient deployment ID for progress tracking
     deployment_id = f"{request.host_id}:{request.stack_name}:{uuid.uuid4().hex[:8]}"
@@ -380,7 +388,7 @@ async def deploy_stack(
                     deployment_id=deployment_id,
                     compose_content=compose_yaml,
                     project_name=request.stack_name,
-                    env_file_content=env_content,
+                    env_files=env_files,
                     action=request.action,
                     remove_volumes=request.remove_volumes,
                     force_recreate=request.force_recreate,
@@ -428,7 +436,7 @@ async def deploy_stack(
                     compose_yaml=compose_yaml,
                     progress_callback=on_progress,
                     action=request.action,
-                    env_file_content=env_content,
+                    env_files=env_files,
                     remove_volumes=request.remove_volumes,
                     force_recreate=request.force_recreate,
                     pull_images=request.pull_images,
@@ -1129,7 +1137,7 @@ async def import_deployment(
             await stack_storage.write_stack(
                 name=stack_name,
                 compose_yaml=request.compose_content,
-                env_content=request.env_content,
+                env_files=request.env_files,
             )
             logger.info(f"{display_name} created stack '{stack_name}' (use_existing_stack but stack was missing)")
     elif not stack_already_exists:
@@ -1137,7 +1145,7 @@ async def import_deployment(
         await stack_storage.write_stack(
             name=stack_name,
             compose_yaml=request.compose_content,
-            env_content=request.env_content,
+            env_files=request.env_files,
         )
         logger.info(f"{display_name} created stack '{stack_name}' on filesystem during import")
     elif request.overwrite_stack:
@@ -1145,7 +1153,7 @@ async def import_deployment(
         await stack_storage.write_stack(
             name=stack_name,
             compose_yaml=request.compose_content,
-            env_content=request.env_content,
+            env_files=request.env_files,
         )
         logger.info(f"{display_name} overwrote existing stack '{stack_name}' on filesystem during import")
 
@@ -1496,28 +1504,62 @@ async def _read_local_file(request: ReadComposeFileRequest) -> ReadComposeFileRe
             error="File not found"
         )
 
+    # Bound the compose read so a pathological file can't be slurped whole.
+    try:
+        if os.path.getsize(path) > MAX_ENV_FILE_SIZE:
+            return ReadComposeFileResponse(
+                success=False,
+                path=path,
+                error="Compose file too large"
+            )
+    except OSError:
+        return ReadComposeFileResponse(
+            success=False,
+            path=path,
+            error="File not found"
+        )
+
     try:
         # Read compose file
         with open(path, 'r', encoding='utf-8') as f:
             content = f.read()
 
-        # Check for .env file in same directory
-        env_content = None
-        env_path = os.path.join(os.path.dirname(path), '.env')
-        if os.path.isfile(env_path):
+        # Capture .env plus every same-dir file referenced via env_file:
+        env_files: Dict[str, str] = {}
+        base_dir = os.path.dirname(path)
+        dot_env = os.path.join(base_dir, ".env")
+        if os.path.isfile(dot_env) and not os.path.islink(dot_env):
             try:
-                with open(env_path, 'r', encoding='utf-8') as f:
-                    env_content = f.read()
+                if os.path.getsize(dot_env) <= MAX_ENV_FILE_SIZE:
+                    with open(dot_env, "r", encoding="utf-8") as f:
+                        env_files[".env"] = f.read()
             except (OSError, IOError):
-                pass  # .env is optional
+                pass
+
+        captured, skipped = parse_env_file_refs(content)
+        for fname in captured:
+            if not is_safe_env_filename(fname):
+                continue
+            fpath = os.path.join(base_dir, fname)
+            if os.path.islink(fpath):
+                skipped.append(fname)
+                continue
+            if os.path.isfile(fpath):
+                try:
+                    if os.path.getsize(fpath) > MAX_ENV_FILE_SIZE:
+                        skipped.append(fname)
+                        continue
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        env_files[fname] = f.read()
+                except (OSError, IOError):
+                    pass
 
         logger.info(f"Read compose file from localhost: {path}")
 
         return ReadComposeFileResponse(
-            success=True,
-            path=path,
-            content=content,
-            env_content=env_content
+            success=True, path=path, content=content,
+            env_content=env_files.get(".env"),  # legacy field
+            env_files=env_files, skipped_env_files=skipped,
         )
 
     except (OSError, IOError) as e:
@@ -1584,7 +1626,9 @@ async def _read_agent_file(host_id: str, request: ReadComposeFileRequest) -> Rea
         success=True,
         path=request.path,
         content=response_data.get("content"),
-        env_content=response_data.get("env_content")
+        env_content=response_data.get("env_content"),
+        env_files=response_data.get("env_files") or {},
+        skipped_env_files=response_data.get("skipped_env_files") or [],
     )
 
 

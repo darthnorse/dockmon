@@ -3,6 +3,7 @@ Request Models for DockMon API Endpoints
 Pydantic models for API request validation
 """
 
+import ipaddress
 import re
 import time
 from datetime import datetime
@@ -575,3 +576,99 @@ class RenameContainerRequest(BaseModel):
                 'and contain only alphanumeric characters, underscores, periods, or hyphens'
             )
         return v
+
+
+# Drivers supported for per-host network creation. Only bridge is offered:
+# - overlay requires Swarm mode (which DockMon does not orchestrate) and would
+#   not provide real cross-host connectivity for standalone hosts anyway.
+# - macvlan/ipvlan require a parent host-interface option that this simple
+#   create form does not collect, so they are deferred rather than half-built.
+SUPPORTED_NETWORK_DRIVERS = frozenset(['bridge'])
+
+
+class CreateNetworkRequest(BaseModel):
+    """Request model for creating a Docker network on a host."""
+    name: str = Field(..., min_length=1, max_length=255)
+    driver: str = Field(default='bridge', max_length=30)
+    subnet: Optional[str] = Field(default=None, max_length=64)
+    gateway: Optional[str] = Field(default=None, max_length=64)
+    internal: bool = Field(default=False)
+
+    @field_validator('name')
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        """Validate network name matches Docker naming rules."""
+        v = v.strip()
+        if not v:
+            raise ValueError('Network name cannot be empty')
+        if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]*', v):
+            raise ValueError(
+                'Network name must start with an alphanumeric character '
+                'and contain only alphanumeric characters, underscores, periods, or hyphens'
+            )
+        return v
+
+    @field_validator('driver')
+    @classmethod
+    def validate_driver(cls, v: str) -> str:
+        """Restrict to standalone-host drivers; reject overlay/unknown."""
+        v = (v or 'bridge').strip().lower()
+        if v not in SUPPORTED_NETWORK_DRIVERS:
+            raise ValueError(
+                f'Unsupported network driver "{v}". Supported drivers: '
+                f'{", ".join(sorted(SUPPORTED_NETWORK_DRIVERS))}. '
+                'Overlay networks require Swarm mode and are not supported.'
+            )
+        return v
+
+    @field_validator('subnet')
+    @classmethod
+    def validate_subnet(cls, v: Optional[str]) -> Optional[str]:
+        """Normalize blank to None; require a canonical CIDR.
+
+        Docker rejects subnets with host bits set (e.g. 172.16.24.0/16), so
+        validate strictly and suggest the network address when that's the issue.
+        """
+        if v is None or not v.strip():
+            return None
+        v = v.strip()
+        try:
+            ipaddress.ip_network(v, strict=True)
+        except ValueError:
+            # Distinguish "host bits set" (fixable) from a truly malformed CIDR.
+            try:
+                canonical = ipaddress.ip_network(v, strict=False)
+            except ValueError:
+                raise ValueError(f'Invalid subnet CIDR: {v}')
+            raise ValueError(
+                f"Invalid subnet '{v}': host bits are set; use the network address {canonical}"
+            )
+        return v
+
+    @field_validator('gateway')
+    @classmethod
+    def validate_gateway(cls, v: Optional[str]) -> Optional[str]:
+        """Normalize blank to None; validate IP when provided."""
+        if v is None or not v.strip():
+            return None
+        v = v.strip()
+        try:
+            ipaddress.ip_address(v)
+        except ValueError:
+            raise ValueError(f'Invalid gateway IP address: {v}')
+        return v
+
+    @model_validator(mode='after')
+    def validate_ipam_consistency(self):
+        """A gateway requires a subnet, must match its IP version, and lie within it."""
+        if self.gateway and not self.subnet:
+            raise ValueError('Gateway requires a subnet')
+        if self.gateway and self.subnet:
+            # Both already validated as syntactically correct by the field validators
+            net = ipaddress.ip_network(self.subnet, strict=False)
+            gw = ipaddress.ip_address(self.gateway)
+            if gw.version != net.version:
+                raise ValueError('Gateway IP version must match the subnet')
+            if gw not in net:
+                raise ValueError(f'Gateway {self.gateway} is not within subnet {self.subnet}')
+        return self

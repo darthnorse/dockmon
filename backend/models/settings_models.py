@@ -249,6 +249,11 @@ class GlobalSettingsUpdate(BaseModel):
     stats_retention_days: Optional[int] = Field(None, ge=1, le=30, description="Stats history retention in days (1-30)")
     stats_points_per_view: Optional[int] = Field(None, ge=100, le=2000, description="Stats points per view/tier (100-2000)")
 
+    # Live chart window (v2.4.x+). Detail-view live chart reach; bounds the
+    # in-memory live buffer per entity, so higher = more server RAM. 60s..1800s
+    # (1..30 min), default 600 (10 min). Backend-only; not pushed to stats-service.
+    live_chart_window_seconds: Optional[int] = Field(None, ge=60, le=1800, description="Live chart window in seconds (60-1800)")
+
     model_config = ConfigDict(extra="forbid")  # Reject unknown keys (typos, attacks)
 
     @field_validator('webui_url_mapping_chain')

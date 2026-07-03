@@ -197,6 +197,10 @@ const StackDirMode os.FileMode = 0755
 // StackFileMode is the file permission for stack files (readable by all for bind mounts)
 const StackFileMode os.FileMode = 0644
 
+// EnvFileMode is the file permission for env files, which commonly hold secrets
+// and must not be world-readable.
+const EnvFileMode os.FileMode = 0600
+
 // ValidateStackName checks that a project name is safe for filesystem use.
 // Returns an error if the name could cause path traversal or other issues.
 func ValidateStackName(name string) error {
@@ -307,9 +311,13 @@ func WriteStackEnvFile(stacksDir, projectName, envContent string) (string, error
 		return "", nil
 	}
 
-	// Write .env file
-	if err := os.WriteFile(envPath, []byte(envContent), StackFileMode); err != nil {
+	// Write .env file. os.WriteFile won't tighten perms on an existing file, so
+	// chmod explicitly to protect secrets in previously world-readable .env files.
+	if err := os.WriteFile(envPath, []byte(envContent), EnvFileMode); err != nil {
 		return "", fmt.Errorf("failed to write .env file: %w", err)
+	}
+	if err := os.Chmod(envPath, EnvFileMode); err != nil {
+		return "", fmt.Errorf("failed to set .env permissions: %w", err)
 	}
 
 	return envPath, nil
@@ -358,9 +366,14 @@ func WriteStackEnvFiles(stacksDir, projectName string, files map[string]string) 
 	for name, content := range files {
 		bare := strings.TrimPrefix(name, "./")
 		fpath := filepath.Join(stackDir, bare)
-		f, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, StackFileMode)
+		f, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, EnvFileMode)
 		if err != nil {
 			return fmt.Errorf("failed to write env file %q: %w", bare, err)
+		}
+		// O_CREATE only applies EnvFileMode to new files; enforce on rewrites too.
+		if cerr := f.Chmod(EnvFileMode); cerr != nil {
+			f.Close()
+			return fmt.Errorf("failed to set env file %q permissions: %w", bare, cerr)
 		}
 		if _, werr := f.Write([]byte(content)); werr != nil {
 			f.Close()

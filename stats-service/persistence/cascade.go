@@ -293,3 +293,19 @@ func (c *Cascade) RemoveHost(hostID string) {
 		}
 	}
 }
+
+// RemoveEntity drops all in-memory tier state for a single entity, identified by
+// its composite container key ("<hostID>:<containerID>") or host_id. Without
+// this, a container that stops emitting samples leaks its last in-flight bucket
+// forever. Stale-cleanup paths (e.g. StatsCache.CleanStaleStats /
+// RemoveContainerStats) should call this once they hold a Cascade reference so
+// evicted entities are dropped here too.
+func (c *Cascade) RemoveEntity(entityID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k := range c.state {
+		if k.entityID == entityID {
+			delete(c.state, k)
+		}
+	}
+}

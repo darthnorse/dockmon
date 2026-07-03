@@ -252,6 +252,11 @@ func (h *SelfUpdateHandler) performNativeSelfUpdate(ctx context.Context, req Sel
 	if req.BinaryURL == "" {
 		return fmt.Errorf("binary_url is required for native self-update")
 	}
+	// A checksum is mandatory: without it a compromised download URL could swap
+	// the binary undetected. Container-mode updates verify via image digest.
+	if req.Checksum == "" {
+		return fmt.Errorf("checksum is required for native self-update")
+	}
 
 	h.log.WithFields(logrus.Fields{
 		"version":    req.Version,
@@ -285,24 +290,22 @@ func (h *SelfUpdateHandler) performNativeSelfUpdate(ctx context.Context, req Sel
 		return fmt.Errorf("failed to download binary: %w", err)
 	}
 
-	// Step 3: Verify checksum if provided
-	if req.Checksum != "" {
-		h.sendProgress("verify", "Verifying checksum")
+	// Step 3: Verify checksum (mandatory - enforced above)
+	h.sendProgress("verify", "Verifying checksum")
 
-		actualChecksum, err := h.computeFileChecksum(newBinaryPath)
-		if err != nil {
-			h.sendProgressError("verify", err)
-			return fmt.Errorf("failed to compute checksum: %w", err)
-		}
-
-		if actualChecksum != req.Checksum {
-			err := fmt.Errorf("checksum mismatch: expected %s, got %s", req.Checksum, actualChecksum)
-			h.sendProgressError("verify", err)
-			return err
-		}
-
-		h.log.Info("Checksum verified successfully")
+	actualChecksum, err := h.computeFileChecksum(newBinaryPath)
+	if err != nil {
+		h.sendProgressError("verify", err)
+		return fmt.Errorf("failed to compute checksum: %w", err)
 	}
+
+	if actualChecksum != req.Checksum {
+		err := fmt.Errorf("checksum mismatch: expected %s, got %s", req.Checksum, actualChecksum)
+		h.sendProgressError("verify", err)
+		return err
+	}
+
+	h.log.Info("Checksum verified successfully")
 
 	// Step 4: Make binary executable
 	if err := os.Chmod(newBinaryPath, 0755); err != nil {
@@ -615,6 +618,9 @@ func (h *SelfUpdateHandler) cloneHostConfig(hostConfig *container.HostConfig) *c
 		MaskedPaths:     hostConfig.MaskedPaths,
 		ReadonlyPaths:   hostConfig.ReadonlyPaths,
 		Init:            hostConfig.Init,
+		LogConfig:       hostConfig.LogConfig,
+		Tmpfs:           hostConfig.Tmpfs,
+		StorageOpt:      hostConfig.StorageOpt,
 	}
 }
 

@@ -65,14 +65,30 @@ type HealthCheckHandler struct {
 	// Guarded by mu.
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// Shared transports (reused across checks) keep connection pools warm and
+	// avoid per-check allocation. One verifies TLS, one skips it.
+	transportVerify *http.Transport
+	transportSkip   *http.Transport
+}
+
+// newHealthCheckTransport builds a reusable transport with the given TLS policy.
+func newHealthCheckTransport(insecureSkipVerify bool) *http.Transport {
+	return &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: insecureSkipVerify, // #nosec G402
+		},
+	}
 }
 
 // NewHealthCheckHandler creates a new health check handler
 func NewHealthCheckHandler(log *logrus.Logger, sendEvent func(string, interface{}) error) *HealthCheckHandler {
 	return &HealthCheckHandler{
-		configs:   make(map[string]*HealthCheckConfig),
-		log:       log,
-		sendEvent: sendEvent,
+		configs:         make(map[string]*HealthCheckConfig),
+		log:             log,
+		sendEvent:       sendEvent,
+		transportVerify: newHealthCheckTransport(false),
+		transportSkip:   newHealthCheckTransport(true),
 	}
 }
 
@@ -280,11 +296,10 @@ func (h *HealthCheckHandler) runDueChecks(ctx context.Context, lastCheck map[str
 func (h *HealthCheckHandler) performCheck(ctx context.Context, config *HealthCheckConfig) {
 	startTime := time.Now()
 
-	// Create HTTP client with appropriate settings
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: !config.VerifySSL, // #nosec G402
-		},
+	// Reuse a shared transport (keeps connection pools warm across checks).
+	transport := h.transportVerify
+	if !config.VerifySSL {
+		transport = h.transportSkip
 	}
 
 	// Handle follow_redirects
@@ -295,12 +310,17 @@ func (h *HealthCheckHandler) performCheck(ctx context.Context, config *HealthChe
 		}
 	}
 
+	// Floor the timeout so a zero/unset value doesn't mean "no timeout".
+	timeout := time.Duration(config.TimeoutSeconds) * time.Second
+	if config.TimeoutSeconds <= 0 {
+		timeout = 10 * time.Second
+	}
+
 	client := &http.Client{
 		Transport:     transport,
-		Timeout:       time.Duration(config.TimeoutSeconds) * time.Second,
+		Timeout:       timeout,
 		CheckRedirect: checkRedirect,
 	}
-	defer client.CloseIdleConnections()
 
 	// Create request
 	method := config.Method

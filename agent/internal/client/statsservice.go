@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"net/http"
 	"strings"
 	"time"
@@ -27,12 +28,15 @@ type StatsServiceClient struct {
 	token  string
 	log    *logrus.Logger
 	sendCh chan AgentStatsMsg
+	dialer *websocket.Dialer
 }
 
 // NewStatsServiceClient builds a client from a base backend URL (http/https)
 // and the agent's permanent token (its agents.id row). The base URL scheme is
 // rewritten to ws/wss and "/api/stats/ws/ingest" is appended.
-func NewStatsServiceClient(backendURL, token string, log *logrus.Logger) *StatsServiceClient {
+// insecureSkipVerify configures TLS verification on this client's OWN dialer,
+// so it never depends on (or races with) a mutated websocket.DefaultDialer.
+func NewStatsServiceClient(backendURL, token string, insecureSkipVerify bool, log *logrus.Logger) *StatsServiceClient {
 	wsURL := backendURL
 	switch {
 	case strings.HasPrefix(wsURL, "https://"):
@@ -41,11 +45,18 @@ func NewStatsServiceClient(backendURL, token string, log *logrus.Logger) *StatsS
 		wsURL = "ws://" + strings.TrimPrefix(wsURL, "http://")
 	}
 	wsURL = strings.TrimRight(wsURL, "/") + "/api/stats/ws/ingest"
+
+	d := *websocket.DefaultDialer
+	if insecureSkipVerify {
+		d.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // #nosec G402
+	}
+
 	return &StatsServiceClient{
 		url:    wsURL,
 		token:  token,
 		log:    log,
 		sendCh: make(chan AgentStatsMsg, 256),
+		dialer: &d,
 	}
 }
 
@@ -91,7 +102,7 @@ func (c *StatsServiceClient) Run(ctx context.Context) {
 // is idle, so reconnection can fire promptly.
 func (c *StatsServiceClient) connectAndPump(ctx context.Context) error {
 	header := http.Header{"Authorization": {"Bearer " + c.token}}
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, c.url, header)
+	conn, _, err := c.dialer.DialContext(ctx, c.url, header)
 	if err != nil {
 		return err
 	}

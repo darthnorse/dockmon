@@ -263,6 +263,8 @@ class NotificationChannelCreate(BaseModel):
             server_url = v.get('server_url', '')
             if not (server_url.startswith('http://') or server_url.startswith('https://')):
                 raise ValueError('Gotify server URL must start with http:// or https://')
+            if is_ssrf_target(server_url):
+                raise ValueError('Gotify server URL targets a cloud metadata service or dangerous internal endpoint')
 
         elif channel_type == 'ntfy':
             required_keys = {'server_url', 'topic'}
@@ -273,6 +275,8 @@ class NotificationChannelCreate(BaseModel):
             server_url = v.get('server_url', '')
             if not (server_url.startswith('http://') or server_url.startswith('https://')):
                 raise ValueError('ntfy server URL must start with http:// or https://')
+            if is_ssrf_target(server_url):
+                raise ValueError('ntfy server URL targets a cloud metadata service or dangerous internal endpoint')
 
             # Validate topic is not empty
             topic = v.get('topic', '')
@@ -315,6 +319,8 @@ class NotificationChannelCreate(BaseModel):
             url = v.get('url', '')
             if not (url.startswith('http://') or url.startswith('https://')):
                 raise ValueError('Webhook URL must start with http:// or https://')
+            if is_ssrf_target(url):
+                raise ValueError('Webhook URL targets a cloud metadata service or dangerous internal endpoint')
 
             # Validate headers is a dict if provided
             if 'headers' in v and v['headers'] is not None:

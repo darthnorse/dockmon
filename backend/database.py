@@ -4159,13 +4159,24 @@ class DatabaseManager:
         return ph.hash(password)
 
     def get_or_create_default_user(self) -> None:
-        """Create default admin user if no users exist"""
+        """Create default admin user if no users exist.
+
+        The password comes from DOCKMON_INITIAL_ADMIN_PASSWORD when set (for
+        automated provisioning); otherwise a random one is generated and printed
+        to the logs once. A static well-known default would let anyone who reaches
+        a fresh instance before its owner claim the admin account.
+        """
         with self.get_session() as session:
             user_count = session.query(User).count()
             if user_count == 0:
+                initial_password = os.getenv("DOCKMON_INITIAL_ADMIN_PASSWORD")
+                generated = not initial_password
+                if generated:
+                    initial_password = secrets.token_urlsafe(18)
+
                 user = User(
                     username="admin",
-                    password_hash=self._hash_password("dockmon123"),
+                    password_hash=self._hash_password(initial_password),
                     is_first_login=True,
                     must_change_password=True
                 )
@@ -4177,7 +4188,15 @@ class DatabaseManager:
                     session.add(UserGroupMembership(user_id=user.id, group_id=admin_group.id))
 
                 session.commit()
-                logger.info("Created default admin user")
+
+                if generated:
+                    logger.warning(
+                        "\n%s\nDockMon first run: created admin user 'admin' with a RANDOM password:\n"
+                        "    %s\nLog in and change it now — this is shown only once.\n%s",
+                        "=" * 72, initial_password, "=" * 72,
+                    )
+                else:
+                    logger.info("Created default admin user with password from DOCKMON_INITIAL_ADMIN_PASSWORD")
 
     def username_exists(self, username: str) -> bool:
         """Check if username already exists"""

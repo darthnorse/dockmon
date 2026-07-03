@@ -25,7 +25,7 @@ from auth.api_key_auth import (
     get_effective_capabilities, get_capabilities_for_group, get_capabilities_for_user,
 )
 from auth.cookie_sessions import cookie_session_manager
-from auth.utils import format_timestamp, format_timestamp_required, get_user_or_404, validate_group_ids, get_auditable_user_info, ensure_not_last_admin, verify_critical_capabilities, ensure_no_privilege_escalation
+from auth.utils import format_timestamp, format_timestamp_required, get_user_or_404, validate_group_ids, get_auditable_user_info, ensure_not_last_admin, verify_critical_capabilities, ensure_no_privilege_escalation, revoke_api_keys_for_user
 from database import User, CustomGroup, UserGroupMembership
 from audit import get_client_info, AuditAction
 from audit.audit_logger import AuditEntityType
@@ -562,11 +562,18 @@ async def delete_user(
             **get_client_info(request)
         )
 
+        # Revoke API keys created by this user so programmatic access does not
+        # outlive the account (the FK is SET NULL, which keeps keys active).
+        revoked_keys = revoke_api_keys_for_user(session, target_user_id)
+
         # Hard delete — FK cascades handle related data
         session.delete(user)
         session.flush()
         verify_critical_capabilities(session)
         session.commit()
+
+        if revoked_keys:
+            logger.info(f"Revoked {revoked_keys} API key(s) created by deleted user '{username}'")
 
         # Evict sessions and invalidate caches AFTER commit
         # (avoids logging out a user if the delete fails)

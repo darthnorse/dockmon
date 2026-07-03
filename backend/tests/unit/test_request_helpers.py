@@ -11,16 +11,67 @@ from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from utils.client_ip import get_request_scheme, get_request_host, _get_cors_origin_parts
+from utils.client_ip import get_request_scheme, get_request_host, _get_cors_origin_parts, get_client_ip
 
 
-def _make_request(headers: dict[str, str] | None = None, scheme: str = "http", netloc: str = "internal:8080") -> MagicMock:
+def _make_request(headers: dict[str, str] | None = None, scheme: str = "http", netloc: str = "internal:8080", peer: str = "127.0.0.1") -> MagicMock:
     """Create a mock FastAPI Request with the given headers and URL parts."""
     request = MagicMock()
     request.headers = headers or {}
     request.url.scheme = scheme
     request.url.netloc = netloc
+    request.client.host = peer
     return request
+
+
+class TestGetClientIp:
+    """Client IP derivation across default and reverse-proxy deployments."""
+
+    def test_default_mode_trusts_x_real_ip_from_bundled_nginx(self):
+        # Bundled nginx sets X-Real-IP=$remote_addr (overwriting client value),
+        # so the real client is recoverable even though the socket peer is nginx.
+        req = _make_request(headers={"x-real-ip": "203.0.113.5"}, peer="127.0.0.1")
+        with patch("utils.client_ip.AppConfig") as cfg:
+            cfg.REVERSE_PROXY_MODE = False
+            assert get_client_ip(req) == "203.0.113.5"
+
+    def test_default_mode_falls_back_to_socket_peer(self):
+        req = _make_request(headers={}, peer="192.168.1.9")
+        with patch("utils.client_ip.AppConfig") as cfg:
+            cfg.REVERSE_PROXY_MODE = False
+            assert get_client_ip(req) == "192.168.1.9"
+
+    def test_reverse_proxy_takes_client_left_of_trusted_hop(self):
+        req = _make_request(headers={"x-forwarded-for": "203.0.113.5, 10.0.0.2"})
+        with patch("utils.client_ip.AppConfig") as cfg:
+            cfg.REVERSE_PROXY_MODE = True
+            cfg.TRUSTED_PROXY_COUNT = 1
+            assert get_client_ip(req) == "203.0.113.5"
+
+    def test_reverse_proxy_ignores_spoofed_leftmost_entry(self):
+        # Attacker prepends a fake hop; with 1 trusted hop the real client is the
+        # second-from-right, never the attacker-controlled left-most value.
+        req = _make_request(headers={"x-forwarded-for": "9.9.9.9, 203.0.113.5, 10.0.0.2"})
+        with patch("utils.client_ip.AppConfig") as cfg:
+            cfg.REVERSE_PROXY_MODE = True
+            cfg.TRUSTED_PROXY_COUNT = 1
+            assert get_client_ip(req) == "203.0.113.5"
+
+
+class TestGetRequestSchemeDefaultMode:
+    """Default (bundled-nginx) deployment must honor X-Forwarded-Proto for the Secure cookie."""
+
+    def test_default_mode_trusts_forwarded_proto(self):
+        req = _make_request(headers={"x-forwarded-proto": "https"}, scheme="http")
+        with patch("utils.client_ip.AppConfig") as cfg:
+            cfg.REVERSE_PROXY_MODE = False
+            assert get_request_scheme(req) == "https"
+
+    def test_default_mode_falls_back_to_url_scheme(self):
+        req = _make_request(headers={}, scheme="http")
+        with patch("utils.client_ip.AppConfig") as cfg:
+            cfg.REVERSE_PROXY_MODE = False
+            assert get_request_scheme(req) == "http"
 
 
 class TestGetCorsOriginParts:
@@ -139,12 +190,6 @@ class TestGetRequestScheme:
         with patch("utils.client_ip.AppConfig") as mock_config:
             mock_config.REVERSE_PROXY_MODE = True
             mock_config.CORS_ORIGINS = None
-            assert get_request_scheme(request) == "http"
-
-    def test_ignores_proxy_headers_when_not_in_proxy_mode(self):
-        request = _make_request(headers={"x-forwarded-proto": "https"}, scheme="http")
-        with patch("utils.client_ip.AppConfig") as mock_config:
-            mock_config.REVERSE_PROXY_MODE = False
             assert get_request_scheme(request) == "http"
 
     def test_ignores_cors_origins_when_not_in_proxy_mode(self):

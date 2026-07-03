@@ -528,8 +528,10 @@ class HttpHealthCheckConfig(BaseModel):
         if ' ' in v:
             raise ValueError('URL cannot contain spaces')
 
-        # Block cloud metadata and dangerous internal endpoints
-        if is_ssrf_target(v):
+        # Block cloud metadata and dangerous internal endpoints. Health checks run
+        # from the DockMon backend, so localhost/loopback is the backend itself and
+        # is blocked; private/container networks remain allowed.
+        if is_ssrf_target(v, block_loopback=True):
             raise ValueError('URL targets a cloud metadata service or dangerous internal endpoint')
 
         return v

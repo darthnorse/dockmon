@@ -14,10 +14,12 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Dict, Optional, Set
+from urllib.parse import urlparse
 import httpx
 
 from database import ContainerHttpHealthCheck
 from event_bus import Event, EventType, get_event_bus
+from utils.url_validation import is_ssrf_target
 from utils.keys import make_composite_key
 
 logger = logging.getLogger(__name__)
@@ -203,7 +205,7 @@ class HttpHealthChecker:
         # Connection pooling is disabled since each check creates its own client
         client_kwargs = {
             'timeout': httpx.Timeout(config['timeout_seconds']),
-            'follow_redirects': config['follow_redirects'],
+            'follow_redirects': False,  # followed manually so each hop is SSRF-validated
             'limits': httpx.Limits(max_connections=1, max_keepalive_connections=0)
         }
 
@@ -268,8 +270,30 @@ class HttpHealthChecker:
                     except json.JSONDecodeError:
                         logger.warning(f"Invalid auth_config_json for {container_id}: not valid JSON")
 
-                # Make request using the dedicated client
-                response = await client.request(**request_kwargs)
+                # Follow redirects manually so every hop is re-validated against the
+                # SSRF blocklist: a stored URL that passed validation could otherwise
+                # 30x-redirect the backend to an internal/metadata endpoint.
+                max_hops = 5 if config['follow_redirects'] else 0
+                origin = urlparse(config['url'])
+                hop = 0
+                while True:
+                    response = await client.request(**request_kwargs)
+                    if not (response.is_redirect and hop < max_hops):
+                        break
+                    location = response.headers.get('location')
+                    if not location:
+                        break
+                    next_url = str(response.url.join(location))
+                    if is_ssrf_target(next_url, block_loopback=True):
+                        raise httpx.RequestError(f"Blocked redirect to disallowed target: {next_url}")
+                    nxt = urlparse(next_url)
+                    # Strip credentials before following a cross-origin redirect.
+                    if (nxt.scheme, nxt.hostname, nxt.port) != (origin.scheme, origin.hostname, origin.port):
+                        request_kwargs.pop('auth', None)
+                        if 'headers' in request_kwargs:
+                            request_kwargs['headers'].pop('Authorization', None)
+                    request_kwargs['url'] = next_url
+                    hop += 1
 
                 # Calculate response time
                 response_time_ms = int((time.time() - start_time) * 1000)

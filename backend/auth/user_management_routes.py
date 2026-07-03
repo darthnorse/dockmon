@@ -20,9 +20,12 @@ from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field, field_validator, EmailStr
 from auth.password import ph
 from auth.shared import db, safe_audit_log
-from auth.api_key_auth import require_capability, get_current_user_or_api_key, invalidate_user_groups_cache
+from auth.api_key_auth import (
+    require_capability, get_current_user_or_api_key, invalidate_user_groups_cache,
+    get_effective_capabilities, get_capabilities_for_group, get_capabilities_for_user,
+)
 from auth.cookie_sessions import cookie_session_manager
-from auth.utils import format_timestamp, format_timestamp_required, get_user_or_404, validate_group_ids, get_auditable_user_info, ensure_not_last_admin, verify_critical_capabilities
+from auth.utils import format_timestamp, format_timestamp_required, get_user_or_404, validate_group_ids, get_auditable_user_info, ensure_not_last_admin, verify_critical_capabilities, ensure_no_privilege_escalation
 from database import User, CustomGroup, UserGroupMembership
 from audit import get_client_info, AuditAction
 from audit.audit_logger import AuditEntityType
@@ -222,6 +225,13 @@ async def create_user(
         groups = validate_group_ids(session, user_data.group_ids)
         group_names = [g.name for g in groups]
 
+        # Prevent privilege escalation: cannot assign groups granting capabilities
+        # the acting principal does not itself hold.
+        requested_caps = set()
+        for g in groups:
+            requested_caps.update(get_capabilities_for_group(g.id))
+        ensure_no_privilege_escalation(get_effective_capabilities(current_user), requested_caps, "assign these groups")
+
         password_hash = ph.hash(user_data.password)
 
         new_user = User(
@@ -391,6 +401,13 @@ async def update_user(
             # Validate all new group_ids exist (uses shared helper)
             new_groups = validate_group_ids(session, user_data.group_ids)
             new_group_names = [g.name for g in new_groups]
+
+            # Prevent privilege escalation: cannot assign groups granting capabilities
+            # the acting principal does not itself hold (e.g. adding Administrators).
+            requested_caps = set()
+            for g in new_groups:
+                requested_caps.update(get_capabilities_for_group(g.id))
+            ensure_no_privilege_escalation(get_effective_capabilities(current_user), requested_caps, "assign these groups")
 
             admin_group = session.query(CustomGroup).filter(
                 CustomGroup.name == "Administrators"
@@ -592,6 +609,14 @@ async def reset_user_password(
                 status_code=400,
                 detail="Cannot reset password for OIDC users"
             )
+
+        # Prevent privilege escalation: cannot reset a user holding capabilities the
+        # acting principal does not itself hold (e.g. resetting an Administrator).
+        ensure_no_privilege_escalation(
+            get_effective_capabilities(current_user),
+            get_capabilities_for_user(target_user_id),
+            "reset this user's password",
+        )
 
         # Generate or use provided password
         if password_data.new_password:

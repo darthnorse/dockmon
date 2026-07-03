@@ -18,6 +18,7 @@ from auth.api_key_auth import (
     get_current_user_or_api_key,
     invalidate_group_permissions_cache,
     invalidate_user_groups_cache,
+    get_effective_capabilities,
 )
 from auth.shared import db
 from auth.utils import (
@@ -926,6 +927,25 @@ async def update_group_permissions(
             deduped[perm_update.capability] = perm_update
         request.permissions = list(deduped.values())
 
+        # Prevent privilege escalation: a groups.manage holder cannot newly GRANT a
+        # capability it does not itself hold (would let it self-escalate to admin).
+        # No-op re-affirmation of an already-granted capability is allowed.
+        actor_caps = get_effective_capabilities(current_user)
+        newly_granted = set()
+        for perm_update in request.permissions:
+            if not perm_update.allowed or perm_update.capability in actor_caps:
+                continue
+            existing = session.query(GroupPermission).filter_by(
+                group_id=group_id, capability=perm_update.capability
+            ).first()
+            if not (existing and existing.allowed):
+                newly_granted.add(perm_update.capability)
+        if newly_granted:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Cannot grant capabilities you do not hold: {', '.join(sorted(newly_granted))}",
+            )
+
         for perm_update in request.permissions:
             if perm_update.capability not in CRITICAL_CAPABILITIES:
                 continue
@@ -1053,6 +1073,23 @@ async def copy_group_permissions(
             warning = f"Source group '{source_group.name}' has no permissions. Target group permissions have been cleared."
 
         source_granted = {p.capability for p in source_permissions if p.allowed}
+
+        # Prevent privilege escalation: cannot copy in a capability the actor does
+        # not hold unless the target already has it granted.
+        actor_caps = get_effective_capabilities(current_user)
+        target_granted_now = {
+            p.capability for p in session.query(GroupPermission).filter(
+                GroupPermission.group_id == target_group_id,
+                GroupPermission.allowed == True,  # noqa: E712
+            ).all()
+        }
+        newly_granted = {c for c in source_granted if c not in actor_caps and c not in target_granted_now}
+        if newly_granted:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Cannot grant capabilities you do not hold: {', '.join(sorted(newly_granted))}",
+            )
+
         target_current = session.query(GroupPermission).filter(
             GroupPermission.group_id == target_group_id,
             GroupPermission.capability.in_(CRITICAL_CAPABILITIES),

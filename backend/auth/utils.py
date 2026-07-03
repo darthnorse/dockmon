@@ -118,6 +118,23 @@ def ensure_not_last_admin(session: Session, user_id: int, action: str) -> None:
         )
 
 
+def ensure_no_privilege_escalation(actor_caps, target_caps, action: str) -> None:
+    """Raise 403 if target_caps contains any capability the actor does not hold.
+
+    Prevents a users.manage / groups.manage holder from granting or reaching
+    capabilities beyond its own (self-escalation / higher-privilege takeover).
+    """
+    excess = set(target_caps) - set(actor_caps)
+    if excess:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Cannot {action}: it would involve capabilities you do not hold "
+                f"({', '.join(sorted(excess))})"
+            ),
+        )
+
+
 def get_user_or_404(session: Session, user_id: int) -> User:
     """Get user by ID or raise 404 HTTPException.
 

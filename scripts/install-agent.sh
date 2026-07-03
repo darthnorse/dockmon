@@ -97,11 +97,51 @@ else
     log_info "Using specified agent version: $AGENT_VERSION"
 fi
 
+# Select a SHA-256 tool for verifying the downloaded release binary
+if command -v sha256sum >/dev/null 2>&1; then
+    SHA256_CMD="sha256sum"
+elif command -v shasum >/dev/null 2>&1; then
+    SHA256_CMD="shasum -a 256"
+else
+    SHA256_CMD=""
+fi
+
 # Download binary
 log_info "Downloading DockMon agent v${AGENT_VERSION}..."
-DOWNLOAD_URL="https://github.com/darthnorse/dockmon/releases/download/agent-v${AGENT_VERSION}/dockmon-agent-linux-${ARCH}"
+BINARY_NAME="dockmon-agent-linux-${ARCH}"
+DOWNLOAD_URL="https://github.com/darthnorse/dockmon/releases/download/agent-v${AGENT_VERSION}/${BINARY_NAME}"
+CHECKSUM_URL="https://github.com/darthnorse/dockmon/releases/download/agent-v${AGENT_VERSION}/checksums.txt"
 
-if ! curl -fsSL -o "$INSTALL_PATH" "$DOWNLOAD_URL"; then
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+if curl -fsSL -o "${TMP_DIR}/${BINARY_NAME}" "$DOWNLOAD_URL"; then
+    # Verify the release binary against the release checksums before trusting it
+    if curl -fsSL -o "${TMP_DIR}/checksums.txt" "$CHECKSUM_URL"; then
+        EXPECTED_SHA="$(grep " ${BINARY_NAME}\$" "${TMP_DIR}/checksums.txt" | awk '{print $1}' | head -1)"
+        if [ -z "$EXPECTED_SHA" ]; then
+            log_error "checksums.txt has no entry for ${BINARY_NAME} - refusing to install an unverified binary"
+            exit 1
+        fi
+        if [ -z "$SHA256_CMD" ]; then
+            log_error "Neither sha256sum nor shasum is available to verify the download - aborting"
+            exit 1
+        fi
+        ACTUAL_SHA="$($SHA256_CMD "${TMP_DIR}/${BINARY_NAME}" | awk '{print $1}')"
+        if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            log_error "SHA256 verification FAILED for ${BINARY_NAME}"
+            log_error "  expected: ${EXPECTED_SHA}"
+            log_error "  actual:   ${ACTUAL_SHA}"
+            log_error "Aborting - the download may be corrupt or tampered with."
+            exit 1
+        fi
+        log_info "SHA256 verification passed"
+    else
+        log_warn "Could not fetch checksums.txt for agent-v${AGENT_VERSION}."
+        log_warn "Installing the binary WITHOUT integrity verification - only continue if you trust this network and source."
+    fi
+    mv "${TMP_DIR}/${BINARY_NAME}" "$INSTALL_PATH"
+else
     log_warn "Release download failed, trying to extract from Docker image..."
 
     if ! command -v docker &> /dev/null; then
@@ -109,10 +149,10 @@ if ! curl -fsSL -o "$INSTALL_PATH" "$DOWNLOAD_URL"; then
         exit 1
     fi
 
-    # Use version tag or latest
     DOCKER_TAG="${AGENT_VERSION}"
+    log_warn "Docker image fallback: ghcr.io/darthnorse/dockmon-agent:${DOCKER_TAG} is NOT checksum-verified by this installer."
     if [ "$DOCKER_TAG" = "latest" ]; then
-        DOCKER_TAG="latest"
+        log_warn "Using the mutable ':latest' tag - pin AGENT_VERSION to a specific release for a reproducible, auditable install."
     fi
 
     log_info "Pulling Docker image ghcr.io/darthnorse/dockmon-agent:${DOCKER_TAG}..."
@@ -135,29 +175,32 @@ fi
 log_info "Creating data directory: $DATA_PATH"
 mkdir -p "$DATA_PATH"
 
-# Build environment lines for systemd
-ENV_LINES="Environment=\"DOCKMON_URL=${DOCKMON_URL}\"
-Environment=\"REGISTRATION_TOKEN=${REGISTRATION_TOKEN}\"
-Environment=\"DATA_PATH=${DATA_PATH}\"
-Environment=\"TZ=${TZ}\""
+# Build the environment for systemd. Secrets (REGISTRATION_TOKEN) go into a
+# root-only EnvironmentFile rather than the world-readable unit file, so these
+# are plain KEY=value lines (no Environment= prefix / quoting).
+ENV_FILE_CONTENT="DOCKMON_URL=${DOCKMON_URL}
+REGISTRATION_TOKEN=${REGISTRATION_TOKEN}
+DATA_PATH=${DATA_PATH}
+TZ=${TZ}"
 
 if [ -n "$INSECURE_SKIP_VERIFY" ] && [ "$INSECURE_SKIP_VERIFY" = "true" ]; then
-    ENV_LINES="${ENV_LINES}
-Environment=\"INSECURE_SKIP_VERIFY=true\""
+    ENV_FILE_CONTENT="${ENV_FILE_CONTENT}
+INSECURE_SKIP_VERIFY=true"
 fi
 
 if [ -n "$AGENT_NAME" ]; then
-    # Reject characters that could break out of the systemd Environment="..." quoting
-    # and inject extra unit directives: control chars (newlines/tabs/CR), double
-    # quotes, and backslashes. Display names with spaces, dashes, dots, etc. are fine.
+    # Reject characters that could inject additional EnvironmentFile assignments:
+    # control chars (newlines/tabs/CR) would start a new KEY=value line; double
+    # quotes and backslashes get special-cased by systemd's parser. Display names
+    # with spaces, dashes, dots, etc. are fine.
     case "$AGENT_NAME" in
         *[[:cntrl:]]*|*'"'*|*'\'*)
             log_error "AGENT_NAME contains forbidden characters (newlines, tabs, double quotes, or backslashes). Use printable characters only."
             exit 1
             ;;
     esac
-    ENV_LINES="${ENV_LINES}
-Environment=\"AGENT_NAME=${AGENT_NAME}\""
+    ENV_FILE_CONTENT="${ENV_FILE_CONTENT}
+AGENT_NAME=${AGENT_NAME}"
 fi
 
 if [ -n "$FORCE_UNIQUE_REGISTRATION" ]; then
@@ -169,8 +212,8 @@ if [ -n "$FORCE_UNIQUE_REGISTRATION" ]; then
                 log_error "FORCE_UNIQUE_REGISTRATION=${FORCE_UNIQUE_REGISTRATION} requires AGENT_NAME to also be set"
                 exit 1
             fi
-            ENV_LINES="${ENV_LINES}
-Environment=\"FORCE_UNIQUE_REGISTRATION=true\""
+            ENV_FILE_CONTENT="${ENV_FILE_CONTENT}
+FORCE_UNIQUE_REGISTRATION=true"
             ;;
         false|FALSE|False|f|F|0)
             # Explicit false — accept silently, matches strconv.ParseBool semantics.
@@ -181,6 +224,22 @@ Environment=\"FORCE_UNIQUE_REGISTRATION=true\""
             ;;
     esac
 fi
+
+# Write secrets to a root-only EnvironmentFile (contains REGISTRATION_TOKEN).
+# umask 077 closes the brief window where the file would otherwise be
+# world-readable between creation and chmod.
+ENV_DIR="/etc/dockmon-agent"
+ENV_FILE="${ENV_DIR}/agent.env"
+log_info "Writing agent environment to ${ENV_FILE} (root-only)..."
+mkdir -p "$ENV_DIR"
+chmod 700 "$ENV_DIR"
+OLD_UMASK="$(umask)"
+umask 077
+cat > "$ENV_FILE" << EOF
+${ENV_FILE_CONTENT}
+EOF
+umask "$OLD_UMASK"
+chmod 600 "$ENV_FILE"
 
 # Create systemd service file
 log_info "Creating systemd service..."
@@ -194,10 +253,20 @@ Requires=docker.service
 
 [Service]
 Type=simple
-${ENV_LINES}
+EnvironmentFile=${ENV_FILE}
 ExecStart=${INSTALL_PATH}
 Restart=always
 RestartSec=10
+
+# Hardening (conservative subset - verified safe with Docker socket access).
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+# Stricter confinement is available but must be validated per host (Docker
+# socket path, LXC/NAS quirks) before enabling. To opt in, uncomment and keep
+# ReadWritePaths covering the agent data dir (identity/token + stacks):
+#ProtectSystem=strict
+#ReadWritePaths=${DATA_PATH}
 
 [Install]
 WantedBy=multi-user.target

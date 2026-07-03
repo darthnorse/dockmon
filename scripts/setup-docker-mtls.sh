@@ -363,6 +363,29 @@ print_info "Certificate Directory: $CERT_DIR"
 print_info "Validity Period: $DAYS_VALID days"
 echo ""
 
+# Warn when certs would live on the unRAID flash (/boot is vfat/FAT32):
+# POSIX permissions are NOT honored there and the flash is often SMB-exported,
+# so the chmod 400 applied to the keys below provides no real protection.
+case "$CERT_DIR" in
+    /boot/*)
+        echo ""
+        print_warn "======================================================================"
+        print_warn "SECURITY WARNING: storing Docker mTLS certificates on the unRAID flash"
+        print_warn "  $CERT_DIR"
+        print_warn ""
+        print_warn "The flash drive is FAT32: file permissions (chmod 400 on the keys) are"
+        print_warn "NOT enforced, and the flash is frequently exported over SMB. The CA key"
+        print_warn "written here can mint client certificates granting full root-equivalent"
+        print_warn "control of Docker on this host - anyone who reads it owns the host."
+        print_warn ""
+        print_warn "Recommended instead:"
+        print_warn "  - Use the DockMon agent (outbound-only, no exposed Docker API or CA key)"
+        print_warn "  - Or place these certs on encrypted, permission-honoring storage"
+        print_warn "======================================================================"
+        echo ""
+        ;;
+esac
+
 # Create certificate directory
 mkdir -p "$CERT_DIR"
 cd "$CERT_DIR"

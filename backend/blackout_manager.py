@@ -50,8 +50,14 @@ class BlackoutManager:
                 start_str = window.get('start_time') or window.get('start', '00:00')
                 end_str = window.get('end_time') or window.get('end', '00:00')
 
-                start_time = datetime.strptime(start_str, '%H:%M').time()
-                end_time = datetime.strptime(end_str, '%H:%M').time()
+                # Skip a single malformed window rather than aborting evaluation of
+                # all remaining (and otherwise valid) windows.
+                try:
+                    start_time = datetime.strptime(start_str, '%H:%M').time()
+                    end_time = datetime.strptime(end_str, '%H:%M').time()
+                except (ValueError, TypeError):
+                    logger.warning(f"Skipping blackout window with invalid time range: {start_str}-{end_str}")
+                    continue
 
                 # Handle overnight windows (e.g., 23:00 to 02:00)
                 if start_time > end_time:

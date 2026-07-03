@@ -1219,7 +1219,11 @@ class NotificationService:
             # Prevent duplicate notifications within 5 seconds (Docker sends kill/stop/die almost simultaneously)
             # This protects against rapid-fire notifications from the same event
             if hasattr(alert, 'notified_at') and alert.notified_at:
-                time_since_notified = datetime.now(timezone.utc) - alert.notified_at.replace(tzinfo=timezone.utc if not alert.notified_at.tzinfo else None)
+                # Normalize to aware UTC only when naive; an aware value must be
+                # left intact (making it naive would raise on the subtraction and
+                # silently drop the notification).
+                notified_at = alert.notified_at if alert.notified_at.tzinfo else alert.notified_at.replace(tzinfo=timezone.utc)
+                time_since_notified = datetime.now(timezone.utc) - notified_at
                 if time_since_notified.total_seconds() < 5:
                     logger.info(f"Skipping duplicate notification for alert {alert.id} ({alert.title}) - last notified {time_since_notified.total_seconds():.1f}s ago")
                     return False

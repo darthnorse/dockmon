@@ -274,11 +274,12 @@ class HttpHealthChecker:
                 # SSRF blocklist: a stored URL that passed validation could otherwise
                 # 30x-redirect the backend to an internal/metadata endpoint.
                 max_hops = 5 if config['follow_redirects'] else 0
+                redirect_codes = {301, 302, 303, 307, 308}
                 origin = urlparse(config['url'])
                 hop = 0
                 while True:
                     response = await client.request(**request_kwargs)
-                    if not (response.is_redirect and hop < max_hops):
+                    if not (hop < max_hops and response.status_code in redirect_codes):
                         break
                     location = response.headers.get('location')
                     if not location:

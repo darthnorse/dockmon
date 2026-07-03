@@ -91,20 +91,17 @@ class TestRevokeApiKeysForUser:
 
 
 class TestFirstRunAdminPassword:
-    def test_generated_password_is_not_the_legacy_default(self, db):
-        """With no env override, the seeded admin must not use 'dockmon123'."""
+    def test_default_password_and_forced_change(self, db):
+        """Default first-run admin uses 'dockmon123' and must change on first login."""
         from database import User
         from auth.password import ph
-        from argon2.exceptions import VerifyMismatchError
 
         db.get_or_create_default_user()
         with db.get_session() as session:
             admin = session.query(User).filter_by(username="admin").first()
             assert admin is not None
             assert admin.must_change_password is True
-            # argon2 raises on mismatch; the legacy default must NOT verify.
-            with pytest.raises(VerifyMismatchError):
-                ph.verify(admin.password_hash, "dockmon123")
+            assert ph.verify(admin.password_hash, "dockmon123")
 
     def test_env_override_sets_admin_password(self, db, monkeypatch):
         from database import User

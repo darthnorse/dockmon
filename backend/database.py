@@ -4161,18 +4161,14 @@ class DatabaseManager:
     def get_or_create_default_user(self) -> None:
         """Create default admin user if no users exist.
 
-        The password comes from DOCKMON_INITIAL_ADMIN_PASSWORD when set (for
-        automated provisioning); otherwise a random one is generated and printed
-        to the logs once. A static well-known default would let anyone who reaches
-        a fresh instance before its owner claim the admin account.
+        Uses DOCKMON_INITIAL_ADMIN_PASSWORD when set (automated provisioning),
+        otherwise the documented default 'dockmon123'. The account is flagged
+        must_change_password so the operator sets their own password on first login.
         """
         with self.get_session() as session:
             user_count = session.query(User).count()
             if user_count == 0:
-                initial_password = os.getenv("DOCKMON_INITIAL_ADMIN_PASSWORD")
-                generated = not initial_password
-                if generated:
-                    initial_password = secrets.token_urlsafe(18)
+                initial_password = os.getenv("DOCKMON_INITIAL_ADMIN_PASSWORD") or "dockmon123"
 
                 user = User(
                     username="admin",
@@ -4188,15 +4184,7 @@ class DatabaseManager:
                     session.add(UserGroupMembership(user_id=user.id, group_id=admin_group.id))
 
                 session.commit()
-
-                if generated:
-                    logger.warning(
-                        "\n%s\nDockMon first run: created admin user 'admin' with a RANDOM password:\n"
-                        "    %s\nLog in and change it now — this is shown only once.\n%s",
-                        "=" * 72, initial_password, "=" * 72,
-                    )
-                else:
-                    logger.info("Created default admin user with password from DOCKMON_INITIAL_ADMIN_PASSWORD")
+                logger.info("Created default admin user")
 
     def username_exists(self, username: str) -> bool:
         """Check if username already exists"""

@@ -260,16 +260,20 @@ class AlertRuleValidator:
             self._validate_json_parseable('host_selector_json', host_selector)
 
             # Validate regex if present
-            if isinstance(host_selector, dict) and 'regex' in host_selector:
-                self._validate_regex(host_selector['regex'])
+            if isinstance(host_selector, dict):
+                if 'regex' in host_selector:
+                    self._validate_regex(host_selector['regex'])
+                self._validate_prefixed_regexes(host_selector)
 
         if container_selector:
             self._validate_selector_size('container_selector_json', container_selector)
             self._validate_json_parseable('container_selector_json', container_selector)
 
             # Validate regex if present
-            if isinstance(container_selector, dict) and 'regex' in container_selector:
-                self._validate_regex(container_selector['regex'])
+            if isinstance(container_selector, dict):
+                if 'regex' in container_selector:
+                    self._validate_regex(container_selector['regex'])
+                self._validate_prefixed_regexes(container_selector)
 
         if labels:
             if isinstance(labels, str):
@@ -308,6 +312,16 @@ class AlertRuleValidator:
                 json.loads(value)
             except json.JSONDecodeError as e:
                 raise AlertRuleValidationError(f"Invalid {field_name}: {e}")
+
+    def _validate_prefixed_regexes(self, selector: dict) -> None:
+        """ReDoS-validate any selector value using the engine's 'regex:' prefix.
+
+        The engine treats host_name/container_name values that start with 'regex:'
+        as patterns, so those must be validated too (not just a 'regex' key).
+        """
+        for value in selector.values():
+            if isinstance(value, str) and value.startswith('regex:'):
+                self._validate_regex(value[6:])
 
     def _validate_regex(self, pattern: str) -> None:
         """Validate regex pattern"""

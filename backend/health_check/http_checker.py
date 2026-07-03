@@ -285,7 +285,7 @@ class HttpHealthChecker:
                     if not location:
                         break
                     next_url = str(response.url.join(location))
-                    if is_ssrf_target(next_url, block_loopback=True):
+                    if is_ssrf_target(next_url):
                         raise httpx.RequestError(f"Blocked redirect to disallowed target: {next_url}")
                     nxt = urlparse(next_url)
                     # Strip credentials before following a cross-origin redirect.

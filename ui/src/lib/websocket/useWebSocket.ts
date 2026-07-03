@@ -60,6 +60,7 @@ export type WebSocketMessage =
   | { type: 'container_update_layer_progress'; data: { host_id: string; entity_id: string; overall_progress: number; layers: Array<{ id: string; status: string; progress: number; size?: number }>; total_layers: number; remaining_layers: number; summary: string; speed_mbps?: number } }
   | { type: 'container_update_warning'; data: { host_id: string; container_id: string; container_name: string; failed_dependents: string[]; warning: string } }
   | { type: 'container_update_complete'; data: { host_id: string; old_container_id: string; new_container_id: string; container_name: string; failed_dependents?: string[]; warning?: string } }
+  | { type: 'container_recreated'; data: { old_composite_key: string; new_composite_key: string } }
   | { type: 'pong'; data?: unknown }
 
 export type WebSocketStatus = 'connecting' | 'connected' | 'disconnected' | 'error'
@@ -72,7 +73,6 @@ interface UseWebSocketOptions {
   onError?: (error: Event) => void
   reconnect?: boolean
   reconnectInterval?: number
-  reconnectAttempts?: number
 }
 
 export function useWebSocket({
@@ -83,7 +83,6 @@ export function useWebSocket({
   onError,
   reconnect = true,
   reconnectInterval = POLLING_CONFIG.WEBSOCKET_RECONNECT,
-  reconnectAttempts = POLLING_CONFIG.WEBSOCKET_MAX_ATTEMPTS,
 }: UseWebSocketOptions) {
   const [status, setStatus] = useState<WebSocketStatus>('connecting')
   const wsRef = useRef<WebSocket | null>(null)
@@ -91,6 +90,9 @@ export function useWebSocket({
   const reconnectCountRef = useRef(0)
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const pongTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Set when disconnect() closes the socket on purpose (unmount/logout) so the
+  // async onclose handler doesn't schedule a reconnect against a dead session.
+  const intentionalCloseRef = useRef(false)
 
   // Store callbacks in refs to avoid dependency changes
   const onMessageRef = useRef(onMessage)
@@ -106,9 +108,15 @@ export function useWebSocket({
   }, [onMessage, onConnect, onDisconnect, onError])
 
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      return // Already connected
+    if (
+      wsRef.current?.readyState === WebSocket.OPEN ||
+      wsRef.current?.readyState === WebSocket.CONNECTING
+    ) {
+      return // Already connected or connecting - avoid duplicate sockets
     }
+
+    // Fresh connect attempt is not an intentional close
+    intentionalCloseRef.current = false
 
     try {
       setStatus('connecting')
@@ -170,18 +178,27 @@ export function useWebSocket({
           pongTimeoutRef.current = null
         }
 
-        if (reconnect && reconnectCountRef.current < reconnectAttempts) {
+        // Don't reconnect if we closed the socket on purpose (unmount/logout)
+        if (intentionalCloseRef.current) {
+          return
+        }
+
+        // Retry indefinitely at the capped interval — a monitoring dashboard
+        // should never permanently stop trying to reconnect.
+        if (reconnect) {
           reconnectCountRef.current++
           // Cap the exponent to prevent overflow after many attempts
           const cappedExponent = Math.min(reconnectCountRef.current - 1, 10)
           const baseDelay = reconnectInterval * Math.pow(1.5, cappedExponent)
           const delay = Math.min(baseDelay, POLLING_CONFIG.WEBSOCKET_MAX_DELAY)
 
+          // Clear any pending reconnect before scheduling a new one
+          if (reconnectTimeoutRef.current) {
+            clearTimeout(reconnectTimeoutRef.current)
+          }
+
           reconnectTimeoutRef.current = setTimeout(() => {
-            debug.log(
-              'WebSocket',
-              `Reconnecting (attempt ${reconnectCountRef.current}/${reconnectAttempts})...`
-            )
+            debug.log('WebSocket', `Reconnecting (attempt ${reconnectCountRef.current})...`)
             connect()
           }, delay)
         }
@@ -192,9 +209,12 @@ export function useWebSocket({
       debug.error('WebSocket', 'Connection failed:', error)
       setStatus('error')
     }
-  }, [url, reconnect, reconnectInterval, reconnectAttempts])
+  }, [url, reconnect, reconnectInterval])
 
   const disconnect = useCallback(() => {
+    // Mark as intentional so the socket's onclose handler skips reconnect
+    intentionalCloseRef.current = true
+
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current)
       reconnectTimeoutRef.current = null

@@ -26,7 +26,7 @@
  * - pong: Heartbeat response
  */
 
-import { createContext, useContext, useCallback, useRef } from 'react'
+import { createContext, useContext, useCallback, useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { debug } from '@/lib/debug'
@@ -69,6 +69,28 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
     }
   }, [])
 
+  // Debounce event-list invalidation: a burst of new_event messages should
+  // trigger a single refetch of both the global and per-host event queries.
+  const eventsInvalidateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const invalidateEventsDebounced = useCallback(() => {
+    if (eventsInvalidateTimerRef.current) {
+      clearTimeout(eventsInvalidateTimerRef.current)
+    }
+    eventsInvalidateTimerRef.current = setTimeout(() => {
+      queryClient.invalidateQueries({ queryKey: ['events'] })
+      queryClient.invalidateQueries({ queryKey: ['host-events'] })
+      eventsInvalidateTimerRef.current = null
+    }, 1500)
+  }, [queryClient])
+
+  useEffect(() => {
+    return () => {
+      if (eventsInvalidateTimerRef.current) {
+        clearTimeout(eventsInvalidateTimerRef.current)
+      }
+    }
+  }, [])
+
   const handleMessage = useCallback(
     (message: WebSocketMessage) => {
       debug.log('WebSocket', 'Received message:', message.type)
@@ -99,7 +121,7 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
           break
 
         case 'new_event':
-          queryClient.invalidateQueries({ queryKey: ['events'] })
+          invalidateEventsDebounced()
           break
 
         case 'host_added':
@@ -155,6 +177,10 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
         case 'container_update_layer_progress':
           break
 
+        // Container recreated (new ID, same name) - handled by ContainerDetailsModal via addMessageHandler
+        case 'container_recreated':
+          break
+
         // Container update warning - show toast when dependent containers fail
         case 'container_update_warning':
           toast.warning(`Update warning for ${message.data.container_name}`, {
@@ -186,7 +212,7 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
         }
       }
     },
-    [queryClient]
+    [queryClient, invalidateEventsDebounced]
   )
 
   // For sub-path deployments, configure base in vite.config.ts (e.g., base: '/dockmon/')
@@ -207,7 +233,6 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
     },
     reconnect: true,
     reconnectInterval: 3000,
-    reconnectAttempts: 10,
   })
 
   return (

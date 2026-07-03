@@ -24,6 +24,7 @@ import { useStatsContext } from '@/lib/stats/StatsProvider'
 import { parseCompositeKey } from '@/lib/utils/containerKeys'
 import { useContainerModal } from '@/providers/ContainerModalProvider'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
+import type { WebSocketMessage } from '@/lib/websocket/useWebSocket'
 
 // Import tab content components
 import { ContainerInfoTab } from './modal-tabs/ContainerInfoTab'
@@ -147,7 +148,7 @@ export function ContainerDetailsModal({
   // Listen for container recreations during updates (new ID, same name)
   // This prevents the modal from closing when a container is updated
   const handleContainerUpdate = useCallback(
-    (message: any) => {
+    (message: WebSocketMessage) => {
       if (!container || !containerId) return
 
       // Listen for container_recreated event (sent immediately when container gets new ID)

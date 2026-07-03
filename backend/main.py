@@ -388,6 +388,7 @@ app = FastAPI(
     version="2.1.8",
     docs_url=None,  # Disable Swagger UI (using ReDoc instead at /docs)
     redoc_url=None,  # Use custom ReDoc endpoint at /docs instead
+    openapi_url=None,  # Disable the public schema route; served auth-gated below
     description="""
 # DockMon API
 
@@ -565,9 +566,14 @@ async def health_check():
         return JSONResponse(status_code=503, content=payload)
     return payload
 
+@app.get("/openapi.json", include_in_schema=False)
+async def openapi_json(current_user: dict = Depends(get_current_user)):
+    """API schema (auth-gated to avoid unauthenticated reconnaissance)."""
+    return app.openapi()
+
 @app.get("/docs", include_in_schema=False)
-async def redoc_html():
-    """ReDoc documentation with sidebar navigation"""
+async def redoc_html(current_user: dict = Depends(get_current_user)):
+    """ReDoc documentation with sidebar navigation (auth-gated)."""
     return get_redoc_html(
         openapi_url="/openapi.json",
         title="DockMon API Documentation",

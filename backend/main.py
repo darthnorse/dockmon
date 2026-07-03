@@ -28,6 +28,7 @@ from docker import DockerClient
 from docker.errors import DockerException, APIError
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends, status, Cookie, Response, Query
 from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError as PydanticValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html
 from fastapi.responses import FileResponse, JSONResponse
@@ -4487,6 +4488,27 @@ async def create_notification_channel(channel: NotificationChannelCreate, reques
 async def update_notification_channel(channel_id: int, updates: NotificationChannelUpdate, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_notifications):
     """Update a notification channel"""
     try:
+        # Validate a changed config against the channel's immutable type, reusing
+        # the create-time validators (the PUT model omits type, so this can't run
+        # as a model validator and must be done here).
+        if updates.config is not None:
+            with monitor.db.get_session() as session:
+                existing = session.query(NotificationChannel).filter(
+                    NotificationChannel.id == channel_id
+                ).first()
+                if not existing:
+                    raise HTTPException(status_code=404, detail="Channel not found")
+                existing_type, existing_name = existing.type, existing.name
+            try:
+                validated = NotificationChannelCreate(
+                    name=updates.name if updates.name is not None else existing_name,
+                    type=existing_type,
+                    config=updates.config,
+                )
+            except PydanticValidationError as ve:
+                raise HTTPException(status_code=422, detail=f"Invalid channel config: {ve.errors()[0]['msg']}")
+            updates.config = validated.config  # normalized (e.g. smtp_port coerced to int)
+
         update_data = {k: v for k, v in updates.dict().items() if v is not None}
         db_channel = monitor.db.update_notification_channel(channel_id, update_data)
 

@@ -338,10 +338,27 @@ class NotificationChannelCreate(BaseModel):
 
 
 class NotificationChannelUpdate(BaseModel):
-    """Request model for updating notification channels"""
+    """Request model for updating notification channels.
+
+    config is validated in the endpoint against the channel's immutable type
+    (the type isn't part of this partial-update payload).
+    """
     name: Optional[str] = None
     config: Optional[Dict[str, Any]] = None
     enabled: Optional[bool] = None
+
+    @field_validator('name')
+    @classmethod
+    def validate_name(cls, v: Optional[str]) -> Optional[str]:
+        """Sanitize channel name on update (matches create-time validation)."""
+        if v is None:
+            return v
+        if not v.strip():
+            raise ValueError('Channel name cannot be empty')
+        sanitized = re.sub(r'[<>"\']', '', v.strip())
+        if len(sanitized) != len(v.strip()):
+            raise ValueError('Channel name contains invalid characters')
+        return sanitized
 
 
 class EventLogFilter(BaseModel):

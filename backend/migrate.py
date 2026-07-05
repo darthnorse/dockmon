@@ -186,83 +186,6 @@ def _log_migration_plan(alembic_cfg, current: str, target: str):
             logger.info(f"   → {version}: {doc}")
 
 
-def _validate_schema(engine, version: str):
-    """
-    Validate expected schema exists for given version.
-
-    This provides an extra safety check that migrations actually created
-    the expected tables/columns. Catches migration bugs early.
-
-    Args:
-        engine: SQLAlchemy engine
-        version: Revision ID to validate (e.g., '002_v2_0_1')
-
-    Raises:
-        RuntimeError: If expected schema is missing
-    """
-    inspector = inspect(engine)
-
-    # Version-specific validation rules
-    # Add new rules here when creating new migrations
-    validations = {
-        '001_v2_0_0': {
-            'tables': ['containers', 'container_updates', 'docker_hosts', 'event_logs'],
-        },
-        '002_v2_0_1': {
-            'container_updates_columns': ['changelog_url', 'changelog_source', 'changelog_checked_at'],
-        },
-        '003_v2_0_2': {
-            'container_updates_columns': ['registry_page_url', 'registry_page_source'],
-            'container_http_health_checks_columns': ['max_restart_attempts', 'restart_retry_delay_seconds'],
-        },
-        '005_v2_1_0': {
-            'tables': ['deployments', 'deployment_containers', 'deployment_templates', 'deployment_metadata'],
-            # Note: deployments table columns validated implicitly via table existence
-            # stage_percent is not a column - docstring comment only, replaced by current_stage + progress_percent
-        },
-        '013_v2_1_8': {
-            'users_columns': ['role'],
-            'tables': ['api_keys'],
-        },
-        '014_v2_1_8_hotfix_1': {
-            'tag_assignments_columns': ['order_index'],
-        },
-        '021_v2_2_0': {
-            'tables': ['registration_tokens', 'agents'],
-            'docker_hosts_columns': ['connection_type', 'engine_id', 'replaced_by_host_id', 'host_ip'],
-        },
-        # Add validations for future versions here:
-    }
-
-    if version in validations:
-        rules = validations[version]
-
-        # Validate tables exist
-        if 'tables' in rules:
-            existing_tables = set(inspector.get_table_names())
-            required = set(rules['tables'])
-            missing = required - existing_tables
-            if missing:
-                raise RuntimeError(f"Schema validation failed: Missing tables: {missing}")
-
-        # Validate columns exist (format: {table_name}_columns: [col1, col2, ...])
-        for key, required_cols in rules.items():
-            if key.endswith('_columns'):
-                table_name = key.replace('_columns', '')
-
-                # Check table exists first
-                if table_name not in inspector.get_table_names():
-                    raise RuntimeError(f"Schema validation failed: Table '{table_name}' does not exist")
-
-                existing_cols = {col['name'] for col in inspector.get_columns(table_name)}
-                required = set(required_cols)
-                missing = required - existing_cols
-                if missing:
-                    raise RuntimeError(f"Schema validation failed: Missing columns in {table_name}: {missing}")
-
-    logger.info(f"Schema validation passed for version: {version}")
-
-
 def _sync_app_version(engine):
     """Sync app_version in GlobalSettings from the VERSION file."""
     app_version = get_app_version()
@@ -315,13 +238,12 @@ def _handle_fresh_install(engine, alembic_cfg) -> bool:
             session.commit()
             logger.info(f"GlobalSettings.app_version set to {app_version}")
 
-        # Stamp database as HEAD without running migrations
+        # Stamp database as HEAD without running migrations.
+        # Schema correctness vs the migration chain is enforced by
+        # tests/integration/database/test_schema_parity.py.
         logger.info(f"Stamping database at version: {head_revision}")
         command.stamp(alembic_cfg, head_revision)
         logger.info(f"Database initialized at version: {head_revision}")
-
-        # Validate schema was created correctly
-        _validate_schema(engine, head_revision)
 
         return True
 
@@ -366,12 +288,6 @@ def _handle_v1_upgrade(engine, alembic_cfg, db_path: str) -> bool:
         try:
             command.upgrade(alembic_cfg, "head")
             logger.info("Migrations completed successfully")
-
-            # Get final version for validation
-            head_version = _get_head_revision(alembic_cfg)
-
-            # Validate schema
-            _validate_schema(engine, head_version)
 
             # Clean up V1 alert tables (legacy cleanup)
             _cleanup_v1_tables(engine)
@@ -470,9 +386,6 @@ def _handle_upgrade(engine, alembic_cfg, db_path: str) -> bool:
                     f"Expected {head_version}, got {final_version}. "
                     f"This usually means the migration rolled back due to a constraint violation or error."
                 )
-
-            # Validate schema
-            _validate_schema(engine, head_version)
 
             # Clean up V1 alert tables (legacy cleanup)
             _cleanup_v1_tables(engine)

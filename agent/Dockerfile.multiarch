@@ -36,7 +36,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     ./cmd/agent
 
 # Runtime stage
-FROM alpine:3.19
+FROM alpine:3.21
 
 ARG VERSION=dev
 LABEL org.opencontainers.image.title="DockMon Agent"
@@ -46,8 +46,8 @@ LABEL org.opencontainers.image.source="https://github.com/darthnorse/dockmon"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.vendor="darthnorse"
 
-# Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata
+# Install runtime dependencies (apk upgrade pulls latest security patches)
+RUN apk upgrade --no-cache && apk add --no-cache ca-certificates tzdata
 
 # Create data directory
 RUN mkdir -p /data
@@ -62,5 +62,10 @@ COPY --from=builder /build/agent/dockmon-agent /app/dockmon-agent
 
 # Expose no ports (agent connects outbound only)
 
-# Run as root (like main DockMon container) to access Docker socket
+# Runs as root by design: the documented `docker run` (and the server-generated
+# run command) mount /var/run/docker.sock without --group-add, so the agent must
+# be root to reach the socket (typically root:docker 0660). Dropping to a
+# non-root user here would break Docker access for existing deployments. The
+# non-root su-exec pattern in agent/Dockerfile requires callers to pass a
+# matching --group-add and is not used for the published multiarch image.
 ENTRYPOINT ["/app/dockmon-agent"]

@@ -203,9 +203,14 @@ func (s *Service) Deploy(ctx context.Context, req DeployRequest) (result *Deploy
 		"stack_dir": filepath.Dir(composeFile),
 	})
 
-	// For "down" action, optionally delete the stack directory
+	// For "down" action, optionally delete the stack directory. Only delete when
+	// the down actually succeeded; otherwise a failed teardown would orphan the
+	// still-running containers from their compose file.
 	if req.Action == "down" && req.RemoveVolumes {
 		defer func() {
+			if result == nil || !result.Success {
+				return
+			}
 			if err := DeleteStackDir(stacksDir, req.ProjectName, s.log); err != nil {
 				s.logWarn("Failed to delete stack directory", logrus.Fields{
 					"error": err.Error(),
@@ -674,10 +679,24 @@ func (s *Service) runComposeUp(ctx context.Context, req DeployRequest, composeFi
 		TotalSvcs: len(serviceNames),
 	})
 
+	// Detect whether this project already had containers before we start, so a
+	// failed redeploy doesn't tear down previously-running services.
+	preExisting, discErr := DiscoverContainers(ctx, s.dockerClient, req.ProjectName, s.log)
+	if discErr != nil {
+		s.logWarn("Failed to check for pre-existing containers before up", logrus.Fields{"error": discErr.Error()})
+	}
+	hadExistingContainers := len(preExisting) > 0
+
 	if err := composeService.Up(ctx, project, upOpts); err != nil {
 		s.logError("Compose up failed", err, nil)
-		s.logWarn("Deployment failed, attempting cleanup...", nil)
-		_ = composeService.Down(ctx, req.ProjectName, api.DownOptions{RemoveOrphans: true})
+		if hadExistingContainers {
+			// The project was already running; a destructive Down would strand the
+			// user with nothing. Leave existing containers in place and just report.
+			s.logWarn("Deployment failed; leaving pre-existing containers in place (skipping teardown)", nil)
+		} else {
+			s.logWarn("Deployment failed, attempting cleanup...", nil)
+			_ = composeService.Down(ctx, req.ProjectName, api.DownOptions{RemoveOrphans: true})
+		}
 		return s.failResult(req.DeploymentID, fmt.Sprintf("Failed to start services (%s): %v", strings.Join(serviceNames, ", "), err))
 	}
 

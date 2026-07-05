@@ -10,7 +10,7 @@ from typing import Literal, NotRequired, TypedDict
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from database import User, CustomGroup, UserGroupMembership, GroupPermission
+from database import User, CustomGroup, UserGroupMembership, GroupPermission, ApiKey
 
 
 # ==================== Auth Context Types ====================
@@ -115,6 +115,37 @@ def ensure_not_last_admin(session: Session, user_id: int, action: str) -> None:
         raise HTTPException(
             status_code=400,
             detail=f"Cannot {action}: this is the last member of the Administrators group"
+        )
+
+
+def revoke_api_keys_for_user(session: Session, user_id: int, now: datetime | None = None) -> int:
+    """Revoke all active API keys created by a user; return the count revoked.
+
+    Called on user deletion so programmatic access does not outlive the account.
+    ApiKey.created_by_user_id is SET NULL on delete, which would otherwise leave
+    the keys fully active under their group's permissions.
+    """
+    now = now or datetime.now(timezone.utc)
+    return session.query(ApiKey).filter(
+        ApiKey.created_by_user_id == user_id,
+        ApiKey.revoked_at.is_(None),
+    ).update({ApiKey.revoked_at: now}, synchronize_session=False)
+
+
+def ensure_no_privilege_escalation(actor_caps, target_caps, action: str) -> None:
+    """Raise 403 if target_caps contains any capability the actor does not hold.
+
+    Prevents a users.manage / groups.manage holder from granting or reaching
+    capabilities beyond its own (self-escalation / higher-privilege takeover).
+    """
+    excess = set(target_caps) - set(actor_caps)
+    if excess:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Cannot {action}: it would involve capabilities you do not hold "
+                f"({', '.join(sorted(excess))})"
+            ),
         )
 
 

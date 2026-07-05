@@ -27,6 +27,10 @@ SSRF_BLOCKED_PATTERNS = [
 def is_ssrf_target(url: str) -> bool:
     """Check if a URL targets a cloud metadata service or dangerous internal endpoint.
 
+    Blocks cloud metadata / link-local endpoints only. Private and loopback
+    addresses are intentionally allowed: Docker hosts and container health-check
+    targets legitimately live on private networks and localhost.
+
     Args:
         url: The URL to check
 

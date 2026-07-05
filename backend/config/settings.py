@@ -247,6 +247,13 @@ class AppConfig:
     CORS_ORIGINS = get_cors_origins()
     REVERSE_PROXY_MODE = os.getenv('REVERSE_PROXY_MODE', 'false').lower() == 'true'
 
+    # Number of trusted proxy hops whose IPs appear as the right-most entries of
+    # X-Forwarded-For (used only in REVERSE_PROXY_MODE). The real client is taken
+    # as the entry immediately left of these trusted hops, so a client cannot spoof
+    # its IP by prepending fake entries. Default 1 = the single fronting proxy
+    # (e.g. Caddy) whose address the bundled nginx appends.
+    TRUSTED_PROXY_COUNT = _safe_int('DOCKMON_TRUSTED_PROXY_COUNT', 1, min_val=1, max_val=10)
+
     # Break-glass override: force local password login on regardless of the
     # oidc_config.local_login_disabled DB flag. Lets an operator recover access
     # if SSO breaks while local login is disabled (set in compose, restart, log

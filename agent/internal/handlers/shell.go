@@ -256,8 +256,15 @@ func (h *ShellHandler) closeSession(sessionID string) {
 	}
 	h.sessionsMu.Unlock()
 
-	if exists && session.cancel != nil {
-		session.cancel()
+	if exists {
+		if session.cancel != nil {
+			session.cancel()
+		}
+		// Cancelling the context does not unblock the hijacked exec connection's
+		// blocking Read; closing the conn does, so the read loop can exit.
+		if session.Conn.Conn != nil {
+			session.Conn.Close()
+		}
 	}
 
 	h.log.WithField("session_id", sessionID).Info("Shell session closed")
@@ -271,6 +278,10 @@ func (h *ShellHandler) CloseAll() {
 	for sessionID, session := range h.sessions {
 		if session.cancel != nil {
 			session.cancel()
+		}
+		// Close the hijacked exec connection so the blocked read loop unblocks.
+		if session.Conn.Conn != nil {
+			session.Conn.Close()
 		}
 		h.log.WithField("session_id", sessionID).Debug("Closed shell session")
 	}

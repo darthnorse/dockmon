@@ -3,6 +3,17 @@
 # DockMon Update Script
 # Updates both the system and DockMon to latest versions
 # Place this in scripts/update.sh in your repository
+#
+# ============================================================================
+# LEGACY / UNMAINTAINED - DO NOT USE FOR DockMon 2.x
+# ----------------------------------------------------------------------------
+# This script targets the pre-2.x static layout (src/index.html served by a
+# web server) and does NOT understand the 2.x containerized architecture
+# (Docker image + supervisord + Go services). It is kept for historical
+# reference only. For 2.x, update via the container image, e.g.:
+#   DOCKER_HOST= docker compose pull && docker compose up -d
+# Do NOT rely on any static/default root password fallback in this file.
+# ============================================================================
 
 set -e
 

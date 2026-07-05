@@ -14,6 +14,7 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/registry"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/sirupsen/logrus"
 )
 
@@ -139,7 +140,7 @@ func (u *Updater) Update(ctx context.Context, req UpdateRequest) *UpdateResult {
 		containerName,
 	)
 	if err != nil {
-		RestoreBackup(ctx, u.cli, u.log, backupName, containerName)
+		_ = RestoreBackup(ctx, u.cli, u.log, backupName, containerName, wasRunning)
 		return u.failResult(containerID, StageCreating, fmt.Errorf("failed to create container: %w", err))
 	}
 	newContainerID := newContainerResp.ID
@@ -157,7 +158,7 @@ func (u *Updater) Update(ctx context.Context, req UpdateRequest) *UpdateResult {
 				// Primary network failure is critical - rollback
 				u.log.WithError(err).Errorf("Failed to connect primary network %s", networkName)
 				u.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
-				RestoreBackup(ctx, u.cli, u.log, backupName, containerName)
+				_ = RestoreBackup(ctx, u.cli, u.log, backupName, containerName, wasRunning)
 				return u.failResult(containerID, StageCreating, fmt.Errorf("failed to connect primary network: %w", err))
 			}
 		}
@@ -177,7 +178,7 @@ func (u *Updater) Update(ctx context.Context, req UpdateRequest) *UpdateResult {
 	u.sendProgress(StageStarting, "Starting new container")
 	if err := u.cli.ContainerStart(ctx, newContainerID, container.StartOptions{}); err != nil {
 		u.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
-		RestoreBackup(ctx, u.cli, u.log, backupName, containerName)
+		_ = RestoreBackup(ctx, u.cli, u.log, backupName, containerName, wasRunning)
 		return u.failResult(containerID, StageStarting, fmt.Errorf("failed to start container: %w", err))
 	}
 
@@ -188,8 +189,8 @@ func (u *Updater) Update(ctx context.Context, req UpdateRequest) *UpdateResult {
 		stopTimeout := req.StopTimeout
 		u.cli.ContainerStop(ctx, newContainerID, container.StopOptions{Timeout: &stopTimeout})
 		u.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
-		RestoreBackup(ctx, u.cli, u.log, backupName, containerName)
-		return u.failResultRolledBack(containerID, StageHealthCheck, fmt.Errorf("health check failed: %w", err))
+		restoreErr := RestoreBackup(ctx, u.cli, u.log, backupName, containerName, wasRunning)
+		return u.failResultRolledBack(containerID, StageHealthCheck, fmt.Errorf("health check failed: %w", err), restoreErr)
 	}
 
 	// Step 10: Restore original stopped state if container wasn't running before update
@@ -287,40 +288,39 @@ func (u *Updater) pullImageWithProgress(ctx context.Context, req UpdateRequest) 
 			continue
 		}
 
-		var progress struct {
-			ID             string `json:"id"`
-			Status         string `json:"status"`
-			ProgressDetail struct {
-				Current int64 `json:"current"`
-				Total   int64 `json:"total"`
-			} `json:"progressDetail"`
-		}
-
-		if err := json.Unmarshal(line, &progress); err != nil {
+		var msg jsonmessage.JSONMessage
+		if err := json.Unmarshal(line, &msg); err != nil {
 			continue
 		}
 
-		if progress.ID == "" {
+		// Docker reports pull failures as in-band error lines over HTTP 200.
+		if msg.Error != nil {
+			return fmt.Errorf("pull error for %s: %s", req.NewImage, msg.Error.Message)
+		}
+
+		if msg.ID == "" {
 			continue
 		}
 
-		layer, exists := layerStatus[progress.ID]
+		layer, exists := layerStatus[msg.ID]
 		if !exists {
 			layer = &LayerProgress{}
-			layerStatus[progress.ID] = layer
+			layerStatus[msg.ID] = layer
 		}
 
-		layer.ID = progress.ID
-		layer.Status = progress.Status
+		layer.ID = msg.ID
+		layer.Status = msg.Status
 
 		// Handle completion events specially
-		if progress.Status == "Pull complete" || progress.Status == "Already exists" {
+		if msg.Status == "Pull complete" || msg.Status == "Already exists" {
 			layer.Current = layer.Total
-		} else {
-			layer.Current = progress.ProgressDetail.Current
-			if progress.ProgressDetail.Total > 0 {
-				layer.Total = progress.ProgressDetail.Total
+		} else if msg.Progress != nil {
+			layer.Current = msg.Progress.Current
+			if msg.Progress.Total > 0 {
+				layer.Total = msg.Progress.Total
 			}
+		} else {
+			layer.Current = 0
 		}
 
 		// Calculate percent for this layer
@@ -367,8 +367,8 @@ func (u *Updater) pullImageWithProgress(ctx context.Context, req UpdateRequest) 
 		}
 
 		// Throttle broadcasts: every 500ms OR 5% change OR completion events
-		isCompletion := strings.Contains(strings.ToLower(progress.Status), "complete") ||
-			progress.Status == "Already exists"
+		isCompletion := strings.Contains(strings.ToLower(msg.Status), "complete") ||
+			msg.Status == "Already exists"
 		shouldBroadcast := now.Sub(lastBroadcast) >= 500*time.Millisecond ||
 			abs(overallPercent-lastPercent) >= 5 ||
 			isCompletion
@@ -505,14 +505,21 @@ func (u *Updater) failResult(containerID, stage string, err error) *UpdateResult
 }
 
 // failResultRolledBack creates a failed result with rollback indicator.
-func (u *Updater) failResultRolledBack(containerID, stage string, err error) *UpdateResult {
+// RolledBack is only true when the restore actually succeeded (restoreErr == nil);
+// a failed restore is surfaced in the error message so callers aren't misled.
+func (u *Updater) failResultRolledBack(containerID, stage string, err error, restoreErr error) *UpdateResult {
 	u.sendProgress(StageRollback, err.Error())
+
+	errMsg := err.Error()
+	if restoreErr != nil {
+		errMsg = fmt.Sprintf("%s (rollback also failed: %v)", errMsg, restoreErr)
+	}
 
 	return &UpdateResult{
 		Success:        false,
 		OldContainerID: truncateID(containerID),
-		RolledBack:     true,
-		Error:          err.Error(),
+		RolledBack:     restoreErr == nil,
+		Error:          errMsg,
 	}
 }
 

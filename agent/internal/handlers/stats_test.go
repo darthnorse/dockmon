@@ -57,7 +57,7 @@ func TestStatsHandler_SetStatsServiceClient(t *testing.T) {
 	}
 
 	// Real client enables the dual-send.
-	c := client.NewStatsServiceClient("http://localhost:0/never", "tok", log)
+	c := client.NewStatsServiceClient("http://localhost:0/never", "tok", false, log)
 	h.SetStatsServiceClient(c)
 	if statsServiceStrictlyNil(t, h) {
 		t.Fatalf("statsService should be non-nil after setting a real client")

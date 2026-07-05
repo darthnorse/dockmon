@@ -263,6 +263,8 @@ class NotificationChannelCreate(BaseModel):
             server_url = v.get('server_url', '')
             if not (server_url.startswith('http://') or server_url.startswith('https://')):
                 raise ValueError('Gotify server URL must start with http:// or https://')
+            if is_ssrf_target(server_url):
+                raise ValueError('Gotify server URL targets a cloud metadata service or dangerous internal endpoint')
 
         elif channel_type == 'ntfy':
             required_keys = {'server_url', 'topic'}
@@ -273,6 +275,8 @@ class NotificationChannelCreate(BaseModel):
             server_url = v.get('server_url', '')
             if not (server_url.startswith('http://') or server_url.startswith('https://')):
                 raise ValueError('ntfy server URL must start with http:// or https://')
+            if is_ssrf_target(server_url):
+                raise ValueError('ntfy server URL targets a cloud metadata service or dangerous internal endpoint')
 
             # Validate topic is not empty
             topic = v.get('topic', '')
@@ -315,6 +319,8 @@ class NotificationChannelCreate(BaseModel):
             url = v.get('url', '')
             if not (url.startswith('http://') or url.startswith('https://')):
                 raise ValueError('Webhook URL must start with http:// or https://')
+            if is_ssrf_target(url):
+                raise ValueError('Webhook URL targets a cloud metadata service or dangerous internal endpoint')
 
             # Validate headers is a dict if provided
             if 'headers' in v and v['headers'] is not None:
@@ -338,10 +344,27 @@ class NotificationChannelCreate(BaseModel):
 
 
 class NotificationChannelUpdate(BaseModel):
-    """Request model for updating notification channels"""
+    """Request model for updating notification channels.
+
+    config is validated in the endpoint against the channel's immutable type
+    (the type isn't part of this partial-update payload).
+    """
     name: Optional[str] = None
     config: Optional[Dict[str, Any]] = None
     enabled: Optional[bool] = None
+
+    @field_validator('name')
+    @classmethod
+    def validate_name(cls, v: Optional[str]) -> Optional[str]:
+        """Sanitize channel name on update (matches create-time validation)."""
+        if v is None:
+            return v
+        if not v.strip():
+            raise ValueError('Channel name cannot be empty')
+        sanitized = re.sub(r'[<>"\']', '', v.strip())
+        if len(sanitized) != len(v.strip()):
+            raise ValueError('Channel name contains invalid characters')
+        return sanitized
 
 
 class EventLogFilter(BaseModel):
@@ -511,7 +534,9 @@ class HttpHealthCheckConfig(BaseModel):
         if ' ' in v:
             raise ValueError('URL cannot contain spaces')
 
-        # Block cloud metadata and dangerous internal endpoints
+        # Block cloud metadata endpoints. localhost/private targets are allowed:
+        # health checks legitimately point at a service on the monitored host
+        # (agent-side checks run there) or the container network.
         if is_ssrf_target(v):
             raise ValueError('URL targets a cloud metadata service or dangerous internal endpoint')
 

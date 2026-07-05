@@ -261,6 +261,11 @@ func (h *HostStatsHandler) calculateNetBytesPerSec(now time.Time) float64 {
 
 	for iface, curr := range currNet {
 		if prev, ok := h.prevNet[iface]; ok {
+			// Skip interfaces whose counters went backwards (reset/renumber) to
+			// avoid uint64 underflow producing a bogus huge rate.
+			if curr.rxBytes < prev.rxBytes || curr.txBytes < prev.txBytes {
+				continue
+			}
 			rxDelta := curr.rxBytes - prev.rxBytes
 			txDelta := curr.txBytes - prev.txBytes
 			totalBytesPerSec += float64(rxDelta+txDelta) / elapsed

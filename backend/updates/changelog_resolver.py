@@ -24,6 +24,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -116,8 +117,16 @@ def _check_oci_labels(labels: dict) -> Optional[str]:
         return None
 
     source = labels.get('org.opencontainers.image.source')
-    if source and 'github.com' in source:
-        return source.rstrip('/') + '/releases'
+    if not source:
+        return None
+
+    # Image labels are attacker-controlled: validate scheme + host rather than a
+    # substring, so values like "javascript:...//github.com" cannot slip through
+    # and later render as a clickable link (stored XSS).
+    parsed = urlparse(source.strip())
+    host = (parsed.hostname or '').lower()
+    if parsed.scheme in ('http', 'https') and (host == 'github.com' or host.endswith('.github.com')):
+        return source.strip().rstrip('/') + '/releases'
     return None
 
 

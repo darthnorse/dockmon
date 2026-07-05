@@ -419,6 +419,9 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
     // Don't save on initial load (empty array)
     if (sorting.length === 0 && !preferences?.container_table_sort) return
 
+    // Skip the echo-save triggered by hydrating state from loaded preferences
+    if (JSON.stringify(sorting) === JSON.stringify(preferences?.container_table_sort ?? [])) return
+
     // Debounce to avoid too many updates
     const timer = setTimeout(() => {
       updatePreferences.mutate({ container_table_sort: sorting })
@@ -438,6 +441,9 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
   useEffect(() => {
     // Don't save on initial load (empty object)
     if (Object.keys(columnVisibility).length === 0 && !preferences?.container_table_column_visibility) return
+
+    // Skip the echo-save triggered by hydrating state from loaded preferences
+    if (JSON.stringify(columnVisibility) === JSON.stringify(preferences?.container_table_column_visibility ?? {})) return
 
     // Debounce to avoid too many updates
     const timer = setTimeout(() => {
@@ -463,6 +469,9 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
 
     // Remove 'select' before saving (we always add it back on load)
     const orderWithoutSelect = columnOrder.filter(id => id !== 'select')
+
+    // Skip the echo-save triggered by hydrating state from loaded preferences
+    if (JSON.stringify(orderWithoutSelect) === JSON.stringify(preferences?.container_table_column_order ?? [])) return
 
     // Debounce to avoid too many updates
     const timer = setTimeout(() => {
@@ -925,7 +934,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
           const tags = row.original.tags || []
           const visibleTags = tags.slice(0, 3)
           const remainingCount = tags.length - visibleTags.length
-          const isExpanded = expandedTagsContainerId === row.original.id
+          const isExpanded = expandedTagsContainerId === makeCompositeKey(row.original)
 
           const safeWebUiHref = row.original.web_ui_url
             ? sanitizeHref(row.original.web_ui_url)
@@ -986,7 +995,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
                         className="px-2 py-0.5 text-xs rounded-full bg-muted text-muted-foreground font-medium cursor-pointer hover:bg-muted/80 transition-colors"
                         onClick={(e) => {
                           e.stopPropagation()
-                          setExpandedTagsContainerId(isExpanded ? null : row.original.id)
+                          setExpandedTagsContainerId(isExpanded ? null : makeCompositeKey(row.original))
                         }}
                       >
                         +{remainingCount}
@@ -1421,7 +1430,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
 
       return [...builtIn, ...customColumnIds.map((id) => buildCustomColumnDef<Container>(id))]
     },
-    [executeAction, isContainerPending, alertCounts, allAutoUpdateConfigs, allHealthCheckConfigs, canOperate, customColumnIds]
+    [executeAction, isContainerPending, alertCounts, allAutoUpdateConfigs, allHealthCheckConfigs, canOperate, customColumnIds, updatesSummary, simplifiedWorkflow, expandedTagsContainerId, openModal]
   )
 
   const table = useReactTable({

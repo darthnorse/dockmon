@@ -13,7 +13,7 @@
  *   openModal(compositeKey, 'logs')  // Opens modal on logs tab
  */
 
-import { createContext, useContext, useState, ReactNode } from 'react'
+import { createContext, useContext, useState, useCallback, useMemo, ReactNode } from 'react'
 import { ContainerDetailsModal } from '@/features/containers/components/ContainerDetailsModal'
 
 interface ContainerModalState {
@@ -45,35 +45,38 @@ export function ContainerModalProvider({ children }: { children: ReactNode }) {
     initialTab: 'info',
   })
 
-  const openModal = (compositeKey: string, initialTab: string = 'info') => {
+  const openModal = useCallback((compositeKey: string, initialTab: string = 'info') => {
     setState({
       isOpen: true,
       containerId: compositeKey,
       initialTab,
     })
-  }
+  }, [])
 
-  const closeModal = () => {
+  const closeModal = useCallback(() => {
     setState({
       isOpen: false,
       containerId: null,
       initialTab: 'info',
     })
-  }
+  }, [])
 
-  const updateContainerId = (newCompositeKey: string) => {
+  const updateContainerId = useCallback((newCompositeKey: string) => {
     setState((prev) => ({
       ...prev,
       containerId: newCompositeKey,
     }))
-  }
+  }, [])
 
-  const contextValue: ContainerModalContextValue = {
-    openModal,
-    closeModal,
-    updateContainerId,
-    isModalOpen: state.isOpen,
-  }
+  const contextValue: ContainerModalContextValue = useMemo(
+    () => ({
+      openModal,
+      closeModal,
+      updateContainerId,
+      isModalOpen: state.isOpen,
+    }),
+    [openModal, closeModal, updateContainerId, state.isOpen]
+  )
 
   return (
     <ContainerModalContext.Provider value={contextValue}>

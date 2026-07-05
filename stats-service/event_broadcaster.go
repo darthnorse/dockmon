@@ -4,9 +4,14 @@ import (
 	"encoding/json"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
+
+// eventWriteTimeout bounds a single broadcast write so one stalled client can't
+// hold the per-connection lock and freeze event delivery to everyone else.
+const eventWriteTimeout = 5 * time.Second
 
 // EventBroadcaster manages WebSocket connections and broadcasts events
 type EventBroadcaster struct {
@@ -70,7 +75,10 @@ func (eb *EventBroadcaster) Broadcast(event DockerEvent) {
 	// Send to all connections (with per-connection write lock)
 	for conn, mu := range connMutexes {
 		mu.Lock()
-		err := conn.WriteMessage(websocket.TextMessage, data)
+		err := conn.SetWriteDeadline(time.Now().Add(eventWriteTimeout))
+		if err == nil {
+			err = conn.WriteMessage(websocket.TextMessage, data)
+		}
 		mu.Unlock()
 
 		if err != nil {

@@ -5,7 +5,7 @@ Uses SQLite for persistent storage of configuration and settings
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
-from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, DateTime, JSON, ForeignKey, Text, UniqueConstraint, CheckConstraint, text, Float, func, Index
+from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, DateTime, JSON, ForeignKey, Text, Table, UniqueConstraint, CheckConstraint, text, Float, func, Index
 from sqlalchemy.orm import sessionmaker, Session, relationship, declarative_base
 from sqlalchemy.pool import StaticPool
 import os
@@ -1400,6 +1400,44 @@ class DeploymentMetadata(Base):
         Index('idx_deployment_metadata_host_deployment', 'host_id', 'deployment_id'),  # Common lookup for deployments on host
         {"sqlite_autoincrement": False},
     )
+
+
+# Stats history tables - owned by the Go stats-service (read/write happens in
+# stats-service/persistence, never from Python). Core Table definitions with no
+# ORM class: they exist in Base.metadata so fresh installs (create_all) get
+# them; upgrades get them from migration 037. Definitions must stay identical
+# to that migration - test_schema_parity.py enforces this.
+container_stats_history = Table(
+    "container_stats_history",
+    Base.metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("container_id", Text, nullable=False),
+    Column("host_id", Text, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False),
+    Column("timestamp", Integer, nullable=False),
+    Column("resolution", Text, nullable=False),
+    Column("cpu_percent", Float, nullable=True),
+    Column("memory_usage", BigInteger, nullable=True),
+    Column("memory_limit", BigInteger, nullable=True),
+    Column("network_bps", Float, nullable=True),
+    UniqueConstraint("container_id", "resolution", "timestamp", name="uq_container_stats"),
+    Index("idx_container_stats_host", "host_id"),
+)
+
+host_stats_history = Table(
+    "host_stats_history",
+    Base.metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("host_id", Text, ForeignKey("docker_hosts.id", ondelete="CASCADE"), nullable=False),
+    Column("timestamp", Integer, nullable=False),
+    Column("resolution", Text, nullable=False),
+    Column("cpu_percent", Float, nullable=True),
+    Column("memory_percent", Float, nullable=True),
+    Column("memory_used_bytes", BigInteger, nullable=True),
+    Column("memory_limit_bytes", BigInteger, nullable=True),
+    Column("network_bps", Float, nullable=True),
+    Column("container_count", Integer, nullable=True),
+    UniqueConstraint("host_id", "resolution", "timestamp", name="uq_host_stats"),
+)
 
 
 class DatabaseManager:

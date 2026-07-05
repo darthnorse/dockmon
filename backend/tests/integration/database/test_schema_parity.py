@@ -17,7 +17,9 @@ stats history tables: migration 037 created tables that deliberately have no
 ORM model (the Go stats-service owns them), so create_all() never made them
 and stats-service silently disabled itself.
 
-These tests fail on ANY new divergence. Known historical leftovers that only
+These tests fail on any new table/column divergence, and additionally enforce
+full definitional parity (types, nullability, defaults, uniques, foreign keys)
+for the Go-owned stats history tables. Known historical leftovers that only
 exist on upgraded databases are frozen in LEGACY_UPGRADED_ONLY_COLUMNS below;
 do not add entries for new code.
 """
@@ -98,6 +100,27 @@ def _index_names(db_path: str, table: str) -> set:
     names = {r[1] for r in conn.execute(f"PRAGMA index_list('{table}')")}
     conn.close()
     return names
+
+
+def _table_detail(db_path: str, table: str) -> dict:
+    """Full definitional snapshot of one table: column types, nullability,
+    defaults, PKs, unique constraints (as column tuples), and foreign keys."""
+    conn = sqlite3.connect(db_path)
+    cols = {
+        r[1]: {"type": r[2].upper(), "notnull": r[3], "default": r[4], "pk": r[5]}
+        for r in conn.execute(f"PRAGMA table_info('{table}')")
+    }
+    uniques = set()
+    for r in conn.execute(f"PRAGMA index_list('{table}')"):
+        name, is_unique = r[1], r[2]
+        if is_unique:
+            uniques.add(tuple(x[2] for x in conn.execute(f"PRAGMA index_info('{name}')")))
+    fks = {
+        (r[3], r[2], r[4], r[6])  # from_col, ref_table, to_col, on_delete
+        for r in conn.execute(f"PRAGMA foreign_key_list('{table}')")
+    }
+    conn.close()
+    return {"cols": cols, "uniques": uniques, "fks": fks}
 
 
 @pytest.fixture
@@ -185,6 +208,33 @@ class TestStatsHistoryTablesOnFreshInstall:
         assert "idx_container_stats_host" in _index_names(
             fresh_db, "container_stats_history"
         )
+
+    def test_stats_tables_fully_identical_between_paths(self, fresh_db, upgraded_db):
+        """The general parity tests compare names only (legacy drift makes a
+        full-schema deep diff infeasible), but the Go-owned stats tables have
+        no legacy baggage and the Go reader/writer depends on their types,
+        NOT NULL flags, unique constraints, and CASCADE foreign keys - so for
+        these two tables the Core Table definitions and migration 037/044 must
+        agree on every detail, not just column names."""
+        for table in ("container_stats_history", "host_stats_history"):
+            fresh = _table_detail(fresh_db, table)
+            upgraded = _table_detail(upgraded_db, table)
+            assert fresh == upgraded, (
+                f"{table} differs between fresh install and upgrade:\n"
+                f"  fresh:    {fresh}\n  upgraded: {upgraded}"
+            )
+
+    def test_stats_tables_constraints(self, fresh_db):
+        """Lock the constraint shape the Go stats-service relies on."""
+        cs = _table_detail(fresh_db, "container_stats_history")
+        hs = _table_detail(fresh_db, "host_stats_history")
+        assert ("container_id", "resolution", "timestamp") in cs["uniques"]
+        assert ("host_id", "resolution", "timestamp") in hs["uniques"]
+        assert ("host_id", "docker_hosts", "id", "CASCADE") in cs["fks"]
+        assert ("host_id", "docker_hosts", "id", "CASCADE") in hs["fks"]
+        for detail in (cs, hs):
+            for col in ("host_id", "timestamp", "resolution"):
+                assert detail["cols"][col]["notnull"] == 1, f"{col} must be NOT NULL"
 
 
 class TestRepairMigration044:

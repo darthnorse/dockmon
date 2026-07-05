@@ -22,6 +22,20 @@ from auth.action_token_auth import generate_action_token
 
 logger = logging.getLogger(__name__)
 
+
+def _redact(text: str, *secrets: str) -> str:
+    """Redact known secrets from a string before logging.
+
+    httpx errors stringify to include the full request URL, which for some
+    providers (Telegram) embeds the bot token; redact it so tokens never reach
+    the logs.
+    """
+    result = str(text)
+    for secret in secrets:
+        if secret:
+            result = result.replace(secret, '***')
+    return result
+
 # V1 dataclasses AlertEvent and DockerEventAlert removed - V2 uses AlertV2 database model
 
 # Human-readable labels for alert kinds, used in notification titles ({KIND}).
@@ -228,10 +242,10 @@ class NotificationService:
                 retry_timestamp = datetime.now(timezone.utc) + timedelta(seconds=retry_after)
                 self._rate_limited_channels['telegram'] = retry_timestamp
                 logger.warning(f"Telegram rate limited, retry after {retry_after}s")
-            logger.error(f"Failed to send Telegram notification: {e}")
+            logger.error(f"Failed to send Telegram notification: {_redact(e, token)}")
             return False
         except Exception as e:
-            logger.error(f"Failed to send Telegram notification: {e}")
+            logger.error(f"Failed to send Telegram notification: {_redact(e, token)}")
             return False
 
     async def _send_discord(self, config: Dict[str, Any], message: str, event=None, action_url: str = '') -> bool:
@@ -472,9 +486,11 @@ class NotificationService:
             elif event and hasattr(event, 'event_type') and event.event_type in ['die', 'oom', 'kill']:
                 priority = 8  # High priority for critical events
 
-            # Build URL with proper path handling
+            # Build URL with proper path handling. The app token goes in the
+            # X-Gotify-Key header (not the query string) so it cannot leak into
+            # reverse-proxy or error logs.
             base_url = server_url.rstrip('/')
-            url = f"{base_url}/message?token={app_token}"
+            url = f"{base_url}/message"
 
             # Determine title: use event container name if available, otherwise use provided title
             notification_title = f"DockMon: {event.container_name}" if event and hasattr(event, 'container_name') else title
@@ -489,7 +505,7 @@ class NotificationService:
                 payload['extras'] = extras
 
             # Send request with timeout
-            response = await self.http_client.post(url, json=payload)
+            response = await self.http_client.post(url, json=payload, headers={'X-Gotify-Key': app_token})
             response.raise_for_status()
 
             logger.info("Gotify notification sent successfully")
@@ -699,8 +715,10 @@ class NotificationService:
             plain_text = re.sub(r'`(.*?)`', r'\1', plain_text)
             plain_text = re.sub(r'[🚨🔴🟢💀⚠️🏥✅🔄📢]', '', plain_text)
 
-            # HTML version with basic styling (light theme for better email compatibility)
-            html_text = message.replace('\n', '<br>')
+            # HTML version with basic styling (light theme for better email compatibility).
+            # Escape the message first so attacker-influenceable content (e.g. container
+            # labels in {LABELS}) cannot inject markup; our own tags are added after.
+            html_text = html.escape(message).replace('\n', '<br>')
             html_text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', html_text)
             html_text = re.sub(r'`(.*?)`', r'<code style="background:#f5f5f5;color:#333;padding:2px 6px;border-radius:3px;font-family:monospace;">\1</code>', html_text)
 
@@ -1201,7 +1219,11 @@ class NotificationService:
             # Prevent duplicate notifications within 5 seconds (Docker sends kill/stop/die almost simultaneously)
             # This protects against rapid-fire notifications from the same event
             if hasattr(alert, 'notified_at') and alert.notified_at:
-                time_since_notified = datetime.now(timezone.utc) - alert.notified_at.replace(tzinfo=timezone.utc if not alert.notified_at.tzinfo else None)
+                # Normalize to aware UTC only when naive; an aware value must be
+                # left intact (making it naive would raise on the subtraction and
+                # silently drop the notification).
+                notified_at = alert.notified_at if alert.notified_at.tzinfo else alert.notified_at.replace(tzinfo=timezone.utc)
+                time_since_notified = datetime.now(timezone.utc) - notified_at
                 if time_since_notified.total_seconds() < 5:
                     logger.info(f"Skipping duplicate notification for alert {alert.id} ({alert.title}) - last notified {time_since_notified.total_seconds():.1f}s ago")
                     return False

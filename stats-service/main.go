@@ -639,16 +639,13 @@ func main() {
 
 	// WebSocket endpoint for event streaming - PROTECTED
 	mux.HandleFunc("/ws/events", func(w http.ResponseWriter, r *http.Request) {
-		// Validate token from query parameter or header
+		// Validate token from query parameter or header using constant-time
+		// comparison to prevent timing attacks.
 		tokenParam := r.URL.Query().Get("token")
 		authHeader := r.Header.Get("Authorization")
 
-		validToken := false
-		if tokenParam == token {
-			validToken = true
-		} else if authHeader == "Bearer "+token {
-			validToken = true
-		}
+		validToken := subtle.ConstantTimeCompare([]byte(tokenParam), []byte(token)) == 1 ||
+			subtle.ConstantTimeCompare([]byte(authHeader), []byte("Bearer "+token)) == 1
 
 		if !validToken {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -706,9 +703,11 @@ func main() {
 		}()
 	})
 
-	// Create server with configured port
+	// Create server with configured port. Bind to loopback only: nginx and the
+	// backend reach stats-service via 127.0.0.1 inside the same container, and it
+	// is never meant to be exposed externally.
 	srv := &http.Server{
-		Addr:              ":" + config.Port,
+		Addr:              "127.0.0.1:" + config.Port,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,

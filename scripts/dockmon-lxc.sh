@@ -3,6 +3,19 @@
 # DockMon LXC Container Auto-Creation Script for Proxmox
 # Run this script on your Proxmox host to automatically create and configure DockMon
 # Usage: bash dockmon-lxc.sh
+#
+# ============================================================================
+# LEGACY / UNMAINTAINED - DO NOT USE FOR DockMon 2.x
+# ----------------------------------------------------------------------------
+# This script builds the pre-2.x static layout (src/index.html served from
+# /var/www/html) and does NOT reflect the 2.x containerized architecture
+# (Docker image + supervisord + Go services). It is kept for historical
+# reference only; deploy 2.x with the published container image instead.
+#
+# SECURITY: the non-interactive path falls back to the well-known static root
+# password "dockmon123" if openssl is unavailable. Never ship a container with
+# that fallback - always set a strong, unique root password.
+# ============================================================================
 
 set -e
 

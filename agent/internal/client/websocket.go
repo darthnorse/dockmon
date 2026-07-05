@@ -47,10 +47,16 @@ type WebSocketClient struct {
 	doneChan      chan struct{}
 	stopOnce      sync.Once  // Prevents double-close panic on stopChan
 
-	// WaitGroup to track background goroutines (ping, event streaming)
+	// WaitGroup to track per-connection background goroutines (ping, event
+	// streaming). Waited on every connection teardown, so it must NOT include
+	// long-running operations or reconnect would block behind a 10-min pull.
 	backgroundWg  sync.WaitGroup
 	// WaitGroup to track message handler goroutines (must complete before backgroundWg.Wait)
 	messageWg     sync.WaitGroup
+	// WaitGroup for detached long-running operations (update, deploy, self-update).
+	// These run on context.Background() and survive reconnects; only waited at
+	// full shutdown (Run exit).
+	longRunningWg sync.WaitGroup
 }
 
 // NewWebSocketClient creates a new WebSocket client
@@ -161,6 +167,10 @@ func (c *WebSocketClient) StatsHandler() *handlers.StatsHandler {
 // Run starts the WebSocket client with automatic reconnection
 func (c *WebSocketClient) Run(ctx context.Context) error {
 	defer close(c.doneChan)
+	// At full shutdown, wait (bounded) for detached long-running operations so an
+	// in-flight update/deploy/self-update isn't abandoned. Reconnects never wait
+	// on these; only Run exit does.
+	defer c.waitLongRunning(30 * time.Second)
 
 	backoff := c.cfg.ReconnectInitial
 	isReconnect := false
@@ -243,8 +253,11 @@ func (c *WebSocketClient) connect(ctx context.Context) error {
 	}
 	wsURL = wsURL + "/api/agent/ws"
 
-	// Configure dialer with TLS settings
-	dialer := websocket.DefaultDialer
+	// Configure dialer with TLS settings on a LOCAL copy of DefaultDialer.
+	// Mutating the package global would race with other goroutines that read it
+	// (e.g. StatsServiceClient).
+	d := *websocket.DefaultDialer
+	dialer := &d
 	if c.cfg.InsecureSkipVerify {
 		dialer.TLSClientConfig = &tls.Config{
 			InsecureSkipVerify: true, // #nosec G402
@@ -726,9 +739,9 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 		if err = protocol.ParseCommand(msg, &updateReq); err == nil {
 			// Run update in background and respond immediately
 			// Use background context so update continues even if WebSocket disconnects
-			c.backgroundWg.Add(1)
+			c.longRunningWg.Add(1)
 			go func() { // #nosec G118
-				defer c.backgroundWg.Done()
+				defer c.longRunningWg.Done()
 				// Use background context instead of connection context
 				// This allows updates to complete even if connection drops
 				updateCtx := context.Background()
@@ -751,9 +764,9 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 		if err = protocol.ParseCommand(msg, &updateReq); err == nil {
 			// Run self-update in background and respond immediately
 			// Use background context so update continues even if WebSocket disconnects
-			c.backgroundWg.Add(1)
+			c.longRunningWg.Add(1)
 			go func() { // #nosec G118
-				defer c.backgroundWg.Done()
+				defer c.longRunningWg.Done()
 				// Use background context for self-update
 				updateCtx := context.Background()
 				if updateErr := c.selfUpdateHandler.PerformSelfUpdate(updateCtx, updateReq); updateErr != nil {
@@ -777,9 +790,9 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 			if err = protocol.ParseCommand(msg, &deployReq); err == nil {
 				// Run deployment in background and respond immediately
 				// Use background context so deployment continues even if WebSocket disconnects
-				c.backgroundWg.Add(1)
+				c.longRunningWg.Add(1)
 				go func() { // #nosec G118
-					defer c.backgroundWg.Done()
+					defer c.longRunningWg.Done()
 					// Use background context for deployment
 					deployCtx := context.Background()
 					deployResult := c.deployHandler.DeployCompose(deployCtx, deployReq)
@@ -1346,22 +1359,29 @@ func (c *WebSocketClient) closeConnection() {
 		}
 		c.conn = nil
 	}
-	c.connMu.Unlock()  // Release lock BEFORE waiting
+	c.connMu.Unlock()
 
-	// Wait for background goroutines to complete (with timeout)
-	// This is done WITHOUT holding the lock to prevent blocking other goroutines
+	// Per-connection background goroutines were already drained by
+	// handleConnection's deferred cleanup, so there's nothing to wait on here.
+	// Long-running operations (update/deploy/self-update) run detached and are
+	// waited on only at full shutdown (see Run).
+	c.registered = false
+}
+
+// waitLongRunning waits, bounded by timeout, for detached long-running
+// operations to finish. Called only at full shutdown so reconnects never block
+// on an in-flight update, deploy, or self-update.
+func (c *WebSocketClient) waitLongRunning(timeout time.Duration) {
 	done := make(chan struct{})
 	go func() {
-		c.backgroundWg.Wait()
+		c.longRunningWg.Wait()
 		close(done)
 	}()
 
 	select {
 	case <-done:
-		c.log.Info("All background operations completed")
-	case <-time.After(30 * time.Second):
-		c.log.Warn("Timed out waiting for background operations to complete")
+		c.log.Info("All long-running operations completed")
+	case <-time.After(timeout):
+		c.log.Warn("Timed out waiting for long-running operations to complete")
 	}
-
-	c.registered = false
 }

@@ -41,7 +41,7 @@ func TestStatsServiceClient_SendsMessages(t *testing.T) {
 
 	log := logrus.New()
 	log.SetOutput(&testLogWriter{t})
-	c := NewStatsServiceClient(srv.URL, "test-token", log)
+	c := NewStatsServiceClient(srv.URL, "test-token", false, log)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -70,7 +70,7 @@ func TestStatsServiceClient_SendsMessages(t *testing.T) {
 func TestStatsServiceClient_DropsWhenChannelFull(t *testing.T) {
 	log := logrus.New()
 	log.SetOutput(&testLogWriter{t})
-	c := NewStatsServiceClient("ws://localhost:0/never", "tok", log)
+	c := NewStatsServiceClient("ws://localhost:0/never", "tok", false, log)
 	// Don't run the client; spam the send channel.
 	for i := 0; i < 10000; i++ {
 		c.Send(AgentStatsMsg{ContainerID: "abc123abc123"})
@@ -91,7 +91,7 @@ func TestNewStatsServiceClient_BuildsWsURL(t *testing.T) {
 		{"https://dockmon.example.com/", "wss://"}, // trailing slash trimmed
 	}
 	for _, tc := range cases {
-		c := NewStatsServiceClient(tc.input, "tok", log)
+		c := NewStatsServiceClient(tc.input, "tok", false, log)
 		if !strings.HasPrefix(c.url, tc.prefix) {
 			t.Errorf("%s -> url=%q, want %s prefix", tc.input, c.url, tc.prefix)
 		}
@@ -128,7 +128,7 @@ func TestStatsServiceClient_ReconnectsAfterServerDisconnect(t *testing.T) {
 
 	log := logrus.New()
 	log.SetOutput(&testLogWriter{t})
-	c := NewStatsServiceClient(srv.URL, "test-token", log)
+	c := NewStatsServiceClient(srv.URL, "test-token", false, log)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

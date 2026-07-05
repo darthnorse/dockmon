@@ -24,7 +24,7 @@ import {
   ArrowDown,
   ArrowUp,
 } from 'lucide-react'
-import { apiClient } from '@/lib/api/client'
+import { apiClient, ApiError } from '@/lib/api/client'
 import { debug } from '@/lib/debug'
 import { toast } from 'sonner'
 import { makeCompositeKeyFrom } from '@/lib/utils/containerKeys'
@@ -76,6 +76,36 @@ const CONTAINER_COLORS = [
   'text-lime-400',
 ]
 
+// Cache sanitized log HTML keyed by the raw line so identical lines across 2s
+// polls don't re-run ansiToHtml + DOMPurify on every render.
+const sanitizedHtmlCache = new Map<string, string>()
+function getSanitizedLogHtml(line: string): string {
+  const cached = sanitizedHtmlCache.get(line)
+  if (cached !== undefined) return cached
+
+  const html = DOMPurify.sanitize(ansiToHtml(line), {
+    ALLOWED_TAGS: ['span'],
+    ALLOWED_ATTR: ['class', 'style'],
+  })
+
+  // Bound cache growth on chatty containers
+  if (sanitizedHtmlCache.size > 5000) {
+    sanitizedHtmlCache.clear()
+  }
+  sanitizedHtmlCache.set(line, html)
+  return html
+}
+
+// Cheap content signature to detect whether a fetch actually changed the logs.
+// Container logs are append/sliding-window, so length + first/last lines catch
+// real changes without stringifying thousands of lines each poll.
+function logsSignature(arr: LogLine[]): string {
+  if (arr.length === 0) return '0'
+  const first = arr[0]
+  const last = arr[arr.length - 1]
+  return `${arr.length}|${first?.containerKey}|${first?.timestamp}|${first?.log}|${last?.containerKey}|${last?.timestamp}|${last?.log}`
+}
+
 export function LogViewer({
   containers,
   showContainerNames = true,
@@ -105,6 +135,8 @@ export function LogViewer({
   const containerColorMap = useRef<Record<string, number>>({})
   const nextColorIndex = useRef(0)
   const isFetchingRef = useRef(false)
+  // Mirror of current logs so fetchLogs can skip setLogs when content is unchanged
+  const logsRef = useRef<LogLine[]>([])
 
   // Use refs for values that change but shouldn't trigger fetchLogs recreation
   const tailCountRef = useRef(tailCount)
@@ -115,6 +147,7 @@ export function LogViewer({
   useEffect(() => { tailCountRef.current = tailCount }, [tailCount])
   useEffect(() => { sortOrderRef.current = sortOrder }, [sortOrder])
   useEffect(() => { userHasScrolledRef.current = userHasScrolled }, [userHasScrolled])
+  useEffect(() => { logsRef.current = logs }, [logs])
 
   // Assign colors to containers
   useEffect(() => {
@@ -184,12 +217,9 @@ export function LogViewer({
             containerKey: makeCompositeKeyFrom(container.hostId, container.containerId),
           }))
         } catch (error) {
-          // TypeScript infers 'unknown' - safer than 'any'
-          if (error && typeof error === 'object' && 'response' in error) {
-            const apiError = error as { response?: { status?: number } }
-            if (apiError.response?.status === 429) {
-              rateLimitHit = true
-            }
+          // apiClient throws ApiError with a top-level status
+          if (error instanceof ApiError && error.status === 429) {
+            rateLimitHit = true
           }
           return []
         }
@@ -209,6 +239,11 @@ export function LogViewer({
         const bTime = new Date(b.timestamp).getTime()
         return sortOrderRef.current === 'asc' ? aTime - bTime : bTime - aTime
       })
+
+      // Skip the state update (and re-render) when nothing changed since last poll
+      if (logsSignature(newLogs) === logsSignature(logsRef.current)) {
+        return
+      }
 
       // Only auto-scroll if user hasn't manually scrolled away
       const shouldAutoScroll = !userHasScrolledRef.current
@@ -289,7 +324,10 @@ export function LogViewer({
         intervalRef.current = null
       }
     }
-  }, [autoRefresh, containers.length])
+    // Key on the actual container set (not just count) so swapping a same-count
+    // selection re-arms the interval with a fetchLogs bound to the new containers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRefresh, currentContainerIds])
 
   // Re-sort when sort order changes
   useEffect(() => {
@@ -518,12 +556,7 @@ export function LogViewer({
                   )}
                   <span
                     className="text-foreground"
-                    dangerouslySetInnerHTML={{
-                      __html: DOMPurify.sanitize(ansiToHtml(log.log), {
-                        ALLOWED_TAGS: ['span'],
-                        ALLOWED_ATTR: ['class', 'style'],
-                      }),
-                    }}
+                    dangerouslySetInnerHTML={{ __html: getSanitizedLogHtml(log.log) }}
                   />
                 </div>
               ))}

@@ -13,7 +13,7 @@
  * - Real-time updates via WebSocket
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { cn } from '@/lib/utils'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 
@@ -85,9 +85,10 @@ export function LayerProgressDisplay({
   const [layerProgress, setLayerProgress] = useState<LayerProgressData | null>(null)
   const [layerDetailsExpanded, setLayerDetailsExpanded] = useState(true)  // Default expanded
 
-  // Store completion timeout IDs for cleanup (prevents memory leak)
-  const [completionTimeoutId, setCompletionTimeoutId] = useState<NodeJS.Timeout | null>(null)
-  const [collapseTimeoutId, setCollapseTimeoutId] = useState<NodeJS.Timeout | null>(null)
+  // Store timeout IDs in refs (not state) so they are NOT effect deps — using
+  // state here caused effects to churn and re-arm the collapse timer forever.
+  const completionTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const collapseTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   // Listen for WebSocket progress messages
   const handleProgressMessage = useCallback(
@@ -113,17 +114,16 @@ export function LayerProgressDisplay({
           const stage = progress?.stage || message.data?.stage
           if (stage === 'completed' || message.status === 'running') {
             // Clear any existing timeout first
-            if (completionTimeoutId) {
-              clearTimeout(completionTimeoutId)
+            if (completionTimeoutRef.current) {
+              clearTimeout(completionTimeoutRef.current)
             }
 
             // Set new timeout and store ID for cleanup
-            const timeoutId = setTimeout(() => {
+            completionTimeoutRef.current = setTimeout(() => {
               setUpdateProgress(null)
               setLayerProgress(null)
-              setCompletionTimeoutId(null)
+              completionTimeoutRef.current = null
             }, 3000)
-            setCompletionTimeoutId(timeoutId)
           }
         }
 
@@ -148,45 +148,46 @@ export function LayerProgressDisplay({
         }
       }
     },
-    [hostId, entityId, eventType, simpleProgressEventType, completionTimeoutId]
+    [hostId, entityId, eventType, simpleProgressEventType]
   )
 
   useEffect(() => {
     const cleanup = addMessageHandler(handleProgressMessage)
+    return cleanup
+  }, [addMessageHandler, handleProgressMessage])
 
-    // Return combined cleanup function
+  // Clear pending timers on unmount only (prevents memory leak)
+  useEffect(() => {
     return () => {
-      cleanup()
-
-      // Clear timeouts if component unmounts (prevents memory leak)
-      if (completionTimeoutId) {
-        clearTimeout(completionTimeoutId)
+      if (completionTimeoutRef.current) {
+        clearTimeout(completionTimeoutRef.current)
       }
-      if (collapseTimeoutId) {
-        clearTimeout(collapseTimeoutId)
+      if (collapseTimeoutRef.current) {
+        clearTimeout(collapseTimeoutRef.current)
       }
     }
-  }, [addMessageHandler, handleProgressMessage, completionTimeoutId, collapseTimeoutId])
+  }, [])
 
-  // Auto-collapse layer details 2 seconds after reaching 100% (unless disabled)
+  // Auto-collapse layer details 2 seconds after reaching 100% (unless disabled).
+  // Schedule only when no timer is already pending so the effect can't re-arm itself.
   useEffect(() => {
     if (disableAutoCollapse) return
 
-    if (layerProgress && layerProgress.overall_progress === 100 && layerDetailsExpanded) {
-      // Clear any existing collapse timeout
-      if (collapseTimeoutId) {
-        clearTimeout(collapseTimeoutId)
-      }
-
-      // Set new timeout to collapse after 2 seconds
-      const timeoutId = setTimeout(() => {
+    if (
+      layerProgress &&
+      layerProgress.overall_progress === 100 &&
+      layerDetailsExpanded &&
+      !collapseTimeoutRef.current
+    ) {
+      collapseTimeoutRef.current = setTimeout(() => {
         setLayerDetailsExpanded(false)
-        setCollapseTimeoutId(null)
+        collapseTimeoutRef.current = null
       }, 2000)
-
-      setCollapseTimeoutId(timeoutId)
     }
-  }, [layerProgress?.overall_progress, layerDetailsExpanded, collapseTimeoutId, disableAutoCollapse])
+    // Depend on overall_progress (not the whole layerProgress object, which is a
+    // fresh reference on every WS message) to avoid re-arming the timer each tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layerProgress?.overall_progress, layerDetailsExpanded, disableAutoCollapse])
 
   // Don't render if no progress data
   if (!updateProgress && !layerProgress) {

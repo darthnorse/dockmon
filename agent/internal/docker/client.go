@@ -11,6 +11,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ import (
 	"github.com/docker/docker/api/types/registry"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/darthnorse/dockmon-agent/internal/config"
 	"github.com/sirupsen/logrus"
@@ -676,9 +678,24 @@ func (c *Client) PullImage(ctx context.Context, imageName string) error {
 	}
 	defer reader.Close()
 
-	// Read to EOF to ensure pull completes
-	_, err = io.Copy(io.Discard, reader)
-	if err != nil {
+	// Read the stream to completion. Docker reports pull failures as in-band
+	// error lines over HTTP 200, so we must parse them rather than discard.
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var msg jsonmessage.JSONMessage
+		if err := json.Unmarshal(line, &msg); err != nil {
+			continue
+		}
+		if msg.Error != nil {
+			return fmt.Errorf("pull error for %s: %s", imageName, msg.Error.Message)
+		}
+	}
+	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("failed to read pull response: %w", err)
 	}
 
@@ -749,14 +766,28 @@ func (c *Client) PullImageWithProgress(ctx context.Context, imageName string, au
 			continue
 		}
 
-		var progress PullProgress
-		if err := json.Unmarshal(line, &progress); err != nil {
+		var msg jsonmessage.JSONMessage
+		if err := json.Unmarshal(line, &msg); err != nil {
 			// Best effort - skip malformed lines, don't fail the pull
 			continue
 		}
 
+		// Docker reports pull failures as in-band error lines over HTTP 200.
+		if msg.Error != nil {
+			return fmt.Errorf("pull error for %s: %s", imageName, msg.Error.Message)
+		}
+
 		// Call progress callback (best effort, ignore panics)
 		if onProgress != nil {
+			progress := PullProgress{
+				ID:       msg.ID,
+				Status:   msg.Status,
+				Progress: msg.ProgressMessage,
+			}
+			if msg.Progress != nil {
+				progress.ProgressDetail.Current = msg.Progress.Current
+				progress.ProgressDetail.Total = msg.Progress.Total
+			}
 			func() {
 				defer func() { recover() }()
 				onProgress(progress)
@@ -851,7 +882,7 @@ func (c *Client) GetContainerByName(ctx context.Context, name string) (string, e
 
 	containers, err := c.cli.ContainerList(ctx, container.ListOptions{
 		All:     true,
-		Filters: filters.NewArgs(filters.Arg("name", "^/"+name+"$")),
+		Filters: filters.NewArgs(filters.Arg("name", "^/"+regexp.QuoteMeta(name)+"$")),
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to list containers: %w", err)

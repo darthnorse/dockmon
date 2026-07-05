@@ -120,7 +120,7 @@ func main() {
 	// load the persisted token from DataPath/permanent_token and dual-send
 	// activates immediately. This matches the spec's gating intent.
 	if cfg.PermanentToken != "" && cfg.DockMonURL != "" {
-		statsClient := client.NewStatsServiceClient(cfg.DockMonURL, cfg.PermanentToken, log)
+		statsClient := client.NewStatsServiceClient(cfg.DockMonURL, cfg.PermanentToken, cfg.InsecureSkipVerify, log)
 		if statsHandler := wsClient.StatsHandler(); statsHandler != nil {
 			statsHandler.SetStatsServiceClient(statsClient)
 		}

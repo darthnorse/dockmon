@@ -20,6 +20,7 @@ import { useSetContainerUpdatePolicy } from '../../hooks/useUpdatePolicies'
 import { UpdateValidationConfirmModal } from '../UpdateValidationConfirmModal'
 import { LayerProgressDisplay } from '@/components/shared/LayerProgressDisplay'
 import { getRegistryUrl, getRegistryName } from '@/lib/utils/registry'
+import { sanitizeHref } from '@/lib/utils/urlSanitize'
 import type { Container } from '../../types'
 import type { UpdatePolicyValue } from '../../types/updatePolicy'
 import { POLICY_OPTIONS } from '../../types/updatePolicy'
@@ -616,15 +617,25 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
           ) : (
             <div className="flex gap-2">
               {changelogUrl ? (
-                <a
-                  href={changelogUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex-1 flex items-center gap-2 text-sm text-blue-500 hover:text-blue-600 bg-muted rounded-lg p-3 transition-colors"
-                >
-                  <ExternalLink className="h-4 w-4 flex-shrink-0" />
-                  <span className="truncate">{changelogUrl}</span>
-                </a>
+                (() => {
+                  const safeChangelogHref = sanitizeHref(changelogUrl)
+                  return safeChangelogHref ? (
+                    <a
+                      href={safeChangelogHref}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex-1 flex items-center gap-2 text-sm text-blue-500 hover:text-blue-600 bg-muted rounded-lg p-3 transition-colors"
+                    >
+                      <ExternalLink className="h-4 w-4 flex-shrink-0" />
+                      <span className="truncate">{changelogUrl}</span>
+                    </a>
+                  ) : (
+                    <span className="flex-1 flex items-center gap-2 text-sm text-muted-foreground bg-muted rounded-lg p-3">
+                      <ExternalLink className="h-4 w-4 flex-shrink-0" />
+                      <span className="truncate">{changelogUrl}</span>
+                    </span>
+                  )
+                })()
               ) : (
                 <div className="flex-1 text-sm text-muted-foreground bg-muted rounded-lg p-3">
                   No changelog URL configured
@@ -684,9 +695,10 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
               {(() => {
                 const displayUrl = registryPageUrl || getRegistryUrl(container.image)
                 const displayName = registryPageUrl ? 'View Registry' : `View on ${getRegistryName(container.image)}`
-                return (
+                const safeDisplayHref = sanitizeHref(displayUrl)
+                return safeDisplayHref ? (
                   <a
-                    href={displayUrl}
+                    href={safeDisplayHref}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="flex-1 flex items-center gap-2 text-sm text-blue-500 hover:text-blue-600 bg-muted rounded-lg p-3 transition-colors"
@@ -694,6 +706,11 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
                     <ExternalLink className="h-4 w-4 flex-shrink-0" />
                     <span className="truncate">{displayName}</span>
                   </a>
+                ) : (
+                  <span className="flex-1 flex items-center gap-2 text-sm text-muted-foreground bg-muted rounded-lg p-3">
+                    <ExternalLink className="h-4 w-4 flex-shrink-0" />
+                    <span className="truncate">{displayName}</span>
+                  </span>
                 )
               })()}
               <Button

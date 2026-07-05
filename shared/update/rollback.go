@@ -3,6 +3,7 @@ package update
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -40,28 +41,36 @@ func CreateBackup(
 	return backupName, nil
 }
 
-// RestoreBackup restores the backup container to its original name and starts it.
+// RestoreBackup restores the backup container to its original name. It only
+// starts the container when it was running before the update (wasRunning), so
+// a container that was stopped stays stopped. Returns an error if the restore
+// did not fully succeed so callers can report rollback status truthfully.
 func RestoreBackup(
 	ctx context.Context,
 	cli *client.Client,
 	log *logrus.Logger,
 	backupName string,
 	originalName string,
-) {
+	wasRunning bool,
+) error {
 	log.Warnf("Restoring backup %s to %s", backupName, originalName)
 
 	// Find backup container
 	backupID, err := GetContainerByName(ctx, cli, backupName)
-	if err != nil || backupID == "" {
+	if err != nil {
 		log.WithError(err).Errorf("CRITICAL: Failed to find backup container %s", backupName)
-		return
+		return fmt.Errorf("failed to find backup container %s: %w", backupName, err)
+	}
+	if backupID == "" {
+		log.Errorf("CRITICAL: backup container %s not found", backupName)
+		return fmt.Errorf("backup container %s not found", backupName)
 	}
 
 	// Inspect backup to check its state
 	backupInspect, err := cli.ContainerInspect(ctx, backupID)
 	if err != nil {
 		log.WithError(err).Errorf("Failed to inspect backup container %s", backupName)
-		return
+		return fmt.Errorf("failed to inspect backup container %s: %w", backupName, err)
 	}
 
 	// Handle various backup states
@@ -90,16 +99,24 @@ func RestoreBackup(
 	// Rename backup to original name
 	if err := cli.ContainerRename(ctx, backupID, originalName); err != nil {
 		log.WithError(err).Errorf("CRITICAL: Failed to rename backup to %s", originalName)
-		return
+		return fmt.Errorf("failed to rename backup to %s: %w", originalName, err)
+	}
+
+	// Only restart if the container was running before the update (Issue #90).
+	if !wasRunning {
+		log.Infof("Restored backup %s left stopped (was not running before update)", originalName)
+		log.Warnf("Successfully restored backup to %s", originalName)
+		return nil
 	}
 
 	// Start the restored container
 	if err := cli.ContainerStart(ctx, backupID, container.StartOptions{}); err != nil {
 		log.WithError(err).Errorf("CRITICAL: Failed to start restored container %s", originalName)
-		return
+		return fmt.Errorf("failed to start restored container %s: %w", originalName, err)
 	}
 
 	log.Warnf("Successfully restored backup to %s", originalName)
+	return nil
 }
 
 // RemoveBackup removes the backup container after successful update.
@@ -127,7 +144,7 @@ func RemoveBackup(
 func GetContainerByName(ctx context.Context, cli *client.Client, name string) (string, error) {
 	containers, err := cli.ContainerList(ctx, container.ListOptions{
 		All:     true,
-		Filters: filters.NewArgs(filters.Arg("name", "^/"+name+"$")),
+		Filters: filters.NewArgs(filters.Arg("name", "^/"+regexp.QuoteMeta(name)+"$")),
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to list containers: %w", err)

@@ -4159,13 +4159,20 @@ class DatabaseManager:
         return ph.hash(password)
 
     def get_or_create_default_user(self) -> None:
-        """Create default admin user if no users exist"""
+        """Create default admin user if no users exist.
+
+        Uses DOCKMON_INITIAL_ADMIN_PASSWORD when set (automated provisioning),
+        otherwise the documented default 'dockmon123'. The account is flagged
+        must_change_password so the operator sets their own password on first login.
+        """
         with self.get_session() as session:
             user_count = session.query(User).count()
             if user_count == 0:
+                initial_password = os.getenv("DOCKMON_INITIAL_ADMIN_PASSWORD") or "dockmon123"
+
                 user = User(
                     username="admin",
-                    password_hash=self._hash_password("dockmon123"),
+                    password_hash=self._hash_password(initial_password),
                     is_first_login=True,
                     must_change_password=True
                 )

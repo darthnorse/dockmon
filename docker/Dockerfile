@@ -122,6 +122,8 @@ RUN mkdir -p /etc/nginx/certs
 RUN rm -f /etc/nginx/http.d/default.conf
 COPY docker/nginx.conf /etc/nginx/http.d/default.conf
 COPY docker/nginx-http.conf /docker/nginx-http.conf
+# Shared security-headers snippet included by both nginx configs
+COPY docker/security-headers.conf /etc/nginx/snippets/security-headers.conf
 
 # Add WebSocket upgrade mapping to main nginx.conf (must be in http block)
 RUN sed -i '/^http {/a \    # WebSocket upgrade mapping\n    map $http_upgrade $connection_upgrade {\n        default upgrade;\n        '"''"' close;\n    }\n' /etc/nginx/nginx.conf
@@ -138,8 +140,8 @@ RUN mkdir -p /app/data && \
 RUN echo '#!/bin/bash' > /startup.sh && \
     echo 'set -e' >> /startup.sh && \
     echo '' >> /startup.sh && \
-    echo '# Ensure certificates exist (generate if missing)' >> /startup.sh && \
-    echo 'if [ ! -f /etc/nginx/certs/dockmon.crt ]; then' >> /startup.sh && \
+    echo '# Ensure certificates exist and are not near expiry (regenerate if missing or expiring within 7 days)' >> /startup.sh && \
+    echo 'if [ ! -f /etc/nginx/certs/dockmon.crt ] || ! openssl x509 -checkend 604800 -noout -in /etc/nginx/certs/dockmon.crt 2>/dev/null; then' >> /startup.sh && \
     echo '  mkdir -p /etc/nginx/certs' >> /startup.sh && \
     echo '  echo "Generating SSL certificates (47-day validity for Apple browser compliance)..."' >> /startup.sh && \
     echo '  openssl req -x509 -nodes -days 47 -newkey rsa:2048 \' >> /startup.sh && \
@@ -173,9 +175,10 @@ RUN echo '#!/bin/bash' > /startup.sh && \
     echo 'exec /usr/local/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf' >> /startup.sh && \
     chmod +x /startup.sh
 
-# Expose ports (8081 is internal for stats service)
+# Expose ports
 # Port 443: HTTPS mode (default), Port 80: HTTP mode (REVERSE_PROXY_MODE=true)
-EXPOSE 443 80 8080
+# 8080/8081 are bound to 127.0.0.1 internally (backend + stats) - not exposed
+EXPOSE 443 80
 
 # Health check - checks both backend and stats service
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \

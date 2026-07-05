@@ -382,6 +382,20 @@ def check_auth_capability(current_user: dict, capability: str) -> bool:
     return False
 
 
+def get_effective_capabilities(current_user: dict) -> set[str]:
+    """Return the acting principal's effective capability set.
+
+    Session users get the union across all their groups; an API key gets its
+    single group's capabilities. Used to prevent privilege escalation (a
+    principal must not grant or reach capabilities it does not itself hold).
+    """
+    if current_user.get("auth_type") == "api_key":
+        group_id = current_user.get("group_id")
+        return set(get_capabilities_for_group(group_id)) if group_id else set()
+    user_id = current_user.get("user_id")
+    return set(get_capabilities_for_user(user_id)) if user_id else set()
+
+
 def _get_auth_identifier(current_user: dict, include_group: bool = False) -> str:
     """
     Build a human-readable identifier for logging/audit.

@@ -11,7 +11,7 @@
  * - No global state management needed
  */
 
-import { createContext, useContext, type ReactNode } from 'react'
+import { createContext, useContext, useCallback, useMemo, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { authApi } from './api'
@@ -96,7 +96,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   })
 
   // Extract capabilities from response
-  const capabilities = data?.capabilities ?? []
+  const capabilities = useMemo(() => data?.capabilities ?? [], [data])
 
   // Check if user is admin (in Administrators group or has users.manage capability)
   const isAdmin =
@@ -105,26 +105,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     false
 
   // Helper to check if user has a specific capability
-  const hasCapability = (capability: string): boolean => {
-    return capabilities.includes(capability)
-  }
+  const hasCapability = useCallback(
+    (capability: string): boolean => capabilities.includes(capability),
+    [capabilities]
+  )
 
-  const value: AuthContextValue = {
-    user: data?.user ?? null,
-    capabilities,
-    isLoading: isLoading || loginMutation.isPending || logoutMutation.isPending,
-    isAuthenticated: !isError && data?.user != null,
-    isFirstLogin: data?.user?.is_first_login ?? false,
-    mustChangePassword: data?.user?.must_change_password ?? false,
-    isAdmin,
-    hasCapability,
-    login: async (credentials) => {
-      await loginMutation.mutateAsync(credentials)
+  const { mutateAsync: loginAsync } = loginMutation
+  const login = useCallback(
+    async (credentials: LoginRequest) => {
+      await loginAsync(credentials)
     },
-    logout: async () => {
-      await logoutMutation.mutateAsync()
-    },
-  }
+    [loginAsync]
+  )
+
+  const { mutateAsync: logoutAsync } = logoutMutation
+  const logout = useCallback(async () => {
+    await logoutAsync()
+  }, [logoutAsync])
+
+  const value: AuthContextValue = useMemo(
+    () => ({
+      user: data?.user ?? null,
+      capabilities,
+      isLoading: isLoading || loginMutation.isPending || logoutMutation.isPending,
+      isAuthenticated: !isError && data?.user != null,
+      isFirstLogin: data?.user?.is_first_login ?? false,
+      mustChangePassword: data?.user?.must_change_password ?? false,
+      isAdmin,
+      hasCapability,
+      login,
+      logout,
+    }),
+    [
+      data,
+      capabilities,
+      isLoading,
+      loginMutation.isPending,
+      logoutMutation.isPending,
+      isError,
+      isAdmin,
+      hasCapability,
+      login,
+      logout,
+    ]
+  )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

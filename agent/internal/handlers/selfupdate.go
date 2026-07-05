@@ -285,7 +285,9 @@ func (h *SelfUpdateHandler) performNativeSelfUpdate(ctx context.Context, req Sel
 		return fmt.Errorf("failed to download binary: %w", err)
 	}
 
-	// Step 3: Verify checksum if provided
+	// Step 3: Verify checksum when the backend supplied one. It is not always
+	// available (e.g. a release without a published checksum asset), so a missing
+	// checksum is logged and the update proceeds rather than failing.
 	if req.Checksum != "" {
 		h.sendProgress("verify", "Verifying checksum")
 
@@ -302,6 +304,8 @@ func (h *SelfUpdateHandler) performNativeSelfUpdate(ctx context.Context, req Sel
 		}
 
 		h.log.Info("Checksum verified successfully")
+	} else {
+		h.log.Warn("No checksum provided by backend; proceeding without binary verification")
 	}
 
 	// Step 4: Make binary executable
@@ -615,6 +619,9 @@ func (h *SelfUpdateHandler) cloneHostConfig(hostConfig *container.HostConfig) *c
 		MaskedPaths:     hostConfig.MaskedPaths,
 		ReadonlyPaths:   hostConfig.ReadonlyPaths,
 		Init:            hostConfig.Init,
+		LogConfig:       hostConfig.LogConfig,
+		Tmpfs:           hostConfig.Tmpfs,
+		StorageOpt:      hostConfig.StorageOpt,
 	}
 }
 

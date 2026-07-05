@@ -368,14 +368,23 @@ func (h *ScanHandler) ReadComposeFile(ctx context.Context, req ReadComposeFileRe
 		}
 	}
 
-	// Validate file exists and is a regular file
-	fileInfo, err := os.Stat(req.Path)
+	// Validate file exists and is a regular file. Use Lstat and reject symlinks
+	// so a symlinked compose path can't be used to read arbitrary root files.
+	fileInfo, err := os.Lstat(req.Path)
 	if err != nil {
 		h.log.WithError(err).WithField("path", req.Path).Debug("File not accessible")
 		return ReadComposeFileResult{
 			Success: false,
 			Path:    req.Path,
 			Error:   "File not found or not accessible",
+		}
+	}
+	if fileInfo.Mode()&os.ModeSymlink != 0 {
+		h.log.WithField("path", req.Path).Warn("Refusing to read compose file: is a symlink")
+		return ReadComposeFileResult{
+			Success: false,
+			Path:    req.Path,
+			Error:   "Compose file is a symlink",
 		}
 	}
 	if fileInfo.IsDir() {

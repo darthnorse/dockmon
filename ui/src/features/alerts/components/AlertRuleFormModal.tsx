@@ -307,9 +307,14 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       container_run_mode: containerSelector.should_run === null ? 'all' : containerSelector.should_run ? 'should_run' : 'on_demand',
       // Parse channel IDs - filter to numbers only for backward compatibility
       // (old rules may have type strings like "discord" which we drop - user must re-select)
-      notify_channels: rule?.notify_channels_json
-        ? (JSON.parse(rule.notify_channels_json) as (number | string)[]).filter((v): v is number => typeof v === 'number')
-        : [],
+      notify_channels: (() => {
+        if (!rule?.notify_channels_json) return []
+        try {
+          return (JSON.parse(rule.notify_channels_json) as (number | string)[]).filter((v): v is number => typeof v === 'number')
+        } catch {
+          return []
+        }
+      })(),
       custom_template: rule?.custom_template !== undefined ? rule.custom_template : null,
       // Auto-resolve defaults to false - user can enable for any alert type
       auto_resolve_updates: rule?.auto_resolve ?? false,

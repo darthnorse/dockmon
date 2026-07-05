@@ -39,30 +39,40 @@ def get_client_ip(request: Request) -> str:
         - Returns: "203.0.113.5"
     """
     if AppConfig.REVERSE_PROXY_MODE:
-        # Trust X-Forwarded-For from reverse proxy
-        # Format: "client, proxy1, proxy2"
+        # An external proxy fronts the bundled nginx. X-Forwarded-For is
+        # "client, proxy1, ..., proxyN" where the right-most entries are added by
+        # trusted infrastructure. Take the entry immediately left of the trusted
+        # hops so a client cannot spoof its IP by prepending fake entries.
         xff = request.headers.get("x-forwarded-for")
         if xff:
-            client_ip = xff.split(",")[0].strip()
-            logger.debug(f"Using X-Forwarded-For: {client_ip}")
-            return client_ip
+            parts = [p.strip() for p in xff.split(",") if p.strip()]
+            hops = AppConfig.TRUSTED_PROXY_COUNT
+            if len(parts) > hops:
+                client_ip = parts[-(hops + 1)]
+                logger.debug(f"Using X-Forwarded-For (trusted hops={hops}): {client_ip}")
+                return client_ip
+            # Fewer entries than expected trusted hops — use the left-most as the
+            # best available client identity rather than a proxy address.
+            logger.debug(f"X-Forwarded-For shorter than trusted hops; using left-most: {parts[0]}")
+            return parts[0]
 
-        # Fallback to X-Real-IP (nginx alternative)
         real_ip = request.headers.get("x-real-ip")
         if real_ip:
-            client_ip = real_ip.strip()
-            logger.debug(f"Using X-Real-IP: {client_ip}")
-            return client_ip
+            return real_ip.strip()
 
         logger.warning(
             "REVERSE_PROXY_MODE enabled but no X-Forwarded-For or X-Real-IP header found. "
             "Falling back to request.client.host."
         )
+        return request.client.host if request.client else "unknown"
 
-    # Direct connection or no proxy headers
-    client_ip = request.client.host if request.client else "unknown"
-    logger.debug(f"Using request.client.host: {client_ip}")
-    return client_ip
+    # Default (bundled-nginx) deployment: uvicorn only sees the local nginx as the
+    # socket peer. The bundled nginx sets X-Real-IP=$remote_addr, overwriting any
+    # client-supplied value, so it is trustworthy for the real client IP.
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
+    return request.client.host if request.client else "unknown"
 
 
 def _get_cors_origin_parts() -> tuple[str, str] | None:
@@ -126,6 +136,14 @@ def get_request_scheme(request: Request) -> str:
             "reflects the local TCP scheme and may be wrong if the proxy "
             "terminates TLS."
         )
+    else:
+        # Default (bundled-nginx) deployment: nginx sets X-Forwarded-Proto=$scheme
+        # (overwriting any client value), so honor it for the Secure cookie flag
+        # and OIDC redirect URIs even though the nginx->uvicorn hop is plain HTTP.
+        proto = request.headers.get("x-forwarded-proto")
+        if proto:
+            logger.debug("Using scheme from X-Forwarded-Proto (bundled nginx)")
+            return proto.split(",")[0].strip().lower()
     return request.url.scheme
 
 
@@ -170,9 +188,18 @@ def get_client_ip_ws(websocket) -> str:
     if AppConfig.REVERSE_PROXY_MODE:
         forwarded = websocket.headers.get('x-forwarded-for')
         if forwarded:
-            return forwarded.split(',')[0].strip()
+            parts = [p.strip() for p in forwarded.split(',') if p.strip()]
+            hops = AppConfig.TRUSTED_PROXY_COUNT
+            if len(parts) > hops:
+                return parts[-(hops + 1)]
+            return parts[0]
         real_ip = websocket.headers.get('x-real-ip')
         if real_ip:
             return real_ip.strip()
+        return websocket.client.host if websocket.client else "unknown"
 
+    # Default deployment: trust the bundled nginx's X-Real-IP.
+    real_ip = websocket.headers.get('x-real-ip')
+    if real_ip:
+        return real_ip.strip()
     return websocket.client.host if websocket.client else "unknown"

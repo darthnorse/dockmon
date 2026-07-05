@@ -482,8 +482,17 @@ func (s *Server) handleUpdateJSON(w http.ResponseWriter, r *http.Request, req Up
 	}
 	defer dockerClient.Close()
 
+	// Detach the update/rollback from the request context: a client disconnect
+	// mid-update must not cancel the rollback and strand the container.
+	timeout := time.Duration(req.Timeout) * time.Second
+	if timeout <= 0 {
+		timeout = 30 * time.Minute
+	}
+	opCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	// Detect runtime options (Podman, API version)
-	options := update.DetectOptions(r.Context(), dockerClient, s.log)
+	options := update.DetectOptions(opCtx, dockerClient, s.log)
 
 	// Create updater
 	updater := update.NewUpdater(dockerClient, s.log, options)
@@ -496,7 +505,7 @@ func (s *Server) handleUpdateJSON(w http.ResponseWriter, r *http.Request, req Up
 		HealthTimeout: req.HealthTimeout,
 		RegistryAuth:  req.RegistryAuth,
 	}
-	result := updater.Update(r.Context(), updateReq)
+	result := updater.Update(opCtx, updateReq)
 
 	// Record metrics
 	duration := time.Since(startTime)
@@ -528,10 +537,6 @@ func (s *Server) handleUpdateSSE(w http.ResponseWriter, r *http.Request, req Upd
 		timeout = 30 * time.Minute // Default
 	}
 
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
-	defer cancel()
-
 	// SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -543,6 +548,12 @@ func (s *Server) handleUpdateSSE(w http.ResponseWriter, r *http.Request, req Upd
 		http.Error(w, "SSE not supported", http.StatusInternalServerError)
 		return
 	}
+
+	// Detach the update/rollback from the request context: a client disconnect
+	// mid-update must not cancel the rollback and strand the container. The
+	// background goroutine below owns opCancel and the Docker client so the
+	// operation can finish even after this handler returns on disconnect.
+	opCtx, opCancel := context.WithTimeout(context.Background(), timeout)
 
 	s.log.WithFields(logrus.Fields{
 		"container_id": req.ContainerID,
@@ -563,9 +574,9 @@ func (s *Server) handleUpdateSSE(w http.ResponseWriter, r *http.Request, req Upd
 		data, _ := json.Marshal(errResp)
 		fmt.Fprintf(w, "event: complete\ndata: %s\n\n", data)
 		flusher.Flush()
+		opCancel()
 		return
 	}
-	defer dockerClient.Close()
 
 	// Keepalive ticker - send comment every 15s to prevent connection timeout
 	ticker := time.NewTicker(15 * time.Second)
@@ -578,10 +589,14 @@ func (s *Server) handleUpdateSSE(w http.ResponseWriter, r *http.Request, req Upd
 	progressCh := make(chan update.ProgressEvent, 100)
 	pullProgressCh := make(chan update.PullProgressEvent, 100)
 
-	// Start update in goroutine
+	// Start update in goroutine. It owns opCancel and the Docker client so the
+	// update can outlive this handler if the SSE client disconnects.
 	go func() {
+		defer opCancel()
+		defer dockerClient.Close()
+
 		// Detect runtime options (Podman, API version)
-		options := update.DetectOptions(ctx, dockerClient, s.log)
+		options := update.DetectOptions(opCtx, dockerClient, s.log)
 
 		// Add progress callbacks
 		options.OnProgress = func(event update.ProgressEvent) {
@@ -610,7 +625,7 @@ func (s *Server) handleUpdateSSE(w http.ResponseWriter, r *http.Request, req Upd
 			HealthTimeout: req.HealthTimeout,
 			RegistryAuth:  req.RegistryAuth,
 		}
-		result := updater.Update(ctx, updateReq)
+		result := updater.Update(opCtx, updateReq)
 
 		close(progressCh)
 		close(pullProgressCh)
@@ -658,16 +673,11 @@ func (s *Server) handleUpdateSSE(w http.ResponseWriter, r *http.Request, req Upd
 			fmt.Fprintf(w, ": keepalive %d\n\n", time.Now().Unix())
 			flusher.Flush()
 
-		case <-ctx.Done():
-			// Timeout or client disconnect
-			errResp := update.UpdateResult{
-				Success:        false,
-				OldContainerID: req.ContainerID,
-				Error:          "operation timeout",
-			}
-			data, _ := json.Marshal(errResp)
-			fmt.Fprintf(w, "event: complete\ndata: %s\n\n", data)
-			flusher.Flush()
+		case <-r.Context().Done():
+			// Client disconnected: stop streaming. The update runs on its own
+			// detached context and finishes (or rolls back) in the background;
+			// its result arrives via resultCh, and timeouts surface there too.
+			s.log.WithField("container_id", req.ContainerID).Warn("SSE client disconnected; update continues in background")
 			return
 		}
 	}

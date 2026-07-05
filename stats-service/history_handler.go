@@ -69,6 +69,13 @@ func parseHistoryParams(q url.Values, tiers []persistence.Tier) (historyParams, 
 		if err != nil {
 			return historyParams{}, err
 		}
+		// Cap the span at the largest tier window so an oversized from/to range
+		// can't force FillGaps to allocate hundreds of thousands of slots.
+		if len(tiers) > 0 {
+			if maxSpan := int64(tiers[len(tiers)-1].Window.Seconds()); to-from > maxSpan {
+				from = to - maxSpan
+			}
+		}
 		span := time.Duration(to-from) * time.Second
 		p.tier = persistence.SelectTier(tiers, span)
 		p.from = time.Unix(from, 0)

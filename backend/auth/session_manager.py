@@ -1,6 +1,6 @@
 """
 Session Management System for DockMon
-Provides secure session tokens with IP validation and automatic cleanup
+Provides secure session tokens with automatic cleanup
 """
 
 import logging
@@ -72,25 +72,14 @@ class SessionManager:
 
             session = self.sessions[session_id]
             current_time = datetime.now(timezone.utc)
-            client_ip = request.client.host
 
             # Check if session has expired
             if current_time - session["created_at"] > self.session_timeout:
                 del self.sessions[session_id]
-                security_audit.log_session_expired(client_ip, session_id)
+                security_audit.log_session_expired(request.client.host, session_id)
                 return False
 
-            # Validate IP consistency for security
-            if session["client_ip"] != client_ip:
-                security_audit.log_session_hijack_attempt(
-                    original_ip=session["client_ip"],
-                    attempted_ip=client_ip,
-                    session_id=session_id
-                )
-                del self.sessions[session_id]
-                return False
-
-            # Update last accessed time
+            # A changed client IP does not invalidate the session (CDN/proxy/IPv6 egress rotates).
             session["last_accessed"] = current_time
             return True
 

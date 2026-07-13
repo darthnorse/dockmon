@@ -7,7 +7,6 @@ SECURITY FEATURES:
 - SameSite=lax (CSRF protection)
 - Signed cookies with itsdangerous (tamper-proof)
 - Session expiry with automatic cleanup
-- IP validation to prevent session hijacking
 
 MEMORY SAFETY:
 - Thread-safe session storage with locks
@@ -236,7 +235,7 @@ class CookieSessionManager:
         Args:
             user_id: Database user ID
             username: Username
-            client_ip: Client IP address for validation
+            client_ip: Client IP address, recorded for audit (not an access gate)
             display_name: Optional friendly display name (e.g. from OIDC 'name' claim)
 
         Returns:
@@ -316,7 +315,9 @@ class CookieSessionManager:
         1. Signature validation (prevents tampering)
         2. Session existence check
         3. Expiry check
-        4. IP validation (prevents hijacking)
+
+        client_ip is recorded for audit only, not used to gate access: egress
+        IPs rotate legitimately behind CDNs, proxies, and dual-stack IPv6.
         """
         if not signed_token:
             return None
@@ -356,17 +357,6 @@ class CookieSessionManager:
             if not never_expire and now - session["created_at"] > dynamic_timeout:
                 del self.sessions[session_id]
                 logger.info(f"Session {session_id[:8]}... expired for user '{session['username']}'")
-                return None
-
-            # 4. Validate IP consistency (prevent session hijacking)
-            # Now safe in all modes: session creation and validation both use get_client_ip()
-            # which extracts real client IP from X-Forwarded-For in reverse proxy mode
-            if session["client_ip"] != client_ip:
-                logger.warning(
-                    f"IP mismatch: Session created from {session['client_ip']}, "
-                    f"accessed from {client_ip}. Invalidating session for user: {session['username']}"
-                )
-                del self.sessions[session_id]
                 return None
 
             # Update last accessed time

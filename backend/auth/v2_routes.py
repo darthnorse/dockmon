@@ -6,7 +6,6 @@ SECURITY IMPROVEMENTS over v1:
 2. Secure flag (HTTPS only in production)
 3. SameSite=lax (CSRF protection)
 4. Argon2id password hashing (better than bcrypt)
-5. IP validation (prevent session hijacking)
 """
 
 import logging
@@ -231,7 +230,6 @@ async def login_v2(
     - HttpOnly cookie (XSS protection)
     - Secure flag for HTTPS (in production)
     - SameSite=lax (CSRF protection for cross-site POST)
-    - IP binding (session hijack prevention)
 
     Returns:
         User data and session cookie
@@ -464,7 +462,6 @@ async def get_current_user_dependency(
     2. Signature is valid (tamper-proof)
     3. Session exists server-side
     4. Session not expired
-    5. IP matches (prevent hijacking)
 
     Raises:
         HTTPException: 401 if authentication fails

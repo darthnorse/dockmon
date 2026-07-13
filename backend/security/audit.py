@@ -232,20 +232,6 @@ class SecurityAuditLogger:
             risk_level="LOW"
         )
 
-    def log_session_hijack_attempt(self, original_ip: str, attempted_ip: str, session_id: str):
-        """Log potential session hijacking attempt"""
-        self._log_security_event(
-            level="ERROR",
-            event_type="SESSION_HIJACK_ATTEMPT",
-            client_ip=attempted_ip,
-            details={
-                "original_ip": original_ip,
-                "attempted_ip": attempted_ip,
-                "session_id": session_id[:8] + "..."
-            },
-            risk_level="HIGH"
-        )
-
     def log_authentication_failure(self, client_ip: str, user_agent: str, reason: str):
         """Log authentication failure"""
         self._log_security_event(

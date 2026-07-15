@@ -252,6 +252,8 @@ async def validate_stack_ports(
         raise HTTPException(status_code=404, detail=f"Stack '{name}' not found")
 
     try:
+        # Friendly message for a malformed compose instead of raw PyYAML text.
+        stack_storage.validate_compose_syntax(compose_yaml)
         requested = extract_ports_from_compose(compose_yaml)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

@@ -62,6 +62,30 @@ function validateComposeContent(parsed: unknown): { error?: string; warning?: st
   return {}
 }
 
+/**
+ * First line whose indentation uses a tab (1-based), or null. Block-scalar
+ * (| / >) content is skipped — a tab there is literal, valid YAML.
+ */
+export function findIndentationTab(value: string): number | null {
+  const lines = value.split('\n')
+  let blockParentIndent: number | null = null
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? ''
+    if (blockParentIndent !== null) {
+      if (line.trim() === '') continue
+      const spaces = /^ */.exec(line)?.[0].length ?? 0
+      if (spaces > blockParentIndent) continue
+      blockParentIndent = null
+    }
+    const leading = /^[ \t]*/.exec(line)?.[0] ?? ''
+    if (leading.includes('\t')) return i + 1
+    if (/(?::|^\s*-)\s+[|>][+\-0-9]*\s*(#.*)?$/.test(line)) {
+      blockParentIndent = leading.length
+    }
+  }
+  return null
+}
+
 // Theme mapping for CodeMirror (dark themes only)
 const EDITOR_THEMES = {
   'github-dark': themes.githubDark,
@@ -155,6 +179,15 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
 
     try {
       if (type === 'stack') {
+        // js-yaml tolerates some tabs; flag indentation tabs up front.
+        const tabLine = findIndentationTab(value)
+        if (tabLine !== null) {
+          return {
+            valid: false,
+            error: `Line ${tabLine}: tab character in indentation — YAML requires spaces, not tabs.`,
+          }
+        }
+
         // Try parsing YAML as-is
         let parsed: unknown
         try {

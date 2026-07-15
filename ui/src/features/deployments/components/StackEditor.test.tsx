@@ -10,7 +10,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { forwardRef } from 'react'
 import { render, screen, waitFor } from '@/test/utils'
 import userEvent from '@testing-library/user-event'
-import { StackEditor } from './StackEditor'
+import { StackEditor, blockingComposeErrorMessage } from './StackEditor'
+import { ApiError } from '@/lib/api/client'
 import * as useStacksModule from '../hooks/useStacks'
 import * as useDeploymentsModule from '../hooks/useDeployments'
 import * as usePortConflictsModule from '../hooks/usePortConflicts'
@@ -233,5 +234,71 @@ describe('StackEditor unreferenced env badge', () => {
 
     expect(screen.getByRole('button', { name: '.db.env' })).toBeInTheDocument()
     expect(screen.queryByTitle(/not referenced by your compose/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('StackEditor deploy guard (discussion #236)', () => {
+  it('does not deploy when the pre-deploy port check reports a malformed compose (400)', async () => {
+    const user = userEvent.setup()
+    vi.mocked(useStacksModule.useStack).mockReturnValue({
+      data: { name: 'myapp', compose_yaml: 'services: {}\n', env_files: {}, deployed_to: [] },
+      isLoading: false,
+    } as any)
+    const composeErr = new ApiError('Compose file has a tab character at line 2, column 1.', 400)
+    const recheck = vi.fn().mockRejectedValue(composeErr)
+    vi.mocked(usePortConflictsModule.usePortConflicts).mockReturnValue({
+      conflicts: [], isLoading: false, error: null, recheck,
+    } as any)
+
+    // A single host auto-selects, enabling the Deploy button.
+    const hosts = [{ id: 'host-1', name: 'prod', status: 'online' }]
+    render(<StackEditor selectedStackName="myapp" hosts={hosts as any} onStackChange={vi.fn()} />)
+
+    await user.click(await screen.findByRole('button', { name: /deploy/i }))
+
+    await waitFor(() => expect(recheck).toHaveBeenCalled())
+    // The bad compose must block the deploy, not fall through to executeDeploy().
+    expect(useDeploymentsModule.useStackAction().mutateAsync).not.toHaveBeenCalled()
+  })
+
+  it('deploys anyway when the port check fails for a non-compose reason (host unreachable)', async () => {
+    const user = userEvent.setup()
+    vi.mocked(useStacksModule.useStack).mockReturnValue({
+      data: { name: 'myapp', compose_yaml: 'services: {}\n', env_files: {}, deployed_to: [] },
+      isLoading: false,
+    } as any)
+    const recheck = vi.fn().mockRejectedValue(new ApiError('Host not available for port check', 409))
+    vi.mocked(usePortConflictsModule.usePortConflicts).mockReturnValue({
+      conflicts: [], isLoading: false, error: null, recheck,
+    } as any)
+
+    const hosts = [{ id: 'host-1', name: 'prod', status: 'online' }]
+    render(<StackEditor selectedStackName="myapp" hosts={hosts as any} onStackChange={vi.fn()} />)
+
+    await user.click(await screen.findByRole('button', { name: /deploy/i }))
+
+    await waitFor(() => expect(useDeploymentsModule.useStackAction().mutateAsync).toHaveBeenCalled())
+  })
+})
+
+describe('blockingComposeErrorMessage', () => {
+  const err = new ApiError('Compose file has a tab character at line 2, column 1.', 400)
+
+  it('returns the message for a 400 when there are no unsaved changes', () => {
+    expect(blockingComposeErrorMessage(err, false)).toBe(err.message)
+  })
+
+  it('returns null for a 400 when there ARE unsaved changes (let save-first flow run)', () => {
+    // A user who fixed a malformed saved stack in the editor must not be blocked;
+    // the deploy falls through to the save-changes dialog which re-validates.
+    expect(blockingComposeErrorMessage(err, true)).toBeNull()
+  })
+
+  it('returns null for a non-400 error (host unreachable)', () => {
+    expect(blockingComposeErrorMessage(new ApiError('offline', 409), false)).toBeNull()
+  })
+
+  it('returns null for a non-ApiError', () => {
+    expect(blockingComposeErrorMessage(new Error('boom'), false)).toBeNull()
   })
 })

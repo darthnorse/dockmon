@@ -246,3 +246,22 @@ def test_get_stack_hides_referenced_env_files_without_view_env(client, monkeypat
     assert resp.status_code == 200
     assert resp.json()["referenced_env_files"] == []
     assert resp.json()["env_files"] == {}
+
+
+@pytest.mark.integration
+def test_validate_ports_malformed_compose_returns_friendly_400(authed_client, monkeypatch):
+    """A tabbed (malformed) saved compose surfaces the friendly validator message
+    via 400, not raw PyYAML text, so PortConflictBanner shows an actionable error
+    instead of masking it as 'unable to reach host'."""
+    from deployment import stack_storage
+
+    monkeypatch.setattr(
+        stack_storage,
+        "read_stack",
+        AsyncMock(return_value=("services:\n\tapp:\n\t\timage: nginx\n", {})),
+    )
+
+    resp = authed_client.post("/api/stacks/myapp/validate-ports", json={"host_id": "abc"})
+
+    assert resp.status_code == 400
+    assert "tab character" in resp.json()["detail"]

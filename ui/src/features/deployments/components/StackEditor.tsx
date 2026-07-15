@@ -52,6 +52,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { cn } from '@/lib/utils'
+import { ApiError } from '@/lib/api/client'
 import { toast } from 'sonner'
 import {
   useStack,
@@ -81,6 +82,21 @@ function dropEnvFile(map: Record<string, string>, key: string): Record<string, s
   const next = { ...map }
   delete next[key]
   return next
+}
+
+/**
+ * Message to surface for a malformed-compose (400) port-check failure, or null.
+ * With unsaved edits, returns null so the save-first flow re-validates instead
+ * of blocking a user who just fixed a bad saved stack in the editor.
+ */
+export function blockingComposeErrorMessage(
+  err: unknown,
+  hasUnsavedChanges: boolean,
+): string | null {
+  if (err instanceof ApiError && err.status === 400 && !hasUnsavedChanges) {
+    return err.message
+  }
+  return null
 }
 
 type DialogType = 'delete' | 'copy' | 'save-changes' | 'remove-confirm' | 'add-env-file' | 'remove-env-file' | null
@@ -463,7 +479,15 @@ export function StackEditor({
     let fresh: PortConflict[] = []
     try {
       fresh = await recheckPorts()
-    } catch {
+    } catch (err) {
+      const blockingMessage = blockingComposeErrorMessage(err, hasChanges)
+      if (blockingMessage !== null) {
+        setErrors({ compose: blockingMessage })
+        setActiveTab('compose')
+        toast.error(blockingMessage)
+        return
+      }
+      // Unreachable/network or unsaved edits — proceed; Docker is the final gate.
       await executeDeploy()
       return
     }

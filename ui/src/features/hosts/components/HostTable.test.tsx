@@ -277,6 +277,90 @@ describe('HostTable', () => {
     })
   })
 
+  describe('search filtering', () => {
+    it('should filter hosts by name', () => {
+      vi.mocked(useHostsModule.useHosts).mockReturnValue({
+        data: mockHosts,
+        isLoading: false,
+        error: null,
+      } as any)
+
+      render(<HostTable searchQuery="production" />)
+
+      expect(screen.getByText('production-server')).toBeInTheDocument()
+      expect(screen.queryByText('dev-server')).not.toBeInTheDocument()
+      expect(screen.queryByText('staging-server')).not.toBeInTheDocument()
+    })
+
+    it('should filter hosts by name case-insensitively', () => {
+      vi.mocked(useHostsModule.useHosts).mockReturnValue({
+        data: mockHosts,
+        isLoading: false,
+        error: null,
+      } as any)
+
+      render(<HostTable searchQuery="PRODUCTION" />)
+
+      expect(screen.getByText('production-server')).toBeInTheDocument()
+      expect(screen.queryByText('dev-server')).not.toBeInTheDocument()
+    })
+
+    it('should filter hosts by URL', () => {
+      vi.mocked(useHostsModule.useHosts).mockReturnValue({
+        data: mockHosts,
+        isLoading: false,
+        error: null,
+      } as any)
+
+      render(<HostTable searchQuery="192.168.1.101" />)
+
+      expect(screen.getByText('dev-server')).toBeInTheDocument()
+      expect(screen.queryByText('production-server')).not.toBeInTheDocument()
+      expect(screen.queryByText('staging-server')).not.toBeInTheDocument()
+    })
+
+    it('should filter hosts by tag', () => {
+      vi.mocked(useHostsModule.useHosts).mockReturnValue({
+        data: mockHosts,
+        isLoading: false,
+        error: null,
+      } as any)
+
+      render(<HostTable searchQuery="qa" />)
+
+      expect(screen.getByText('staging-server')).toBeInTheDocument()
+      expect(screen.queryByText('production-server')).not.toBeInTheDocument()
+      expect(screen.queryByText('dev-server')).not.toBeInTheDocument()
+    })
+
+    it('should show all hosts when search query is empty', () => {
+      vi.mocked(useHostsModule.useHosts).mockReturnValue({
+        data: mockHosts,
+        isLoading: false,
+        error: null,
+      } as any)
+
+      render(<HostTable searchQuery="" />)
+
+      expect(screen.getByText('production-server')).toBeInTheDocument()
+      expect(screen.getByText('dev-server')).toBeInTheDocument()
+      expect(screen.getByText('staging-server')).toBeInTheDocument()
+    })
+
+    it('should show a no-match message when search yields no results', () => {
+      vi.mocked(useHostsModule.useHosts).mockReturnValue({
+        data: mockHosts,
+        isLoading: false,
+        error: null,
+      } as any)
+
+      render(<HostTable searchQuery="nonexistent-host" />)
+
+      expect(screen.getByText('No hosts match your search')).toBeInTheDocument()
+      expect(screen.queryByText('production-server')).not.toBeInTheDocument()
+    })
+  })
+
   describe('empty cells', () => {
     it('should render dash placeholders for unset metric/uptime cells', () => {
       vi.mocked(useHostsModule.useHosts).mockReturnValue({

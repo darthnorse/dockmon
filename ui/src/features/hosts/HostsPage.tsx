@@ -80,7 +80,7 @@ export function HostsPage() {
       </div>
 
       {/* Host Table */}
-      <HostTable onEditHost={handleEditHost} />
+      <HostTable onEditHost={handleEditHost} searchQuery={searchQuery} />
 
       {/* Host Modal */}
       <HostModal

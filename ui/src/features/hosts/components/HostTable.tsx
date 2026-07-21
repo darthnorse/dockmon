@@ -294,12 +294,25 @@ function Uptime({ daemonStartedAt }: { daemonStartedAt?: string | null | undefin
 
 interface HostTableProps {
   onEditHost?: (host: Host) => void
+  searchQuery?: string
 }
 
-export function HostTable({ onEditHost }: HostTableProps = {}) {
+export function HostTable({ onEditHost, searchQuery = '' }: HostTableProps = {}) {
   const { hasCapability } = useAuth()
   const canManage = hasCapability('hosts.manage')
-  const { data: hosts = [], isLoading, error } = useHosts()
+  const { data: allHosts = [], isLoading, error } = useHosts()
+
+  const hosts = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase()
+    if (!query) return allHosts
+
+    return allHosts.filter((host) => {
+      if (host.name?.toLowerCase().includes(query)) return true
+      if (host.url?.toLowerCase().includes(query)) return true
+      if (host.tags?.some((tag) => tag.toLowerCase().includes(query))) return true
+      return false
+    })
+  }, [allHosts, searchQuery])
   const queryClient = useQueryClient()
   const { data: preferences } = useUserPreferences()
   const updatePreferences = useUpdatePreferences()
@@ -659,11 +672,20 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
     )
   }
 
-  if (hosts.length === 0) {
+  if (allHosts.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
         <p className="text-lg font-medium">No hosts configured</p>
         <p className="text-sm mt-1">Add your first Docker host to get started</p>
+      </div>
+    )
+  }
+
+  if (hosts.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
+        <p className="text-lg font-medium">No hosts match your search</p>
+        <p className="text-sm mt-1">Try a different name, URL, or tag</p>
       </div>
     )
   }

@@ -105,10 +105,16 @@ class OIDCConfigUpdateRequest(BaseModel):
         parsed = urlparse(v)
         if parsed.scheme not in ('http', 'https') or not parsed.hostname:
             raise ValueError("Redirect URI override must be an absolute http(s) URL")
-        if parsed.query or parsed.fragment:
-            raise ValueError("Redirect URI override must not contain a query string or fragment")
+        if parsed.query or parsed.fragment or parsed.params:
+            raise ValueError(
+                "Redirect URI override must not contain a query string, fragment, or path parameters"
+            )
         if parsed.username or parsed.password or '@' in parsed.netloc:
             raise ValueError("Redirect URI override must not contain credentials")
+        try:
+            parsed.port  # raises when the authority carries a non-numeric port
+        except ValueError:
+            raise ValueError("Redirect URI override has an invalid port") from None
         v = v.rstrip('/')
         if not urlparse(v).path.endswith(CALLBACK_PATH):
             raise ValueError(f"Redirect URI override must end with {CALLBACK_PATH}")

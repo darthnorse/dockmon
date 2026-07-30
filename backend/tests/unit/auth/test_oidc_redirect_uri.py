@@ -186,6 +186,21 @@ class TestRedirectUriOverrideValidation:
         with pytest.raises(ValidationError):
             OIDCConfigUpdateRequest(redirect_uri_override=bad)
 
+    def test_rejects_a_non_numeric_port(self):
+        """urlparse().hostname alone accepts this; the URL is still unusable."""
+        with pytest.raises(ValidationError):
+            OIDCConfigUpdateRequest(
+                redirect_uri_override="https://dockmon.example.com:abc/api/v2/auth/oidc/callback"
+            )
+
+    def test_rejects_path_parameters(self):
+        """urlparse splits ';foo' off the path, so the suffix check passes while
+        the stored value still carries it into the provider comparison."""
+        with pytest.raises(ValidationError):
+            OIDCConfigUpdateRequest(
+                redirect_uri_override="https://dockmon.example.com/api/v2/auth/oidc/callback;foo"
+            )
+
     def test_empty_string_clears_the_override(self):
         assert OIDCConfigUpdateRequest(redirect_uri_override="   ").redirect_uri_override == ""
 

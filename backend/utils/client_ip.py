@@ -126,26 +126,25 @@ def _split_host_port(netloc: str) -> tuple[str, str | None]:
     return netloc, None
 
 
-def _is_implicit_port(port: str) -> bool:
-    """Whether a port is implicit in a URL for either scheme.
+def _strip_implicit_port(netloc: str, scheme: str) -> str:
+    """Drop a port the scheme implies anyway, so it cannot reach a redirect URI.
 
-    A default port of the *other* scheme (:80 on https) is far more likely a
-    proxy reporting its backend hop than a real public port, and writing it into
-    a redirect URI would break the provider's exact-string match either way.
+    Only the port implicit for *this* scheme: a port stated explicitly, however
+    unusual (https on :80), is the operator's declaration and is kept.
     """
-    return port in DEFAULT_PORTS.values()
-
-
-def _strip_implicit_port(netloc: str) -> str:
-    """Drop a port that a URL implies anyway."""
     host, port = _split_host_port(netloc)
-    if port and _is_implicit_port(port):
+    if port and port == DEFAULT_PORTS.get(scheme):
         return host
     return netloc
 
 
 def _forwarded_port(request: Request) -> str | None:
-    """Public port from X-Forwarded-Port, or None if absent/implicit/invalid."""
+    """Public port from X-Forwarded-Port, or None if absent/implicit/invalid.
+
+    Any scheme's default port is discarded here, not just this scheme's: the
+    header is the proxy's guess at the public port, and a cross-scheme default
+    (:80 on https) is far more likely its own backend hop than a real origin.
+    """
     raw = request.headers.get("x-forwarded-port")
     if not raw:
         return None
@@ -153,7 +152,7 @@ def _forwarded_port(request: Request) -> str | None:
     if not port.isdigit() or not 1 <= int(port) <= 65535:
         logger.warning(f"Ignoring malformed X-Forwarded-Port header: {raw!r}")
         return None
-    if _is_implicit_port(port):
+    if port in DEFAULT_PORTS.values():
         return None
     return port
 
@@ -171,10 +170,25 @@ def _cors_origin_port(host: str, scheme: str) -> str | None:
             continue
         if cors_host.lower() != host.lower():
             continue
-        if _is_implicit_port(cors_port):
+        if cors_port == DEFAULT_PORTS.get(scheme):
             continue
         return cors_port
     return None
+
+
+def _declared_origin_netloc(scheme: str) -> str | None:
+    """Netloc of a declared origin, preferring one that matches the scheme.
+
+    Mixing the effective scheme with another origin's netloc would name a host
+    the operator never published under that scheme.
+    """
+    origins = _iter_cors_origins()
+    if not origins:
+        return None
+    for cors_scheme, cors_netloc in origins:
+        if cors_scheme == scheme:
+            return cors_netloc
+    return origins[0][1]
 
 
 def _is_declared_host(host: str) -> bool:
@@ -200,7 +214,7 @@ def _restore_public_port(netloc: str, request: Request, scheme: str) -> str:
     """
     host, port = _split_host_port(netloc)
     if port:
-        return _strip_implicit_port(netloc)
+        return _strip_implicit_port(netloc, scheme)
     if ':' in host and not host.startswith('['):
         # Unbracketed IPv6 literal: appending a port would yield an unparsable URL.
         return netloc
@@ -317,10 +331,10 @@ def get_request_host(request: Request, scheme: str | None = None) -> str:
                 "Ignoring X-Forwarded-Host not named by DOCKMON_CORS_ORIGINS; "
                 "using the declared origin instead"
             )
-        parts = _get_cors_origin_parts()
-        if parts:
+        declared = _declared_origin_netloc(scheme)
+        if declared:
             logger.debug("No usable X-Forwarded-Host header; using host from DOCKMON_CORS_ORIGINS")
-            return _strip_implicit_port(parts[1])
+            return _strip_implicit_port(declared, scheme)
         logger.warning(
             "REVERSE_PROXY_MODE enabled but no X-Forwarded-Host header found "
             "and DOCKMON_CORS_ORIGINS not set. Falling back to Host header."

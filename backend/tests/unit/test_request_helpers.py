@@ -362,6 +362,15 @@ class TestForwardedPortRecovery:
             mock_config.CORS_ORIGINS = None
             assert get_request_host(request, "https") == "dockmon.lokal"
 
+    def test_keeps_a_stated_cross_scheme_port_in_forwarded_host(self):
+        """A port stated outright is a declaration, however unusual — unlike
+        X-Forwarded-Port, which is the proxy's guess and may name its own hop."""
+        request = _make_request(headers={"x-forwarded-host": "dockmon.lokal:80"})
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = None
+            assert get_request_host(request, "https") == "dockmon.lokal:80"
+
     def test_leaves_unbracketed_ipv6_literal_alone(self):
         """Appending a port to a bare IPv6 literal would yield an unparsable URL."""
         request = _make_request(headers={
@@ -566,6 +575,15 @@ class TestForwardedHostMustBeDeclared:
             mock_config.REVERSE_PROXY_MODE = True
             mock_config.CORS_ORIGINS = None
             assert get_request_host(request, "https") == "anything.lokal"
+
+    def test_fallback_prefers_a_declared_origin_matching_the_scheme(self):
+        """Pairing the effective scheme with another origin's netloc would name a
+        host the operator never published under that scheme."""
+        request = _make_request(headers={"x-forwarded-host": "evil.tld"})
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "http://lan.lokal:8001,https://dockmon.lokal:8314"
+            assert get_request_host(request, "https") == "dockmon.lokal:8314"
 
     def test_declared_match_ignores_the_port(self):
         """The declaration names a host; the request may carry a port with it."""

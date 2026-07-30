@@ -192,6 +192,10 @@ class OIDCConfig(Base):
     # Provider compatibility: some providers (e.g. Authentik) reject client_secret + PKCE together
     disable_pkce_with_secret = Column(Boolean, nullable=False, default=False)
 
+    # Escape hatch for proxy chains that forward no usable public origin, leaving
+    # the auto-detected redirect_uri unable to match the provider's registration
+    redirect_uri_override = Column(Text, nullable=True)
+
     # Pending approval for new OIDC users (v2.6.0)
     require_approval = Column(Boolean, nullable=False, server_default='0', default=False)
     approval_notify_channel_ids = Column(Text, nullable=True)  # JSON array of channel IDs

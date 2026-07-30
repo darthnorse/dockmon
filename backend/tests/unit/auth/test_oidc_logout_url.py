@@ -131,6 +131,26 @@ async def test_oidc_logout_url_includes_client_id(oidc_logout_env):
 
 
 @pytest.mark.asyncio
+async def test_oidc_logout_url_follows_redirect_uri_override(oidc_logout_env, db_session):
+    """The post-logout URI must describe the same origin as the callback, or a
+    provider validating post-logout URIs rejects it (issue #242)."""
+    config = db_session.query(OIDCConfig).filter_by(id=1).first()
+    config.redirect_uri_override = (
+        "https://dockmon.example.com:8314/api/v2/auth/oidc/callback"
+    )
+    db_session.commit()
+
+    result = await v2.logout_v2(
+        response=Response(),
+        request=_make_logout_request(),
+        session_id="signed-token",
+    )
+
+    assert result.oidc_logout_url is not None
+    assert "https%3A%2F%2Fdockmon.example.com%3A8314%2Flogin" in result.oidc_logout_url
+
+
+@pytest.mark.asyncio
 async def test_oidc_logout_url_omits_client_id_and_warns_when_unconfigured(
     oidc_logout_env, db_session, monkeypatch
 ):

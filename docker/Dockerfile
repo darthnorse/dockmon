@@ -124,9 +124,11 @@ COPY docker/nginx.conf /etc/nginx/http.d/default.conf
 COPY docker/nginx-http.conf /docker/nginx-http.conf
 # Shared security-headers snippet included by both nginx configs
 COPY docker/security-headers.conf /etc/nginx/snippets/security-headers.conf
+# Forwarded-header maps (used by nginx-http.conf); must be in the http block
+COPY docker/forwarded-headers.conf /etc/nginx/snippets/forwarded-headers.conf
 
 # Add WebSocket upgrade mapping to main nginx.conf (must be in http block)
-RUN sed -i '/^http {/a \    # WebSocket upgrade mapping\n    map $http_upgrade $connection_upgrade {\n        default upgrade;\n        '"''"' close;\n    }\n' /etc/nginx/nginx.conf
+RUN sed -i '/^http {/a \    # WebSocket upgrade mapping\n    map $http_upgrade $connection_upgrade {\n        default upgrade;\n        '"''"' close;\n    }\n    include /etc/nginx/snippets/forwarded-headers.conf;\n' /etc/nginx/nginx.conf
 
 # Copy supervisor configuration
 COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf

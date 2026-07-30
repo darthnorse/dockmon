@@ -43,12 +43,12 @@ from auth.cookie_sessions import cookie_session_manager, get_session_cookie_max_
 from auth.api_key_auth import invalidate_user_groups_cache
 from auth.utils import count_other_admins
 from utils.base_path import get_base_path
-from utils.oidc import build_discovery_url, normalize_provider_url
+from utils.oidc import build_callback_url, build_discovery_url, normalize_provider_url
 from database import User, OIDCConfig, OIDCGroupMapping, PendingOIDCAuth, CustomGroup, UserGroupMembership
 from security.rate_limiting import rate_limit_auth
 from audit import log_login, log_login_failure, get_client_info, AuditAction
 from audit.audit_logger import AuditEntityType
-from utils.client_ip import get_client_ip, get_request_scheme, get_request_host
+from utils.client_ip import get_client_ip
 from utils.encryption import decrypt_password
 
 logger = logging.getLogger(__name__)
@@ -598,11 +598,7 @@ async def oidc_authorize(
         code_verifier = '' if skip_pkce else _generate_code_verifier()
         code_challenge = '' if skip_pkce else _generate_code_challenge(code_verifier)
 
-        # Build callback URL
-        scheme = get_request_scheme(request)
-        host = get_request_host(request)
-        base_path = get_base_path().rstrip('/')
-        redirect_uri = f"{scheme}://{host}{base_path}/api/v2/auth/oidc/callback"
+        redirect_uri = build_callback_url(request, config.redirect_uri_override)
 
         # Validate and sanitize the redirect URL to prevent open redirect attacks
         validated_redirect = _validate_redirect_url(redirect)

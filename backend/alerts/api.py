@@ -19,7 +19,9 @@ from fastapi import APIRouter, HTTPException, Depends, Query, status
 from pydantic import BaseModel, Field, ConfigDict, field_serializer
 
 from database import DatabaseManager, AlertV2, AlertAnnotation, User
+from alerts.capabilities import HOST_METRIC_FIELDS, host_metric_capabilities
 from alerts.engine import AlertEngine
+from stats_client import get_stats_client
 from security.rate_limiting import get_rate_limit_dependency
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability  # v2 hybrid auth (cookies + API keys)
 from auth.utils import get_auditable_user_info
@@ -97,6 +99,19 @@ class AddAnnotationRequest(BaseModel):
     text: str = Field(min_length=1, max_length=5000)
 
 
+class HostMetricCapability(BaseModel):
+    """Host metrics a single host is currently observed to report"""
+    host_id: str
+    host_name: str
+    metrics: List[str]
+
+
+class MetricCapabilitiesResponse(BaseModel):
+    """Per-host metric capability plus the full set of host metrics"""
+    hosts: List[HostMetricCapability]
+    host_metrics: List[str]
+
+
 # ==================== Dependencies ====================
 
 def get_db() -> DatabaseManager:
@@ -112,6 +127,43 @@ def get_alert_engine(db: DatabaseManager = Depends(get_db)) -> AlertEngine:
 
 
 # ==================== Alert Endpoints ====================
+
+@router.get(
+    "/metrics/capabilities",
+    response_model=MetricCapabilitiesResponse,
+    dependencies=[Depends(get_rate_limit_dependency("alerts")), Depends(require_capability("alerts.view"))],
+)
+async def get_metric_capabilities():
+    """Which host metrics each host is currently observed to report.
+
+    Derived from samples actually arriving and still fresh, never from
+    connection type: two agent hosts of the same type differ purely by whether
+    /host/proc is mounted. A rule targeting a host with no capability for its
+    metric can never fire, so the UI surfaces it instead of accepting silently.
+    """
+    from main import monitor
+
+    try:
+        host_stats = await get_stats_client().get_host_stats()
+    except Exception as e:
+        logger.warning(f"Could not read host stats for metric capabilities: {e}")
+        host_stats = {}
+
+    hosts = list(monitor.hosts.values())
+    capabilities = host_metric_capabilities(host_stats, [h.id for h in hosts])
+
+    return MetricCapabilitiesResponse(
+        hosts=[
+            HostMetricCapability(
+                host_id=host.id,
+                host_name=host.name,
+                metrics=capabilities.get(host.id, []),
+            )
+            for host in hosts
+        ],
+        host_metrics=list(HOST_METRIC_FIELDS),
+    )
+
 
 @router.get("/", response_model=AlertListResponse, dependencies=[Depends(get_rate_limit_dependency("alerts")), Depends(require_capability("alerts.view"))])
 async def list_alerts(

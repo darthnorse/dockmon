@@ -381,10 +381,12 @@ func main() {
 	//
 	// NOT wrapped in authMiddleware: auth is per-WebSocket via the agent's
 	// permanent UUID token, validated inside HandleWebSocket itself.
+	var ingestHandler *IngestHandler
 	if persistDB != nil {
-		ingestHandler := &IngestHandler{
+		ingestHandler = &IngestHandler{
 			db:    persistDB,
 			cache: cache,
+			hosts: streamManager,
 			upgrader: websocket.Upgrader{
 				CheckOrigin: func(r *http.Request) bool { return true },
 			},
@@ -461,58 +463,14 @@ func main() {
 	})))
 
 	// Add Docker host - PROTECTED
-	mux.HandleFunc("/api/hosts/add", authMiddleware(token, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		var req struct {
-			HostID      string `json:"host_id"`
-			HostName    string `json:"host_name"`
-			HostAddress string `json:"host_address"`
-			TLSCACert   string `json:"tls_ca_cert,omitempty"`
-			TLSCert     string `json:"tls_cert,omitempty"`
-			TLSKey      string `json:"tls_key,omitempty"`
-			NumCPUs     int    `json:"num_cpus,omitempty"`
-			TotalMemory uint64 `json:"total_memory,omitempty"`
-			IsLocal     bool   `json:"is_local,omitempty"`
-		}
-
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		// Validate required fields
-		if req.HostID == "" || req.HostName == "" || req.HostAddress == "" {
-			http.Error(w, "host_id, host_name, and host_address are required", http.StatusBadRequest)
-			return
-		}
-
-		if err := streamManager.AddDockerHost(req.HostID, req.HostName, req.HostAddress, req.TLSCACert, req.TLSCert, req.TLSKey); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Store number of CPUs for host CPU aggregation
-		if req.NumCPUs > 0 {
-			cache.SetHostNumCPUs(req.HostID, req.NumCPUs)
-		}
-
-		// Store Docker-visible host memory for host memory aggregation
-		if req.TotalMemory > 0 {
-			cache.SetHostMemory(req.HostID, req.TotalMemory)
-		}
-
-		// Mark host as local for /host/proc reading
-		if req.IsLocal {
-			cache.SetHostLocal(req.HostID, true)
-		}
-
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "added"})
-	}))
+	// Guard against a typed-nil interface: ingestHandler is a nil *IngestHandler
+	// when persistence is disabled, and calling through it would panic.
+	var agentSessions agentSessionRegistry
+	if ingestHandler != nil {
+		agentSessions = ingestHandler
+	}
+	mux.HandleFunc("/api/hosts/add", authMiddleware(token,
+		makeHostsAddHandler(streamManager, cache, agentSessions)))
 
 	// Remove Docker host - PROTECTED
 	mux.HandleFunc("/api/hosts/remove", authMiddleware(token, func(w http.ResponseWriter, r *http.Request) {

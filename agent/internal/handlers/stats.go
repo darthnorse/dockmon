@@ -216,6 +216,7 @@ func (h *StatsHandler) processStats(stat *container.StatsResponse, containerID, 
 	h.statsServiceMu.RUnlock()
 	if ss != nil {
 		ss.Send(statsmsg.AgentStatsMsg{
+			Type:          statsmsg.TypeContainerStats,
 			ContainerID:   containerID,
 			ContainerName: containerName,
 			CPUPercent:    cpuPct,

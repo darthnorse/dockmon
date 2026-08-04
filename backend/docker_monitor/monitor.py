@@ -1221,6 +1221,10 @@ class DockerMonitor:
                             await stats_client.add_event_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
                             logger.info(f"Re-registered {host.name} ({host.id[:8]}) with event service")
                         else:
+                            # Agent hosts feed the Go services over WebSocket, but a
+                            # Docker registration from a previous connection type would
+                            # keep writing the same host stats cache key.
+                            await self._unregister_docker_host_services(host.id, host.name)
                             logger.info(f"Skipped stats/event service re-registration for agent host {host.name} (uses WebSocket)")
                     except Exception as e:
                         logger.error(f"Failed to re-register {host.name} with Go services: {e}")
@@ -1269,8 +1273,21 @@ class DockerMonitor:
             security_status: Security status (default: "unknown")
         """
         if host_id in self.hosts:
-            # Host already exists - mark it online (reconnection case)
-            self.hosts[host_id].status = "online"
+            existing = self.hosts[host_id]
+
+            # An agent claiming a host_id that is still registered as a Docker
+            # host would leave two writers on the same stats-service host cache
+            # key. Repair the registration instead of returning early.
+            if existing.connection_type != "agent":
+                logger.warning(
+                    f"Agent claimed host {name} ({host_id[:8]}...) which was registered as "
+                    f"'{existing.connection_type}'; converting it to an agent host"
+                )
+                self._convert_host_to_agent(host_id, existing.name)
+                existing.connection_type = "agent"
+                existing.url = "agent://"
+
+            existing.status = "online"
             logger.info(f"Agent host {name} ({host_id[:8]}...) reconnected, marked online")
             self._schedule_host_status_broadcast(host_id, "online")
             return
@@ -1295,6 +1312,64 @@ class DockerMonitor:
 
         # Broadcast status change for real-time UI update
         self._schedule_host_status_broadcast(host_id, "online")
+
+    async def _unregister_docker_host_services(self, host_id: str, host_name: str):
+        """Drop a host's Docker registration from the Go stats and event services.
+
+        Required on every transition to agent: the aggregator writes the host
+        stats cache for registered Docker hosts and ingest writes it for agents,
+        both under the same key.
+        """
+        try:
+            stats_client = get_stats_client()
+        except Exception as e:
+            logger.warning(f"Could not reach stats service to unregister {host_name}: {e}")
+            return
+
+        try:
+            await stats_client.remove_docker_host(host_id)
+        except asyncio.TimeoutError:
+            logger.debug(f"Timeout unregistering {host_name} from stats service (expected during cleanup)")
+        except Exception as e:
+            logger.warning(f"Failed to unregister {host_name} from stats service: {e}")
+
+        try:
+            await stats_client.remove_event_host(host_id)
+        except asyncio.TimeoutError:
+            logger.debug(f"Timeout unregistering {host_name} from event service (expected during cleanup)")
+        except Exception as e:
+            logger.warning(f"Failed to unregister {host_name} from event service: {e}")
+
+    def _convert_host_to_agent(self, host_id: str, host_name: str):
+        """Repair a host that an agent has taken over from a Docker connection."""
+        client = self.clients.pop(host_id, None)
+        if client is not None:
+            try:
+                client.close()
+            except Exception as e:
+                logger.debug(f"Error closing Docker client for {host_name}: {e}")
+
+        try:
+            with self.db.get_session() as session:
+                db_host = session.query(DockerHostDB).filter_by(id=host_id).first()
+                if db_host:
+                    db_host.connection_type = "agent"
+                    db_host.url = "agent://"
+                    session.commit()
+        except Exception as e:
+            logger.error(f"Failed to persist agent takeover for {host_name}: {e}")
+
+        try:
+            asyncio.get_running_loop()
+            task = asyncio.create_task(
+                self._unregister_docker_host_services(host_id, host_name)
+            )
+            task.add_done_callback(_handle_task_exception)
+        except RuntimeError:
+            logger.warning(
+                f"No event loop to unregister {host_name} from the stats service; "
+                f"its Docker registration may linger until restart"
+            )
 
     def _schedule_host_status_broadcast(self, host_id: str, status: str):
         """

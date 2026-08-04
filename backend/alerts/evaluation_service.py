@@ -18,6 +18,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 
 from database import DatabaseManager, AlertRuleV2, AlertV2, DockerHostDB
+from alerts.capabilities import STATS_MAX_AGE_SECONDS, is_sample_fresh, sample_age_seconds
 from alerts.engine import AlertEngine, EvaluationContext
 from agent.connection_manager import agent_connection_manager
 from event_logger import EventLogger, EventContext, EventCategory, EventType, EventSeverity
@@ -121,6 +122,12 @@ class AlertEvaluationService:
         self._blackout_task: Optional[asyncio.Task] = None
         self._pending_event_alerts_task: Optional[asyncio.Task] = None
         self._resolve_loop_task: Optional[asyncio.Task] = None
+
+        # Hosts already reported as unable to serve a host-scope rule, so the
+        # warning fires once per host rather than every evaluation cycle.
+        self._hosts_missing_metrics_reported: set = set()
+        # Same throttling for samples whose last_update cannot be parsed.
+        self._bad_timestamp_reported: set = set()
 
     async def start(self):
         """Start the alert evaluation service"""
@@ -953,6 +960,9 @@ class AlertEvaluationService:
                     logger.debug(f"Container {composite_key} not found in cache")
                     continue
 
+                if not self._is_sample_fresh(container_stats, f"container {composite_key}"):
+                    continue
+
                 # Use container's tags which include both user-created (from DB) and
                 # derived tags (from Docker labels like compose:*, swarm:*, dockmon.tag)
                 # This enables tag-based alert filtering to work with label-defined tags
@@ -1030,15 +1040,77 @@ class AlertEvaluationService:
                     exc_info=True
                 )
 
+    def _is_sample_fresh(self, stats: Dict[str, Any], subject: str) -> bool:
+        """Whether a stats sample is recent enough to evaluate.
+
+        Unstamped or unreadable timestamps evaluate anyway: alerting on a
+        slightly old sample beats silently alerting on nothing. Parse problems
+        are surfaced here rather than left to the broad catches upstream.
+        """
+        try:
+            age = sample_age_seconds(stats)
+        except Exception as e:
+            logger.warning(f"Could not read last_update for {subject} ({e}); evaluating anyway")
+            return True
+
+        if age is None:
+            if stats.get("last_update") is not None and subject not in self._bad_timestamp_reported:
+                self._bad_timestamp_reported.add(subject)
+                logger.warning(
+                    f"Unreadable last_update {stats.get('last_update')!r} for {subject}; "
+                    f"evaluating anyway"
+                )
+            return True
+
+        self._bad_timestamp_reported.discard(subject)
+        if age > STATS_MAX_AGE_SECONDS:
+            logger.debug(f"Skipping stale stats for {subject} ({age:.0f}s old)")
+            return False
+        return True
+
+    def _host_scope_metric_rules(self, rules_by_metric: Dict[str, List[AlertRuleV2]]) -> List[AlertRuleV2]:
+        return [
+            rule
+            for rules in rules_by_metric.values()
+            for rule in rules
+            if rule.scope == "host"
+        ]
+
+    def _report_host_without_metrics(
+        self,
+        host,
+        context: EvaluationContext,
+        rules_by_metric: Dict[str, List[AlertRuleV2]],
+        reason: str,
+    ):
+        """Warn once per host when a host-scope rule has no metrics to evaluate.
+
+        Debug-level silence here is why a whole class of hosts could never fire
+        a metric alert without anything saying so.
+        """
+        if host.id in self._hosts_missing_metrics_reported:
+            return
+
+        matching = [
+            rule for rule in self._host_scope_metric_rules(rules_by_metric)
+            if self.engine._check_selectors(rule, context)
+        ]
+        if not matching:
+            return
+
+        self._hosts_missing_metrics_reported.add(host.id)
+        metrics = sorted({rule.metric for rule in matching})
+        logger.warning(
+            f"Host {host.name} reports no host metrics ({reason}); "
+            f"{len(matching)} host-scope rule(s) on {', '.join(metrics)} cannot be evaluated. "
+            f"Containerized agents need -v /proc:/host/proc:ro to collect host metrics."
+        )
+
     async def _evaluate_host_metrics(self, rules_by_metric: Dict[str, List[AlertRuleV2]]):
         """Evaluate host metric rules"""
         try:
             # Get all host stats from stats service
-            stats = await self.stats_client.get_host_stats()
-
-            if not stats:
-                logger.debug("No host stats available")
-                return
+            stats = await self.stats_client.get_host_stats() or {}
 
             # Get hosts from monitor
             hosts = list(self.monitor.hosts.values())
@@ -1051,10 +1123,6 @@ class AlertEvaluationService:
             for host in hosts:
                 host_stats = stats.get(host.id)
 
-                if not host_stats:
-                    logger.debug(f"Host {host.name} stats not found")
-                    continue
-
                 # Fetch host tags for tag-based selector matching
                 host_tags = self.db.get_tags_for_subject('host', host.id)
 
@@ -1066,6 +1134,20 @@ class AlertEvaluationService:
                     host_name=host.name,
                     tags=host_tags
                 )
+
+                if not host_stats:
+                    self._report_host_without_metrics(
+                        host, context, rules_by_metric, "no samples received"
+                    )
+                    continue
+
+                if not self._is_sample_fresh(host_stats, f"host {host.name}"):
+                    self._report_host_without_metrics(
+                        host, context, rules_by_metric, "samples are stale"
+                    )
+                    continue
+
+                self._hosts_missing_metrics_reported.discard(host.id)
 
                 # Evaluate metrics
                 await self._evaluate_host_stats(host_stats, context, rules_by_metric)

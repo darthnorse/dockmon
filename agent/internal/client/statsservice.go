@@ -65,7 +65,11 @@ func (c *StatsServiceClient) Send(msg AgentStatsMsg) {
 	select {
 	case c.sendCh <- msg:
 	default:
-		c.log.Warnf("Stats service channel full, dropping stats for %s", msg.ContainerID)
+		subject := msg.ContainerID
+		if msg.Type == statsmsg.TypeHostStats {
+			subject = "host"
+		}
+		c.log.Warnf("Stats service channel full, dropping stats for %s", subject)
 	}
 }
 

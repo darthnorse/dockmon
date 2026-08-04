@@ -85,8 +85,10 @@ func (a *Aggregator) aggregate() {
 		hostStats := a.aggregateHostStats(hostID, containers)
 
 		// Push to live dashboard cache only for hosts with a registered
-		// Docker client. Agent-managed hosts update the cache directly
-		// via the ingest WebSocket handler.
+		// Docker client. Agent hosts are written exclusively by the ingest
+		// handler, from the agent's real /proc readings — aggregating their
+		// containers here would be wrong anyway, since agent hosts carry no
+		// CPU-count or host-memory metadata in this cache.
 		if a.streamManager.HasHost(hostID) {
 			a.cache.UpdateHostStats(hostStats)
 		}

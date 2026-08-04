@@ -283,6 +283,275 @@ func TestIngestHandler_ContextCancellationReturnsHandler(t *testing.T) {
 	}
 }
 
+// dialIngest registers host-1 with token tok1 and returns a connected agent
+// WebSocket plus the cache it feeds.
+func dialIngest(t *testing.T, h *IngestHandler, db *persistence.DB) *websocket.Conn {
+	t.Helper()
+	if _, err := db.Write().Exec(
+		`INSERT INTO docker_hosts (id,name) VALUES ('host-1','h1')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Write().Exec(
+		`INSERT INTO agents (id, host_id) VALUES ('tok1','host-1')`); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(h.HandleWebSocket))
+	t.Cleanup(srv.Close)
+
+	url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/stats/ingest"
+	conn, _, err := websocket.DefaultDialer.Dial(url,
+		http.Header{"Authorization": {"Bearer tok1"}})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}
+
+func writeIngestJSON(t *testing.T, conn *websocket.Conn, msg map[string]interface{}) {
+	t.Helper()
+	data, _ := json.Marshal(msg)
+	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+}
+
+// waitFor polls cond until it holds or the deadline expires.
+func waitFor(t *testing.T, cond func() bool) bool {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+func TestIngestHandler_HostStatsMessageUpdatesHostCache(t *testing.T) {
+	cache, db, h := makeIngestFixture(t)
+	conn := dialIngest(t, h, db)
+
+	writeIngestJSON(t, conn, map[string]interface{}{
+		"type":               "host_stats",
+		"cpu_percent":        37.5,
+		"memory_percent":     61.25,
+		"memory_used_bytes":  8_589_934_592,
+		"memory_limit_bytes": 17_179_869_184,
+	})
+
+	var stats *HostStats
+	if !waitFor(t, func() bool {
+		s, ok := cache.GetHostStats("host-1")
+		if ok {
+			stats = s
+		}
+		return ok
+	}) {
+		t.Fatal("host stats never reached the cache")
+	}
+
+	if stats.HostID != "host-1" {
+		t.Errorf("HostID=%q, want host-1 (must come from auth)", stats.HostID)
+	}
+	if stats.CPUPercent != 37.5 {
+		t.Errorf("CPUPercent=%v, want 37.5", stats.CPUPercent)
+	}
+	if stats.MemoryPercent != 61.25 {
+		t.Errorf("MemoryPercent=%v, want 61.25", stats.MemoryPercent)
+	}
+	if stats.MemoryUsedBytes != 8_589_934_592 {
+		t.Errorf("MemoryUsedBytes=%v, want 8589934592", stats.MemoryUsedBytes)
+	}
+	if stats.MemoryLimitBytes != 17_179_869_184 {
+		t.Errorf("MemoryLimitBytes=%v, want 17179869184", stats.MemoryLimitBytes)
+	}
+	if stats.LastUpdate.IsZero() {
+		t.Error("LastUpdate not stamped; evaluator freshness check would reject the sample")
+	}
+}
+
+// A host-typed message must never create a container cache entry, even when a
+// (bogus) container_id rides along.
+func TestIngestHandler_HostStatsDoesNotPolluteContainerCache(t *testing.T) {
+	cache, db, h := makeIngestFixture(t)
+	conn := dialIngest(t, h, db)
+
+	writeIngestJSON(t, conn, map[string]interface{}{
+		"type":           "host_stats",
+		"container_id":   "abc123abc123",
+		"cpu_percent":    10.0,
+		"memory_percent": 20.0,
+	})
+
+	if !waitFor(t, func() bool {
+		_, ok := cache.GetHostStats("host-1")
+		return ok
+	}) {
+		t.Fatal("host stats never reached the cache")
+	}
+	if n := len(cache.GetAllContainerStats()); n != 0 {
+		t.Errorf("container cache has %d entries, want 0", n)
+	}
+}
+
+// Agents predating the typed wire format send no `type` field. Those messages
+// must keep being treated as container stats.
+func TestIngestHandler_UntypedMessageIsContainerStats(t *testing.T) {
+	cache, db, h := makeIngestFixture(t)
+	conn := dialIngest(t, h, db)
+
+	writeIngestJSON(t, conn, map[string]interface{}{
+		"container_id":   "legacy123456",
+		"container_name": "old-agent",
+		"cpu_percent":    5.0,
+	})
+
+	if !waitFor(t, func() bool {
+		_, ok := cache.GetContainerStats("legacy123456", "host-1")
+		return ok
+	}) {
+		t.Fatal("legacy untyped message did not land in the container cache")
+	}
+	if _, ok := cache.GetHostStats("host-1"); ok {
+		t.Error("legacy container message polluted the host cache")
+	}
+}
+
+func TestIngestHandler_ExplicitContainerTypeAccepted(t *testing.T) {
+	cache, db, h := makeIngestFixture(t)
+	conn := dialIngest(t, h, db)
+
+	writeIngestJSON(t, conn, map[string]interface{}{
+		"type":           "container_stats",
+		"container_id":   "typed1234567",
+		"container_name": "nginx",
+		"cpu_percent":    7.5,
+	})
+
+	if !waitFor(t, func() bool {
+		_, ok := cache.GetContainerStats("typed1234567", "host-1")
+		return ok
+	}) {
+		t.Fatal("explicitly typed container message did not land in the container cache")
+	}
+}
+
+// An unknown type must be dropped rather than falling through to either cache.
+func TestIngestHandler_UnknownTypeDropped(t *testing.T) {
+	cache, db, h := makeIngestFixture(t)
+	conn := dialIngest(t, h, db)
+
+	writeIngestJSON(t, conn, map[string]interface{}{
+		"type":         "something_else",
+		"container_id": "unknown12345",
+		"cpu_percent":  1.0,
+	})
+	// Follow with a valid message so we can wait on a deterministic signal.
+	writeIngestJSON(t, conn, map[string]interface{}{
+		"type":           "host_stats",
+		"cpu_percent":    1.0,
+		"memory_percent": 1.0,
+	})
+
+	if !waitFor(t, func() bool {
+		_, ok := cache.GetHostStats("host-1")
+		return ok
+	}) {
+		t.Fatal("host stats never reached the cache")
+	}
+	if n := len(cache.GetAllContainerStats()); n != 0 {
+		t.Errorf("unknown-typed message wrote %d container entries, want 0", n)
+	}
+}
+
+// The agent/Docker disjointness invariant: while an agent holds an ingest
+// session for a host, that host must not also be a registered Docker host.
+func TestIngestHandler_TracksActiveAgentSession(t *testing.T) {
+	_, db, h := makeIngestFixture(t)
+	conn := dialIngest(t, h, db)
+
+	if !waitFor(t, func() bool { return h.HasActiveSession("host-1") }) {
+		t.Fatal("expected an active ingest session for host-1")
+	}
+	if h.HasActiveSession("host-2") {
+		t.Error("host-2 reported as having an ingest session")
+	}
+
+	_ = conn.Close()
+	if !waitFor(t, func() bool { return !h.HasActiveSession("host-1") }) {
+		t.Error("ingest session still active after the agent disconnected")
+	}
+}
+
+type fakeUnregistrar struct {
+	mu      sync.Mutex
+	present map[string]bool
+	removed []string
+}
+
+func (f *fakeUnregistrar) HasHost(hostID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.present[hostID]
+}
+
+func (f *fakeUnregistrar) RemoveDockerHost(hostID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.present, hostID)
+	f.removed = append(f.removed, hostID)
+}
+
+func (f *fakeUnregistrar) removedHosts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.removed...)
+}
+
+// If a Docker registration for the same host_id survived (stale row, in-place
+// connection-type edit), the arriving agent evicts it so the aggregator can
+// never overwrite authenticated agent samples.
+func TestIngestHandler_EvictsStaleDockerRegistrationOnConnect(t *testing.T) {
+	_, db, h := makeIngestFixture(t)
+	reg := &fakeUnregistrar{present: map[string]bool{"host-1": true}}
+	h.hosts = reg
+
+	dialIngest(t, h, db)
+
+	if !waitFor(t, func() bool { return len(reg.removedHosts()) > 0 }) {
+		t.Fatal("stale Docker registration was not evicted on agent connect")
+	}
+	if got := reg.removedHosts()[0]; got != "host-1" {
+		t.Errorf("evicted %q, want host-1", got)
+	}
+	if reg.HasHost("host-1") {
+		t.Error("host still registered as a Docker host after agent takeover")
+	}
+}
+
+// Same invariant against the real StreamManager rather than a fake.
+func TestIngestHandler_AgentTakeoverLeavesNoDockerHost(t *testing.T) {
+	cache, db, h := makeIngestFixture(t)
+	sm := NewStreamManager(cache)
+	h.hosts = sm
+
+	if err := sm.AddDockerHost("host-1", "was-docker", "tcp://198.51.100.7:2376", "", "", ""); err != nil {
+		t.Fatalf("AddDockerHost: %v", err)
+	}
+	if !sm.HasHost("host-1") {
+		t.Fatal("fixture did not register the Docker host")
+	}
+
+	dialIngest(t, h, db)
+
+	if !waitFor(t, func() bool { return !sm.HasHost("host-1") }) {
+		t.Error("HasHost still true after an agent claimed the host_id; " +
+			"the aggregator would overwrite authenticated agent samples")
+	}
+}
+
 func TestInvalidateHandler_EvictsCachedToken(t *testing.T) {
 	path := persistence.MakeFixtureDBForTest(t)
 	db, err := persistence.Open(path)

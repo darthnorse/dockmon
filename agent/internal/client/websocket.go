@@ -34,6 +34,15 @@ type WebSocketClient struct {
 	agentID       string
 	hostID        string
 
+	// procCtx is the process-lifetime context. The dual-send client runs on
+	// it, not on a per-connection context, so it survives reconnects.
+	procCtx context.Context
+
+	// Dual-send to stats-service starts at most once, from whichever of
+	// startup or first registration first has a persisted permanent token.
+	statsServiceOnce sync.Once
+	newStatsService  func(url, token string, insecureSkipVerify bool, log *logrus.Logger) statsServiceClient
+
 	statsHandler       *handlers.StatsHandler
 	hostStatsHandler   *handlers.HostStatsHandler
 	updateHandler      *handlers.UpdateHandler
@@ -74,8 +83,12 @@ func NewWebSocketClient(
 		engineID:      engineID,
 		myContainerID: myContainerID,
 		log:           log,
+		procCtx:       ctx,
 		stopChan:      make(chan struct{}),
 		doneChan:      make(chan struct{}),
+		newStatsService: func(url, token string, insecureSkipVerify bool, log *logrus.Logger) statsServiceClient {
+			return NewStatsServiceClient(url, token, insecureSkipVerify, log)
+		},
 	}
 
 	// Initialize stats handler with sendEvent callback
@@ -103,6 +116,9 @@ func NewWebSocketClient(
 			client.sendJSON,
 		)
 		log.Info("Host stats handler initialized (container mode with /host/proc mount)")
+	} else {
+		log.Warn("Host stats disabled: /host/proc is not mounted. Host CPU/memory will be missing " +
+			"and host-scope metric alerts cannot fire. Add -v /proc:/host/proc:ro to the agent container.")
 	}
 
 	// Initialize update handler with sendEvent callback
@@ -158,10 +174,47 @@ func NewWebSocketClient(
 	return client, nil
 }
 
-// StatsHandler returns the internal StatsHandler so main.go can wire the
-// stats-service dual-send path into it at startup.
+// StatsHandler returns the internal StatsHandler.
 func (c *WebSocketClient) StatsHandler() *handlers.StatsHandler {
 	return c.statsHandler
+}
+
+// statsServiceClient is the dual-send transport: a sender the handlers can
+// push samples into, plus its own reconnect loop.
+type statsServiceClient interface {
+	handlers.StatsServiceSender
+	Run(ctx context.Context)
+}
+
+// EnsureStatsServiceDualSend starts the stats-service dual-send client once a
+// permanent token is available, and attaches it to both the container and host
+// stats handlers. Safe to call repeatedly: startup calls it, and so does the
+// registration path once the token is durably persisted, because on an agent's
+// first run there is no token at startup. The backend hands out a permanent
+// token on every reconnect, so the once-guard is what keeps a reconnect from
+// starting a second client.
+func (c *WebSocketClient) EnsureStatsServiceDualSend() {
+	if c.cfg.PermanentToken == "" || c.cfg.DockMonURL == "" {
+		c.log.WithFields(logrus.Fields{
+			"have_token": c.cfg.PermanentToken != "",
+			"have_url":   c.cfg.DockMonURL != "",
+		}).Debug("Stats service dual-send not started yet (missing token or URL)")
+		return
+	}
+
+	c.statsServiceOnce.Do(func() {
+		statsClient := c.newStatsService(c.cfg.DockMonURL, c.cfg.PermanentToken, c.cfg.InsecureSkipVerify, c.log)
+
+		c.statsHandler.SetStatsServiceClient(statsClient)
+		if c.hostStatsHandler != nil {
+			// Without this, host CPU/memory never reaches the alert
+			// evaluator: the control WebSocket feeds the UI only.
+			c.hostStatsHandler.SetStatsServiceClient(statsClient)
+		}
+
+		go statsClient.Run(c.procCtx)
+		c.log.Info("Stats service dual-send enabled")
+	})
 }
 
 // Run starts the WebSocket client with automatic reconnection
@@ -472,6 +525,10 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 			c.log.WithError(err).Fatalf("CRITICAL: Failed to persist permanent token to %s - agent will lose identity on restart! Ensure volume is mounted: -v agent-data:/data", tokenPath)
 		}
 		c.log.WithField("path", tokenPath).Info("Permanent token persisted securely")
+
+		// First run has no token at startup, so this is where dual-send
+		// begins; later reconnects hit the once-guard.
+		c.EnsureStatsServiceDualSend()
 	}
 
 	return nil

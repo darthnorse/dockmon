@@ -165,6 +165,8 @@ func (h *IngestHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) 
 
 	log.Printf("Agent ingest: connected for host %s", truncateID(hostID, 8))
 
+	loggedUnknownType := false
+
 	for {
 		var msg agentStatsMsg
 		if err := conn.ReadJSON(&msg); err != nil {
@@ -210,8 +212,14 @@ func (h *IngestHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) 
 				DiskWrite:     msg.DiskWrite,
 			})
 		default:
-			log.Printf("Agent ingest: unknown message type %q from host %s",
-				msg.Type, truncateID(hostID, 8))
+			// Once per connection, truncated: msg.Type is agent-controlled up
+			// to the frame limit, and an unthrottled line here would let one
+			// agent rotate the whole container log ring.
+			if !loggedUnknownType {
+				loggedUnknownType = true
+				log.Printf("Agent ingest: unknown message type %q from host %s",
+					truncateID(msg.Type, 32), truncateID(hostID, 8))
+			}
 		}
 	}
 }

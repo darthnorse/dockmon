@@ -9,6 +9,7 @@ import (
 // dockerHostAdder is the slice of StreamManager the add-host endpoint needs.
 type dockerHostAdder interface {
 	AddDockerHost(hostID, hostName, hostAddress, tlsCACert, tlsCert, tlsKey string) error
+	RemoveDockerHost(hostID string)
 }
 
 // agentSessionRegistry reports whether an agent currently owns a host_id.
@@ -52,18 +53,22 @@ func makeHostsAddHandler(hosts dockerHostAdder, cache *StatsCache, sessions agen
 		}
 
 		if sessions != nil && sessions.HasActiveSession(req.HostID) {
-			log.Printf("Rejected Docker host registration for %s: an agent holds this host_id",
-				truncateID(req.HostID, 8))
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusConflict)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"error": "host_id is owned by a connected agent",
-			})
+			rejectAgentOwnedHost(w, req.HostID)
 			return
 		}
 
 		if err := hosts.AddDockerHost(req.HostID, req.HostName, req.HostAddress, req.TLSCACert, req.TLSCert, req.TLSKey); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// An agent that connected during the registration would have checked
+		// for a Docker host before this one existed, so re-check after acting:
+		// either we see its session here, or its own check ran after the
+		// registration landed and evicted us.
+		if sessions != nil && sessions.HasActiveSession(req.HostID) {
+			hosts.RemoveDockerHost(req.HostID)
+			rejectAgentOwnedHost(w, req.HostID)
 			return
 		}
 
@@ -80,4 +85,14 @@ func makeHostsAddHandler(hosts dockerHostAdder, cache *StatsCache, sessions agen
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "added"})
 	}
+}
+
+func rejectAgentOwnedHost(w http.ResponseWriter, hostID string) {
+	log.Printf("Rejected Docker host registration for %s: an agent holds this host_id",
+		truncateID(hostID, 8))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error": "host_id is owned by a connected agent",
+	})
 }

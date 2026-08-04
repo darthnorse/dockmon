@@ -5,11 +5,8 @@ recently they arrived - never of its connection type. Two agent hosts of the
 same type differ purely by whether /host/proc is mounted, so connection type
 cannot answer the question.
 """
-import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
-
-logger = logging.getLogger(__name__)
 
 # Host metrics the stats pipeline can carry today.
 HOST_METRIC_FIELDS = ("cpu_percent", "memory_percent")
@@ -26,29 +23,16 @@ def parse_stats_timestamp(value: Any) -> Optional[datetime]:
     Returns None when the value is absent or unparseable - callers fail open on
     None rather than dropping the sample, because silent non-evaluation is the
     exact failure this module exists to prevent.
-
-    Go marshals time.Time as RFC3339 with up to nanosecond precision, which
-    datetime.fromisoformat rejects, so fractional seconds are trimmed to
-    microseconds first.
     """
     if not value:
         return None
     if isinstance(value, datetime):
         parsed = value
     elif isinstance(value, str):
-        text = value.strip().replace("Z", "+00:00")
-        if "." in text:
-            head, _, tail = text.partition(".")
-            digits = ""
-            for char in tail:
-                if char.isdigit():
-                    digits += char
-                else:
-                    break
-            offset = tail[len(digits):]
-            text = f"{head}.{digits[:6].ljust(6, '0')}{offset}" if digits else head + offset
+        # Go marshals time.Time as RFC3339; fromisoformat handles the 'Z' suffix
+        # and truncates sub-microsecond precision on the project's Python.
         try:
-            parsed = datetime.fromisoformat(text)
+            parsed = datetime.fromisoformat(value.strip())
         except ValueError:
             return None
     else:

@@ -18,7 +18,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 
 from database import DatabaseManager, AlertRuleV2, AlertV2, DockerHostDB
-from alerts.capabilities import STATS_MAX_AGE_SECONDS, is_sample_fresh, sample_age_seconds
+from alerts.capabilities import STATS_MAX_AGE_SECONDS, sample_age_seconds
 from alerts.engine import AlertEngine, EvaluationContext
 from agent.connection_manager import agent_connection_manager
 from event_logger import EventLogger, EventContext, EventCategory, EventType, EventSeverity
@@ -986,6 +986,13 @@ class AlertEvaluationService:
                 # Evaluate metrics
                 await self._evaluate_container_stats(container_stats, context, rules_by_metric)
 
+            # Containers come and go; drop throttle entries for subjects that
+            # no longer report, so the set stays bounded by what exists now.
+            self._bad_timestamp_reported.intersection_update(
+                {f"container {key}" for key in stats}
+                | {s for s in self._bad_timestamp_reported if s.startswith("host ")}
+            )
+
         except Exception as e:
             logger.error(f"Error evaluating container metrics: {e}", exc_info=True)
 
@@ -1079,7 +1086,6 @@ class AlertEvaluationService:
     def _report_host_without_metrics(
         self,
         host,
-        context: EvaluationContext,
         rules_by_metric: Dict[str, List[AlertRuleV2]],
         reason: str,
     ):
@@ -1091,8 +1097,20 @@ class AlertEvaluationService:
         if host.id in self._hosts_missing_metrics_reported:
             return
 
+        # An offline host has an obvious reason to report nothing.
+        if getattr(host, "status", None) != "online":
+            return
+
+        host_rules = self._host_scope_metric_rules(rules_by_metric)
+        if not host_rules:
+            return
+
+        # Selector matching needs a context, so build it only once we know a
+        # warning is possible - hosts without stats are otherwise re-checked
+        # every cycle for the lifetime of the process.
+        context = self._host_context(host)
         matching = [
-            rule for rule in self._host_scope_metric_rules(rules_by_metric)
+            rule for rule in host_rules
             if self.engine._check_selectors(rule, context)
         ]
         if not matching:
@@ -1100,10 +1118,22 @@ class AlertEvaluationService:
 
         self._hosts_missing_metrics_reported.add(host.id)
         metrics = sorted({rule.metric for rule in matching})
+        remedy = ""
+        if getattr(host, "connection_type", None) == "agent":
+            remedy = " Containerized agents need -v /proc:/host/proc:ro to collect host metrics."
         logger.warning(
             f"Host {host.name} reports no host metrics ({reason}); "
-            f"{len(matching)} host-scope rule(s) on {', '.join(metrics)} cannot be evaluated. "
-            f"Containerized agents need -v /proc:/host/proc:ro to collect host metrics."
+            f"{len(matching)} host-scope rule(s) on {', '.join(metrics)} cannot be evaluated.{remedy}"
+        )
+
+    def _host_context(self, host) -> EvaluationContext:
+        """Evaluation context for a host, including tags for selector matching."""
+        return EvaluationContext(
+            scope_type="host",
+            scope_id=host.id,
+            host_id=host.id,
+            host_name=host.name,
+            tags=self.db.get_tags_for_subject('host', host.id),
         )
 
     async def _evaluate_host_metrics(self, rules_by_metric: Dict[str, List[AlertRuleV2]]):
@@ -1123,34 +1153,24 @@ class AlertEvaluationService:
             for host in hosts:
                 host_stats = stats.get(host.id)
 
-                # Fetch host tags for tag-based selector matching
-                host_tags = self.db.get_tags_for_subject('host', host.id)
-
-                # Create evaluation context
-                context = EvaluationContext(
-                    scope_type="host",
-                    scope_id=host.id,
-                    host_id=host.id,
-                    host_name=host.name,
-                    tags=host_tags
-                )
-
                 if not host_stats:
                     self._report_host_without_metrics(
-                        host, context, rules_by_metric, "no samples received"
+                        host, rules_by_metric, "no samples received"
                     )
                     continue
 
                 if not self._is_sample_fresh(host_stats, f"host {host.name}"):
                     self._report_host_without_metrics(
-                        host, context, rules_by_metric, "samples are stale"
+                        host, rules_by_metric, "samples are stale"
                     )
                     continue
 
                 self._hosts_missing_metrics_reported.discard(host.id)
 
                 # Evaluate metrics
-                await self._evaluate_host_stats(host_stats, context, rules_by_metric)
+                await self._evaluate_host_stats(
+                    host_stats, self._host_context(host), rules_by_metric
+                )
 
         except Exception as e:
             logger.error(f"Error evaluating host metrics: {e}", exc_info=True)

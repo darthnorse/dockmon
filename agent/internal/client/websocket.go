@@ -174,11 +174,6 @@ func NewWebSocketClient(
 	return client, nil
 }
 
-// StatsHandler returns the internal StatsHandler.
-func (c *WebSocketClient) StatsHandler() *handlers.StatsHandler {
-	return c.statsHandler
-}
-
 // statsServiceClient is the dual-send transport: a sender the handlers can
 // push samples into, plus its own reconnect loop.
 type statsServiceClient interface {

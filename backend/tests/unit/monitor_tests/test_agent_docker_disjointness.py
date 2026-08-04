@@ -14,7 +14,7 @@ import pytest
 import database as database_module
 from database import DatabaseManager, DockerHostDB
 from docker_monitor.monitor import DockerMonitor
-from models.docker_models import DockerHost
+from models.docker_models import DockerHost, DockerHostConfig
 
 HOST_ID = "7be442c9-24bc-4047-b33a-41bbf51ea2f9"
 
@@ -123,15 +123,24 @@ async def test_agent_reconnect_does_not_unregister(monitor, db, stats_client):
     assert monitor.hosts[HOST_ID].status == "online"
 
 
-async def test_update_host_agent_branch_unregisters_docker_host(monitor, db, stats_client):
-    """update_host skips re-registration for agent hosts but historically left
-    any pre-existing Docker registration in place."""
-    monitor.hosts[HOST_ID] = DockerHost(
-        id=HOST_ID, name="agent-box", url="agent://",
-        connection_type="agent", status="online",
-    )
+async def test_update_host_to_agent_url_unregisters_docker_host(monitor, db, stats_client):
+    """Editing a host to agent:// must drop its Docker registration.
 
-    await monitor._unregister_docker_host_services(HOST_ID, "agent-box")
+    update_host returns early for agent:// URLs, so the cleanup has to live on
+    that branch - the later re-registration block never sees an agent host.
+    """
+    _docker_host_row(db)
+    _existing_docker_host(monitor)
+    monitor.db.update_host = MagicMock(return_value=types.SimpleNamespace(
+        os_type=None, os_version=None, kernel_version=None, docker_version=None,
+        daemon_started_at=None, total_memory=None, num_cpus=None,
+    ))
+    monitor.event_logger = MagicMock()
 
+    config = DockerHostConfig(name="now-agent", url="agent://")
+    host = monitor.update_host(HOST_ID, config)
+    await asyncio.sleep(0)
+
+    assert host.connection_type == "agent"
     stats_client.remove_docker_host.assert_awaited_once_with(HOST_ID)
     stats_client.remove_event_host.assert_awaited_once_with(HOST_ID)

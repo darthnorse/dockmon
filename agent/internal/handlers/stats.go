@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"sync"
 	"time"
 
@@ -14,14 +13,6 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/sirupsen/logrus"
 )
-
-// StatsServiceSender is the narrow interface the StatsHandler uses to ship
-// stats samples to stats-service. *client.StatsServiceClient satisfies this
-// interface structurally — handlers cannot import `client` directly because
-// `client` already imports `handlers` for the main WebSocket client.
-type StatsServiceSender interface {
-	Send(msg statsmsg.AgentStatsMsg)
-}
 
 // StatsHandler manages container stats collection and streaming
 type StatsHandler struct {
@@ -35,12 +26,9 @@ type StatsHandler struct {
 	// Callback to send stats to backend
 	sendMessage func(msgType string, payload interface{}) error
 
-	// Optional: if non-nil, stats are also dual-sent to stats-service for
-	// historical persistence. nil disables the dual-send. See spec §10.
-	// Protected by statsServiceMu because collectStats goroutines read it
-	// concurrently with SetStatsServiceClient writes.
-	statsService   StatsServiceSender
-	statsServiceMu sync.RWMutex
+	// Dual-send to stats-service for historical persistence; disabled while
+	// no client is attached. See spec §10.
+	statsSink
 }
 
 // NewStatsHandler creates a new stats handler
@@ -51,32 +39,6 @@ func NewStatsHandler(dockerClient *docker.Client, log *logrus.Logger, sendMessag
 		streams:      make(map[string]context.CancelFunc),
 		sendMessage:  sendMessage,
 	}
-}
-
-// SetStatsServiceClient enables dual-send to stats-service. Pass nil to disable.
-// Accepts any implementation of StatsServiceSender; *client.StatsServiceClient
-// satisfies the interface structurally. Safe to call concurrently with
-// processStats goroutines.
-func (h *StatsHandler) SetStatsServiceClient(c StatsServiceSender) {
-	h.statsServiceMu.Lock()
-	defer h.statsServiceMu.Unlock()
-	// Normalize typed-nil to untyped nil so processStats can use a simple
-	// nil check. A typed-nil *client.StatsServiceClient would pass `!= nil`
-	// but panic on the nil receiver.
-	if c == nil || isNilPointer(c) {
-		h.statsService = nil
-		return
-	}
-	h.statsService = c
-}
-
-// isNilPointer reports whether v is an interface value wrapping a nil
-// pointer (the "typed nil" footgun). It returns false for non-pointer
-// concrete types, for non-nil pointers, and for an already-nil interface
-// (callers should check `c == nil` separately for clarity).
-func isNilPointer(v interface{}) bool {
-	rv := reflect.ValueOf(v)
-	return rv.Kind() == reflect.Ptr && rv.IsNil()
 }
 
 // StartStatsCollection begins stats collection for all running containers
@@ -211,10 +173,7 @@ func (h *StatsHandler) processStats(stat *container.StatsResponse, containerID, 
 		h.log.Errorf("Failed to send stats for %s: %v", safeShortID(containerID), err)
 	}
 
-	h.statsServiceMu.RLock()
-	ss := h.statsService
-	h.statsServiceMu.RUnlock()
-	if ss != nil {
+	if ss := h.sender(); ss != nil {
 		ss.Send(statsmsg.AgentStatsMsg{
 			Type:          statsmsg.TypeContainerStats,
 			ContainerID:   containerID,

@@ -281,6 +281,7 @@ class DockerMonitor:
     def __init__(self):
         self.hosts: Dict[str, DockerHost] = {}
         self.clients: Dict[str, DockerClient] = {}
+        self._main_loop: Optional[asyncio.AbstractEventLoop] = None
         self.db = DatabaseManager(DATABASE_PATH)  # Initialize database with centralized path
         self.settings = self.db.get_settings()  # Load settings from DB
         self.notification_settings = NotificationSettings()
@@ -1095,6 +1096,12 @@ class DockerMonitor:
                     num_cpus=updated_db_host.num_cpus,
                 )
                 self.hosts[host_id] = host
+
+                # A host edited into agent:// keeps any Docker registration it
+                # had, which would keep writing the same stats-service host
+                # cache key the agent's own samples write.
+                self._schedule_docker_host_unregistration(host_id, config.name)
+
                 logger.info(f"Updated agent host: {config.name} ({host_id[:8]}...)")
                 return host
 
@@ -1221,10 +1228,6 @@ class DockerMonitor:
                             await stats_client.add_event_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
                             logger.info(f"Re-registered {host.name} ({host.id[:8]}) with event service")
                         else:
-                            # Agent hosts feed the Go services over WebSocket, but a
-                            # Docker registration from a previous connection type would
-                            # keep writing the same host stats cache key.
-                            await self._unregister_docker_host_services(host.id, host.name)
                             logger.info(f"Skipped stats/event service re-registration for agent host {host.name} (uses WebSocket)")
                     except Exception as e:
                         logger.error(f"Failed to re-register {host.name} with Go services: {e}")
@@ -1313,6 +1316,36 @@ class DockerMonitor:
         # Broadcast status change for real-time UI update
         self._schedule_host_status_broadcast(host_id, "online")
 
+    def bind_event_loop(self, loop: asyncio.AbstractEventLoop):
+        """Record the application event loop for use from worker threads."""
+        self._main_loop = loop
+
+    def _schedule_docker_host_unregistration(self, host_id: str, host_name: str):
+        """Run the Go-service unregistration without blocking the caller.
+
+        Works from both the event loop (agent registration) and a worker thread
+        (update_host runs under asyncio.to_thread). The stats client's session
+        is bound to the main loop, so a worker thread hands the work back to it
+        rather than running it on a loop of its own.
+        """
+        coro = self._unregister_docker_host_services(host_id, host_name)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            loop = getattr(self, "_main_loop", None)
+            if loop is None:
+                coro.close()
+                logger.warning(
+                    f"No event loop available to unregister {host_name} from the stats "
+                    f"service; its Docker registration may linger until restart"
+                )
+                return
+            asyncio.run_coroutine_threadsafe(coro, loop)
+            return
+
+        task = asyncio.create_task(coro)
+        task.add_done_callback(_handle_task_exception)
+
     async def _unregister_docker_host_services(self, host_id: str, host_name: str):
         """Drop a host's Docker registration from the Go stats and event services.
 
@@ -1359,17 +1392,7 @@ class DockerMonitor:
         except Exception as e:
             logger.error(f"Failed to persist agent takeover for {host_name}: {e}")
 
-        try:
-            asyncio.get_running_loop()
-            task = asyncio.create_task(
-                self._unregister_docker_host_services(host_id, host_name)
-            )
-            task.add_done_callback(_handle_task_exception)
-        except RuntimeError:
-            logger.warning(
-                f"No event loop to unregister {host_name} from the stats service; "
-                f"its Docker registration may linger until restart"
-            )
+        self._schedule_docker_host_unregistration(host_id, host_name)
 
     def _schedule_host_status_broadcast(self, host_id: str, status: str):
         """

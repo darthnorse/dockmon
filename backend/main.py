@@ -209,6 +209,10 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Background task failed: {e}", exc_info=True)
 
+    # Sync monitor methods that run under asyncio.to_thread need a handle on
+    # this loop to schedule coroutines on the clients bound to it.
+    monitor.bind_event_loop(asyncio.get_running_loop())
+
     await monitor.event_logger.start()
     monitor.event_logger.log_system_event("DockMon Backend Starting", "DockMon backend is initializing", EventSeverity.INFO, LogEventType.STARTUP)
 

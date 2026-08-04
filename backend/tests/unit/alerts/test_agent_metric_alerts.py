@@ -39,9 +39,9 @@ def _now_iso(offset_seconds: float = 0) -> str:
     return (datetime.now(timezone.utc) - timedelta(seconds=offset_seconds)).isoformat()
 
 
-def _host(host_id, name, connection_type="agent"):
+def _host(host_id, name, connection_type="agent", status="online"):
     return types.SimpleNamespace(
-        id=host_id, name=name, connection_type=connection_type
+        id=host_id, name=name, connection_type=connection_type, status=status
     )
 
 
@@ -264,6 +264,32 @@ async def test_host_without_stats_logs_warning_once_per_interval(db, caplog):
 
     assert len(first) == 1, "expected a warning naming the host with no metrics"
     assert len(second) == 1, "warning must be throttled to once per host per interval"
+
+
+# An offline host has an obvious reason to report nothing; warning about it
+# would bury the case an operator can actually act on.
+async def test_offline_host_is_not_reported(db, caplog):
+    _add_host_rule(db, metric="cpu_percent", threshold=80.0)
+    service = _service(db, [_host(AGENT_HOST, "gone-away", status="offline")])
+
+    with caplog.at_level(logging.WARNING):
+        await _evaluate(service)
+
+    assert not [r for r in caplog.records if "gone-away" in r.message]
+
+
+# The /host/proc remedy is agent-specific; an mTLS host reporting nothing has a
+# different cause, and the advice would send the operator down a dead end.
+async def test_remedy_only_offered_for_agent_hosts(db, caplog):
+    _add_host_rule(db, metric="cpu_percent", threshold=80.0)
+    service = _service(db, [_host(MTLS_HOST, "docker-box", connection_type="tcp")])
+
+    with caplog.at_level(logging.WARNING):
+        await _evaluate(service)
+
+    records = [r for r in caplog.records if "docker-box" in r.message]
+    assert len(records) == 1
+    assert "/host/proc" not in records[0].message
 
 
 async def test_no_warning_when_no_host_rules_match(db):

@@ -3,6 +3,7 @@ package handlers
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,10 @@ import (
 
 // /proc/meminfo reports kilobytes.
 const bytesPerKB = 1024
+
+// errCPUBaseline marks the first /proc/stat read, which has no previous
+// counters to diff against and therefore no usable percentage.
+var errCPUBaseline = errors.New("first CPU reading is a baseline")
 
 // HostStatsHandler collects host-level metrics from /proc (or /host/proc in container mode)
 type HostStatsHandler struct {
@@ -33,11 +38,9 @@ type HostStatsHandler struct {
 	prevTime time.Time
 	mu       sync.Mutex
 
-	// Optional dual-send to stats-service. Host samples reach the alert
-	// evaluator only through this path — the control WebSocket feeds the
-	// UI ring buffer alone.
-	statsService   StatsServiceSender
-	statsServiceMu sync.RWMutex
+	// Host samples reach the alert evaluator only through this dual-send —
+	// the control WebSocket feeds the UI ring buffer alone.
+	statsSink
 }
 
 // memReading is a single /proc/meminfo sample.
@@ -90,19 +93,6 @@ func NewHostStatsHandler(log *logrus.Logger, sendJSON func(interface{}) error) *
 	}
 }
 
-// SetStatsServiceClient enables dual-send of host samples to stats-service.
-// Pass nil to disable. Safe to call concurrently with collection.
-func (h *HostStatsHandler) SetStatsServiceClient(c StatsServiceSender) {
-	h.statsServiceMu.Lock()
-	defer h.statsServiceMu.Unlock()
-	// Normalize typed-nil so the send path can use a plain nil check.
-	if c == nil || isNilPointer(c) {
-		h.statsService = nil
-		return
-	}
-	h.statsService = c
-}
-
 // StartCollection starts periodic host stats collection
 func (h *HostStatsHandler) StartCollection(ctx context.Context, interval time.Duration) {
 	h.log.Infof("Starting host stats collection every %v", interval)
@@ -130,25 +120,29 @@ func (h *HostStatsHandler) collect() {
 
 	now := time.Now()
 
+	// Read everything first so the deltas stay seeded even on a pass we do
+	// not publish.
+	cpuPercent, cpuErr := h.readCPUPercent()
+	mem, memErr := h.readMemory()
+	netBytesPerSec := h.calculateNetBytesPerSec(now)
+	h.prevTime = now
+
 	// A failed /proc read must not publish a sample: zeros are
 	// indistinguishable from a healthy idle host, on both the UI wire and
-	// the alert wire.
-	cpuPercent, err := h.readCPUPercent()
-	if err != nil {
-		h.log.Errorf("Skipping host stats sample: %v", err)
+	// the alert wire. The same goes for the first CPU read, which only seeds
+	// the counters — publishing its 0% could clear a live host CPU alert.
+	if cpuErr != nil {
+		if errors.Is(cpuErr, errCPUBaseline) {
+			h.log.Debug("Skipping first host stats sample (CPU baseline)")
+		} else {
+			h.log.Errorf("Skipping host stats sample: %v", cpuErr)
+		}
 		return
 	}
-
-	mem, err := h.readMemory()
-	if err != nil {
-		h.log.Errorf("Skipping host stats sample: %v", err)
+	if memErr != nil {
+		h.log.Errorf("Skipping host stats sample: %v", memErr)
 		return
 	}
-
-	// Calculate network bytes/sec
-	netBytesPerSec := h.calculateNetBytesPerSec(now)
-
-	h.prevTime = now
 
 	// Send to backend (format expected by _handle_system_stats)
 	msg := map[string]interface{}{
@@ -166,10 +160,7 @@ func (h *HostStatsHandler) collect() {
 		h.log.Debugf("Sent host stats: CPU=%.1f%%, MEM=%.1f%%, NET=%.0f B/s", cpuPercent, mem.percent, netBytesPerSec)
 	}
 
-	h.statsServiceMu.RLock()
-	ss := h.statsService
-	h.statsServiceMu.RUnlock()
-	if ss != nil {
+	if ss := h.sender(); ss != nil {
 		ss.Send(statsmsg.AgentStatsMsg{
 			Type:             statsmsg.TypeHostStats,
 			CPUPercent:       cpuPercent,
@@ -214,9 +205,8 @@ func (h *HostStatsHandler) readCPUPercent() (float64, error) {
 
 			// Calculate deltas
 			if h.prevCPU.idle == 0 && h.prevCPU.user == 0 {
-				// First reading, store and return 0
 				h.prevCPU = curr
-				return 0, nil
+				return 0, errCPUBaseline
 			}
 
 			prevTotal := h.prevCPU.user + h.prevCPU.nice + h.prevCPU.system + h.prevCPU.idle +

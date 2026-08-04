@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -641,4 +644,57 @@ func TestInvalidateHandler_RejectsNonPost(t *testing.T) {
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status=%d, want 405", w.Code)
 	}
+}
+
+// msg.Type is agent-controlled up to the 16KB frame limit; an unthrottled log
+// line per frame would let one authenticated agent rotate the whole container
+// log ring and erase recent history.
+func TestIngestHandler_UnknownTypeLoggedOncePerConnection(t *testing.T) {
+	cache, db, h := makeIngestFixture(t)
+
+	var logBuf bytes.Buffer
+	var logMu sync.Mutex
+	log.SetOutput(&syncWriter{mu: &logMu, w: &logBuf})
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	conn := dialIngest(t, h, db)
+	for i := 0; i < 5; i++ {
+		writeIngestJSON(t, conn, map[string]interface{}{
+			"type":        strings.Repeat("A", 200),
+			"cpu_percent": 1.0,
+		})
+	}
+	// Trailing valid message gives us a deterministic signal that all five
+	// unknown-typed frames have been processed.
+	writeIngestJSON(t, conn, map[string]interface{}{
+		"type": "host_stats", "cpu_percent": 1.0, "memory_percent": 1.0,
+	})
+	if !waitFor(t, func() bool {
+		_, ok := cache.GetHostStats("host-1")
+		return ok
+	}) {
+		t.Fatal("host stats never reached the cache")
+	}
+
+	logMu.Lock()
+	out := logBuf.String()
+	logMu.Unlock()
+
+	if n := strings.Count(out, "unknown message type"); n != 1 {
+		t.Errorf("logged %d unknown-type lines, want 1", n)
+	}
+	if strings.Contains(out, strings.Repeat("A", 64)) {
+		t.Error("full attacker-controlled type was logged untruncated")
+	}
+}
+
+type syncWriter struct {
+	mu *sync.Mutex
+	w  *bytes.Buffer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
 }

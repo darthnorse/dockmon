@@ -9,8 +9,11 @@ import (
 )
 
 type fakeRegistrar struct {
-	added []string
-	err   error
+	added   []string
+	removed []string
+	err     error
+	// onAdd simulates an agent connecting during the registration.
+	onAdd func()
 }
 
 func (f *fakeRegistrar) AddDockerHost(hostID, hostName, hostAddress, caCert, cert, key string) error {
@@ -18,7 +21,14 @@ func (f *fakeRegistrar) AddDockerHost(hostID, hostName, hostAddress, caCert, cer
 		return f.err
 	}
 	f.added = append(f.added, hostID)
+	if f.onAdd != nil {
+		f.onAdd()
+	}
 	return nil
+}
+
+func (f *fakeRegistrar) RemoveDockerHost(hostID string) {
+	f.removed = append(f.removed, hostID)
 }
 
 type fakeSessions struct {
@@ -133,5 +143,23 @@ func TestHostsAddHandler_ConflictBodyIsJSON(t *testing.T) {
 	}
 	if body["error"] == "" {
 		t.Errorf("conflict body missing error field: %v", body)
+	}
+}
+
+// The two disjointness checks read different registries, so an agent can open
+// its session after the pre-check and still find no Docker host to evict. The
+// post-registration re-check is what closes that window.
+func TestHostsAddHandler_RejectsAgentSessionOpenedDuringRegistration(t *testing.T) {
+	sessions := &fakeSessions{active: map[string]bool{}}
+	reg := &fakeRegistrar{onAdd: func() { sessions.active["host-1"] = true }}
+	h := makeHostsAddHandler(reg, NewStatsCache(), sessions)
+
+	w := postHostsAdd(t, h, `{"host_id":"host-1","host_name":"h1","host_address":"tcp://1.2.3.4:2376"}`)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d, want 409; body=%s", w.Code, w.Body.String())
+	}
+	if len(reg.removed) != 1 || reg.removed[0] != "host-1" {
+		t.Errorf("removed=%v, want [host-1]: the racing registration must be rolled back", reg.removed)
 	}
 }

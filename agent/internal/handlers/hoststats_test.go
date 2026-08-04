@@ -57,6 +57,19 @@ func newTestHostStatsHandler(t *testing.T, procContents map[string]string) (*Hos
 
 const testProcStat = "cpu  100 0 100 800 0 0 0 0\ncpu0 100 0 100 800 0 0 0 0\n"
 
+// primeCPU seeds the previous CPU counters so collect() has a delta to work
+// with; without it the first read is a baseline and publishes nothing.
+func primeCPU(h *HostStatsHandler) {
+	h.prevCPU = cpuStats{user: 50, system: 50, idle: 400}
+}
+
+func writeProcFile(t *testing.T, h *HostStatsHandler, name, contents string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(h.procPath, name), []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // /proc/meminfo reports kB. Publishing the raw values as bytes would
 // under-report memory by 1024x.
 func TestHostStatsHandler_MemoryBytesConvertedFromKB(t *testing.T) {
@@ -92,6 +105,7 @@ func TestHostStatsHandler_NoSampleWhenProcReadFails(t *testing.T) {
 	for name, contents := range cases {
 		t.Run(name, func(t *testing.T) {
 			h, sent := newTestHostStatsHandler(t, contents)
+			primeCPU(h)
 			sender := &fakeStatsSender{}
 			h.SetStatsServiceClient(sender)
 
@@ -113,6 +127,7 @@ func TestHostStatsHandler_NoSampleWhenMemTotalMissing(t *testing.T) {
 		"stat":    testProcStat,
 		"meminfo": "Buffers:  1234 kB\n",
 	})
+	primeCPU(h)
 	sender := &fakeStatsSender{}
 	h.SetStatsServiceClient(sender)
 
@@ -126,11 +141,44 @@ func TestHostStatsHandler_NoSampleWhenMemTotalMissing(t *testing.T) {
 	}
 }
 
+// The first /proc/stat read only seeds the counters, so its 0% is unknown
+// utilisation, not idle. Publishing it could clear a live host CPU alert on
+// every agent restart.
+func TestHostStatsHandler_SkipsCPUBaselineSample(t *testing.T) {
+	h, sent := newTestHostStatsHandler(t, map[string]string{
+		"stat":    testProcStat,
+		"meminfo": "MemTotal:       16384 kB\nMemAvailable:    8192 kB\n",
+	})
+	sender := &fakeStatsSender{}
+	h.SetStatsServiceClient(sender)
+
+	h.collect() // baseline
+
+	if len(*sent) != 0 {
+		t.Errorf("published %d control-WS samples on the baseline pass, want 0: %v", len(*sent), *sent)
+	}
+	if n := len(sender.messages()); n != 0 {
+		t.Errorf("dual-sent %d samples on the baseline pass, want 0", n)
+	}
+
+	// Second pass has a delta to work with and must publish.
+	writeProcFile(t, h, "stat", "cpu  200 0 200 1600 0 0 0 0\n")
+	h.collect()
+
+	if len(*sent) != 1 {
+		t.Errorf("control-WS samples after the second pass=%d, want 1", len(*sent))
+	}
+	if n := len(sender.messages()); n != 1 {
+		t.Errorf("dual-sent %d samples after the second pass, want 1", n)
+	}
+}
+
 func TestHostStatsHandler_DualSendsHostStats(t *testing.T) {
 	h, sent := newTestHostStatsHandler(t, map[string]string{
 		"stat":    testProcStat,
 		"meminfo": "MemTotal:       16384 kB\nMemAvailable:    8192 kB\n",
 	})
+	primeCPU(h)
 	sender := &fakeStatsSender{}
 	h.SetStatsServiceClient(sender)
 
@@ -172,6 +220,7 @@ func TestHostStatsHandler_ControlWSKeepsMemPercentField(t *testing.T) {
 		"stat":    testProcStat,
 		"meminfo": "MemTotal:       16384 kB\nMemAvailable:    8192 kB\n",
 	})
+	primeCPU(h)
 
 	h.collect()
 
@@ -192,6 +241,7 @@ func TestHostStatsHandler_NoDualSendWhenUnattached(t *testing.T) {
 		"stat":    testProcStat,
 		"meminfo": "MemTotal:       16384 kB\nMemAvailable:    8192 kB\n",
 	})
+	primeCPU(h)
 
 	h.collect() // must not panic
 

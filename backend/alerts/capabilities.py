@@ -38,10 +38,15 @@ def parse_stats_timestamp(value: Any) -> Optional[datetime]:
     else:
         return None
 
-    if parsed.tzinfo is None:
-        # stats-service stamps UTC; a naive value is the same instant.
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+    try:
+        if parsed.tzinfo is None:
+            # stats-service stamps UTC; a naive value is the same instant.
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (OverflowError, OSError):
+        # A near-datetime.min value with a positive offset (Go's zero time in a
+        # non-UTC zone) overflows on conversion.
+        return None
 
 
 def sample_age_seconds(stats: Dict[str, Any], now: Optional[datetime] = None) -> Optional[float]:

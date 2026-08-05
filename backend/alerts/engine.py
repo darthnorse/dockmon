@@ -706,6 +706,10 @@ class AlertEngine:
         # Add more mappings as needed
         return False
 
+    def matches_selectors(self, rule: AlertRuleV2, context: EvaluationContext) -> bool:
+        """Whether a rule's selectors match a context. Public entry point."""
+        return self._check_selectors(rule, context)
+
     def _check_selectors(self, rule: AlertRuleV2, context: EvaluationContext) -> bool:
         """
         Check if rule selectors match the context

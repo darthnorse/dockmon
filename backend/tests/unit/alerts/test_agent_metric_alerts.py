@@ -14,7 +14,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 import database as database_module
-from alerts.capabilities import HOST_METRIC_FIELDS, host_metric_capabilities
+from alerts.capabilities import (
+    HOST_METRIC_FIELDS,
+    host_metric_capabilities,
+    parse_stats_timestamp,
+)
 from alerts.evaluation_service import STATS_MAX_AGE_SECONDS, AlertEvaluationService
 from database import AlertRuleV2, DatabaseManager
 
@@ -163,26 +167,49 @@ async def test_sample_just_inside_the_window_is_evaluated(db):
     assert service._handle_alert_notification.await_count == 1
 
 
-# Go marshals time.Time as RFC3339 with up to nanosecond precision, which
-# datetime.fromisoformat does not accept directly.
-@pytest.mark.parametrize("timestamp", [
-    "2999-01-01T00:00:00.123456789Z",
-    "2999-01-01T00:00:00.123456Z",
-    "2999-01-01T00:00:00Z",
-    "2999-01-01T00:00:00+00:00",
-    "2999-01-01T01:00:00+01:00",
+# Go marshals time.Time as RFC3339 with up to nanosecond precision. Assert the
+# parse itself: freshness fails open, so an evaluator-level assertion alone
+# would pass even with parsing broken.
+@pytest.mark.parametrize("timestamp,expected", [
+    ("2999-01-01T00:00:00.123456789Z", datetime(2999, 1, 1, 0, 0, 0, 123456, tzinfo=timezone.utc)),
+    ("2999-01-01T00:00:00.123456Z", datetime(2999, 1, 1, 0, 0, 0, 123456, tzinfo=timezone.utc)),
+    ("2999-01-01T00:00:00Z", datetime(2999, 1, 1, tzinfo=timezone.utc)),
+    ("2999-01-01T00:00:00+00:00", datetime(2999, 1, 1, tzinfo=timezone.utc)),
+    ("2999-01-01T01:00:00+01:00", datetime(2999, 1, 1, tzinfo=timezone.utc)),
+    ("2999-01-01T00:00:00", datetime(2999, 1, 1, tzinfo=timezone.utc)),
 ])
-async def test_rfc3339_timestamp_variants_parse_as_fresh(db, timestamp):
+def test_rfc3339_timestamp_variants_parse(timestamp, expected):
+    assert parse_stats_timestamp(timestamp) == expected
+
+
+@pytest.mark.parametrize("timestamp", [
+    "not-a-time",
+    "",
+    None,
+    12345,
+    # Go's zero time in a positive-offset zone overflows on UTC conversion.
+    "0001-01-01T00:00:00+01:00",
+])
+def test_unparseable_timestamps_return_none(timestamp):
+    assert parse_stats_timestamp(timestamp) is None
+
+
+async def test_fresh_timestamp_evaluates_without_a_parse_warning(db, caplog):
     _add_host_rule(db, metric="cpu_percent", threshold=80.0)
     service = _service(
         db,
         [_host(AGENT_HOST, "agent-box")],
-        host_stats={AGENT_HOST: {"cpu_percent": 99.0, "last_update": timestamp}},
+        host_stats={AGENT_HOST: {
+            "cpu_percent": 99.0,
+            "last_update": "2999-01-01T00:00:00.123456789Z",
+        }},
     )
 
-    await _evaluate(service)
+    with caplog.at_level(logging.WARNING):
+        await _evaluate(service)
 
     assert service._handle_alert_notification.await_count == 1
+    assert not [r for r in caplog.records if "last_update" in r.message]
 
 
 # Fail open: a missing or unreadable timestamp must not silence alerting, which

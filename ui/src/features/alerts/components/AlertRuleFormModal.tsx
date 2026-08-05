@@ -10,7 +10,12 @@ import { X, Search, Check, Bell, BellRing, Send, MessageSquare, MessageCircle, H
 import { RemoveScroll } from 'react-remove-scroll'
 import { useCreateAlertRule, useUpdateAlertRule } from '../hooks/useAlertRules'
 import { useNotificationChannels } from '../hooks/useNotificationChannels'
-import { useMetricCapabilities, hostsMissingMetric } from '../hooks/useMetricCapabilities'
+import {
+  useMetricCapabilities,
+  hostsNeedingMetricWarning,
+  isCollectedHostMetric,
+  anyAgentHost,
+} from '../hooks/useMetricCapabilities'
 import type { AlertRule, AlertSeverity, AlertScope, AlertRuleRequest } from '@/types/alerts'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import type { Host } from '@/types/api'
@@ -405,11 +410,15 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       : formData.host_selector_all
         ? hosts.map((h) => h.id)
         : formData.host_selector_ids
-  const hostsWithoutMetric = hostsMissingMetric(
+  const targetedHosts = hosts.filter((h) => targetedHostIds.includes(h.id))
+  const metricNotCollected =
+    isHostMetricRule && !isCollectedHostMetric(metricCapabilities, formData.metric)
+  const hostsWithoutMetric = hostsNeedingMetricWarning(
     metricCapabilities,
-    targetedHostIds,
+    targetedHosts,
     formData.metric,
   )
+  const showProcMountRemedy = anyAgentHost(hostsWithoutMetric, targetedHosts)
 
   // Filter hosts/containers based on search
   const filteredHosts = hosts.filter(
@@ -1058,6 +1067,18 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                 )}
               </div>
 
+              {metricNotCollected && (
+                <div className="rounded-md border border-amber-600/50 bg-amber-950/30 p-3">
+                  <div className="flex gap-2">
+                    <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
+                    <p className="text-sm text-amber-200">
+                      DockMon does not collect {formData.metric?.replace(/_/g, ' ')} for hosts yet, so no host can
+                      report it and this rule will never fire.
+                    </p>
+                  </div>
+                </div>
+              )}
+
               {hostsWithoutMetric.length > 0 && (
                 <div className="rounded-md border border-amber-600/50 bg-amber-950/30 p-3">
                   <div className="flex gap-2">
@@ -1071,9 +1092,14 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                           {hostsWithoutMetric.map((h) => h.host_name).join(', ')}
                         </span>
                       </p>
+                      {showProcMountRemedy && (
+                        <p className="mt-1 text-amber-300/80">
+                          A containerized agent needs <code className="text-amber-200">-v /proc:/host/proc:ro</code> to
+                          collect host metrics.
+                        </p>
+                      )}
                       <p className="mt-1 text-amber-300/80">
-                        A containerized agent needs <code className="text-amber-200">-v /proc:/host/proc:ro</code> to
-                        collect host metrics. The rule can still be saved and starts working once metrics arrive.
+                        The rule can still be saved and starts working once metrics arrive.
                       </p>
                     </div>
                   </div>

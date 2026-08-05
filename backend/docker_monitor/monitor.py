@@ -1315,7 +1315,7 @@ class DockerMonitor:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            loop = getattr(self, "_main_loop", None)
+            loop = self._main_loop
             if loop is None:
                 coro.close()
                 logger.warning(
@@ -1342,21 +1342,17 @@ class DockerMonitor:
             logger.warning(f"Could not reach stats service to unregister {host_name}: {e}")
             return
 
-        try:
-            await stats_client.remove_docker_host(host_id)
-            logger.info(f"Unregistered {host_name} ({host_id[:8]}) from stats service")
-        except asyncio.TimeoutError:
-            logger.debug(f"Timeout unregistering {host_name} from stats service (expected during cleanup)")
-        except Exception as e:
-            logger.warning(f"Failed to unregister {host_name} from stats service: {e}")
-
-        try:
-            await stats_client.remove_event_host(host_id)
-            logger.info(f"Unregistered {host_name} ({host_id[:8]}) from event service")
-        except asyncio.TimeoutError:
-            logger.debug(f"Timeout unregistering {host_name} from event service (expected during cleanup)")
-        except Exception as e:
-            logger.warning(f"Failed to unregister {host_name} from event service: {e}")
+        for service, remove in (
+            ("stats service", stats_client.remove_docker_host),
+            ("event service", stats_client.remove_event_host),
+        ):
+            try:
+                await remove(host_id)
+                logger.info(f"Unregistered {host_name} ({host_id[:8]}) from {service}")
+            except asyncio.TimeoutError:
+                logger.debug(f"Timeout unregistering {host_name} from {service} (expected during cleanup)")
+            except Exception as e:
+                logger.warning(f"Failed to unregister {host_name} from {service}: {e}")
 
     def _convert_host_to_agent(self, host_id: str, host_name: str):
         """Repair a host that an agent has taken over from a Docker connection."""

@@ -1122,7 +1122,7 @@ class AlertEvaluationService:
         context = self._host_context(host)
         matching = [
             rule for rule in host_rules
-            if self.engine._check_selectors(rule, context)
+            if self.engine.matches_selectors(rule, context)
         ]
         if not matching:
             return

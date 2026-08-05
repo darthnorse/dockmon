@@ -53,6 +53,7 @@ def monitor(db, monkeypatch):
     mon.hosts = {}
     mon.clients = {}
     mon.manager = None
+    mon._main_loop = None
     mon.event_logger = MagicMock()
     return mon
 

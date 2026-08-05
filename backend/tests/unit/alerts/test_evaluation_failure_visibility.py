@@ -276,3 +276,116 @@ async def test_alert_message_carries_class_and_scope_but_not_raw_error(db, caplo
     assert any("secret-token-abc123" in r.message for r in caplog.records), (
         "the full error must still be logged for debugging"
     )
+
+
+# --- bounds: the alert must survive a fleet-wide failure ---
+
+async def test_message_is_bounded_when_every_container_fails(db):
+    """An oversized body is rejected by notification channels, losing the alert
+    exactly when the failure is widespread."""
+    service = _service(db, [_host(HOST_A, "h")])
+    for i in range(200):
+        service._cycle_failures.append({
+            "site": "container",
+            "scope": f"{HOST_A}:{i:012d}",
+            "error": "ValueError",
+            "pass_level": False,
+        })
+
+    await service._report_cycle_failures()
+
+    message = _system_alerts(db)[0].message
+    assert len(message) <= 1000, f"message is {len(message)} chars; channels reject it"
+    assert "more" in message, "the omitted scopes must still be accounted for"
+    assert "200 evaluation failure(s)" in message
+
+
+async def test_long_scope_names_are_clamped(db):
+    """Container names are user-controlled, so one long name must not blow the body."""
+    service = _service(db, [_host(HOST_A, "h")])
+    service._cycle_failures.append({
+        "site": "container metric cpu_percent",
+        "scope": "x" * 5000,
+        "error": "ValueError",
+        "pass_level": False,
+    })
+
+    await service._report_cycle_failures()
+
+    assert len(_system_alerts(db)[0].message) <= 1000
+
+
+async def test_pass_level_count_comes_from_the_record_not_the_site_string(db):
+    service = _service(db, [_host(HOST_A, "h")])
+    service._cycle_failures = [
+        {"site": "host pass", "scope": "all hosts", "error": "KeyError", "pass_level": True},
+        {"site": "container", "scope": "c1", "error": "ValueError", "pass_level": False},
+    ]
+
+    await service._report_cycle_failures()
+
+    assert "(1 pass-level)" in _system_alerts(db)[0].message
+
+
+# --- recovery ---
+
+async def test_clean_cycle_resolves_the_open_system_alert(db):
+    """Nothing else resolves system-scope alerts, so a transient failure would
+    otherwise leave an error alert open forever."""
+    _add_host_rule(db)
+    service = _service(
+        db, [_host(HOST_A, "broken")],
+        host_stats={HOST_A: ExplodingStats(last_update=_now_iso())},
+    )
+
+    await service._evaluate_all_rules()
+    assert _system_alerts(db)[0].state == "open"
+
+    service.stats_client.get_host_stats = AsyncMock(
+        return_value={HOST_A: {"cpu_percent": 1.0, "last_update": _now_iso()}}
+    )
+    await service._evaluate_all_rules()
+
+    assert _system_alerts(db)[0].state == "resolved"
+
+
+async def test_alert_left_open_by_a_previous_process_is_resolved(db):
+    """The in-memory flag starts unknown, so a restart still clears a stale alert."""
+    _add_host_rule(db)
+    failing = _service(
+        db, [_host(HOST_A, "broken")],
+        host_stats={HOST_A: ExplodingStats(last_update=_now_iso())},
+    )
+    await failing._evaluate_all_rules()
+    assert _system_alerts(db)[0].state == "open"
+
+    # Fresh service instance, as after a restart.
+    restarted = _service(
+        db, [_host(HOST_A, "healthy")],
+        host_stats={HOST_A: {"cpu_percent": 1.0, "last_update": _now_iso()}},
+    )
+    await restarted._evaluate_all_rules()
+
+    assert _system_alerts(db)[0].state == "resolved"
+
+
+# --- cooldown of zero means notify every time ---
+
+async def test_zero_cooldown_notifies_every_cycle(db):
+    _add_host_rule(db)
+    service = _service(
+        db, [_host(HOST_A, "broken")],
+        host_stats={HOST_A: ExplodingStats(last_update=_now_iso())},
+    )
+    rule = db.get_or_create_system_alert_rule()
+    with db.get_session() as session:
+        row = session.query(AlertRuleV2).filter(AlertRuleV2.id == rule.id).first()
+        row.notification_cooldown_seconds = 0
+        session.commit()
+
+    await service._evaluate_all_rules()
+    await service._evaluate_all_rules()
+
+    assert len(service.notification_calls) == 2, (
+        "a configured 0 means notify immediately, not fall back to an hour"
+    )

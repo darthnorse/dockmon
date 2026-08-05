@@ -27,6 +27,26 @@ from utils.keys import make_composite_key, parse_composite_key
 logger = logging.getLogger(__name__)
 
 
+# Bounds on the aggregated failure alert. Notification channels reject
+# oversized bodies (Discord caps at 2000 chars), which would drop the alert
+# precisely when the failure is fleet-wide.
+MAX_SCOPE_CHARS = 64
+MAX_LISTED_SCOPES = 10
+MAX_LISTED_ERRORS = 3
+MAX_ALERT_MESSAGE_CHARS = 1000
+
+
+def _summarize(items: List[str], limit: int, joiner: str = ", ") -> str:
+    """Join at most `limit` items, noting how many were left out."""
+    if not items:
+        return "unknown"
+    shown = items[:limit]
+    text = joiner.join(shown)
+    if len(items) > limit:
+        text += f" and {len(items) - limit} more"
+    return text
+
+
 # Lifecycle states treated as "recovered" when re-verifying a stopped/unhealthy alert.
 # 'restarting' is excluded so crash-looping containers keep alerting.
 RECOVERED_STATES = ("running",)
@@ -130,7 +150,10 @@ class AlertEvaluationService:
         self._bad_timestamp_reported: set = set()
         # Failures swallowed during the current cycle, reported as one alert at
         # the end of it. Isolation keeps the cycle running; this keeps it visible.
-        self._cycle_failures: List[Dict[str, str]] = []
+        self._cycle_failures: List[Dict[str, Any]] = []
+        # None until the first clean cycle checks the DB, so an alert left open
+        # by a previous process still gets resolved.
+        self._system_alert_open: Optional[bool] = None
 
     async def start(self):
         """Start the alert evaluation service"""
@@ -925,7 +948,7 @@ class AlertEvaluationService:
                 await self._evaluate_host_metrics(rules_by_metric)
 
         except Exception as e:
-            self._record_failure("evaluation cycle", "alert service", e)
+            self._record_failure("evaluation cycle", "alert service", e, pass_level=True)
 
         await self._report_cycle_failures()
 
@@ -996,7 +1019,7 @@ class AlertEvaluationService:
             )
 
         except Exception as e:
-            self._record_failure("container pass", "all containers", e)
+            self._record_failure("container pass", "all containers", e, pass_level=True)
 
     async def _evaluate_container_stats(
         self,
@@ -1196,7 +1219,7 @@ class AlertEvaluationService:
                     self._record_failure("host", host.name, e)
 
         except Exception as e:
-            self._record_failure("host pass", "all hosts", e)
+            self._record_failure("host pass", "all hosts", e, pass_level=True)
 
     async def _evaluate_host_stats(
         self,
@@ -1778,18 +1801,22 @@ class AlertEvaluationService:
             logger.error(f"Error auto-resolving orphaned container alerts: {e}", exc_info=True)
             return resolved_count
 
-    def _record_failure(self, site: str, scope: str, exc: Exception):
+    def _record_failure(self, site: str, scope: str, exc: Exception, pass_level: bool = False):
         """Record a swallowed evaluation failure and log it in full.
 
         The record carries only the exception CLASS: it feeds an alert that can
         be forwarded to external notification channels, and exception text can
         carry sample contents or query parameters. The full error stays here.
+
+        pass_level marks a failure that took out a whole sweep rather than one
+        scope - the distinction an operator reads first.
         """
         logger.error(f"Error evaluating {site} for {scope}: {exc}", exc_info=True)
         self._cycle_failures.append({
             "site": site,
             "scope": scope,
             "error": type(exc).__name__,
+            "pass_level": pass_level,
         })
 
     async def _report_cycle_failures(self):
@@ -1800,26 +1827,55 @@ class AlertEvaluationService:
         rule's own cooldown.
         """
         if not self._cycle_failures:
+            await self._resolve_system_alert()
             return
 
-        pass_level = [f for f in self._cycle_failures if f["site"].endswith("pass")
-                      or f["site"] == "evaluation cycle"]
-        scopes = sorted({f["scope"] for f in self._cycle_failures if f["scope"]})
+        pass_count = sum(1 for f in self._cycle_failures if f["pass_level"])
+        # Scope names are unbounded in count and length (a container name is
+        # user-controlled); an oversized message is rejected by notification
+        # channels, losing the alert exactly when the failure is widespread.
+        scopes = sorted({f["scope"][:MAX_SCOPE_CHARS] for f in self._cycle_failures if f["scope"]})
         errors = sorted({f"{f['error']} ({f['site']})" for f in self._cycle_failures})
 
         message = (
             f"{len(self._cycle_failures)} evaluation failure(s) this cycle "
-            f"({len(pass_level)} pass-level). "
-            f"Affected: {', '.join(scopes) if scopes else 'unknown'}. "
-            f"Errors: {'; '.join(errors[:3])}"
-            f"{' and more' if len(errors) > 3 else ''}"
-        )
+            f"({pass_count} pass-level). "
+            f"Affected: {_summarize(scopes, MAX_LISTED_SCOPES)}. "
+            f"Errors: {_summarize(errors, MAX_LISTED_ERRORS, joiner='; ')}"
+        )[:MAX_ALERT_MESSAGE_CHARS]
 
         await self._create_system_alert(
             title="Alert Evaluation Failing",
             message=message,
-            severity="error",
         )
+        self._system_alert_open = True
+
+    async def _resolve_system_alert(self):
+        """Clear the evaluation-failure alert once cycles are clean again.
+
+        Nothing else resolves system-scope alerts, so without this a single
+        transient failure would leave an open error alert forever.
+        """
+        if self._system_alert_open is False:
+            return
+
+        try:
+            system_rule = self.db.get_or_create_system_alert_rule()
+            dedup_key = self._system_alert_dedup_key(system_rule)
+            with self.db.get_session() as session:
+                alert = session.query(AlertV2).filter(
+                    AlertV2.dedup_key == dedup_key,
+                    AlertV2.state != "resolved",
+                ).first()
+                if alert:
+                    session.expunge(alert)
+            if alert:
+                self.engine._resolve_alert(alert, "Evaluation cycles are clean again")
+                logger.info("Alert evaluation recovered; system alert resolved")
+        except Exception as e:
+            logger.error(f"Failed to resolve system alert: {e}", exc_info=True)
+        finally:
+            self._system_alert_open = False
 
     def _set_alert_text(self, alert: AlertV2, title: str, message: str) -> AlertV2:
         """Persist a caller-supplied title/message onto an alert row."""
@@ -1832,7 +1888,11 @@ class AlertEvaluationService:
             session.expunge(alert)
             return alert
 
-    async def _create_system_alert(self, title: str, message: str, severity: str = "error"):
+    @staticmethod
+    def _system_alert_dedup_key(system_rule) -> str:
+        return f"{system_rule.id}|system_error|system:alert_service"
+
+    async def _create_system_alert(self, title: str, message: str):
         """
         Create a system alert for internal failures.
 
@@ -1856,8 +1916,7 @@ class AlertEvaluationService:
                 host_name="Alert System"
             )
 
-            # Create dedup key for this specific error type
-            dedup_key = f"{system_rule.id}|system_error|system:alert_service"
+            dedup_key = self._system_alert_dedup_key(system_rule)
 
             # Get or create the alert (deduplicates if already exists)
             alert, is_new = self.engine._get_or_create_alert(
@@ -1876,8 +1935,11 @@ class AlertEvaluationService:
 
             # Every other alert path honours the rule's cooldown; this one used
             # to notify on every call, which at a 10s cadence is a flood.
-            cooldown = system_rule.notification_cooldown_seconds or 3600
-            if is_new or not self.engine._check_cooldown(alert, cooldown):
+            # `or` would treat a configured 0 (notify immediately) as unset.
+            cooldown = system_rule.notification_cooldown_seconds
+            if cooldown is None:
+                cooldown = 3600
+            if not self.engine._check_cooldown(alert, cooldown):
                 await self._send_notification(alert)
                 logger.info(f"System alert notified: {title}")
             else:

@@ -336,3 +336,41 @@ def test_capabilities_report_only_fields_present():
     stats = {AGENT_HOST: {"cpu_percent": 12.0, "last_update": _now_iso()}}
 
     assert host_metric_capabilities(stats, [AGENT_HOST])[AGENT_HOST] == ["cpu_percent"]
+
+
+# The throttle key must survive a rename, or a renamed host both leaks its old
+# entry and re-warns under its new name.
+async def test_bad_timestamp_throttle_is_keyed_by_host_id(db, caplog):
+    _add_host_rule(db, metric="cpu_percent", threshold=80.0)
+    host = _host(AGENT_HOST, "before-rename")
+    service = _service(
+        db, [host],
+        host_stats={AGENT_HOST: {"cpu_percent": 99.0, "last_update": "not-a-time"}},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        await _evaluate(service)
+        host.name = "after-rename"
+        await _evaluate(service)
+
+    warnings = [r for r in caplog.records if "Unreadable last_update" in r.message]
+    assert len(warnings) == 1
+    assert service._bad_timestamp_reported == {f"host:{AGENT_HOST}"}
+
+
+async def test_throttle_entries_are_pruned_for_departed_hosts(db):
+    _add_host_rule(db, metric="cpu_percent", threshold=80.0)
+    service = _service(
+        db, [_host(AGENT_HOST, "agent-box")],
+        host_stats={AGENT_HOST: {"cpu_percent": 99.0, "last_update": "not-a-time"}},
+    )
+
+    await _evaluate(service)
+    assert service._bad_timestamp_reported
+
+    service.monitor.hosts = {}
+    service._hosts_missing_metrics_reported.add(AGENT_HOST)
+    await _evaluate(service)
+
+    assert service._bad_timestamp_reported == set()
+    assert service._hosts_missing_metrics_reported == set()

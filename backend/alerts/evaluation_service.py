@@ -960,7 +960,9 @@ class AlertEvaluationService:
                     logger.debug(f"Container {composite_key} not found in cache")
                     continue
 
-                if not self._is_sample_fresh(container_stats, f"container {composite_key}"):
+                if not self._is_sample_fresh(
+                    container_stats, f"container {composite_key}", f"container:{composite_key}"
+                ):
                     continue
 
                 # Use container's tags which include both user-created (from DB) and
@@ -988,9 +990,8 @@ class AlertEvaluationService:
 
             # Containers come and go; drop throttle entries for subjects that
             # no longer report, so the set stays bounded by what exists now.
-            self._bad_timestamp_reported.intersection_update(
-                {f"container {key}" for key in stats}
-                | {s for s in self._bad_timestamp_reported if s.startswith("host ")}
+            self._prune_bad_timestamps(
+                "container:", {f"container:{key}" for key in stats}
             )
 
         except Exception as e:
@@ -1047,12 +1048,15 @@ class AlertEvaluationService:
                     exc_info=True
                 )
 
-    def _is_sample_fresh(self, stats: Dict[str, Any], subject: str) -> bool:
+    def _is_sample_fresh(self, stats: Dict[str, Any], subject: str, key: str) -> bool:
         """Whether a stats sample is recent enough to evaluate.
 
         Unstamped or unreadable timestamps evaluate anyway: alerting on a
         slightly old sample beats silently alerting on nothing. Parse problems
         are surfaced here rather than left to the broad catches upstream.
+
+        `subject` is for humans; `key` throttles the warning and must be stable
+        across renames.
         """
         try:
             age = sample_age_seconds(stats)
@@ -1061,19 +1065,26 @@ class AlertEvaluationService:
             return True
 
         if age is None:
-            if stats.get("last_update") is not None and subject not in self._bad_timestamp_reported:
-                self._bad_timestamp_reported.add(subject)
+            if stats.get("last_update") is not None and key not in self._bad_timestamp_reported:
+                self._bad_timestamp_reported.add(key)
                 logger.warning(
                     f"Unreadable last_update {stats.get('last_update')!r} for {subject}; "
                     f"evaluating anyway"
                 )
             return True
 
-        self._bad_timestamp_reported.discard(subject)
+        self._bad_timestamp_reported.discard(key)
         if age > STATS_MAX_AGE_SECONDS:
             logger.debug(f"Skipping stale stats for {subject} ({age:.0f}s old)")
             return False
         return True
+
+    def _prune_bad_timestamps(self, prefix: str, live_keys: set):
+        """Drop throttle entries whose subject no longer reports at all."""
+        self._bad_timestamp_reported.difference_update({
+            key for key in self._bad_timestamp_reported
+            if key.startswith(prefix) and key not in live_keys
+        })
 
     def _host_scope_metric_rules(self, rules_by_metric: Dict[str, List[AlertRuleV2]]) -> List[AlertRuleV2]:
         return [
@@ -1145,6 +1156,14 @@ class AlertEvaluationService:
             # Get hosts from monitor
             hosts = list(self.monitor.hosts.values())
 
+            # Hosts can be removed; keep the throttle sets bounded by what
+            # exists now rather than by everything ever seen.
+            live_host_ids = {host.id for host in hosts}
+            self._prune_bad_timestamps(
+                "host:", {f"host:{host_id}" for host_id in live_host_ids}
+            )
+            self._hosts_missing_metrics_reported.intersection_update(live_host_ids)
+
             if not hosts:
                 logger.debug("No hosts available")
                 return
@@ -1159,7 +1178,9 @@ class AlertEvaluationService:
                     )
                     continue
 
-                if not self._is_sample_fresh(host_stats, f"host {host.name}"):
+                if not self._is_sample_fresh(
+                    host_stats, f"host {host.name}", f"host:{host.id}"
+                ):
                     self._report_host_without_metrics(
                         host, rules_by_metric, "samples are stale"
                     )

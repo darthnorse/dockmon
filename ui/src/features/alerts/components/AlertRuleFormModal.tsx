@@ -17,6 +17,7 @@ import {
   isHostMetricRule,
   anyAgentHost,
 } from '../hooks/useMetricCapabilities'
+import { maxThresholdFor } from '../utils/metricBounds'
 import type { AlertRule, AlertSeverity, AlertScope, AlertRuleRequest } from '@/types/alerts'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import type { Host } from '@/types/api'
@@ -87,9 +88,7 @@ interface ContainerSelector {
   should_run?: boolean | null
 }
 
-// CPU metrics can exceed 100% on multi-core containers (up to cores * 100%)
 const CPU_METRIC = 'cpu_percent'
-const MAX_CPU_THRESHOLD = 6400
 
 const RULE_KINDS = [
   {
@@ -1017,7 +1016,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                     onChange={(e) => handleChange('threshold', e.target.value ? parseFloat(e.target.value) : undefined)}
                     required={requiresMetric}
                     min={0}
-                    max={formData.metric === CPU_METRIC ? MAX_CPU_THRESHOLD : 100}
+                    max={maxThresholdFor(formData.scope, formData.metric)}
                     step={0.1}
                     className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
@@ -1035,7 +1034,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                     value={formData.clear_threshold || ''}
                     onChange={(e) => handleChange('clear_threshold', e.target.value ? parseFloat(e.target.value) : undefined)}
                     min={0}
-                    max={formData.metric === CPU_METRIC ? MAX_CPU_THRESHOLD : 100}
+                    max={maxThresholdFor(formData.scope, formData.metric)}
                     step={0.1}
                     className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     placeholder="Optional"

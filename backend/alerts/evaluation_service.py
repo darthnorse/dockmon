@@ -19,6 +19,7 @@ from sqlalchemy.orm import joinedload
 
 from database import DatabaseManager, AlertRuleV2, AlertV2, DockerHostDB
 from alerts.capabilities import STATS_MAX_AGE_SECONDS, sample_age_seconds
+from alerts.metrics import PRODUCED_METRICS_BY_SCOPE, is_produced
 from alerts.engine import AlertEngine, EvaluationContext
 from agent.connection_manager import agent_connection_manager
 from event_logger import EventLogger, EventContext, EventCategory, EventType, EventSeverity
@@ -148,6 +149,10 @@ class AlertEvaluationService:
         self._hosts_missing_metrics_reported: set = set()
         # Same throttling for samples whose last_update cannot be parsed.
         self._bad_timestamp_reported: set = set()
+        # (scope, metric) -> the rule ids already reported as unservable. Keyed
+        # by the id set, not just the metric, so a rule added later to an
+        # already-reported metric is still announced.
+        self._dead_metric_reported: Dict[tuple, frozenset] = {}
         # Failures swallowed during the current cycle, reported as one alert at
         # the end of it. Isolation keeps the cycle running; this keeps it visible.
         self._cycle_failures: List[Dict[str, Any]] = []
@@ -932,6 +937,10 @@ class AlertEvaluationService:
                     AlertRuleV2.metric != None  # Metric-driven rules
                 ).all()
 
+                # Before the empty-rule return, so disabling the last dead rule
+                # clears its entry and re-enabling it is announced again.
+                self._report_unservable_rules(rules)
+
                 if not rules:
                     return
 
@@ -1028,16 +1037,9 @@ class AlertEvaluationService:
         rules_by_metric: Dict[str, List[AlertRuleV2]]
     ):
         """Evaluate stats for a single container"""
-        # Map stats to metric names and evaluate
         metric_mappings = {
-            "cpu_percent": stats.get("cpu_percent"),
-            "memory_percent": stats.get("memory_percent"),
-            "memory_usage": stats.get("memory_usage"),
-            "memory_limit": stats.get("memory_limit"),
-            "network_rx_bytes": stats.get("network_rx_bytes"),
-            "network_tx_bytes": stats.get("network_tx_bytes"),
-            "block_read_bytes": stats.get("block_read_bytes"),
-            "block_write_bytes": stats.get("block_write_bytes"),
+            metric: stats.get(metric)
+            for metric in PRODUCED_METRICS_BY_SCOPE["container"]
         }
 
         for metric_name, metric_value in metric_mappings.items():
@@ -1116,6 +1118,36 @@ class AlertEvaluationService:
             for rule in rules
             if rule.scope == "host"
         ]
+
+    def _report_unservable_rules(self, rules: List[AlertRuleV2]):
+        """Warn about enabled rules whose (scope, metric) no producer serves.
+
+        Validation stops new ones, but rules stored before it existed stay
+        enabled and silently never evaluate. Call with the session open: the
+        rule objects are detached afterwards.
+        """
+        dead: Dict[tuple, List[AlertRuleV2]] = {}
+        for rule in rules:
+            key = (rule.scope, rule.metric)
+            if not is_produced(rule.scope, rule.metric):
+                dead.setdefault(key, []).append(rule)
+
+        for key, affected in dead.items():
+            rule_ids = frozenset(rule.id for rule in affected)
+            if self._dead_metric_reported.get(key) == rule_ids:
+                continue
+            self._dead_metric_reported[key] = rule_ids
+
+            scope, metric = key
+            named = ", ".join(f"{rule.name!r} (id={rule.id})" for rule in affected)
+            logger.warning(
+                f"Alert rule(s) target metric {metric!r} in {scope} scope, which no "
+                f"producer serves - they can never fire: {named}"
+            )
+
+        # Keep the throttle bounded by what currently exists.
+        for key in set(self._dead_metric_reported) - set(dead):
+            del self._dead_metric_reported[key]
 
     def _report_host_without_metrics(
         self,
@@ -1228,10 +1260,9 @@ class AlertEvaluationService:
         rules_by_metric: Dict[str, List[AlertRuleV2]]
     ):
         """Evaluate stats for a single host"""
-        # Map stats to metric names and evaluate
         metric_mappings = {
-            "cpu_percent": stats.get("cpu_percent"),
-            "memory_percent": stats.get("memory_percent"),
+            metric: stats.get(metric)
+            for metric in PRODUCED_METRICS_BY_SCOPE["host"]
         }
 
         for metric_name, metric_value in metric_mappings.items():

@@ -8,8 +8,11 @@ cannot answer the question.
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
-# Host metrics the stats pipeline can carry today.
-HOST_METRIC_FIELDS = ("cpu_percent", "memory_percent")
+from alerts.metrics import PRODUCED_METRICS_BY_SCOPE
+
+# Host metrics the stats pipeline can carry today. Sorted rather than taken in
+# set order: this is serialised into the capabilities response the UI reads.
+HOST_METRIC_FIELDS = tuple(sorted(PRODUCED_METRICS_BY_SCOPE["host"]))
 
 # Samples older than this are treated as absent. stats-service prunes on a 60s
 # tick, so a dead host can linger up to 120s in the cache; this makes staleness

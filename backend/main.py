@@ -65,6 +65,10 @@ from utils.image_id import normalize_image_id
 from config.settings import AppConfig, get_cors_origins, setup_logging, HealthCheckFilter
 from models.docker_models import DockerHostConfig, DockerHost
 from models.settings_models import GlobalSettings, AlertRule, AlertRuleV2Create, AlertRuleV2Update, GlobalSettingsUpdate
+from alerts.metrics import validate_metric_fields
+
+# Fields whose change can invalidate a metric rule as a whole.
+METRIC_RULE_FIELDS = frozenset({"scope", "metric", "threshold", "clear_threshold", "operator"})
 from models.request_models import (
     AutoRestartRequest, DesiredStateRequest, AlertRuleCreate, AlertRuleUpdate,
     NotificationChannelCreate, NotificationChannelUpdate, EventLogFilter, BatchJobCreate,
@@ -4228,6 +4232,26 @@ async def update_alert_rule_v2(
         # exclude_unset=True means only fields explicitly set are included
         # We don't filter out None/0/False because those are valid values (e.g., cooldown_seconds=0)
         update_data = updates.dict(exclude_unset=True)
+
+        # Validate the merged record, reusing the create-time validator. The PUT
+        # model omits scope and metric on a partial edit, so this can't run as a
+        # model validator and must be done here.
+        if METRIC_RULE_FIELDS & update_data.keys():
+            existing = monitor.db.get_alert_rule_v2(rule_id)
+            if not existing:
+                raise HTTPException(status_code=404, detail="Alert rule not found")
+
+            merged = {
+                field: update_data.get(field, getattr(existing, field))
+                for field in METRIC_RULE_FIELDS
+            }
+            try:
+                validate_metric_fields(
+                    merged['scope'], merged['metric'], merged['threshold'],
+                    merged['clear_threshold'], merged['operator'],
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
 
         # Track who updated the rule
         update_data['updated_by'] = display_name

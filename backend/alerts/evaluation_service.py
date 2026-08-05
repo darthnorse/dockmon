@@ -1872,10 +1872,12 @@ class AlertEvaluationService:
             if alert:
                 self.engine._resolve_alert(alert, "Evaluation cycles are clean again")
                 logger.info("Alert evaluation recovered; system alert resolved")
+            # Only now is the alert known to be closed. Clearing this in a
+            # finally would strand it open after a transient DB error, because
+            # every later clean cycle would return before retrying.
+            self._system_alert_open = False
         except Exception as e:
             logger.error(f"Failed to resolve system alert: {e}", exc_info=True)
-        finally:
-            self._system_alert_open = False
 
     def _set_alert_text(self, alert: AlertV2, title: str, message: str) -> AlertV2:
         """Persist a caller-supplied title/message onto an alert row."""

@@ -389,3 +389,29 @@ async def test_zero_cooldown_notifies_every_cycle(db):
     assert len(service.notification_calls) == 2, (
         "a configured 0 means notify immediately, not fall back to an hour"
     )
+
+
+async def test_failed_resolution_is_retried_on_the_next_clean_cycle(db):
+    """Clearing the flag unconditionally would strand the alert open after a
+    transient error, since later clean cycles would return before retrying."""
+    _add_host_rule(db)
+    service = _service(
+        db, [_host(HOST_A, "broken")],
+        host_stats={HOST_A: ExplodingStats(last_update=_now_iso())},
+    )
+    await service._evaluate_all_rules()
+    assert _system_alerts(db)[0].state == "open"
+
+    service.stats_client.get_host_stats = AsyncMock(
+        return_value={HOST_A: {"cpu_percent": 1.0, "last_update": _now_iso()}}
+    )
+
+    real_resolve = service.engine._resolve_alert
+    service.engine._resolve_alert = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("db locked"))
+    await service._evaluate_all_rules()
+    assert _system_alerts(db)[0].state == "open", "resolution failed, as staged"
+
+    service.engine._resolve_alert = real_resolve
+    await service._evaluate_all_rules()
+
+    assert _system_alerts(db)[0].state == "resolved", "the retry must happen"

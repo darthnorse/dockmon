@@ -175,3 +175,134 @@ func TestAggregator_HostNetBpsSumsContainerRates(t *testing.T) {
 			gotHostNetBps, want)
 	}
 }
+
+// agentHostStreamManager reports no registered Docker client, which is what
+// makes a host agent-owned: its stats come from the ingest handler.
+type agentHostStreamManager struct{}
+
+func (agentHostStreamManager) HasHost(string) bool { return false }
+
+func agentHostFixture(t *testing.T, agentSample *HostStats) (*Aggregator, []*ContainerStats) {
+	t.Helper()
+	cache := NewStatsCache()
+	now := time.Now()
+
+	// Six unlimited containers: each reports the whole 2GB host as its limit,
+	// so the container-aggregation fallback divides by 6x the real memory.
+	const hostMemory = uint64(2_068_885_504)
+	var containers []*ContainerStats
+	for _, id := range []string{"aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc",
+		"dddddddddddd", "eeeeeeeeeeee", "ffffffffffff"} {
+		cs := &ContainerStats{
+			ContainerID: id, HostID: "agent-1",
+			CPUPercent:  1.0,
+			MemoryUsage: 86_510_153, MemoryLimit: hostMemory,
+			LastUpdate: now,
+		}
+		cache.containerStats["agent-1:"+id] = cs
+		containers = append(containers, cs)
+	}
+
+	if agentSample != nil {
+		cache.UpdateHostStats(agentSample)
+	}
+
+	agg := &Aggregator{
+		cache:             cache,
+		streamManager:     agentHostStreamManager{},
+		aggregateInterval: time.Second,
+		hostProcReader:    NewHostProcReader(),
+	}
+	return agg, containers
+}
+
+// History for an agent host must come from the agent's real /proc reading, the
+// same source the live cache and the alert evaluator use. Aggregating its
+// containers instead produced a chart that disagreed with the alert: measured
+// 4.18% against a real 40.29% on a host whose container limits summed to 6x
+// the real memory.
+func TestAggregator_AgentHostUsesIngestedProcReading(t *testing.T) {
+	agg, containers := agentHostFixture(t, &HostStats{
+		HostID:           "agent-1",
+		CPUPercent:       0.4,
+		MemoryPercent:    40.3,
+		MemoryUsedBytes:  833_515_520,
+		MemoryLimitBytes: 2_068_885_504,
+	})
+
+	got := agg.aggregateHostStats("agent-1", containers)
+
+	if got.MemoryPercent != 40.3 {
+		t.Errorf("MemoryPercent=%v, want 40.3 (the agent's reading, not the container sum)", got.MemoryPercent)
+	}
+	if got.CPUPercent != 0.4 {
+		t.Errorf("CPUPercent=%v, want 0.4 (the agent's reading)", got.CPUPercent)
+	}
+	if got.MemoryLimitBytes != 2_068_885_504 {
+		t.Errorf("MemoryLimitBytes=%d, want the real host memory", got.MemoryLimitBytes)
+	}
+	// Network and container count still come from the aggregation, exactly as
+	// the local /host/proc branch does.
+	if got.ContainerCount != len(containers) {
+		t.Errorf("ContainerCount=%d, want %d", got.ContainerCount, len(containers))
+	}
+}
+
+// A dead agent must not freeze history at its last reading.
+func TestAggregator_StaleAgentSampleFallsBackToAggregation(t *testing.T) {
+	agg, containers := agentHostFixture(t, &HostStats{
+		HostID:        "agent-1",
+		CPUPercent:    0.4,
+		MemoryPercent: 40.3,
+	})
+	// UpdateHostStats stamps LastUpdate; age it past the freshness cutoff.
+	agg.cache.hostStats["agent-1"].LastUpdate = time.Now().Add(-90 * time.Second)
+
+	got := agg.aggregateHostStats("agent-1", containers)
+
+	if got.MemoryPercent == 40.3 {
+		t.Error("stale agent sample was reused; history would freeze at the last reading")
+	}
+}
+
+// An agent with no /host/proc sends no host samples at all. Nothing contradicts
+// the aggregate there (alerts have no data either), so the chart keeps its only
+// signal rather than going blank.
+func TestAggregator_AgentHostWithoutSampleKeepsAggregation(t *testing.T) {
+	agg, containers := agentHostFixture(t, nil)
+
+	got := agg.aggregateHostStats("agent-1", containers)
+
+	if got.ContainerCount != len(containers) {
+		t.Errorf("ContainerCount=%d, want %d", got.ContainerCount, len(containers))
+	}
+	if got.MemoryUsedBytes == 0 {
+		t.Error("expected the container-aggregated sample to still be produced")
+	}
+}
+
+// A registered Docker host's own aggregate is what the aggregator writes to the
+// host cache, so reading it back as input would be a feedback loop.
+func TestAggregator_DockerHostIgnoresHostCacheEntry(t *testing.T) {
+	cache := NewStatsCache()
+	now := time.Now()
+	cache.containerStats["host-1:aaaaaaaaaaaa"] = &ContainerStats{
+		ContainerID: "aaaaaaaaaaaa", HostID: "host-1",
+		CPUPercent: 10.0, MemoryUsage: 1024, MemoryLimit: 4096,
+		LastUpdate: now,
+	}
+	cache.UpdateHostStats(&HostStats{HostID: "host-1", CPUPercent: 99.0, MemoryPercent: 99.0})
+
+	agg := &Aggregator{
+		cache:             cache,
+		streamManager:     stubStreamManager{}, // HasHost == true
+		aggregateInterval: time.Second,
+		hostProcReader:    NewHostProcReader(),
+	}
+
+	got := agg.aggregateHostStats("host-1", []*ContainerStats{cache.containerStats["host-1:aaaaaaaaaaaa"]})
+
+	if got.CPUPercent == 99.0 {
+		t.Error("Docker host read its own cached output back as input")
+	}
+}

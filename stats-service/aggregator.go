@@ -187,6 +187,29 @@ func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerSt
 		// Fall through to container aggregation if /host/proc read failed
 	}
 
+	// Agent-owned host: the ingest handler holds the agent's real /proc
+	// reading, which is also what the live cache and the alert evaluator use.
+	// Aggregating its containers instead would put a different number on the
+	// history chart than the alert fired on — and a wrong one, since agent
+	// hosts carry no CPU-count or memory metadata here.
+	if !a.streamManager.HasHost(hostID) {
+		if agentStats, ok := a.cache.GetHostStats(hostID); ok && !agentStats.LastUpdate.Before(cutoff) {
+			return &HostStats{
+				HostID:           hostID,
+				CPUPercent:       agentStats.CPUPercent,
+				MemoryPercent:    agentStats.MemoryPercent,
+				MemoryUsedBytes:  agentStats.MemoryUsedBytes,
+				MemoryLimitBytes: agentStats.MemoryLimitBytes,
+				NetworkRxBytes:   totalNetRx,
+				NetworkTxBytes:   totalNetTx,
+				ContainerCount:   validContainers,
+			}
+		}
+		// No fresh agent sample (e.g. no /host/proc mount): fall through. The
+		// evaluator has no host data for such a host either, so nothing
+		// contradicts the aggregate and it stays the chart's only signal.
+	}
+
 	// Fallback: Aggregate CPU/memory from container stats
 	if len(containers) == 0 {
 		return &HostStats{

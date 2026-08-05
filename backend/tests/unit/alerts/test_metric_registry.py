@@ -171,6 +171,18 @@ class TestValidateMetricFields:
         with pytest.raises(ValueError, match="clear"):
             validate_metric_fields("host", "memory_percent", 20.0, 10.0, "<")
 
-    def test_equality_operator_has_no_clear_direction(self):
-        validate_metric_fields("host", "cpu_percent", 50.0, 60.0, "==")
-        validate_metric_fields("host", "cpu_percent", 50.0, 40.0, "==")
+    def test_equality_requires_a_matching_clear_threshold(self):
+        # There is no "less strict" side of ==: any other clear threshold means
+        # the alert cannot clear at the very value that raised it.
+        validate_metric_fields("host", "cpu_percent", 50.0, 50.0, "==")
+        with pytest.raises(ValueError, match="clear"):
+            validate_metric_fields("host", "cpu_percent", 50.0, 60.0, "==")
+        with pytest.raises(ValueError, match="clear"):
+            validate_metric_fields("host", "cpu_percent", 50.0, 40.0, "==")
+
+    def test_system_scope_is_storable_but_serves_no_metric(self):
+        # The self-diagnostic rule carries scope="system" and no metric; an
+        # update touching its threshold must not be refused as an invalid scope.
+        validate_metric_fields("system", None, None, None, None)
+        with pytest.raises(ValueError):
+            validate_metric_fields("system", "cpu_percent", 90.0, None, ">=")

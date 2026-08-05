@@ -65,10 +65,7 @@ from utils.image_id import normalize_image_id
 from config.settings import AppConfig, get_cors_origins, setup_logging, HealthCheckFilter
 from models.docker_models import DockerHostConfig, DockerHost
 from models.settings_models import GlobalSettings, AlertRule, AlertRuleV2Create, AlertRuleV2Update, GlobalSettingsUpdate
-from alerts.metrics import validate_metric_fields
-
-# Fields whose change can invalidate a metric rule as a whole.
-METRIC_RULE_FIELDS = frozenset({"scope", "metric", "threshold", "clear_threshold", "operator"})
+from alerts.metrics import METRIC_RULE_FIELDS, validate_metric_fields
 from models.request_models import (
     AutoRestartRequest, DesiredStateRequest, AlertRuleCreate, AlertRuleUpdate,
     NotificationChannelCreate, NotificationChannelUpdate, EventLogFilter, BatchJobCreate,
@@ -4145,6 +4142,16 @@ async def create_alert_rule_v2(
     try:
         _, display_name = get_auditable_user_info(current_user)
 
+        # Validated here rather than on the model so the reason survives: a
+        # model-level rejection is flattened to "Invalid request data" by the
+        # RequestValidationError handler, which is all the UI ever shows.
+        try:
+            validate_metric_fields(
+                rule.scope, rule.metric, rule.threshold, rule.clear_threshold, rule.operator
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
         # Default suppress_during_updates to True for container-scoped rules if not explicitly set
         suppress_during_updates = rule.suppress_during_updates
         if suppress_during_updates is None:
@@ -4210,6 +4217,8 @@ async def create_alert_rule_v2(
             "severity": new_rule.severity,
             "created_at": new_rule.created_at.isoformat() + 'Z',
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to create alert rule v2: {e}")
         raise HTTPException(status_code=500, detail="Failed to create alert rule")

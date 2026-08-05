@@ -10,9 +10,15 @@ from typing import Optional, List
 
 from cronsim import CronSim
 from cronsim.cronsim import CronSimError
-from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
-from alerts.metrics import validate_metric_fields
+
+def _reject_bool(value):
+    """Pydantic coerces JSON booleans to 1.0/0.0 for float fields, so a bool has
+    to be refused before coercion rather than by a downstream numeric check."""
+    if isinstance(value, bool):
+        raise ValueError("must be a number, not a boolean")
+    return value
 
 class GlobalSettings(BaseModel):
     """Global monitoring settings"""
@@ -133,17 +139,9 @@ class AlertRuleV2Create(BaseModel):
     notify_channels_json: Optional[str] = None
     custom_template: Optional[str] = Field(None, max_length=2000)  # Custom template for this rule
 
-    @model_validator(mode="after")
-    def _validate_metric(self):
-        """Reject rules that could never be evaluated.
-
-        Updates cannot do this here - a partial payload carries neither scope
-        nor metric - so PUT validates the merged record in the route instead.
-        """
-        validate_metric_fields(
-            self.scope, self.metric, self.threshold, self.clear_threshold, self.operator
-        )
-        return self
+    _reject_bool_threshold = field_validator("threshold", "clear_threshold", mode="before")(
+        _reject_bool
+    )
 
 
 class AlertRuleV2Update(BaseModel):
@@ -183,6 +181,10 @@ class AlertRuleV2Update(BaseModel):
     labels_json: Optional[str] = None
     notify_channels_json: Optional[str] = None
     custom_template: Optional[str] = Field(None, max_length=2000)  # Custom template for this rule
+
+    _reject_bool_threshold = field_validator("threshold", "clear_threshold", mode="before")(
+        _reject_bool
+    )
 
 
 class GlobalSettingsUpdate(BaseModel):

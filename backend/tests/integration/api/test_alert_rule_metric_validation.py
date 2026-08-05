@@ -216,6 +216,24 @@ class TestCreateValidation:
         )
         assert resp.status_code == 200, resp.text
 
+    def test_rejection_explains_itself(self, alert_client):
+        # A model-level rejection is flattened to "Invalid request data" by the
+        # RequestValidationError handler, which is the only text the UI shows.
+        resp = alert_client.post(
+            "/api/alerts/rules",
+            json=_payload(kind="memory_high", metric="memory_percent", threshold=5000.0),
+        )
+
+        assert resp.status_code == 400, resp.text
+        assert "memory_percent" in resp.json()["detail"]
+
+    @pytest.mark.parametrize("field", ["threshold", "clear_threshold"])
+    def test_boolean_threshold_is_refused(self, alert_client, field):
+        # Pydantic coerces JSON true to 1.0 for a float field, so a bool has to
+        # be caught before coercion or it silently becomes a real threshold.
+        resp = alert_client.post("/api/alerts/rules", json=_payload(**{field: True}))
+        assert _rejected(resp), resp.text
+
 
 @pytest.mark.integration
 class TestUpdateValidation:
@@ -313,6 +331,18 @@ class TestUpdateValidation:
     def test_missing_rule_is_404_not_500(self, alert_client):
         resp = alert_client.put("/api/alerts/rules/nope", json={"threshold": 50.0})
         assert resp.status_code == 404, resp.text
+
+    def test_system_scoped_rule_still_accepts_metric_field_updates(
+        self, alert_client, _real_db
+    ):
+        # The self-diagnostic rule stores scope="system"; validating the merged
+        # record must not reject it as an invalid scope.
+        _insert(_real_db, "system-rule", scope="system", kind="system_error",
+                metric=None, threshold=None, operator=None)
+
+        resp = alert_client.put("/api/alerts/rules/system-rule", json={"threshold": 5.0})
+
+        assert resp.status_code == 200, resp.text
 
     def test_rejection_explains_itself(self, alert_client, _real_db):
         _insert(_real_db, "detail-rule", metric="memory_percent", kind="memory_high")

@@ -1037,20 +1037,31 @@ class AlertEvaluationService:
         rules_by_metric: Dict[str, List[AlertRuleV2]]
     ):
         """Evaluate stats for a single container"""
-        metric_mappings = {
-            metric: stats.get(metric)
-            for metric in PRODUCED_METRICS_BY_SCOPE["container"]
-        }
+        await self._evaluate_scope_stats(
+            "container", context.container_name, stats, context, rules_by_metric
+        )
 
-        for metric_name, metric_value in metric_mappings.items():
+    async def _evaluate_scope_stats(
+        self,
+        scope: str,
+        subject: Optional[str],
+        stats: Dict[str, Any],
+        context: EvaluationContext,
+        rules_by_metric: Dict[str, List[AlertRuleV2]]
+    ):
+        """Evaluate one sample against the rules for its scope's metrics.
+
+        Failures stay per-metric: one unusable value must not skip the metrics
+        behind it.
+        """
+        for metric_name in PRODUCED_METRICS_BY_SCOPE[scope]:
+            metric_value = stats.get(metric_name)
             if metric_value is None:
                 continue
 
-            # Check if we have rules for this metric
             if metric_name not in rules_by_metric:
                 continue
 
-            # Evaluate metric against all matching rules
             try:
                 alerts = self.engine.evaluate_metric(
                     metric_name,
@@ -1060,18 +1071,15 @@ class AlertEvaluationService:
 
                 if alerts:
                     logger.info(
-                        f"Alert triggered for {context.container_name}: "
+                        f"Alert triggered for {scope} {subject}: "
                         f"{metric_name}={metric_value}"
                     )
 
-                    # Trigger notifications for all matched alerts
                     for alert in alerts:
                         await self._handle_alert_notification(alert)
 
             except Exception as e:
-                self._record_failure(
-                    f"container metric {metric_name}", context.container_name or "", e
-                )
+                self._record_failure(f"{scope} metric {metric_name}", subject or "", e)
 
     def _is_sample_fresh(self, stats: Dict[str, Any], subject: str, key: str) -> bool:
         """Whether a stats sample is recent enough to evaluate.
@@ -1260,41 +1268,9 @@ class AlertEvaluationService:
         rules_by_metric: Dict[str, List[AlertRuleV2]]
     ):
         """Evaluate stats for a single host"""
-        metric_mappings = {
-            metric: stats.get(metric)
-            for metric in PRODUCED_METRICS_BY_SCOPE["host"]
-        }
-
-        for metric_name, metric_value in metric_mappings.items():
-            if metric_value is None:
-                continue
-
-            # Check if we have rules for this metric
-            if metric_name not in rules_by_metric:
-                continue
-
-            # Evaluate metric against all matching rules
-            try:
-                alerts = self.engine.evaluate_metric(
-                    metric_name,
-                    float(metric_value),
-                    context
-                )
-
-                if alerts:
-                    logger.info(
-                        f"Alert triggered for host {context.host_name}: "
-                        f"{metric_name}={metric_value}"
-                    )
-
-                    # Trigger notifications for all matched alerts
-                    for alert in alerts:
-                        await self._handle_alert_notification(alert)
-
-            except Exception as e:
-                self._record_failure(
-                    f"host metric {metric_name}", context.host_name or "", e
-                )
+        await self._evaluate_scope_stats(
+            "host", context.host_name, stats, context, rules_by_metric
+        )
 
     async def _handle_alert_notification(self, alert: AlertV2):
         """

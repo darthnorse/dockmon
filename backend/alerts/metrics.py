@@ -29,6 +29,17 @@ PENDING_METRICS_BY_SCOPE: Dict[str, FrozenSet[str]] = {
 
 VALID_SCOPES: FrozenSet[str] = frozenset(PRODUCED_METRICS_BY_SCOPE)
 
+# Scopes a stored rule may carry. "system" belongs to the self-diagnostic rule,
+# which is never metric-driven - it is absent from the maps above, so any metric
+# named against it is still rejected.
+STORABLE_SCOPES: FrozenSet[str] = VALID_SCOPES | frozenset({"system"})
+
+# Fields whose change can invalidate a metric rule as a whole, so an update
+# touching any of them has to be validated against the merged record.
+METRIC_RULE_FIELDS: FrozenSet[str] = frozenset(
+    {"scope", "metric", "threshold", "clear_threshold", "operator"}
+)
+
 # (min, max) per (scope, metric); None means unbounded above.
 METRIC_RANGES: Dict[Tuple[str, str], Tuple[float, Optional[float]]] = {
     ("host", "cpu_percent"): (0, 100),
@@ -94,7 +105,7 @@ def validate_metric_fields(
     """
     # Before the metric shortcut: scope is NOT NULL in the database, and an
     # explicit null on update would otherwise reach it as an IntegrityError.
-    if scope not in VALID_SCOPES:
+    if scope not in STORABLE_SCOPES:
         raise ValueError(
             f"Invalid scope {scope!r}. Must be one of: {', '.join(sorted(VALID_SCOPES))}"
         )
@@ -132,6 +143,12 @@ def validate_metric_fields(
     # operator and clears when it does not breach. A clear threshold on the
     # wrong side of the alert threshold therefore clears while still breaching,
     # and the alert re-fires on the next cycle.
+    if operator == "==" and clear_threshold != threshold:
+        # Equality has no "less strict" side: any other clear threshold leaves
+        # the alert unable to clear at the value that raised it.
+        raise ValueError(
+            f"clear_threshold must equal the threshold ({threshold}) for '==' rules"
+        )
     if operator in _RISING_OPERATORS and clear_threshold > threshold:
         raise ValueError(
             f"clear_threshold must be at most the threshold ({threshold}) for "

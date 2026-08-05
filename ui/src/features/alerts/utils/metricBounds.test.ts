@@ -22,4 +22,11 @@ describe('maxThresholdFor', () => {
   it('falls back to 100 when no metric is selected yet', () => {
     expect(maxThresholdFor('host', undefined)).toBe(100)
   })
+
+  it('leaves byte-valued metrics unbounded', () => {
+    // No rule kind offers these, but an API-created rule loads into this form,
+    // where a 100 cap would be nonsense for a byte threshold.
+    expect(maxThresholdFor('container', 'memory_usage')).toBeUndefined()
+    expect(maxThresholdFor('container', 'memory_limit')).toBeUndefined()
+  })
 })

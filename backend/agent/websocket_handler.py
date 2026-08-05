@@ -284,22 +284,9 @@ class AgentWebSocketHandler:
                                 del self.monitor.clients[old_host_id]
 
                             # Unregister from Go stats and event services
-                            from stats_client import get_stats_client
-                            stats_client = get_stats_client()
-
-                            try:
-                                await stats_client.remove_docker_host(old_host_id)
-                                logger.info(f"Unregistered old host {old_host_name} from stats service")
-                            except asyncio.TimeoutError:
-                                logger.debug(f"Timeout unregistering {old_host_name} from stats service (expected during cleanup)")
-                            except Exception as e:
-                                logger.warning(f"Error unregistering from stats service: {e}")
-
-                            try:
-                                await stats_client.remove_event_host(old_host_id)
-                                logger.info(f"Unregistered old host {old_host_name} from event service")
-                            except Exception as e:
-                                logger.warning(f"Error unregistering from event service: {e}")
+                            await self.monitor.unregister_docker_host_services(
+                                old_host_id, old_host_name
+                            )
 
                             logger.info(f"Migration cleanup complete: old host {old_host_name} removed from active monitoring")
 

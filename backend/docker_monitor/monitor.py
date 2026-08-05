@@ -873,25 +873,8 @@ class DockerMonitor:
                 self.clients[host_id].close()
                 del self.clients[host_id]
 
-            # Remove from Go stats and event services (await to ensure cleanup completes before returning)
-            try:
-                stats_client = get_stats_client()
-
-                try:
-                    # Remove from stats service (closes Docker client and stops all container streams)
-                    await stats_client.remove_docker_host(host_id)
-                    logger.info(f"Removed {host_name} ({host_id[:8]}) from stats service")
-
-                    # Remove from event service
-                    await stats_client.remove_event_host(host_id)
-                    logger.info(f"Removed {host_name} ({host_id[:8]}) from event service")
-                except asyncio.TimeoutError:
-                    # Timeout during cleanup is expected - Go service closes connections immediately
-                    logger.debug(f"Timeout removing {host_name} from Go services (expected during cleanup)")
-                except Exception as e:
-                    logger.error(f"Failed to remove {host_name} from Go services: {e}")
-            except Exception as e:
-                logger.warning(f"Failed to remove host {host_name} ({host_id[:8]}) from Go services: {e}")
+            # Await so cleanup completes before returning
+            await self.unregister_docker_host_services(host_id, host_name)
 
             # Clean up certificate files
             self._cleanup_host_certificates(host_id)
@@ -1328,7 +1311,7 @@ class DockerMonitor:
         is bound to the main loop, so a worker thread hands the work back to it
         rather than running it on a loop of its own.
         """
-        coro = self._unregister_docker_host_services(host_id, host_name)
+        coro = self.unregister_docker_host_services(host_id, host_name)
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -1346,12 +1329,12 @@ class DockerMonitor:
         task = asyncio.create_task(coro)
         task.add_done_callback(_handle_task_exception)
 
-    async def _unregister_docker_host_services(self, host_id: str, host_name: str):
+    async def unregister_docker_host_services(self, host_id: str, host_name: str):
         """Drop a host's Docker registration from the Go stats and event services.
 
-        Required on every transition to agent: the aggregator writes the host
-        stats cache for registered Docker hosts and ingest writes it for agents,
-        both under the same key.
+        Used on host removal and on every transition to agent: the aggregator
+        writes the host stats cache for registered Docker hosts and ingest
+        writes it for agents, both under the same key.
         """
         try:
             stats_client = get_stats_client()
@@ -1361,6 +1344,7 @@ class DockerMonitor:
 
         try:
             await stats_client.remove_docker_host(host_id)
+            logger.info(f"Unregistered {host_name} ({host_id[:8]}) from stats service")
         except asyncio.TimeoutError:
             logger.debug(f"Timeout unregistering {host_name} from stats service (expected during cleanup)")
         except Exception as e:
@@ -1368,6 +1352,7 @@ class DockerMonitor:
 
         try:
             await stats_client.remove_event_host(host_id)
+            logger.info(f"Unregistered {host_name} ({host_id[:8]}) from event service")
         except asyncio.TimeoutError:
             logger.debug(f"Timeout unregistering {host_name} from event service (expected during cleanup)")
         except Exception as e:

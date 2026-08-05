@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/darthnorse/dockmon-agent/internal/docker"
-	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/sirupsen/logrus"
 	logrustest "github.com/sirupsen/logrus/hooks/test"
@@ -82,17 +82,17 @@ type statsAttempt struct {
 	endErr  error
 	silent  bool // never deliver anything, never close
 	wedged  bool // body ignores context cancellation
+	hangs   bool // the open itself never answers until the context ends
 	onRead  func()
 	body    *scriptedBody
 	started chan struct{}
 }
 
 type fakeStatsClient struct {
-	mu        sync.Mutex
-	script    []*statsAttempt // consumed in order; the last entry repeats
-	calls     int
-	listFn    func(ctx context.Context) ([]docker.ContainerWithDigest, error)
-	inspectFn func(ctx context.Context, id string) (types.ContainerJSON, error)
+	mu     sync.Mutex
+	script []*statsAttempt // consumed in order; the last entry repeats
+	calls  int
+	listFn func(ctx context.Context) ([]docker.ContainerWithDigest, error)
 }
 
 func (f *fakeStatsClient) ListContainers(ctx context.Context) ([]docker.ContainerWithDigest, error) {
@@ -117,6 +117,10 @@ func (f *fakeStatsClient) ContainerStats(ctx context.Context, containerID string
 		case att.started <- struct{}{}:
 		default:
 		}
+	}
+	if att.hangs {
+		<-ctx.Done()
+		return container.StatsResponseReader{}, ctx.Err()
 	}
 	if att.err != nil {
 		return container.StatsResponseReader{}, att.err
@@ -186,11 +190,10 @@ func (c *fakeClock) advance(d time.Duration) {
 // waitRecorder replaces the retry sleep: it records the backoff the collector
 // asked for and returns instantly.
 type waitRecorder struct {
-	mu       sync.Mutex
-	waits    []time.Duration
-	stopAt   int  // return false (cancelled) on this call number; 0 = never
-	onWait   func(n int)
-	returned bool
+	mu     sync.Mutex
+	waits  []time.Duration
+	stopAt int // return false (cancelled) on this call number; 0 = never
+	onWait func(n int)
 }
 
 func (w *waitRecorder) wait(ctx context.Context, d time.Duration) bool {
@@ -487,7 +490,8 @@ func TestCollector_ClosesBodyPerAttempt(t *testing.T) {
 // the stats open, which is the one non-cancellation reason to stop for good.
 func TestCollector_StopsWhenContainerRemoved(t *testing.T) {
 	r := newRetryHarness(t, &statsAttempt{
-		// Mirrors internal/docker.Client wrapping the client error with %w.
+		// Wrapped on purpose: IsNotFound must survive an error chain. The
+		// unwrapped shape the Docker SDK actually returns is covered below.
 		err: fmt.Errorf("failed to open stats stream: %w", cerrdefs.ErrNotFound),
 	})
 
@@ -710,6 +714,127 @@ func TestCollector_AbandonsIdleStream(t *testing.T) {
 	}
 }
 
+// TestCollector_AbandonsWedgedOpen: the Docker client has no request timeout,
+// so an open that never answers would block the collector for the life of the
+// connection unless the watchdog is armed before the call.
+func TestCollector_AbandonsWedgedOpen(t *testing.T) {
+	r := newRetryHarness(t,
+		&statsAttempt{hangs: true},
+		&statsAttempt{frames: [][]byte{liveFrame(t, 100)}},
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := r.h.StartContainerStats(ctx, "abcdef123456", "probe"); err != nil {
+		t.Fatalf("StartContainerStats: %v", err)
+	}
+
+	waitFor(t, "the hung open to be abandoned and retried", func() bool { return r.msgs.count() > 0 })
+
+	for _, e := range r.hook.AllEntries() {
+		if e.Level == logrus.WarnLevel && strings.Contains(e.Message, errStreamIdle.Error()) {
+			return
+		}
+	}
+	t.Fatalf("a watchdog abort must be named in the log, not reported as a bare cancellation")
+}
+
+// TestCollector_StableRequiresLiveSampleDuration: an attempt whose first frame
+// arrives late is not evidence of a healthy stream, so it must not reset the
+// backoff.
+func TestCollector_StableRequiresLiveSampleDuration(t *testing.T) {
+	att := &statsAttempt{frames: [][]byte{liveFrame(t, 100)}}
+	// The failing attempt first, so a wrongly-granted reset is visible as a
+	// backoff that drops back to 1s instead of doubling.
+	r := newRetryHarness(t, &statsAttempt{err: fmt.Errorf("boom")}, att)
+	r.waits.stopAt = 2
+
+	// The stream then takes 45s to produce its first frame, and dies.
+	var once sync.Once
+	att.onRead = func() { once.Do(func() { r.clock.advance(45 * time.Second) }) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := r.h.StartContainerStats(ctx, "abcdef123456", "probe"); err != nil {
+		t.Fatalf("StartContainerStats: %v", err)
+	}
+	waitFor(t, "the collector to stop", func() bool { return r.streamCount() == 0 })
+
+	// Measured from the open, a 45s wait for the first frame would look stable
+	// and reset the backoff to 1s.
+	got := r.waits.recorded()
+	want := []time.Duration{1 * time.Second, 2 * time.Second}
+	if len(got) != len(want) || got[1] != want[1] {
+		t.Fatalf("a slow first frame must not count as a stable stream: waits = %v, want %v", got, want)
+	}
+}
+
+// TestCollector_OneFrameStreamsDoNotBypassWarnThrottle: recovery used to reset
+// the throttle on the first live frame, so a stream that served one frame per
+// retry logged a warning and a recovery every cycle.
+func TestCollector_OneFrameStreamsDoNotBypassWarnThrottle(t *testing.T) {
+	r := newRetryHarness(t, &statsAttempt{frames: [][]byte{liveFrame(t, 100)}})
+	r.waits.stopAt = 5
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := r.h.StartContainerStats(ctx, "abcdef123456", "probe"); err != nil {
+		t.Fatalf("StartContainerStats: %v", err)
+	}
+	waitFor(t, "the collector to stop", func() bool { return r.streamCount() == 0 })
+
+	warns, recoveries := 0, 0
+	for _, e := range r.hook.AllEntries() {
+		switch {
+		case e.Level == logrus.WarnLevel:
+			warns++
+		case e.Level == logrus.InfoLevel && strings.Contains(e.Message, "recovered"):
+			recoveries++
+		}
+	}
+	if warns != 1 {
+		t.Fatalf("expected 1 warning across 5 short-lived attempts, got %d", warns)
+	}
+	if recoveries != 0 {
+		t.Fatalf("a one-frame stream must not log recovery, got %d", recoveries)
+	}
+}
+
+// TestCollector_IdleWindowExcludesSendLatency: the watchdog measures daemon
+// silence, so a slow send must not eat the window. Timing-based by nature; the
+// margins are wide.
+func TestCollector_IdleWindowExcludesSendLatency(t *testing.T) {
+	frames := make(chan []byte, 2)
+	frames <- liveFrame(t, 100)
+
+	r := newRetryHarness(t, &statsAttempt{feed: frames})
+	r.h.idleTimeout = 400 * time.Millisecond
+	r.msgs.onSend = func() { time.Sleep(300 * time.Millisecond) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := r.h.StartContainerStats(ctx, "abcdef123456", "probe"); err != nil {
+		t.Fatalf("StartContainerStats: %v", err)
+	}
+	waitFor(t, "the first sample", func() bool { return r.msgs.count() == 1 })
+
+	// 500ms after the first frame: past the window if it were still measured
+	// from the decode (400ms), inside it when measured from the end of the
+	// 300ms send (700ms).
+	time.Sleep(500 * time.Millisecond)
+	frames <- liveFrame(t, 200)
+
+	waitFor(t, "the second sample on the same attempt", func() bool { return r.msgs.count() == 2 })
+	if got := r.client.attemptCount(); got != 1 {
+		t.Fatalf("the stream was reopened %d times; a slow send must not trip the watchdog", got)
+	}
+	close(frames)
+}
+
 // TestCollector_ThrottlesFailureWarnings keeps a wedged daemon from flooding
 // the log while still resurfacing a persistent fault.
 func TestCollector_ThrottlesFailureWarnings(t *testing.T) {
@@ -746,9 +871,11 @@ func TestCollector_ThrottlesFailureWarnings(t *testing.T) {
 func TestCollector_LogsRecoveryOnce(t *testing.T) {
 	r := newRetryHarness(t,
 		&statsAttempt{err: fmt.Errorf("boom")},
-		&statsAttempt{frames: [][]byte{liveFrame(t, 100), liveFrame(t, 200)}},
+		&statsAttempt{frames: [][]byte{liveFrame(t, 100), liveFrame(t, 200), liveFrame(t, 300)}},
 	)
 	r.waits.stopAt = 2
+	// Recovery is only claimed once the stream has been live long enough.
+	r.msgs.onSend = func() { r.clock.advance(45 * time.Second) }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -760,7 +887,7 @@ func TestCollector_LogsRecoveryOnce(t *testing.T) {
 
 	infos := 0
 	for _, e := range r.hook.AllEntries() {
-		if e.Level == logrus.InfoLevel && containsRecovered(e.Message) {
+		if e.Level == logrus.InfoLevel && strings.Contains(e.Message, "recovered") {
 			infos++
 		}
 	}
@@ -769,13 +896,23 @@ func TestCollector_LogsRecoveryOnce(t *testing.T) {
 	}
 }
 
-func containsRecovered(msg string) bool {
-	for i := 0; i+9 <= len(msg); i++ {
-		if msg[i:i+9] == "recovered" {
-			return true
-		}
+// TestCollector_StopsOnUnwrappedNotFound covers the shape the Docker SDK
+// actually returns: internal/docker.Client.ContainerStats passes its error
+// through without wrapping.
+func TestCollector_StopsOnUnwrappedNotFound(t *testing.T) {
+	r := newRetryHarness(t, &statsAttempt{err: cerrdefs.ErrNotFound})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := r.h.StartContainerStats(ctx, "abcdef123456", "probe"); err != nil {
+		t.Fatalf("StartContainerStats: %v", err)
 	}
-	return false
+	waitFor(t, "the collector to stop", func() bool { return r.streamCount() == 0 })
+
+	if got := r.client.attemptCount(); got != 1 {
+		t.Fatalf("a removed container must not be retried, got %d attempts", got)
+	}
 }
 
 // --- startup ----------------------------------------------------------------

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
@@ -33,9 +34,15 @@ const (
 	statsWarnInterval = 5 * time.Minute
 )
 
-// errStreamNotLive ends an attempt when the daemon serves zero-read frames:
-// the stream is open but the container is not running. Expected, not a fault.
-var errStreamNotLive = errors.New("stats stream is not live")
+var (
+	// errStreamNotLive ends an attempt when the daemon serves zero-read frames:
+	// the stream is open but the container is not running. Expected, not a fault.
+	errStreamNotLive = errors.New("stats stream is not live")
+
+	// errStreamIdle names a watchdog abort, which would otherwise reach the log
+	// as a bare cancellation - the one condition the watchdog exists to report.
+	errStreamIdle = errors.New("stats stream went idle")
+)
 
 // statsDockerClient is the Docker surface this handler needs. *docker.Client
 // satisfies it; tests substitute a fake.
@@ -133,7 +140,7 @@ func (h *StatsHandler) StartStatsCollection(ctx context.Context) error {
 			name = c.Names[0]
 		}
 		if err := h.StartContainerStats(ctx, c.ID, name); err != nil {
-			h.log.Errorf("Failed to start stats for container %s: %v", c.ID, err)
+			h.log.Errorf("Failed to start stats for container %s: %v", safeShortID(c.ID), err)
 			// Continue with other containers
 		}
 	}
@@ -156,7 +163,7 @@ func (h *StatsHandler) StartContainerStats(parentCtx context.Context, containerI
 
 	// Check if already streaming
 	if _, exists := h.streams[containerID]; exists {
-		h.log.Debugf("Stats stream already exists for container %s", containerID)
+		h.log.Debugf("Stats stream already exists for container %s", safeShortID(containerID))
 		return nil
 	}
 
@@ -226,11 +233,6 @@ func (h *StatsHandler) collectStats(ctx context.Context, containerID, containerN
 	backoff := statsRetryInitialBackoff
 
 	for {
-		if ctx.Err() != nil {
-			h.log.Debugf("Stats collection cancelled for %s", safeShortID(containerID))
-			return
-		}
-
 		stable, err := h.streamContainerStats(ctx, containerID, containerName, state)
 
 		if ctx.Err() != nil {
@@ -268,60 +270,85 @@ func (h *StatsHandler) streamContainerStats(ctx context.Context, containerID, co
 	attemptCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	stream, err := h.dockerClient.ContainerStats(attemptCtx, containerID, true)
-	if err != nil {
-		return false, err
-	}
-	defer stream.Body.Close()
-
-	idle := time.AfterFunc(h.idleTimeout, cancel)
+	// Armed before the open, not after: the Docker client carries no request
+	// timeout, so a daemon that accepts the connection and never answers would
+	// otherwise block here for the life of the connection.
+	var idleFired atomic.Bool
+	idle := time.AfterFunc(h.idleTimeout, func() {
+		idleFired.Store(true)
+		cancel()
+	})
 	defer idle.Stop()
 
+	classify := func(err error) error {
+		if idleFired.Load() && ctx.Err() == nil {
+			return errStreamIdle
+		}
+		return err
+	}
+
+	stream, err := h.dockerClient.ContainerStats(attemptCtx, containerID, true)
+	if err != nil {
+		return false, classify(err)
+	}
+	defer stream.Body.Close()
+	idle.Reset(h.idleTimeout)
+
 	decoder := json.NewDecoder(stream.Body)
-	started := h.now()
-	live := false
+	var liveSince time.Time
+	recovered := false
 
 	for {
 		if err := attemptCtx.Err(); err != nil {
-			return h.attemptWasStable(live, started), err
+			return h.attemptWasStable(liveSince), classify(err)
 		}
 
 		var stats container.StatsResponse
 		if err := decoder.Decode(&stats); err != nil {
-			return h.attemptWasStable(live, started), err
+			return h.attemptWasStable(liveSince), classify(err)
 		}
 
 		// The frame was already in flight when cancellation landed; sending it
 		// now would put it on a socket the next connection owns.
 		if err := attemptCtx.Err(); err != nil {
-			return h.attemptWasStable(live, started), err
+			return h.attemptWasStable(liveSince), classify(err)
 		}
 
 		// A zero read timestamp is how the daemon reports "subscribed, but this
 		// container is not running". Publishing it would look like a healthy
 		// idle container on both the UI and the alert wire.
 		if stats.Read.IsZero() {
-			return h.attemptWasStable(live, started), errStreamNotLive
+			return h.attemptWasStable(liveSince), errStreamNotLive
 		}
 
-		idle.Reset(h.idleTimeout)
-		if !live {
-			live = true
-			h.logRecovery(state, containerID)
+		if liveSince.IsZero() {
+			liveSince = h.now()
 		}
 
 		// Process stats using shared package
 		h.processStats(&stats, containerID, containerName)
+
+		// Reset after the send so the window measures daemon silence rather
+		// than backpressure on the shared WebSocket write lock.
+		idle.Reset(h.idleTimeout)
+
+		if !recovered && h.attemptWasStable(liveSince) {
+			recovered = true
+			h.logRecovery(state, containerID)
+		}
 	}
 }
 
-func (h *StatsHandler) attemptWasStable(live bool, started time.Time) bool {
-	return live && h.now().Sub(started) >= h.stableAfter
+// attemptWasStable measures from the first live sample, not from the open: a
+// stream whose first frame is slow is not evidence of a healthy stream.
+func (h *StatsHandler) attemptWasStable(liveSince time.Time) bool {
+	return !liveSince.IsZero() && h.now().Sub(liveSince) >= h.stableAfter
 }
 
-// logRecovery reports a stream coming back, once per run of failures. It has to
-// happen here rather than in the retry loop: a healthy stream never returns to
-// that loop.
+// logRecovery reports a stream coming back, once per run of failures, and only
+// once it has been live long enough to count - a stream that delivers one frame
+// per retry must not clear the warning throttle every cycle. It has to happen
+// here rather than in the retry loop: a healthy stream never returns to it.
 func (h *StatsHandler) logRecovery(state *collectorState, containerID string) {
 	if state.failures == 0 {
 		return

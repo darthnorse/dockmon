@@ -80,9 +80,10 @@ type statsAttempt struct {
 	frames  [][]byte    // delivered in order, then endErr
 	feed    chan []byte // when set, used instead of frames; closing it ends the stream
 	endErr  error
-	silent  bool // never deliver anything, never close
-	wedged  bool // body ignores context cancellation
-	hangs   bool // the open itself never answers until the context ends
+	silent  bool  // never deliver anything, never close
+	wedged  bool  // body ignores context cancellation
+	hangs   bool  // the open itself never answers until the context ends
+	hangErr error // when hangs is set, the error the open finally returns
 	onRead  func()
 	body    *scriptedBody
 	started chan struct{}
@@ -120,6 +121,9 @@ func (f *fakeStatsClient) ContainerStats(ctx context.Context, containerID string
 	}
 	if att.hangs {
 		<-ctx.Done()
+		if att.hangErr != nil {
+			return container.StatsResponseReader{}, att.hangErr
+		}
 		return container.StatsResponseReader{}, ctx.Err()
 	}
 	if att.err != nil {
@@ -429,7 +433,7 @@ func TestCollector_BackoffResetsAfterStableStream(t *testing.T) {
 	r := newRetryHarness(t,
 		&statsAttempt{err: fmt.Errorf("boom")},
 		&statsAttempt{err: fmt.Errorf("boom")},
-		&statsAttempt{frames: [][]byte{liveFrame(t, 100)}},
+		&statsAttempt{frames: [][]byte{liveFrame(t, 100), liveFrame(t, 200)}},
 		&statsAttempt{err: fmt.Errorf("boom")},
 	)
 	r.waits.stopAt = 4
@@ -833,6 +837,85 @@ func TestCollector_IdleWindowExcludesSendLatency(t *testing.T) {
 		t.Fatalf("the stream was reopened %d times; a slow send must not trip the watchdog", got)
 	}
 	close(frames)
+}
+
+// TestCollector_SingleFrameIsNeverStable: one frame followed by a long silence
+// is not a healthy stream, however much time passes before the attempt ends.
+func TestCollector_SingleFrameIsNeverStable(t *testing.T) {
+	r := newRetryHarness(t,
+		&statsAttempt{err: fmt.Errorf("boom")},
+		&statsAttempt{frames: [][]byte{liveFrame(t, 100)}},
+	)
+	r.waits.stopAt = 2
+	// Time passes while that single frame is being sent.
+	r.msgs.onSend = func() { r.clock.advance(45 * time.Second) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := r.h.StartContainerStats(ctx, "abcdef123456", "probe"); err != nil {
+		t.Fatalf("StartContainerStats: %v", err)
+	}
+	waitFor(t, "the collector to stop", func() bool { return r.streamCount() == 0 })
+
+	got := r.waits.recorded()
+	if len(got) < 2 || got[1] != 2*time.Second {
+		t.Fatalf("a single frame must not reset the backoff: waits = %v, want second wait 2s", got)
+	}
+	for _, e := range r.hook.AllEntries() {
+		if e.Level == logrus.InfoLevel && strings.Contains(e.Message, "recovered") {
+			t.Fatalf("a single frame must not claim recovery")
+		}
+	}
+}
+
+// TestCollector_SendLongerThanIdleTimeoutDoesNotTripWatchdog: the watchdog is
+// disarmed across the send, so backpressure on the shared WebSocket write lock
+// cannot be mistaken for a wedged daemon.
+func TestCollector_SendLongerThanIdleTimeoutDoesNotTripWatchdog(t *testing.T) {
+	frames := make(chan []byte, 2)
+	frames <- liveFrame(t, 100)
+
+	r := newRetryHarness(t, &statsAttempt{feed: frames})
+	r.h.idleTimeout = 200 * time.Millisecond
+
+	var once sync.Once
+	r.msgs.onSend = func() { once.Do(func() { time.Sleep(400 * time.Millisecond) }) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := r.h.StartContainerStats(ctx, "abcdef123456", "probe"); err != nil {
+		t.Fatalf("StartContainerStats: %v", err)
+	}
+	waitFor(t, "the first sample", func() bool { return r.msgs.count() == 1 })
+
+	frames <- liveFrame(t, 200)
+	waitFor(t, "the second sample on the same attempt", func() bool { return r.msgs.count() == 2 })
+
+	if got := r.client.attemptCount(); got != 1 {
+		t.Fatalf("a send longer than idleTimeout reopened the stream %d times", got)
+	}
+	close(frames)
+}
+
+// TestCollector_WatchdogDoesNotMaskNotFound: if removal races the watchdog, the
+// terminal 404 must survive error classification or the collector retries a
+// container that no longer exists, forever.
+func TestCollector_WatchdogDoesNotMaskNotFound(t *testing.T) {
+	r := newRetryHarness(t, &statsAttempt{hangs: true, hangErr: cerrdefs.ErrNotFound})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := r.h.StartContainerStats(ctx, "abcdef123456", "probe"); err != nil {
+		t.Fatalf("StartContainerStats: %v", err)
+	}
+	waitFor(t, "the collector to stop", func() bool { return r.streamCount() == 0 })
+
+	if got := r.client.attemptCount(); got != 1 {
+		t.Fatalf("a removed container must not be retried, got %d attempts", got)
+	}
 }
 
 // TestCollector_ThrottlesFailureWarnings keeps a wedged daemon from flooding

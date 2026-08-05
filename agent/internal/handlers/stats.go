@@ -281,6 +281,11 @@ func (h *StatsHandler) streamContainerStats(ctx context.Context, containerID, co
 	defer idle.Stop()
 
 	classify := func(err error) error {
+		// A removed container is terminal however the attempt ended; never let
+		// the watchdog's error hide it, or the collector retries forever.
+		if cerrdefs.IsNotFound(err) {
+			return err
+		}
 		if idleFired.Load() && ctx.Err() == nil {
 			return errStreamIdle
 		}
@@ -296,53 +301,48 @@ func (h *StatsHandler) streamContainerStats(ctx context.Context, containerID, co
 
 	decoder := json.NewDecoder(stream.Body)
 	var liveSince time.Time
-	recovered := false
+	stable := false
 
 	for {
 		if err := attemptCtx.Err(); err != nil {
-			return h.attemptWasStable(liveSince), classify(err)
+			return stable, classify(err)
 		}
 
 		var stats container.StatsResponse
 		if err := decoder.Decode(&stats); err != nil {
-			return h.attemptWasStable(liveSince), classify(err)
+			return stable, classify(err)
 		}
 
 		// The frame was already in flight when cancellation landed; sending it
 		// now would put it on a socket the next connection owns.
 		if err := attemptCtx.Err(); err != nil {
-			return h.attemptWasStable(liveSince), classify(err)
+			return stable, classify(err)
 		}
 
 		// A zero read timestamp is how the daemon reports "subscribed, but this
 		// container is not running". Publishing it would look like a healthy
 		// idle container on both the UI and the alert wire.
 		if stats.Read.IsZero() {
-			return h.attemptWasStable(liveSince), errStreamNotLive
+			return stable, errStreamNotLive
 		}
 
-		if liveSince.IsZero() {
+		// Stability is latched by a later sample, never computed when the
+		// attempt ends: one frame followed by a long silence is the shape this
+		// must not credit.
+		switch {
+		case liveSince.IsZero():
 			liveSince = h.now()
-		}
-
-		// Process stats using shared package
-		h.processStats(&stats, containerID, containerName)
-
-		// Reset after the send so the window measures daemon silence rather
-		// than backpressure on the shared WebSocket write lock.
-		idle.Reset(h.idleTimeout)
-
-		if !recovered && h.attemptWasStable(liveSince) {
-			recovered = true
+		case !stable && h.now().Sub(liveSince) >= h.stableAfter:
+			stable = true
 			h.logRecovery(state, containerID)
 		}
-	}
-}
 
-// attemptWasStable measures from the first live sample, not from the open: a
-// stream whose first frame is slow is not evidence of a healthy stream.
-func (h *StatsHandler) attemptWasStable(liveSince time.Time) bool {
-	return !liveSince.IsZero() && h.now().Sub(liveSince) >= h.stableAfter
+		// Disarmed across the send: the window measures daemon silence, and a
+		// slow shared WebSocket write must not be read as a wedged stream.
+		idle.Stop()
+		h.processStats(&stats, containerID, containerName)
+		idle.Reset(h.idleTimeout)
+	}
 }
 
 // logRecovery reports a stream coming back, once per run of failures, and only

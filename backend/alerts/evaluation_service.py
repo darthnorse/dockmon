@@ -128,6 +128,9 @@ class AlertEvaluationService:
         self._hosts_missing_metrics_reported: set = set()
         # Same throttling for samples whose last_update cannot be parsed.
         self._bad_timestamp_reported: set = set()
+        # Failures swallowed during the current cycle, reported as one alert at
+        # the end of it. Isolation keeps the cycle running; this keeps it visible.
+        self._cycle_failures: List[Dict[str, str]] = []
 
     async def start(self):
         """Start the alert evaluation service"""
@@ -897,6 +900,7 @@ class AlertEvaluationService:
 
     async def _evaluate_all_rules(self):
         """Evaluate all enabled metric-driven rules"""
+        self._cycle_failures = []
         try:
             # Get all enabled metric-driven rules
             with self.db.get_session() as session:
@@ -921,13 +925,9 @@ class AlertEvaluationService:
                 await self._evaluate_host_metrics(rules_by_metric)
 
         except Exception as e:
-            logger.error(f"Error evaluating rules: {e}", exc_info=True)
-            # Create system alert to notify users of evaluation failure
-            await self._create_system_alert(
-                title="Alert Rule Evaluation Failed",
-                message=f"Failed to evaluate alert rules: {str(e)[:500]}",  # Truncate long error messages
-                severity="error"
-            )
+            self._record_failure("evaluation cycle", "alert service", e)
+
+        await self._report_cycle_failures()
 
     async def _evaluate_container_metrics(self, rules_by_metric: Dict[str, List[AlertRuleV2]]):
         """Evaluate container metric rules"""
@@ -953,40 +953,41 @@ class AlertEvaluationService:
 
             # Evaluate each container's metrics
             # Note: container_id here is actually the composite key (host_id:container_id)
+            # One bad sample must not abort the containers behind it.
             for composite_key, container_stats in stats.items():
-                container = container_map.get(composite_key)
+                try:
+                    container = container_map.get(composite_key)
 
-                if not container:
-                    logger.debug(f"Container {composite_key} not found in cache")
-                    continue
+                    if not container:
+                        logger.debug(f"Container {composite_key} not found in cache")
+                        continue
 
-                if not self._is_sample_fresh(
-                    container_stats, f"container {composite_key}", f"container:{composite_key}"
-                ):
-                    continue
+                    if not self._is_sample_fresh(
+                        container_stats, f"container {composite_key}", f"container:{composite_key}"
+                    ):
+                        continue
 
-                # Use container's tags which include both user-created (from DB) and
-                # derived tags (from Docker labels like compose:*, swarm:*, dockmon.tag)
-                # This enables tag-based alert filtering to work with label-defined tags
-                # See: https://github.com/darthnorse/dockmon/issues/88
-                container_tags = container.tags or []
+                    # Use container's tags which include both user-created (from DB) and
+                    # derived tags (from Docker labels like compose:*, swarm:*, dockmon.tag)
+                    # This enables tag-based alert filtering to work with label-defined tags
+                    container_tags = container.tags or []
 
-                # Create evaluation context
-                # Use composite key for scope_id to prevent cross-host collisions
-                context = EvaluationContext(
-                    scope_type="container",
-                    scope_id=make_composite_key(container.host_id, container.short_id),
-                    host_id=container.host_id,
-                    host_name=container.host_name,
-                    container_id=container.short_id,
-                    container_name=container.name,
-                    desired_state=container.desired_state or 'unspecified',
-                    labels=container.labels or {},
-                    tags=container_tags  # Container tags for tag-based filtering
-                )
+                    # Use composite key for scope_id to prevent cross-host collisions
+                    context = EvaluationContext(
+                        scope_type="container",
+                        scope_id=make_composite_key(container.host_id, container.short_id),
+                        host_id=container.host_id,
+                        host_name=container.host_name,
+                        container_id=container.short_id,
+                        container_name=container.name,
+                        desired_state=container.desired_state or 'unspecified',
+                        labels=container.labels or {},
+                        tags=container_tags  # Container tags for tag-based filtering
+                    )
 
-                # Evaluate metrics
-                await self._evaluate_container_stats(container_stats, context, rules_by_metric)
+                    await self._evaluate_container_stats(container_stats, context, rules_by_metric)
+                except Exception as e:
+                    self._record_failure("container", composite_key, e)
 
             # Containers come and go; drop throttle entries for subjects that
             # no longer report, so the set stays bounded by what exists now.
@@ -995,7 +996,7 @@ class AlertEvaluationService:
             )
 
         except Exception as e:
-            logger.error(f"Error evaluating container metrics: {e}", exc_info=True)
+            self._record_failure("container pass", "all containers", e)
 
     async def _evaluate_container_stats(
         self,
@@ -1043,9 +1044,8 @@ class AlertEvaluationService:
                         await self._handle_alert_notification(alert)
 
             except Exception as e:
-                logger.error(
-                    f"Error evaluating {metric_name} for {context.container_name}: {e}",
-                    exc_info=True
+                self._record_failure(
+                    f"container metric {metric_name}", context.container_name or "", e
                 )
 
     def _is_sample_fresh(self, stats: Dict[str, Any], subject: str, key: str) -> bool:
@@ -1168,33 +1168,35 @@ class AlertEvaluationService:
                 logger.debug("No hosts available")
                 return
 
-            # Evaluate each host's metrics
+            # One bad sample must not abort the hosts behind it.
             for host in hosts:
-                host_stats = stats.get(host.id)
+                try:
+                    host_stats = stats.get(host.id)
 
-                if not host_stats:
-                    self._report_host_without_metrics(
-                        host, rules_by_metric, "no samples received"
+                    if not host_stats:
+                        self._report_host_without_metrics(
+                            host, rules_by_metric, "no samples received"
+                        )
+                        continue
+
+                    if not self._is_sample_fresh(
+                        host_stats, f"host {host.name}", f"host:{host.id}"
+                    ):
+                        self._report_host_without_metrics(
+                            host, rules_by_metric, "samples are stale"
+                        )
+                        continue
+
+                    self._hosts_missing_metrics_reported.discard(host.id)
+
+                    await self._evaluate_host_stats(
+                        host_stats, self._host_context(host), rules_by_metric
                     )
-                    continue
-
-                if not self._is_sample_fresh(
-                    host_stats, f"host {host.name}", f"host:{host.id}"
-                ):
-                    self._report_host_without_metrics(
-                        host, rules_by_metric, "samples are stale"
-                    )
-                    continue
-
-                self._hosts_missing_metrics_reported.discard(host.id)
-
-                # Evaluate metrics
-                await self._evaluate_host_stats(
-                    host_stats, self._host_context(host), rules_by_metric
-                )
+                except Exception as e:
+                    self._record_failure("host", host.name, e)
 
         except Exception as e:
-            logger.error(f"Error evaluating host metrics: {e}", exc_info=True)
+            self._record_failure("host pass", "all hosts", e)
 
     async def _evaluate_host_stats(
         self,
@@ -1236,9 +1238,8 @@ class AlertEvaluationService:
                         await self._handle_alert_notification(alert)
 
             except Exception as e:
-                logger.error(
-                    f"Error evaluating {metric_name} for host {context.host_name}: {e}",
-                    exc_info=True
+                self._record_failure(
+                    f"host metric {metric_name}", context.host_name or "", e
                 )
 
     async def _handle_alert_notification(self, alert: AlertV2):
@@ -1777,6 +1778,60 @@ class AlertEvaluationService:
             logger.error(f"Error auto-resolving orphaned container alerts: {e}", exc_info=True)
             return resolved_count
 
+    def _record_failure(self, site: str, scope: str, exc: Exception):
+        """Record a swallowed evaluation failure and log it in full.
+
+        The record carries only the exception CLASS: it feeds an alert that can
+        be forwarded to external notification channels, and exception text can
+        carry sample contents or query parameters. The full error stays here.
+        """
+        logger.error(f"Error evaluating {site} for {scope}: {exc}", exc_info=True)
+        self._cycle_failures.append({
+            "site": site,
+            "scope": scope,
+            "error": type(exc).__name__,
+        })
+
+    async def _report_cycle_failures(self):
+        """Raise one aggregated system alert for everything swallowed this cycle.
+
+        Per-failure alerts would be unusable at a 10s cadence; the alert row is
+        refreshed every failing cycle while its notification obeys the system
+        rule's own cooldown.
+        """
+        if not self._cycle_failures:
+            return
+
+        pass_level = [f for f in self._cycle_failures if f["site"].endswith("pass")
+                      or f["site"] == "evaluation cycle"]
+        scopes = sorted({f["scope"] for f in self._cycle_failures if f["scope"]})
+        errors = sorted({f"{f['error']} ({f['site']})" for f in self._cycle_failures})
+
+        message = (
+            f"{len(self._cycle_failures)} evaluation failure(s) this cycle "
+            f"({len(pass_level)} pass-level). "
+            f"Affected: {', '.join(scopes) if scopes else 'unknown'}. "
+            f"Errors: {'; '.join(errors[:3])}"
+            f"{' and more' if len(errors) > 3 else ''}"
+        )
+
+        await self._create_system_alert(
+            title="Alert Evaluation Failing",
+            message=message,
+            severity="error",
+        )
+
+    def _set_alert_text(self, alert: AlertV2, title: str, message: str) -> AlertV2:
+        """Persist a caller-supplied title/message onto an alert row."""
+        with self.db.get_session() as session:
+            alert = session.merge(alert)
+            alert.title = title
+            alert.message = message
+            session.commit()
+            session.refresh(alert)
+            session.expunge(alert)
+            return alert
+
     async def _create_system_alert(self, title: str, message: str, severity: str = "error"):
         """
         Create a system alert for internal failures.
@@ -1815,10 +1870,18 @@ class AlertEvaluationService:
                 # Update existing alert with new occurrence
                 alert = self.engine._update_alert(alert)
 
-            # Send notification
-            await self._send_notification(alert)
+            # _get_or_create_alert derives title/message from the rule, so the
+            # caller's description of what actually failed would be lost.
+            alert = self._set_alert_text(alert, title, message)
 
-            logger.info(f"Created system alert: {title}")
+            # Every other alert path honours the rule's cooldown; this one used
+            # to notify on every call, which at a 10s cadence is a flood.
+            cooldown = system_rule.notification_cooldown_seconds or 3600
+            if is_new or not self.engine._check_cooldown(alert, cooldown):
+                await self._send_notification(alert)
+                logger.info(f"System alert notified: {title}")
+            else:
+                logger.debug(f"System alert in cooldown, not re-notifying: {title}")
 
         except Exception as e:
             # Fail silently - we don't want system alert creation to crash the service

@@ -306,3 +306,31 @@ func TestAggregator_DockerHostIgnoresHostCacheEntry(t *testing.T) {
 		t.Error("Docker host read its own cached output back as input")
 	}
 }
+
+// Guard against a self-refreshing agent sample: the aggregator must never write
+// an agent host's entry back to the cache, or its own output would keep
+// stamping a fresh LastUpdate and a disconnected agent's reading could never
+// expire. The live-cache write is gated on HasHost, which is false for exactly
+// the hosts the ingest branch serves — this pins that pairing.
+func TestAggregator_NeverWritesBackAgentHostEntry(t *testing.T) {
+	agg, _ := agentHostFixture(t, &HostStats{
+		HostID:           "agent-1",
+		CPUPercent:       0.4,
+		MemoryPercent:    40.3,
+		MemoryUsedBytes:  833_515_520,
+		MemoryLimitBytes: 2_068_885_504,
+	})
+	before := agg.cache.hostStats["agent-1"].LastUpdate
+
+	for i := 0; i < 3; i++ {
+		agg.aggregate()
+	}
+
+	after := agg.cache.hostStats["agent-1"]
+	if !after.LastUpdate.Equal(before) {
+		t.Error("aggregator refreshed the agent's own cache entry; a stale sample could never expire")
+	}
+	if after.MemoryPercent != 40.3 {
+		t.Errorf("MemoryPercent=%v, want the agent's untouched 40.3", after.MemoryPercent)
+	}
+}

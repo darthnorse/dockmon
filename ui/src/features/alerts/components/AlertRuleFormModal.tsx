@@ -14,6 +14,7 @@ import {
   useMetricCapabilities,
   hostsNeedingMetricWarning,
   isCollectedHostMetric,
+  isHostMetricRule,
   anyAgentHost,
 } from '../hooks/useMetricCapabilities'
 import type { AlertRule, AlertSeverity, AlertScope, AlertRuleRequest } from '@/types/alerts'
@@ -23,6 +24,17 @@ import type { Container } from '@/features/containers/types'
 import { apiClient } from '@/lib/api/client'
 import { NoChannelsConfirmModal } from './NoChannelsConfirmModal'
 import { useAuth } from '@/features/auth/AuthContext'
+
+function MetricWarning({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="rounded-md border border-amber-600/50 bg-amber-950/30 p-3">
+      <div className="flex gap-2">
+        <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
+        <div className="text-sm text-amber-200">{children}</div>
+      </div>
+    </div>
+  )
+}
 
 interface Props {
   rule?: AlertRule | null
@@ -402,17 +414,16 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
 
   // A host-scope metric rule can only fire on hosts that report that metric.
   // Tag-based selection is resolved server-side, so it is not checked here.
-  const isHostMetricRule = formData.scope === 'host' && !!formData.metric
-  const { data: metricCapabilities } = useMetricCapabilities(isHostMetricRule)
-  const targetedHostIds =
-    !isHostMetricRule || selectedTags.length > 0
+  const hostMetricRule = isHostMetricRule(formData.scope, requiresMetric, formData.metric)
+  const { data: metricCapabilities } = useMetricCapabilities(hostMetricRule)
+  const targetedHosts =
+    !hostMetricRule || selectedTags.length > 0
       ? []
       : formData.host_selector_all
-        ? hosts.map((h) => h.id)
-        : formData.host_selector_ids
-  const targetedHosts = hosts.filter((h) => targetedHostIds.includes(h.id))
+        ? hosts
+        : hosts.filter((h) => formData.host_selector_ids.includes(h.id))
   const metricNotCollected =
-    isHostMetricRule && !isCollectedHostMetric(metricCapabilities, formData.metric)
+    hostMetricRule && !isCollectedHostMetric(metricCapabilities, formData.metric)
   const hostsWithoutMetric = hostsNeedingMetricWarning(
     metricCapabilities,
     targetedHosts,
@@ -1068,42 +1079,34 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
               </div>
 
               {metricNotCollected && (
-                <div className="rounded-md border border-amber-600/50 bg-amber-950/30 p-3">
-                  <div className="flex gap-2">
-                    <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
-                    <p className="text-sm text-amber-200">
-                      DockMon does not collect {formData.metric?.replace(/_/g, ' ')} for hosts yet, so no host can
-                      report it and this rule will never fire.
-                    </p>
-                  </div>
-                </div>
+                <MetricWarning>
+                  <p>
+                    DockMon does not collect {formData.metric?.replace(/_/g, ' ')} for hosts yet, so no host can
+                    report it and this rule will never fire.
+                  </p>
+                </MetricWarning>
               )}
 
               {hostsWithoutMetric.length > 0 && (
-                <div className="rounded-md border border-amber-600/50 bg-amber-950/30 p-3">
-                  <div className="flex gap-2">
-                    <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
-                    <div className="text-sm text-amber-200">
-                      <p>
-                        {hostsWithoutMetric.length === 1 ? 'This host is' : `${hostsWithoutMetric.length} of these hosts are`}{' '}
-                        not reporting {formData.metric?.replace(/_/g, ' ')}, so this rule cannot fire for{' '}
-                        {hostsWithoutMetric.length === 1 ? 'it' : 'them'}:{' '}
-                        <span className="font-medium">
-                          {hostsWithoutMetric.map((h) => h.host_name).join(', ')}
-                        </span>
-                      </p>
-                      {showProcMountRemedy && (
-                        <p className="mt-1 text-amber-300/80">
-                          A containerized agent needs <code className="text-amber-200">-v /proc:/host/proc:ro</code> to
-                          collect host metrics.
-                        </p>
-                      )}
-                      <p className="mt-1 text-amber-300/80">
-                        The rule can still be saved and starts working once metrics arrive.
-                      </p>
-                    </div>
-                  </div>
-                </div>
+                <MetricWarning>
+                  <p>
+                    {hostsWithoutMetric.length === 1 ? 'This host is' : `${hostsWithoutMetric.length} of these hosts are`}{' '}
+                    not reporting {formData.metric?.replace(/_/g, ' ')}, so this rule cannot fire for{' '}
+                    {hostsWithoutMetric.length === 1 ? 'it' : 'them'}:{' '}
+                    <span className="font-medium">
+                      {hostsWithoutMetric.map((h) => h.host_name).join(', ')}
+                    </span>
+                  </p>
+                  {showProcMountRemedy && (
+                    <p className="mt-1 text-amber-300/80">
+                      A containerized agent needs <code className="text-amber-200">-v /proc:/host/proc:ro</code> to
+                      collect host metrics.
+                    </p>
+                  )}
+                  <p className="mt-1 text-amber-300/80">
+                    The rule can still be saved and starts working once metrics arrive.
+                  </p>
+                </MetricWarning>
               )}
 
               {selectedTags.length > 0 ? (

@@ -1338,18 +1338,17 @@ class DockerMonitor:
         """
         try:
             stats_client = get_stats_client()
+            unregisters = (
+                ("stats service", stats_client.remove_docker_host),
+                ("event service", stats_client.remove_event_host),
+            )
         except Exception as e:
             logger.warning(f"Could not reach stats service to unregister {host_name}: {e}")
             return
 
-        # Resolve each method inside the try so a missing one cannot skip the
-        # other service's cleanup.
-        for service, method in (
-            ("stats service", "remove_docker_host"),
-            ("event service", "remove_event_host"),
-        ):
+        for service, unregister in unregisters:
             try:
-                await getattr(stats_client, method)(host_id)
+                await unregister(host_id)
                 logger.info(f"Unregistered {host_name} ({host_id[:8]}) from {service}")
             except asyncio.TimeoutError:
                 logger.debug(f"Timeout unregistering {host_name} from {service} (expected during cleanup)")

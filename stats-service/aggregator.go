@@ -114,7 +114,9 @@ func (a *Aggregator) aggregate() {
 			// Only ingest host sample when there is fresh data. An
 			// all-stale host would produce an all-zeros sample that
 			// corrupts blended cascade tiers instead of leaving gaps.
-			if freshCount > 0 {
+			// An agent's own reading counts as fresh data in its own right:
+			// the evaluator alerts on it whether or not containers report.
+			if freshCount > 0 || a.freshAgentSample(hostID) != nil {
 				a.cascade.Ingest(hostID, true, now, sampleFromHostStats(hostStats, hostNetBps))
 			}
 			for _, cs := range containers {
@@ -126,6 +128,43 @@ func (a *Aggregator) aggregate() {
 			}
 		}
 	}
+
+	// An agent host whose container entries have aged out of the cache never
+	// appears in the grouping above, but it is still reporting itself and the
+	// evaluator is still alerting on it.
+	if a.cascade != nil && settingsProvider.PersistEnabled() {
+		now := time.Now()
+		for hostID, hostStats := range a.cache.GetAllHostStats() {
+			if _, grouped := hostContainers[hostID]; grouped {
+				continue
+			}
+			if a.freshAgentSample(hostID) == nil {
+				continue
+			}
+			a.cascade.Ingest(hostID, true, now, sampleFromHostStats(hostStats, 0))
+		}
+	}
+}
+
+// agentSampleMaxAge matches the alert evaluator's freshness window
+// (STATS_MAX_AGE_SECONDS in backend/alerts/capabilities.py). A shorter window
+// here would put the container aggregate back on the chart while the evaluator
+// was still alerting on the agent's reading.
+const agentSampleMaxAge = 60 * time.Second
+
+// freshAgentSample returns the agent's own host reading for an agent-owned
+// host, or nil when the host is a registered Docker host or has no recent
+// sample. Docker hosts are excluded because the aggregator writes their cache
+// entry itself — reading it back would be a feedback loop.
+func (a *Aggregator) freshAgentSample(hostID string) *HostStats {
+	if a.streamManager.HasHost(hostID) {
+		return nil
+	}
+	stats, ok := a.cache.GetHostStats(hostID)
+	if !ok || time.Since(stats.LastUpdate) > agentSampleMaxAge {
+		return nil
+	}
+	return stats
 }
 
 // aggregateHostStats aggregates stats for a single host
@@ -187,27 +226,20 @@ func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerSt
 		// Fall through to container aggregation if /host/proc read failed
 	}
 
-	// Agent-owned host: the ingest handler holds the agent's real /proc
-	// reading, which is also what the live cache and the alert evaluator use.
-	// Aggregating its containers instead would put a different number on the
-	// history chart than the alert fired on — and a wrong one, since agent
-	// hosts carry no CPU-count or memory metadata here.
-	if !a.streamManager.HasHost(hostID) {
-		if agentStats, ok := a.cache.GetHostStats(hostID); ok && !agentStats.LastUpdate.Before(cutoff) {
-			return &HostStats{
-				HostID:           hostID,
-				CPUPercent:       agentStats.CPUPercent,
-				MemoryPercent:    agentStats.MemoryPercent,
-				MemoryUsedBytes:  agentStats.MemoryUsedBytes,
-				MemoryLimitBytes: agentStats.MemoryLimitBytes,
-				NetworkRxBytes:   totalNetRx,
-				NetworkTxBytes:   totalNetTx,
-				ContainerCount:   validContainers,
-			}
+	// Agent-owned host: use the ingest handler's real /proc reading so history
+	// matches what the evaluator alerts on. Falling through (no /host/proc
+	// mount) is fine — the evaluator has no host data for that host either.
+	if agentStats := a.freshAgentSample(hostID); agentStats != nil {
+		return &HostStats{
+			HostID:           hostID,
+			CPUPercent:       agentStats.CPUPercent,
+			MemoryPercent:    agentStats.MemoryPercent,
+			MemoryUsedBytes:  agentStats.MemoryUsedBytes,
+			MemoryLimitBytes: agentStats.MemoryLimitBytes,
+			NetworkRxBytes:   totalNetRx,
+			NetworkTxBytes:   totalNetTx,
+			ContainerCount:   validContainers,
 		}
-		// No fresh agent sample (e.g. no /host/proc mount): fall through. The
-		// evaluator has no host data for such a host either, so nothing
-		// contradicts the aggregate and it stays the chart's only signal.
 	}
 
 	// Fallback: Aggregate CPU/memory from container stats

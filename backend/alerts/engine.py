@@ -334,9 +334,9 @@ class AlertEngine:
                     continue
 
                 # Check selectors
-                matches_selectors = self._check_selectors(rule, context)
-                logger.debug(f"Engine: Rule '{rule.name}' matches selectors: {matches_selectors}")
-                if not matches_selectors:
+                selectors_match = self.matches_selectors(rule, context)
+                logger.debug(f"Engine: Rule '{rule.name}' matches selectors: {selectors_match}")
+                if not selectors_match:
                     continue
 
                 # Check if we should suppress this alert during container update
@@ -707,10 +707,6 @@ class AlertEngine:
         return False
 
     def matches_selectors(self, rule: AlertRuleV2, context: EvaluationContext) -> bool:
-        """Whether a rule's selectors match a context. Public entry point."""
-        return self._check_selectors(rule, context)
-
-    def _check_selectors(self, rule: AlertRuleV2, context: EvaluationContext) -> bool:
         """
         Check if rule selectors match the context
 
@@ -919,7 +915,7 @@ class AlertEngine:
 
             for rule in rules:
                 # Check selectors
-                if not self._check_selectors(rule, context):
+                if not self.matches_selectors(rule, context):
                     continue
 
                 # Get or create runtime state

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   anyAgentHost,
   hostsMissingMetric,
+  isHostMetricRule,
   hostsNeedingMetricWarning,
   isCollectedHostMetric,
   type MetricCapabilities,
@@ -101,5 +102,27 @@ describe('anyAgentHost', () => {
   it('is false when every flagged host is a Docker host', () => {
     const flagged = [{ host_id: AGENT_WITH_PROC, host_name: 'with-proc', metrics: [] }]
     expect(anyAgentHost(flagged, [{ id: AGENT_WITH_PROC, connection_type: 'remote' }])).toBe(false)
+  })
+})
+
+// The rule form keeps formData.metric when the user switches to an event-driven
+// rule kind, and the submit path drops it. The capability warning must drop it
+// too, or a "Host Offline" rule carrying a leftover disk_percent is told it will
+// never fire.
+describe('isHostMetricRule', () => {
+  it('is not treated as a metric rule when the kind needs no metric', () => {
+    expect(isHostMetricRule('host', false, 'disk_percent')).toBe(false)
+  })
+
+  it('is still a metric rule when the kind needs one', () => {
+    expect(isHostMetricRule('host', true, 'cpu_percent')).toBe(true)
+  })
+
+  it('is not a metric rule for container scope', () => {
+    expect(isHostMetricRule('container', true, 'cpu_percent')).toBe(false)
+  })
+
+  it('is not a metric rule with no metric selected', () => {
+    expect(isHostMetricRule('host', true, undefined)).toBe(false)
   })
 })

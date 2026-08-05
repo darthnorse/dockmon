@@ -334,3 +334,107 @@ func TestAggregator_NeverWritesBackAgentHostEntry(t *testing.T) {
 		t.Errorf("MemoryPercent=%v, want the agent's untouched 40.3", after.MemoryPercent)
 	}
 }
+
+// The evaluator treats an agent host sample as fresh for 60s, so the aggregator
+// must too: a shorter window would put the container aggregate back on the chart
+// while an alert was still firing on the agent's reading.
+func TestAggregator_AgentSampleFreshWindowMatchesEvaluator(t *testing.T) {
+	agg, containers := agentHostFixture(t, &HostStats{
+		HostID: "agent-1", CPUPercent: 0.4, MemoryPercent: 40.3,
+		MemoryUsedBytes: 833_515_520, MemoryLimitBytes: 2_068_885_504,
+	})
+	// 45s: past the 30s container cutoff, inside the evaluator's 60s window.
+	agg.cache.hostStats["agent-1"].LastUpdate = time.Now().Add(-45 * time.Second)
+
+	got := agg.aggregateHostStats("agent-1", containers)
+
+	if got.MemoryPercent != 40.3 {
+		t.Errorf("MemoryPercent=%v, want 40.3: a 45s-old sample is still what the evaluator uses", got.MemoryPercent)
+	}
+}
+
+// The host sample must not be discarded because the host's CONTAINERS went
+// stale — the agent's own reading is what the chart and the alert share.
+func TestAggregator_IngestsAgentHostSampleWhenContainersAreStale(t *testing.T) {
+	on := true
+	settingsProvider.ApplyPartialUpdate(&on, nil, nil)
+	t.Cleanup(func() {
+		off := false
+		settingsProvider.ApplyPartialUpdate(&off, nil, nil)
+	})
+
+	agg, _ := agentHostFixture(t, &HostStats{
+		HostID: "agent-1", CPUPercent: 0.4, MemoryPercent: 40.3,
+		MemoryUsedBytes: 833_515_520, MemoryLimitBytes: 2_068_885_504,
+	})
+	for _, cs := range agg.cache.containerStats {
+		cs.LastUpdate = time.Now().Add(-90 * time.Second)
+	}
+
+	tiers := persistence.ComputeTiers(500)
+	agg.cascade = persistence.NewCascade(tiers, make(chan persistence.WriteJob, 64))
+	agg.aggregate()
+
+	if agg.cascade.StateSize() == 0 {
+		t.Error("no host sample ingested; the chart goes blank while alerts still fire on the agent's reading")
+	}
+}
+
+// A host whose container entries have aged out of the cache entirely never
+// appears in the container grouping, so it needs its own pass.
+func TestAggregator_IngestsAgentHostSampleWithNoContainers(t *testing.T) {
+	on := true
+	settingsProvider.ApplyPartialUpdate(&on, nil, nil)
+	t.Cleanup(func() {
+		off := false
+		settingsProvider.ApplyPartialUpdate(&off, nil, nil)
+	})
+
+	cache := NewStatsCache()
+	cache.UpdateHostStats(&HostStats{
+		HostID: "agent-1", CPUPercent: 0.4, MemoryPercent: 40.3,
+		MemoryUsedBytes: 833_515_520, MemoryLimitBytes: 2_068_885_504,
+	})
+
+	tiers := persistence.ComputeTiers(500)
+	agg := &Aggregator{
+		cache:             cache,
+		streamManager:     agentHostStreamManager{},
+		aggregateInterval: time.Second,
+		hostProcReader:    NewHostProcReader(),
+		cascade:           persistence.NewCascade(tiers, make(chan persistence.WriteJob, 64)),
+	}
+	agg.aggregate()
+
+	if agg.cascade.StateSize() != 1 {
+		t.Errorf("cascade state size=%d, want 1 (the agent host sample)", agg.cascade.StateSize())
+	}
+}
+
+// A registered Docker host with no containers must NOT get a host sample from
+// its own cached entry — that entry is the aggregator's own output.
+func TestAggregator_DockerHostWithNoContainersIsNotIngested(t *testing.T) {
+	on := true
+	settingsProvider.ApplyPartialUpdate(&on, nil, nil)
+	t.Cleanup(func() {
+		off := false
+		settingsProvider.ApplyPartialUpdate(&off, nil, nil)
+	})
+
+	cache := NewStatsCache()
+	cache.UpdateHostStats(&HostStats{HostID: "host-1", CPUPercent: 5.0})
+
+	tiers := persistence.ComputeTiers(500)
+	agg := &Aggregator{
+		cache:             cache,
+		streamManager:     stubStreamManager{}, // HasHost == true
+		aggregateInterval: time.Second,
+		hostProcReader:    NewHostProcReader(),
+		cascade:           persistence.NewCascade(tiers, make(chan persistence.WriteJob, 64)),
+	}
+	agg.aggregate()
+
+	if agg.cascade.StateSize() != 0 {
+		t.Errorf("cascade state size=%d, want 0 (Docker host output must not be re-ingested)", agg.cascade.StateSize())
+	}
+}

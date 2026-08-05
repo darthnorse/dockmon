@@ -30,6 +30,19 @@ export function useMetricCapabilities(enabled = true) {
   })
 }
 
+/**
+ * Whether a rule's capability warning applies at all. An event-driven kind
+ * carries no metric, but the form keeps the previous one on formData and the
+ * submit path drops it - so this must drop it too.
+ */
+export function isHostMetricRule(
+  scope: string,
+  requiresMetric: boolean,
+  metric: string | undefined,
+): boolean {
+  return scope === 'host' && requiresMetric && !!metric
+}
+
 /** A host as the rule form knows it - only the fields the warning depends on. */
 export interface TargetedHost {
   id: string

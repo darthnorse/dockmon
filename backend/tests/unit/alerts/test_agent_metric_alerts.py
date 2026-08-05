@@ -182,16 +182,31 @@ def test_rfc3339_timestamp_variants_parse(timestamp, expected):
     assert parse_stats_timestamp(timestamp) == expected
 
 
-@pytest.mark.parametrize("timestamp", [
-    "not-a-time",
-    "",
-    None,
-    12345,
-    # Go's zero time in a positive-offset zone overflows on UTC conversion.
-    "0001-01-01T00:00:00+01:00",
-])
+@pytest.mark.parametrize("timestamp", ["not-a-time", "", None, 12345])
 def test_unparseable_timestamps_return_none(timestamp):
     assert parse_stats_timestamp(timestamp) is None
+
+
+# Go's zero time means "never reported". In a positive-offset zone it overflows
+# on UTC conversion; returning None there would fail open and evaluate it, while
+# the same instant written as Z ages out and is skipped - the freshness gate
+# must not depend on how the timestamp was spelled.
+@pytest.mark.parametrize("zero_time", [
+    "0001-01-01T00:00:00Z",
+    "0001-01-01T00:00:00+01:00",
+    "0001-01-01T00:00:00-01:00",
+])
+async def test_go_zero_time_is_stale_in_every_offset(db, zero_time):
+    _add_host_rule(db, metric="cpu_percent", threshold=80.0)
+    service = _service(
+        db,
+        [_host(AGENT_HOST, "agent-box")],
+        host_stats={AGENT_HOST: {"cpu_percent": 99.0, "last_update": zero_time}},
+    )
+
+    await _evaluate(service)
+
+    assert service._handle_alert_notification.await_count == 0
 
 
 async def test_fresh_timestamp_evaluates_without_a_parse_warning(db, caplog):

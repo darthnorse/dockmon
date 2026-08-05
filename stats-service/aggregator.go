@@ -82,7 +82,11 @@ func (a *Aggregator) aggregate() {
 	}
 
 	for hostID, containers := range hostContainers {
-		hostStats := a.aggregateHostStats(hostID, containers)
+		// Read the agent's sample once: checking freshness separately from
+		// building the sample lets a reading that lands in between authorize
+		// persisting the container-derived fallback.
+		agentSample := a.freshAgentSample(hostID)
+		hostStats := a.aggregateHostStats(hostID, containers, agentSample)
 
 		// Push to live dashboard cache only for hosts with a registered
 		// Docker client. Agent hosts are written exclusively by the ingest
@@ -116,7 +120,7 @@ func (a *Aggregator) aggregate() {
 			// corrupts blended cascade tiers instead of leaving gaps.
 			// An agent's own reading counts as fresh data in its own right:
 			// the evaluator alerts on it whether or not containers report.
-			if freshCount > 0 || a.freshAgentSample(hostID) != nil {
+			if freshCount > 0 || agentSample != nil {
 				a.cascade.Ingest(hostID, true, now, sampleFromHostStats(hostStats, hostNetBps))
 			}
 			for _, cs := range containers {
@@ -134,14 +138,15 @@ func (a *Aggregator) aggregate() {
 	// evaluator is still alerting on it.
 	if a.cascade != nil && settingsProvider.PersistEnabled() {
 		now := time.Now()
-		for hostID, hostStats := range a.cache.GetAllHostStats() {
+		for hostID := range a.cache.GetAllHostStats() {
 			if _, grouped := hostContainers[hostID]; grouped {
 				continue
 			}
-			if a.freshAgentSample(hostID) == nil {
+			agentSample := a.freshAgentSample(hostID)
+			if agentSample == nil {
 				continue
 			}
-			a.cascade.Ingest(hostID, true, now, sampleFromHostStats(hostStats, 0))
+			a.cascade.Ingest(hostID, true, now, sampleFromHostStats(agentSample, 0))
 		}
 	}
 }
@@ -168,7 +173,9 @@ func (a *Aggregator) freshAgentSample(hostID string) *HostStats {
 }
 
 // aggregateHostStats aggregates stats for a single host
-func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerStats) *HostStats {
+// agentSample is the host's own reading when it is agent-owned and fresh, read
+// once by the caller so freshness and the persisted values cannot disagree.
+func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerStats, agentSample *HostStats) *HostStats {
 	var (
 		totalNetRx      uint64
 		totalNetTx      uint64
@@ -227,15 +234,15 @@ func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerSt
 	}
 
 	// Agent-owned host: use the ingest handler's real /proc reading so history
-	// matches what the evaluator alerts on. Falling through (no /host/proc
-	// mount) is fine — the evaluator has no host data for that host either.
-	if agentStats := a.freshAgentSample(hostID); agentStats != nil {
+	// matches what the evaluator alerts on. A nil sample (no /host/proc mount)
+	// falls through — the evaluator has no host data for that host either.
+	if agentSample != nil {
 		return &HostStats{
 			HostID:           hostID,
-			CPUPercent:       agentStats.CPUPercent,
-			MemoryPercent:    agentStats.MemoryPercent,
-			MemoryUsedBytes:  agentStats.MemoryUsedBytes,
-			MemoryLimitBytes: agentStats.MemoryLimitBytes,
+			CPUPercent:       agentSample.CPUPercent,
+			MemoryPercent:    agentSample.MemoryPercent,
+			MemoryUsedBytes:  agentSample.MemoryUsedBytes,
+			MemoryLimitBytes: agentSample.MemoryLimitBytes,
 			NetworkRxBytes:   totalNetRx,
 			NetworkTxBytes:   totalNetTx,
 			ContainerCount:   validContainers,

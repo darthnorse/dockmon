@@ -76,7 +76,7 @@ func TestAggregator_HostMemoryUsesDockerHostLimit(t *testing.T) {
 
 	got := agg.aggregateHostStats("host-1", []*ContainerStats{
 		cache.containerStats["host-1:aaaaaaaaaaaa"],
-	})
+	}, agg.freshAgentSample("host-1"))
 	if got.MemoryLimitBytes != hostLimit {
 		t.Fatalf("MemoryLimitBytes=%d, want Docker host limit %d", got.MemoryLimitBytes, hostLimit)
 	}
@@ -230,7 +230,7 @@ func TestAggregator_AgentHostUsesIngestedProcReading(t *testing.T) {
 		MemoryLimitBytes: 2_068_885_504,
 	})
 
-	got := agg.aggregateHostStats("agent-1", containers)
+	got := agg.aggregateHostStats("agent-1", containers, agg.freshAgentSample("agent-1"))
 
 	if got.MemoryPercent != 40.3 {
 		t.Errorf("MemoryPercent=%v, want 40.3 (the agent's reading, not the container sum)", got.MemoryPercent)
@@ -258,7 +258,7 @@ func TestAggregator_StaleAgentSampleFallsBackToAggregation(t *testing.T) {
 	// UpdateHostStats stamps LastUpdate; age it past the freshness cutoff.
 	agg.cache.hostStats["agent-1"].LastUpdate = time.Now().Add(-90 * time.Second)
 
-	got := agg.aggregateHostStats("agent-1", containers)
+	got := agg.aggregateHostStats("agent-1", containers, agg.freshAgentSample("agent-1"))
 
 	if got.MemoryPercent == 40.3 {
 		t.Error("stale agent sample was reused; history would freeze at the last reading")
@@ -271,7 +271,7 @@ func TestAggregator_StaleAgentSampleFallsBackToAggregation(t *testing.T) {
 func TestAggregator_AgentHostWithoutSampleKeepsAggregation(t *testing.T) {
 	agg, containers := agentHostFixture(t, nil)
 
-	got := agg.aggregateHostStats("agent-1", containers)
+	got := agg.aggregateHostStats("agent-1", containers, agg.freshAgentSample("agent-1"))
 
 	if got.ContainerCount != len(containers) {
 		t.Errorf("ContainerCount=%d, want %d", got.ContainerCount, len(containers))
@@ -300,7 +300,7 @@ func TestAggregator_DockerHostIgnoresHostCacheEntry(t *testing.T) {
 		hostProcReader:    NewHostProcReader(),
 	}
 
-	got := agg.aggregateHostStats("host-1", []*ContainerStats{cache.containerStats["host-1:aaaaaaaaaaaa"]})
+	got := agg.aggregateHostStats("host-1", []*ContainerStats{cache.containerStats["host-1:aaaaaaaaaaaa"]}, agg.freshAgentSample("host-1"))
 
 	if got.CPUPercent == 99.0 {
 		t.Error("Docker host read its own cached output back as input")
@@ -346,7 +346,7 @@ func TestAggregator_AgentSampleFreshWindowMatchesEvaluator(t *testing.T) {
 	// 45s: past the 30s container cutoff, inside the evaluator's 60s window.
 	agg.cache.hostStats["agent-1"].LastUpdate = time.Now().Add(-45 * time.Second)
 
-	got := agg.aggregateHostStats("agent-1", containers)
+	got := agg.aggregateHostStats("agent-1", containers, agg.freshAgentSample("agent-1"))
 
 	if got.MemoryPercent != 40.3 {
 		t.Errorf("MemoryPercent=%v, want 40.3: a 45s-old sample is still what the evaluator uses", got.MemoryPercent)

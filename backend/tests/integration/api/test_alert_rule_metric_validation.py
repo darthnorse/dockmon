@@ -227,6 +227,16 @@ class TestCreateValidation:
         assert resp.status_code == 400, resp.text
         assert "memory_percent" in resp.json()["detail"]
 
+    def test_system_scope_cannot_be_created(self, alert_client):
+        # "system" is storable so the self-diagnostic rule stays editable, but
+        # only the scope pattern keeps clients from minting new system rules.
+        resp = alert_client.post(
+            "/api/alerts/rules",
+            json=_payload(scope="system", kind="system_error", metric=None,
+                          threshold=None, operator=None),
+        )
+        assert _rejected(resp), resp.text
+
     @pytest.mark.parametrize("field", ["threshold", "clear_threshold"])
     def test_boolean_threshold_is_refused(self, alert_client, field):
         # Pydantic coerces JSON true to 1.0 for a float field, so a bool has to

@@ -6,10 +6,11 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { X, Search, Check, Bell, BellRing, Send, MessageSquare, MessageCircle, Hash, Smartphone, Mail, Globe, Users } from 'lucide-react'
+import { X, Search, Check, Bell, BellRing, Send, MessageSquare, MessageCircle, Hash, Smartphone, Mail, Globe, Users, AlertTriangle } from 'lucide-react'
 import { RemoveScroll } from 'react-remove-scroll'
 import { useCreateAlertRule, useUpdateAlertRule } from '../hooks/useAlertRules'
 import { useNotificationChannels } from '../hooks/useNotificationChannels'
+import { useMetricCapabilities, hostsMissingMetric } from '../hooks/useMetricCapabilities'
 import type { AlertRule, AlertSeverity, AlertScope, AlertRuleRequest } from '@/types/alerts'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import type { Host } from '@/types/api'
@@ -393,6 +394,22 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
 
   // Filter rule kinds based on selected scope
   const availableRuleKinds = RULE_KINDS.filter((k) => k.scopes.includes(formData.scope))
+
+  // A host-scope metric rule can only fire on hosts that report that metric.
+  // Tag-based selection is resolved server-side, so it is not checked here.
+  const isHostMetricRule = formData.scope === 'host' && !!formData.metric
+  const { data: metricCapabilities } = useMetricCapabilities(isHostMetricRule)
+  const targetedHostIds =
+    !isHostMetricRule || selectedTags.length > 0
+      ? []
+      : formData.host_selector_all
+        ? hosts.map((h) => h.id)
+        : formData.host_selector_ids
+  const hostsWithoutMetric = hostsMissingMetric(
+    metricCapabilities,
+    targetedHostIds,
+    formData.metric,
+  )
 
   // Filter hosts/containers based on search
   const filteredHosts = hosts.filter(
@@ -1040,6 +1057,28 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                   </div>
                 )}
               </div>
+
+              {hostsWithoutMetric.length > 0 && (
+                <div className="rounded-md border border-amber-600/50 bg-amber-950/30 p-3">
+                  <div className="flex gap-2">
+                    <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
+                    <div className="text-sm text-amber-200">
+                      <p>
+                        {hostsWithoutMetric.length === 1 ? 'This host is' : `${hostsWithoutMetric.length} of these hosts are`}{' '}
+                        not reporting {formData.metric?.replace(/_/g, ' ')}, so this rule cannot fire for{' '}
+                        {hostsWithoutMetric.length === 1 ? 'it' : 'them'}:{' '}
+                        <span className="font-medium">
+                          {hostsWithoutMetric.map((h) => h.host_name).join(', ')}
+                        </span>
+                      </p>
+                      <p className="mt-1 text-amber-300/80">
+                        A containerized agent needs <code className="text-amber-200">-v /proc:/host/proc:ro</code> to
+                        collect host metrics. The rule can still be saved and starts working once metrics arrive.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {selectedTags.length > 0 ? (
                 <div className="rounded-md bg-gray-900/50 border border-gray-700 p-4 text-center">

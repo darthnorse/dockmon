@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 
-from alerts.safe_regex import selector_matches
+from alerts.safe_regex import selector_value_matches
 from database import DatabaseManager, AlertRuleV2, AlertV2, RuleRuntime, RuleEvaluation
 from utils.keys import parse_composite_key
 
@@ -738,15 +738,8 @@ class AlertEngine:
 
                 # Supported keys: host_name (exact or regex), host_id (exact)
                 if 'host_name' in host_selector:
-                    pattern = host_selector['host_name']
-                    if pattern.startswith('regex:'):
-                        regex_pattern = pattern[6:]  # Remove 'regex:' prefix
-                        if not selector_matches(regex_pattern, context.host_name or ''):
-                            return False
-                    else:
-                        # Exact matching
-                        if context.host_name != pattern:
-                            return False
+                    if not selector_value_matches(host_selector['host_name'], context.host_name):
+                        return False
 
                 if 'host_id' in host_selector:
                     if context.host_id != host_selector['host_id']:
@@ -805,17 +798,12 @@ class AlertEngine:
                         if context.desired_state != 'on_demand':
                             return False
 
-                # Supported keys: container_name (exact or regex), container_id (exact), image (exact or regex)
+                # Supported keys: container_name (exact or regex), container_id (exact)
                 if 'container_name' in container_selector:
-                    pattern = container_selector['container_name']
-                    if pattern.startswith('regex:'):
-                        regex_pattern = pattern[6:]  # Remove 'regex:' prefix
-                        if not selector_matches(regex_pattern, context.container_name or ''):
-                            return False
-                    else:
-                        # Exact matching
-                        if context.container_name != pattern:
-                            return False
+                    if not selector_value_matches(
+                        container_selector['container_name'], context.container_name
+                    ):
+                        return False
 
                 if 'container_id' in container_selector:
                     if context.container_id != container_selector['container_id']:

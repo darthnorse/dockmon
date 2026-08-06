@@ -8,11 +8,8 @@ Both the evaluator's metric lookups and the API's rule validation derive from
 here, so a metric cannot be readable by one and unknown to the other - that
 mismatch is what let four container metrics be accepted and never evaluated.
 """
-import json
 import math
 from typing import Any, Dict, FrozenSet, Optional, Tuple
-
-from alerts.safe_regex import compile_selector_pattern
 
 # Metrics with a live producer, by rule scope. No group-scope evaluator exists.
 PRODUCED_METRICS_BY_SCOPE: Dict[str, FrozenSet[str]] = {
@@ -43,13 +40,6 @@ METRIC_RULE_FIELDS: FrozenSet[str] = frozenset(
     {"scope", "metric", "threshold", "clear_threshold", "operator"}
 )
 
-# Selector fields, validated independently of each other: merging them would let
-# an untouched legacy field veto a legitimate fix to the other one.
-SELECTOR_RULE_FIELDS: FrozenSet[str] = frozenset(
-    {"host_selector_json", "container_selector_json"}
-)
-
-MAX_SELECTOR_SIZE_BYTES = 10_000
 
 # (min, max) per (scope, metric); None means unbounded above.
 METRIC_RANGES: Dict[Tuple[str, str], Tuple[float, Optional[float]]] = {
@@ -99,36 +89,6 @@ def _check_number(label: str, value: Any, bounds: Tuple[float, Optional[float]])
     if high is not None and value > high:
         raise ValueError(f"{label} must be between {low} and {high}")
 
-
-def validate_selector_field(field_name: str, raw: Optional[str]) -> None:
-    """Validate one selector JSON blob, raising ValueError with the reason.
-
-    Not a security boundary - restores, migrations and direct database writes
-    bypass it. `alerts.safe_regex` is what keeps the evaluation loop bounded;
-    this only stops a bad selector at the door with a usable message.
-    """
-    if not raw:
-        return
-
-    if len(raw.encode("utf-8")) > MAX_SELECTOR_SIZE_BYTES:
-        raise ValueError(
-            f"{field_name} too large (max {MAX_SELECTOR_SIZE_BYTES} bytes)"
-        )
-
-    try:
-        selector = json.loads(raw)
-    except (json.JSONDecodeError, TypeError) as e:
-        raise ValueError(f"{field_name} is not valid JSON: {e}")
-
-    if not isinstance(selector, dict):
-        raise ValueError(f"{field_name} must be a JSON object")
-
-    for key, value in selector.items():
-        if isinstance(value, str) and value.startswith("regex:"):
-            try:
-                compile_selector_pattern(value[6:])
-            except ValueError as e:
-                raise ValueError(f"{field_name} field {key!r}: {e}")
 
 
 def validate_metric_fields(

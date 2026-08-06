@@ -5,8 +5,8 @@ Routes under test:
   PUT  /api/alerts/rules/{id}  update_alert_rule_v2
 
 Neither route validated `metric` at all, so a rule naming a metric no producer
-serves saved with a 200 and then never fired. backend/alerts/validator.py looks
-like it covers this but is imported only by its own tests.
+serves saved with a 200 and then never fired. A dead AlertRuleValidator module
+looked like it covered this but was imported only by its own tests; it has since been removed.
 
 Partial updates are the subtle half: with exclude_unset=True a PUT carries
 neither scope nor metric, so validation has to run against the stored rule

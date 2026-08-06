@@ -20,7 +20,7 @@ from sqlalchemy.orm import joinedload
 from database import DatabaseManager, AlertRuleV2, AlertV2, DockerHostDB
 from alerts.capabilities import STATS_MAX_AGE_SECONDS, sample_age_seconds
 from alerts.metrics import PRODUCED_METRICS_BY_SCOPE, is_produced
-from alerts.safe_regex import take_new_quarantines
+from alerts.safe_regex import active_quarantines
 from alerts.engine import AlertEngine, EvaluationContext
 from agent.connection_manager import agent_connection_manager
 from event_logger import EventLogger, EventContext, EventCategory, EventType, EventSeverity
@@ -942,9 +942,6 @@ class AlertEvaluationService:
                 # clears its entry and re-enabling it is announced again.
                 self._report_unservable_rules(rules)
 
-                if not rules:
-                    return
-
                 # Group rules by metric type
                 rules_by_metric: Dict[str, List[AlertRuleV2]] = {}
                 for rule in rules:
@@ -952,8 +949,9 @@ class AlertEvaluationService:
                         rules_by_metric[rule.metric] = []
                     rules_by_metric[rule.metric].append(rule)
 
-            # Fetch container stats if we have stats client
-            if self.stats_client:
+            # No early return here: selector quarantines are reported below and
+            # also arise on the event-driven path, which has no metric rules.
+            if rules_by_metric and self.stats_client:
                 await self._evaluate_container_metrics(rules_by_metric)
                 await self._evaluate_host_metrics(rules_by_metric)
 
@@ -964,18 +962,14 @@ class AlertEvaluationService:
         await self._report_cycle_failures()
 
     def _report_quarantined_selectors(self):
-        """Surface selector patterns this cycle stopped evaluating.
+        """Surface selector patterns that are currently not being evaluated.
 
-        A quarantined selector means its rules silently stop matching, so it
-        rides the same aggregated system alert as any other swallowed failure
-        rather than living only in the logs.
+        Reported every cycle they remain quarantined, not once: the rules using
+        them silently stop matching, so the aggregated alert has to stay open
+        for as long as that is true rather than auto-resolving next cycle.
         """
-        for pattern in take_new_quarantines():
-            self._record_failure(
-                "selector regex",
-                pattern,
-                ValueError("pattern could not be evaluated within its time budget"),
-            )
+        for pattern in active_quarantines():
+            self._record_failure("selector regex", pattern, error="SelectorRegexQuarantined")
 
     async def _evaluate_container_metrics(self, rules_by_metric: Dict[str, List[AlertRuleV2]]):
         """Evaluate container metric rules"""
@@ -1824,21 +1818,32 @@ class AlertEvaluationService:
             logger.error(f"Error auto-resolving orphaned container alerts: {e}", exc_info=True)
             return resolved_count
 
-    def _record_failure(self, site: str, scope: str, exc: Exception, pass_level: bool = False):
+    def _record_failure(
+        self,
+        site: str,
+        scope: str,
+        exc: Optional[Exception] = None,
+        pass_level: bool = False,
+        error: Optional[str] = None,
+    ):
         """Record a swallowed evaluation failure and log it in full.
 
         The record carries only the exception CLASS: it feeds an alert that can
         be forwarded to external notification channels, and exception text can
         carry sample contents or query parameters. The full error stays here.
 
+        `error` names a failure that has no exception behind it, so callers do
+        not have to invent one whose message would be discarded anyway.
+
         pass_level marks a failure that took out a whole sweep rather than one
         scope - the distinction an operator reads first.
         """
-        logger.error(f"Error evaluating {site} for {scope}: {exc}", exc_info=True)
+        if exc is not None:
+            logger.error(f"Error evaluating {site} for {scope}: {exc}", exc_info=True)
         self._cycle_failures.append({
             "site": site,
             "scope": scope,
-            "error": type(exc).__name__,
+            "error": error or type(exc).__name__,
             "pass_level": pass_level,
         })
 

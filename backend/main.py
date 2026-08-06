@@ -65,12 +65,8 @@ from utils.image_id import normalize_image_id
 from config.settings import AppConfig, get_cors_origins, setup_logging, HealthCheckFilter
 from models.docker_models import DockerHostConfig, DockerHost
 from models.settings_models import GlobalSettings, AlertRule, AlertRuleV2Create, AlertRuleV2Update, GlobalSettingsUpdate
-from alerts.metrics import (
-    METRIC_RULE_FIELDS,
-    SELECTOR_RULE_FIELDS,
-    validate_metric_fields,
-    validate_selector_field,
-)
+from alerts.metrics import METRIC_RULE_FIELDS, validate_metric_fields
+from alerts.safe_regex import SELECTOR_RULE_FIELDS, validate_selector_field
 from models.request_models import (
     AutoRestartRequest, DesiredStateRequest, AlertRuleCreate, AlertRuleUpdate,
     NotificationChannelCreate, NotificationChannelUpdate, EventLogFilter, BatchJobCreate,
@@ -4154,8 +4150,8 @@ async def create_alert_rule_v2(
             validate_metric_fields(
                 rule.scope, rule.metric, rule.threshold, rule.clear_threshold, rule.operator
             )
-            for field in sorted(SELECTOR_RULE_FIELDS):
-                validate_selector_field(field, getattr(rule, field))
+            validate_selector_field("host_selector_json", rule.host_selector_json)
+            validate_selector_field("container_selector_json", rule.container_selector_json)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
@@ -4271,11 +4267,11 @@ async def update_alert_rule_v2(
 
         # Each selector stands alone: merging them would let an untouched legacy
         # field block a legitimate fix to the other.
-        for field in sorted(SELECTOR_RULE_FIELDS & update_data.keys()):
-            try:
+        try:
+            for field in sorted(SELECTOR_RULE_FIELDS & update_data.keys()):
                 validate_selector_field(field, update_data[field])
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
         # Track who updated the rule
         update_data['updated_by'] = display_name

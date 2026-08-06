@@ -121,9 +121,27 @@ class TestQuarantine:
         from alerts.safe_regex import _quarantined
 
         assert len(_quarantined) <= 256
-        # Overflow must evict, not clear: wiping would make every known-bad
-        # pattern executable again and restore the N x timeout stall.
+        # Overflow must not clear: wiping would make every known-bad pattern
+        # executable again and restore the N x timeout stall.
         assert len(_quarantined) >= 256
+
+    def test_saturation_fails_closed_rather_than_evicting(self):
+        """Evicting to make room re-opens the stall.
+
+        With more bad patterns than slots, evicting the entry needed next makes
+        every pattern miss and pay a full timeout on every cycle.
+        """
+        for i in range(300):
+            selector_matches(f"(unclosed{i}", "x")
+
+        start = time.perf_counter()
+        assert selector_matches(CATASTROPHIC, CATASTROPHIC_SUBJECT) is False
+        # Refused without running, so no timeout is paid.
+        assert time.perf_counter() - start < SELECTOR_REGEX_TIMEOUT_SECONDS / 10
+
+        from alerts.safe_regex import _quarantined
+
+        assert "(unclosed0" in _quarantined
 
 
 class TestCompileExpansionBomb:
@@ -186,6 +204,19 @@ class TestCompileExpansionBomb:
 
         assert _expansion_bound(r"^web-[0-9]{1,3}$") <= MAX_REPEAT_EXPANSION
         assert _expansion_bound(COMPILE_BOMB) > MAX_REPEAT_EXPANSION
+
+    @pytest.mark.parametrize("body", ["[a-z]" * 90, "(?:a|b)" * 60])
+    def test_a_large_repeated_body_is_rejected_despite_a_small_count(self, body):
+        """Repeat counts say nothing about how much each repetition copies.
+
+        Measured: a 460-char pattern whose counts multiply to only 9000
+        allocated 281MB, because the repeated body was a character class.
+        """
+        pattern = "(?:" + body + "){9000}"
+        assert len(pattern) < MAX_PATTERN_LENGTH  # passes the length cap
+
+        with pytest.raises(ValueError, match="expands"):
+            compile_selector_pattern(pattern)
 
 
 class TestCompileValidation:

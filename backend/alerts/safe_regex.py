@@ -35,10 +35,13 @@ logger = logging.getLogger(__name__)
 SELECTOR_REGEX_TIMEOUT_SECONDS = 0.1
 MAX_PATTERN_LENGTH = 500
 
-# Conservative ceiling on compile-time expansion. Nesting multiplies, so this is
-# the product of every bounded repeat. Real name selectors land far below it:
-# ^web-[0-9]{1,3}$ is 3, ^(?:[a-z0-9]{1,20}-){1,5}[a-z0-9]{1,20}$ is 2000.
-MAX_REPEAT_EXPANSION = 10_000
+# Conservative ceiling on compile-time expansion, measured as the product of
+# every bounded repeat multiplied by the pattern's length - because what gets
+# expanded is the repeated body, not a single atom. A 460-char pattern whose
+# repeat counts multiply to only 9000 still allocated 281MB when the body was a
+# character class. Real name selectors land far below the ceiling:
+# ^web-[0-9]{1,3}$ costs 51, ^(?:[a-z0-9]{1,20}-){1,5}[a-z0-9]{1,20}$ costs 80k.
+MAX_REPEAT_EXPANSION = 200_000
 
 # How long a pattern stays quarantined before it is retried.
 QUARANTINE_TTL_SECONDS = 900
@@ -122,8 +125,8 @@ def _expansion_bound(pattern: str) -> int:
                 # {n,} leaves an open tail, which is a star: no expansion beyond n.
                 count = int(low) if high in (None, "") else int(high)
                 product *= max(count, 1)
-                if product > MAX_REPEAT_EXPANSION:
-                    return product
+                if product * len(pattern) > MAX_REPEAT_EXPANSION:
+                    return _OVER_LIMIT
                 i = match.end()
                 continue
 
@@ -133,7 +136,9 @@ def _expansion_bound(pattern: str) -> int:
         # Unbalanced '[': the scan lost track, so it cannot vouch for the rest.
         return _OVER_LIMIT
 
-    return product
+    # Length stands in for the size of whatever is being repeated: the counts
+    # alone say nothing about how much each repetition copies.
+    return product * max(len(pattern), 1)
 
 
 @lru_cache(maxsize=512)
@@ -178,13 +183,33 @@ def _is_quarantined(pattern: str) -> bool:
     return True
 
 
+def _purge_expired() -> None:
+    now = time.monotonic()
+    for pattern in [
+        p for p, at in _quarantined.items() if now - at > QUARANTINE_TTL_SECONDS
+    ]:
+        del _quarantined[pattern]
+
+
+def _is_saturated() -> bool:
+    """Whether every quarantine slot is held by a still-active entry."""
+    _purge_expired()
+    return len(_quarantined) >= MAX_QUARANTINED_PATTERNS
+
+
 def _quarantine(pattern: str, reason: str) -> None:
     if pattern in _quarantined:
         return
-    if len(_quarantined) >= MAX_QUARANTINED_PATTERNS:
-        # Evict the oldest. Clearing everything would make every known-bad
-        # pattern executable again, which is the stall this module prevents.
-        del _quarantined[next(iter(_quarantined))]
+    if _is_saturated():
+        # Do not evict an active entry to make room: with more bad patterns than
+        # slots, evicting the one needed next makes every pattern miss and pay a
+        # full timeout every cycle - the stall this module exists to prevent.
+        # Unknown patterns are refused instead, until TTLs free space.
+        logger.warning(
+            f"Selector regex quarantine is full ({MAX_QUARANTINED_PATTERNS}); "
+            f"refusing to evaluate further patterns: {pattern!r}"
+        )
+        return
     _quarantined[pattern] = time.monotonic()
     logger.warning(
         f"Selector regex quarantined ({reason}); rules using it will not match "
@@ -200,6 +225,11 @@ def selector_matches(pattern: str, subject: str) -> bool:
     evaluation service can report it rather than let the rule fail in silence.
     """
     if _is_quarantined(pattern):
+        return False
+
+    if _is_saturated():
+        # Fail closed: with every slot held, an unknown pattern cannot be
+        # evaluated without risking the per-cycle stall the quarantine bounds.
         return False
 
     try:

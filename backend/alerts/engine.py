@@ -11,12 +11,12 @@ Handles both event-driven and metric-driven alert rule evaluation with:
 
 import json
 import logging
-import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 
+from alerts.safe_regex import selector_matches
 from database import DatabaseManager, AlertRuleV2, AlertV2, RuleRuntime, RuleEvaluation
 from utils.keys import parse_composite_key
 
@@ -740,9 +740,8 @@ class AlertEngine:
                 if 'host_name' in host_selector:
                     pattern = host_selector['host_name']
                     if pattern.startswith('regex:'):
-                        # Regex matching
                         regex_pattern = pattern[6:]  # Remove 'regex:' prefix
-                        if not re.match(regex_pattern, context.host_name or ''):
+                        if not selector_matches(regex_pattern, context.host_name or ''):
                             return False
                     else:
                         # Exact matching
@@ -810,9 +809,8 @@ class AlertEngine:
                 if 'container_name' in container_selector:
                     pattern = container_selector['container_name']
                     if pattern.startswith('regex:'):
-                        # Regex matching
                         regex_pattern = pattern[6:]  # Remove 'regex:' prefix
-                        if not re.match(regex_pattern, context.container_name or ''):
+                        if not selector_matches(regex_pattern, context.container_name or ''):
                             return False
                     else:
                         # Exact matching

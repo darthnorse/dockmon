@@ -19,3 +19,4 @@ PyJWT[crypto]==2.13.0
 packaging==25.0
 python-dateutil==2.9.0.post0
 cronsim==2.7
+regex==2026.2.28

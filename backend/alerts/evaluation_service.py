@@ -20,6 +20,7 @@ from sqlalchemy.orm import joinedload
 from database import DatabaseManager, AlertRuleV2, AlertV2, DockerHostDB
 from alerts.capabilities import STATS_MAX_AGE_SECONDS, sample_age_seconds
 from alerts.metrics import PRODUCED_METRICS_BY_SCOPE, is_produced
+from alerts.safe_regex import take_new_quarantines
 from alerts.engine import AlertEngine, EvaluationContext
 from agent.connection_manager import agent_connection_manager
 from event_logger import EventLogger, EventContext, EventCategory, EventType, EventSeverity
@@ -959,7 +960,22 @@ class AlertEvaluationService:
         except Exception as e:
             self._record_failure("evaluation cycle", "alert service", e, pass_level=True)
 
+        self._report_quarantined_selectors()
         await self._report_cycle_failures()
+
+    def _report_quarantined_selectors(self):
+        """Surface selector patterns this cycle stopped evaluating.
+
+        A quarantined selector means its rules silently stop matching, so it
+        rides the same aggregated system alert as any other swallowed failure
+        rather than living only in the logs.
+        """
+        for pattern in take_new_quarantines():
+            self._record_failure(
+                "selector regex",
+                pattern,
+                ValueError("pattern could not be evaluated within its time budget"),
+            )
 
     async def _evaluate_container_metrics(self, rules_by_metric: Dict[str, List[AlertRuleV2]]):
         """Evaluate container metric rules"""

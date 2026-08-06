@@ -167,6 +167,20 @@ class TestCompileExpansionBomb:
         assert compile_selector_pattern(r"^[a{1000}]+$") is not None
         assert compile_selector_pattern(r"^a\{1000\}$") is not None
 
+    @pytest.mark.parametrize("pattern", [
+        # A '[' inside a comment used to put the scanner into character-class
+        # mode, so it skipped every repeat that followed and returned 1.
+        r"(?#[)(?:a{1000}){1000}",
+        # Verbose mode makes '#' a comment, which can hide a '[' the same way.
+        "(?x)# [\na{1000}{1000}",
+        # An unbalanced '[' means the scan lost track of the rest.
+        r"[a{1000}",
+    ])
+    def test_constructs_that_could_hide_a_repeat_are_refused(self, pattern):
+        from alerts.safe_regex import _expansion_bound
+
+        assert _expansion_bound(pattern) > MAX_REPEAT_EXPANSION
+
     def test_expansion_bound_threshold_is_enforced(self):
         from alerts.safe_regex import _expansion_bound
 

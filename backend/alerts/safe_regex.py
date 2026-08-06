@@ -62,6 +62,12 @@ _quarantined: Dict[str, float] = {}
 
 _BOUNDED_REPEAT = regex.compile(r"\{(\d+)(?:,(\d*))?\}")
 
+# An inline flag group enabling verbose mode, e.g. (?x) or (?ix:...).
+_VERBOSE_FLAG = regex.compile(r"\(\?[aiLmsux]*x[aiLmsux]*[):]")
+
+# Returned when the scan cannot account for the whole pattern.
+_OVER_LIMIT = MAX_REPEAT_EXPANSION + 1
+
 
 def _expansion_bound(pattern: str) -> int:
     """Upper bound on how many atoms compiling this pattern would expand to.
@@ -71,7 +77,16 @@ def _expansion_bound(pattern: str) -> int:
     cheaper than under-rejecting one that allocates gigabytes. Escapes and
     character classes are tracked so `\\{1000\\}` and `[a{1000}]` read as
     literals rather than repeats.
+
+    Anything that could hide a repeat from this scan is refused outright rather
+    than scanned optimistically - a `[` inside a comment would otherwise put it
+    in character-class mode and make it skip every repeat that follows.
     """
+    # Verbose mode turns unescaped `#` into a comment, which can hide a `[`.
+    # No name selector needs it.
+    if _VERBOSE_FLAG.search(pattern):
+        return _OVER_LIMIT
+
     product = 1
     i = 0
     in_class = False
@@ -93,6 +108,13 @@ def _expansion_bound(pattern: str) -> int:
             i += 1
             continue
 
+        if pattern.startswith("(?#", i):
+            end = pattern.find(")", i)
+            if end == -1:
+                return _OVER_LIMIT
+            i = end + 1
+            continue
+
         if char == "{":
             match = _BOUNDED_REPEAT.match(pattern, i)
             if match:
@@ -106,6 +128,10 @@ def _expansion_bound(pattern: str) -> int:
                 continue
 
         i += 1
+
+    if in_class:
+        # Unbalanced '[': the scan lost track, so it cannot vouch for the rest.
+        return _OVER_LIMIT
 
     return product
 

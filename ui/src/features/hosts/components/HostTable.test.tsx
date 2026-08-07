@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@/test/utils'
+import { render, screen, fireEvent } from '@/test/utils'
 import { HostTable } from './HostTable'
 import * as useHostsModule from '../hooks/useHosts'
 import type { Host } from '../hooks/useHosts'
@@ -274,6 +274,109 @@ describe('HostTable', () => {
       expect(screen.getByText('unknown-server')).toBeInTheDocument()
       // Falls back to Offline status for unknown
       expect(screen.getByText('Offline')).toBeInTheDocument()
+    })
+  })
+
+  describe('search filtering', () => {
+    it('should filter hosts by name', () => {
+      vi.mocked(useHostsModule.useHosts).mockReturnValue({
+        data: mockHosts,
+        isLoading: false,
+        error: null,
+      } as any)
+
+      render(<HostTable searchQuery="production" />)
+
+      expect(screen.getByText('production-server')).toBeInTheDocument()
+      expect(screen.queryByText('dev-server')).not.toBeInTheDocument()
+      expect(screen.queryByText('staging-server')).not.toBeInTheDocument()
+    })
+
+    it('should filter hosts by name case-insensitively', () => {
+      vi.mocked(useHostsModule.useHosts).mockReturnValue({
+        data: mockHosts,
+        isLoading: false,
+        error: null,
+      } as any)
+
+      render(<HostTable searchQuery="PRODUCTION" />)
+
+      expect(screen.getByText('production-server')).toBeInTheDocument()
+      expect(screen.queryByText('dev-server')).not.toBeInTheDocument()
+    })
+
+    it('should filter hosts by URL', () => {
+      vi.mocked(useHostsModule.useHosts).mockReturnValue({
+        data: mockHosts,
+        isLoading: false,
+        error: null,
+      } as any)
+
+      render(<HostTable searchQuery="192.168.1.101" />)
+
+      expect(screen.getByText('dev-server')).toBeInTheDocument()
+      expect(screen.queryByText('production-server')).not.toBeInTheDocument()
+      expect(screen.queryByText('staging-server')).not.toBeInTheDocument()
+    })
+
+    it('should filter hosts by tag', () => {
+      vi.mocked(useHostsModule.useHosts).mockReturnValue({
+        data: mockHosts,
+        isLoading: false,
+        error: null,
+      } as any)
+
+      render(<HostTable searchQuery="qa" />)
+
+      expect(screen.getByText('staging-server')).toBeInTheDocument()
+      expect(screen.queryByText('production-server')).not.toBeInTheDocument()
+      expect(screen.queryByText('dev-server')).not.toBeInTheDocument()
+    })
+
+    it('should show all hosts when search query is empty', () => {
+      vi.mocked(useHostsModule.useHosts).mockReturnValue({
+        data: mockHosts,
+        isLoading: false,
+        error: null,
+      } as any)
+
+      render(<HostTable searchQuery="" />)
+
+      expect(screen.getByText('production-server')).toBeInTheDocument()
+      expect(screen.getByText('dev-server')).toBeInTheDocument()
+      expect(screen.getByText('staging-server')).toBeInTheDocument()
+    })
+
+    it('should clear the selection when the search query changes', () => {
+      vi.mocked(useHostsModule.useHosts).mockReturnValue({
+        data: mockHosts,
+        isLoading: false,
+        error: null,
+      } as any)
+
+      const { rerender } = render(<HostTable searchQuery="" />)
+
+      // Select one host, then narrow the search so it is no longer visible.
+      fireEvent.click(screen.getAllByRole('checkbox')[1])
+      expect(screen.getByText('1 host selected')).toBeInTheDocument()
+
+      rerender(<HostTable searchQuery="staging" />)
+
+      // Bulk actions must not keep acting on a host the query has hidden.
+      expect(screen.queryByText('1 host selected')).not.toBeInTheDocument()
+    })
+
+    it('should show a no-match message when search yields no results', () => {
+      vi.mocked(useHostsModule.useHosts).mockReturnValue({
+        data: mockHosts,
+        isLoading: false,
+        error: null,
+      } as any)
+
+      render(<HostTable searchQuery="nonexistent-host" />)
+
+      expect(screen.getByText('No hosts match your search')).toBeInTheDocument()
+      expect(screen.queryByText('production-server')).not.toBeInTheDocument()
     })
   })
 

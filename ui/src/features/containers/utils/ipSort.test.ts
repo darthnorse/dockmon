@@ -25,6 +25,19 @@ describe('ipv4ToNumber', () => {
     expect(ipv4ToNumber('192.168.1.0x1')).toBeNull()
     expect(ipv4ToNumber('192.168.1. 1')).toBeNull()
     expect(ipv4ToNumber('1e2.168.1.1')).toBeNull()
+    // \d is ASCII-only, so full-width digits do not sneak through.
+    expect(ipv4ToNumber('１９２.168.1.1')).toBeNull()
+  })
+
+  // Leniency is deliberate for a comparator: a slightly non-canonical string
+  // is better sorted among its neighbours than exiled to the bottom.
+  it('tolerates surrounding whitespace', () => {
+    expect(ipv4ToNumber(' 192.168.1.1 ')).toBe(ipv4ToNumber('192.168.1.1'))
+  })
+
+  it('reads leading-zero octets as decimal, never octal', () => {
+    expect(ipv4ToNumber('010.0.0.1')).toBe(ipv4ToNumber('10.0.0.1'))
+    expect(ipv4ToNumber('192.168.001.010')).toBe(ipv4ToNumber('192.168.1.10'))
   })
 })
 

@@ -4,7 +4,13 @@
 
 const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/
 
-/** Numeric value of an IPv4 address, or null if the string is not one. */
+/** Numeric value of an IPv4 address, or null if the string is not one.
+ *
+ * Deliberately lenient about surrounding whitespace and leading zeros: this
+ * orders a list rather than validating input, and sorting 010.0.0.1 next to
+ * 10.0.0.1 serves the reader better than exiling it to the bottom. Octets are
+ * read as decimal, matching what the cell displays - never as octal.
+ */
 export function ipv4ToNumber(ip: string | null | undefined): number | null {
   if (!ip) return null
 

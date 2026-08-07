@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@/test/utils'
+import { render, screen, fireEvent } from '@/test/utils'
 import { HostTable } from './HostTable'
 import * as useHostsModule from '../hooks/useHosts'
 import type { Host } from '../hooks/useHosts'
@@ -345,6 +345,25 @@ describe('HostTable', () => {
       expect(screen.getByText('production-server')).toBeInTheDocument()
       expect(screen.getByText('dev-server')).toBeInTheDocument()
       expect(screen.getByText('staging-server')).toBeInTheDocument()
+    })
+
+    it('should clear the selection when the search query changes', () => {
+      vi.mocked(useHostsModule.useHosts).mockReturnValue({
+        data: mockHosts,
+        isLoading: false,
+        error: null,
+      } as any)
+
+      const { rerender } = render(<HostTable searchQuery="" />)
+
+      // Select one host, then narrow the search so it is no longer visible.
+      fireEvent.click(screen.getAllByRole('checkbox')[1])
+      expect(screen.getByText('1 host selected')).toBeInTheDocument()
+
+      rerender(<HostTable searchQuery="staging" />)
+
+      // Bulk actions must not keep acting on a host the query has hidden.
+      expect(screen.queryByText('1 host selected')).not.toBeInTheDocument()
     })
 
     it('should show a no-match message when search yields no results', () => {

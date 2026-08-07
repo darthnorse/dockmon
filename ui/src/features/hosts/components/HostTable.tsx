@@ -373,6 +373,12 @@ export function HostTable({ onEditHost, searchQuery = '' }: HostTableProps = {})
   // Selection state for bulk operations
   const [selectedHostIds, setSelectedHostIds] = useState<Set<string>>(new Set())
 
+  // Selection survives filtering otherwise, so the bulk action bar would act on
+  // hosts the query has hidden.
+  useEffect(() => {
+    setSelectedHostIds(new Set())
+  }, [searchQuery])
+
   const selectedHost = hosts.find(h => h.id === selectedHostId)
 
   // Selection handlers

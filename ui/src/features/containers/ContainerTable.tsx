@@ -65,6 +65,7 @@ import { BatchUpdateValidationConfirmModal } from './components/BatchUpdateValid
 import { BatchJobPanel } from './components/BatchJobPanel'
 import { ColumnCustomizationPanel } from './components/ColumnCustomizationPanel'
 import { IPAddressCell } from './components/IPAddressCell'
+import { compareIpAddresses } from './utils/ipSort'
 import type { Container } from './types'
 import { useAuth } from '@/features/auth/AuthContext'
 import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
@@ -1133,10 +1134,28 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
       // 7. IP Address (Docker network IPs)
       {
         id: 'ip',
-        header: 'IP Address',
+        // Undefined (rather than null) so sortUndefined can pin the
+        // not-connected rows last in both directions.
+        accessorFn: (row) => row.docker_ip ?? undefined,
+        sortUndefined: 'last',
+        header: ({ column }) => {
+          const sortDirection = column.getIsSorted()
+          return (
+            <Button
+              variant="ghost"
+              onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+              className="h-8 px-2 hover:bg-surface-2"
+            >
+              IP Address
+              <ArrowUpDown className={`ml-2 h-4 w-4 ${sortDirection ? 'text-primary' : 'text-muted-foreground'}`} />
+            </Button>
+          )
+        },
         cell: ({ row }) => <IPAddressCell container={row.original} />,
         size: 150,
-        enableSorting: false,
+        // Sorts on the primary IP, which is the one the cell shows first.
+        sortingFn: (rowA, rowB) =>
+          compareIpAddresses(rowA.original.docker_ip, rowB.original.docker_ip),
       },
       // 8. Ports
       {

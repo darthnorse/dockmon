@@ -40,6 +40,8 @@ import {
   Package,
   ExternalLink,
   Activity,
+  ArrowDown,
+  ArrowUp,
   Filter,
   X,
   ChevronDown,
@@ -1261,6 +1263,37 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
           return <span className="text-sm text-muted-foreground">-</span>
         },
         enableSorting: true,
+      },
+      // 9b. NETWORK (Down/Up traffic)
+      {
+        id: 'network',
+        header: 'NETWORK',
+        cell: ({ row }) => {
+          const container = row.original
+          const rx = container.network_rx
+          const tx = container.network_tx
+
+          if (rx === undefined && tx === undefined) {
+            return <span className="text-xs text-muted-foreground">-</span>
+          }
+
+          return (
+            <div
+              className="flex flex-col gap-0.5 text-xs text-muted-foreground leading-tight"
+              title={`Received: ${formatNetworkBytes(rx ?? 0)} / Sent: ${formatNetworkBytes(tx ?? 0)}`}
+              data-testid="network-io"
+            >
+              <span className="flex items-center gap-1">
+                <ArrowDown className="h-3 w-3 text-info shrink-0" />
+                {formatNetworkBytes(rx ?? 0)}
+              </span>
+              <span className="flex items-center gap-1">
+                <ArrowUp className="h-3 w-3 text-warning shrink-0" />
+                {formatNetworkBytes(tx ?? 0)}
+              </span>
+            </div>
+          )
+        },
       },
       // 10. RAM (memory usage)
       {

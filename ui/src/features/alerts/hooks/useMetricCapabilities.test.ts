@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  agentMountRemedy,
   anyAgentHost,
   hostsMissingMetric,
   isHostMetricRule,
@@ -124,5 +125,43 @@ describe('isHostMetricRule', () => {
 
   it('is not a metric rule with no metric selected', () => {
     expect(isHostMetricRule('host', true, undefined)).toBe(false)
+  })
+})
+
+describe('agentMountRemedy', () => {
+  it('names /host/proc for CPU and memory', () => {
+    expect(agentMountRemedy('cpu_percent')).toBe('-v /proc:/host/proc:ro')
+    expect(agentMountRemedy('memory_percent')).toBe('-v /proc:/host/proc:ro')
+  })
+
+  // Disk rides on the host sample, so a containerized agent needs both mounts.
+  it('names /hostfs alongside /host/proc for disk', () => {
+    expect(agentMountRemedy('disk_percent')).toBe('-v /proc:/host/proc:ro -v /:/hostfs:ro')
+  })
+})
+
+describe('disk_percent capability', () => {
+  const withDisk: MetricCapabilities = {
+    hosts: [
+      { host_id: AGENT_WITH_PROC, host_name: 'with-hostfs', metrics: ['cpu_percent', 'memory_percent', 'disk_percent'] },
+      { host_id: AGENT_WITHOUT_PROC, host_name: 'no-hostfs', metrics: ['cpu_percent', 'memory_percent'] },
+    ],
+    host_metrics: ['cpu_percent', 'disk_percent', 'memory_percent'],
+  }
+
+  it('is collected once the backend advertises it', () => {
+    expect(isCollectedHostMetric(withDisk, 'disk_percent')).toBe(true)
+  })
+
+  it('flags only the host not reporting disk', () => {
+    const flagged = hostsNeedingMetricWarning(
+      withDisk,
+      [
+        { id: AGENT_WITH_PROC, status: 'online', connection_type: 'agent' },
+        { id: AGENT_WITHOUT_PROC, status: 'online', connection_type: 'agent' },
+      ],
+      'disk_percent',
+    )
+    expect(flagged.map((h) => h.host_name)).toEqual(['no-hostfs'])
   })
 })

@@ -16,6 +16,7 @@ import {
   isCollectedHostMetric,
   isHostMetricRule,
   anyAgentHost,
+  agentMountRemedy,
 } from '../hooks/useMetricCapabilities'
 import { maxThresholdFor } from '../utils/metricBounds'
 import type { AlertRule, AlertSeverity, AlertScope, AlertRuleRequest } from '@/types/alerts'
@@ -1098,8 +1099,8 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                   </p>
                   {showProcMountRemedy && (
                     <p className="mt-1 text-amber-300/80">
-                      A containerized agent needs <code className="text-amber-200">-v /proc:/host/proc:ro</code> to
-                      collect host metrics.
+                      A containerized agent needs <code className="text-amber-200">{agentMountRemedy(formData.metric)}</code> to
+                      collect this metric.
                     </p>
                   )}
                   <p className="mt-1 text-amber-300/80">

@@ -97,11 +97,21 @@ export function hostsNeedingMetricWarning(
   return hostsMissingMetric(capabilities, online.map((h) => h.id), metric)
 }
 
-/** Whether any flagged host is an agent, so the /host/proc remedy applies. */
+/** Whether any flagged host is an agent, so the mount remedy applies. */
 export function anyAgentHost(
   flagged: HostMetricCapability[],
   targeted: TargetedHost[],
 ): boolean {
   const byId = new Map(targeted.map((h) => [h.id, h]))
   return flagged.some((host) => byId.get(host.host_id)?.connection_type === 'agent')
+}
+
+/**
+ * The bind mounts a containerized agent needs to report `metric`. Disk rides
+ * on the host sample, so it needs the host root alongside /host/proc.
+ */
+export function agentMountRemedy(metric: string | undefined): string {
+  const mounts = ['-v /proc:/host/proc:ro']
+  if (metric === 'disk_percent') mounts.push('-v /:/hostfs:ro')
+  return mounts.join(' ')
 }

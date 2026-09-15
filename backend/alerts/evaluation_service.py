@@ -148,6 +148,9 @@ class AlertEvaluationService:
         # Hosts already reported as unable to serve a host-scope rule, so the
         # warning fires once per host rather than every evaluation cycle.
         self._hosts_missing_metrics_reported: set = set()
+        # (host_id, metric) pairs already warned about: the host reports other
+        # metrics but not this one, so the host-level warning above stays quiet.
+        self._host_metric_missing_reported: set = set()
         # Same throttling for samples whose last_update cannot be parsed.
         self._bad_timestamp_reported: set = set()
         # (scope, metric) -> the rule ids already reported as unservable. Keyed
@@ -1204,14 +1207,68 @@ class AlertEvaluationService:
         metrics = sorted({rule.metric for rule in matching})
         remedy = ""
         if getattr(host, "connection_type", None) == "agent":
-            remedy = " Containerized agents need -v /proc:/host/proc:ro to collect host metrics"
-            if "disk_percent" in metrics:
-                remedy += " and -v /:/hostfs:ro for disk usage"
-            remedy += "."
+            # /host/proc carries the host sample itself, so it is needed
+            # whatever the metric; disk additionally needs the host root.
+            mounts = {self._AGENT_METRIC_MOUNTS["cpu_percent"]}
+            mounts.update(self._AGENT_METRIC_MOUNTS[m] for m in metrics if m in self._AGENT_METRIC_MOUNTS)
+            remedy = f" Containerized agents need {' '.join(sorted(mounts))} to collect host metrics."
         logger.warning(
             f"Host {host.name} reports no host metrics ({reason}); "
             f"{len(matching)} host-scope rule(s) on {', '.join(metrics)} cannot be evaluated.{remedy}"
         )
+
+    # Bind mount a containerized agent needs to report a host metric.
+    _AGENT_METRIC_MOUNTS = {
+        "cpu_percent": "-v /proc:/host/proc:ro",
+        "memory_percent": "-v /proc:/host/proc:ro",
+        "disk_percent": "-v /:/hostfs:ro",
+    }
+
+    def _report_host_missing_metrics(
+        self,
+        host,
+        stats: Dict[str, Any],
+        context: EvaluationContext,
+        rules_by_metric: Dict[str, List[AlertRuleV2]],
+    ):
+        """Warn once per (host, metric) when a fresh sample lacks a metric a
+        matching host-scope rule needs.
+
+        `_report_host_without_metrics` covers a host with no sample at all; this
+        is the per-metric gap - a host with /host/proc but no /hostfs reports
+        CPU and memory and silently never evaluates its disk rule.
+        """
+        for metric in PRODUCED_METRICS_BY_SCOPE["host"]:
+            key = (host.id, metric)
+            if stats.get(metric) is not None:
+                self._host_metric_missing_reported.discard(key)
+                continue
+            if key in self._host_metric_missing_reported:
+                continue
+
+            matching = [
+                rule for rule in rules_by_metric.get(metric, [])
+                if rule.scope == "host" and self.engine.matches_selectors(rule, context)
+            ]
+            if not matching:
+                continue
+
+            self._host_metric_missing_reported.add(key)
+            connection_type = getattr(host, "connection_type", None)
+            if connection_type == "agent":
+                remedy = (
+                    f" A containerized agent needs {self._AGENT_METRIC_MOUNTS.get(metric, '')} "
+                    f"to report it."
+                )
+            elif str(getattr(host, "url", "")).startswith("unix://"):
+                # The same test the monitor uses to register the host as local.
+                remedy = " Mount the host root at /hostfs in docker-compose.yml to report it."
+            else:
+                remedy = " Docker API hosts cannot report this metric."
+            logger.warning(
+                f"Host {host.name} reports host metrics but not {metric}; "
+                f"{len(matching)} host-scope rule(s) on it cannot be evaluated for this host.{remedy}"
+            )
 
     def _host_context(self, host) -> EvaluationContext:
         """Evaluation context for a host, including tags for selector matching."""
@@ -1239,6 +1296,9 @@ class AlertEvaluationService:
                 "host:", {f"host:{host_id}" for host_id in live_host_ids}
             )
             self._hosts_missing_metrics_reported.intersection_update(live_host_ids)
+            self._host_metric_missing_reported = {
+                key for key in self._host_metric_missing_reported if key[0] in live_host_ids
+            }
 
             if not hosts:
                 logger.debug("No hosts available")
@@ -1265,9 +1325,9 @@ class AlertEvaluationService:
 
                     self._hosts_missing_metrics_reported.discard(host.id)
 
-                    await self._evaluate_host_stats(
-                        host_stats, self._host_context(host), rules_by_metric
-                    )
+                    context = self._host_context(host)
+                    self._report_host_missing_metrics(host, host_stats, context, rules_by_metric)
+                    await self._evaluate_host_stats(host_stats, context, rules_by_metric)
                 except Exception as e:
                     self._record_failure("host", host.name, e)
 

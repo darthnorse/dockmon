@@ -46,9 +46,9 @@ def _now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
-def _host(host_id, name, connection_type="agent"):
+def _host(host_id, name, connection_type="agent", url="agent://"):
     return types.SimpleNamespace(
-        id=host_id, name=name, connection_type=connection_type, status="online"
+        id=host_id, name=name, connection_type=connection_type, status="online", url=url
     )
 
 
@@ -231,3 +231,110 @@ async def test_missing_metrics_remedy_names_hostfs_for_disk_rules(db, caplog):
     assert len(records) == 1
     assert "/hostfs" in records[0].message
     assert "/host/proc" in records[0].message
+
+
+# --- a host that reports CPU/memory but not disk must say so, once ---
+
+async def test_host_with_cpu_but_no_disk_warns_once_naming_hostfs(db, caplog):
+    _add_production_disk_rule(db)
+    service = _service(db, [_host(REPORTING_HOST, "no-hostfs")],
+                       {REPORTING_HOST: _sample()})
+
+    with caplog.at_level(logging.WARNING):
+        await _evaluate(service)
+        first = [r for r in caplog.records if "no-hostfs" in r.message]
+        await _evaluate(service)
+        second = [r for r in caplog.records if "no-hostfs" in r.message]
+
+    assert len(first) == 1
+    assert "disk_percent" in first[0].message
+    assert "-v /:/hostfs:ro" in first[0].message
+    assert "/host/proc" not in first[0].message, "the host already has /host/proc; only the missing mount belongs in the remedy"
+    assert len(second) == 1, "warning must be throttled to once per host per metric"
+
+
+async def test_missing_metric_warning_clears_when_the_metric_arrives(db, caplog):
+    _add_production_disk_rule(db)
+    service = _service(db, [_host(REPORTING_HOST, "late-hostfs")],
+                       {REPORTING_HOST: _sample()})
+
+    with caplog.at_level(logging.WARNING):
+        await _evaluate(service)
+        service.stats_client.get_host_stats = AsyncMock(
+            return_value={REPORTING_HOST: _sample(disk_percent=10.0)})
+        await _evaluate(service)
+        service.stats_client.get_host_stats = AsyncMock(
+            return_value={REPORTING_HOST: _sample()})
+        await _evaluate(service)
+
+    assert len([r for r in caplog.records if "late-hostfs" in r.message]) == 2
+
+
+# An mTLS host can never report disk; the warning must say that rather than
+# offer a mount that does not apply.
+async def test_missing_metric_warning_for_docker_host_offers_no_mount(db, caplog):
+    _add_production_disk_rule(db)
+    service = _service(db, [_host(SILENT_HOST, "docker-box", connection_type="remote", url="tcp://10.0.0.5:2376")],
+                       {SILENT_HOST: _sample()})
+
+    with caplog.at_level(logging.WARNING):
+        await _evaluate(service)
+
+    records = [r for r in caplog.records if "docker-box" in r.message]
+    assert len(records) == 1
+    assert "hostfs" not in records[0].message
+    assert "cannot" in records[0].message
+
+
+async def test_no_missing_metric_warning_without_a_matching_rule(db, caplog):
+    with db.get_session() as session:
+        session.add(AlertRuleV2(
+            id="cpu-rule", name="cpu", kind="cpu_high", enabled=True, scope="host",
+            metric="cpu_percent", operator=">=", threshold=80.0, occurrences=1,
+            severity="warning", host_selector_json=json.dumps({"include_all": True}),
+        ))
+        session.commit()
+    service = _service(db, [_host(REPORTING_HOST, "no-hostfs")],
+                       {REPORTING_HOST: _sample()})
+
+    with caplog.at_level(logging.WARNING):
+        await _evaluate(service)
+
+    assert not [r for r in caplog.records if "no-hostfs" in r.message]
+
+
+async def test_missing_metric_warning_respects_the_rule_selector(db, caplog):
+    with db.get_session() as session:
+        session.add(AlertRuleV2(
+            id="disk-other", name="disk elsewhere", kind="disk_low", enabled=True,
+            scope="host", metric="disk_percent", operator=">=", threshold=80.0,
+            occurrences=1, severity="warning",
+            host_selector_json=json.dumps({"include": [SILENT_HOST]}),
+        ))
+        session.commit()
+    service = _service(db, [_host(REPORTING_HOST, "untargeted")],
+                       {REPORTING_HOST: _sample()})
+
+    with caplog.at_level(logging.WARNING):
+        await _evaluate(service)
+
+    assert not [r for r in caplog.records if "untargeted" in r.message]
+
+
+# The local socket host is "remote" in memory like an mTLS host; only its URL
+# tells them apart, and only the local one has a mount to offer.
+async def test_missing_metric_warning_for_local_host_names_the_compose_mount(db, caplog):
+    _add_production_disk_rule(db)
+    service = _service(
+        db,
+        [_host(SILENT_HOST, "Local Docker", connection_type="remote", url="unix:///var/run/docker.sock")],
+        {SILENT_HOST: _sample()},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        await _evaluate(service)
+
+    records = [r for r in caplog.records if "Local Docker" in r.message]
+    assert len(records) == 1
+    assert "docker-compose.yml" in records[0].message
+    assert "/hostfs" in records[0].message

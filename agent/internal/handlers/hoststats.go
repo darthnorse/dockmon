@@ -185,7 +185,7 @@ func (h *HostStatsHandler) collect(ctx context.Context) {
 // readDisk returns the host disk fields for the sample, or nil when they
 // cannot be measured. Unlike a /proc failure, a disk failure must not skip the
 // sample: that would silence host CPU and memory alerting to add disk.
-func (h *HostStatsHandler) readDisk(ctx context.Context) *statsmsg.HostDisk {
+func (h *HostStatsHandler) readDisk(ctx context.Context) *hostdisk.HostDisk {
 	if h.disk == nil {
 		return nil
 	}
@@ -193,13 +193,7 @@ func (h *HostStatsHandler) readDisk(ctx context.Context) *statsmsg.HostDisk {
 	if err != nil {
 		return nil
 	}
-	return &statsmsg.HostDisk{
-		DiskPercent:        r.Percent,
-		DiskUsedBytes:      r.UsedBytes,
-		DiskAvailableBytes: r.AvailableBytes,
-		DiskTotalBytes:     r.TotalBytes,
-		DiskSource:         r.Source,
-	}
+	return r.Wire()
 }
 
 // readCPUPercent reads /proc/stat (or /host/proc/stat) and calculates CPU usage percentage

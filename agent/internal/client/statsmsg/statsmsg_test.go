@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/darthnorse/dockmon-shared/hostdisk"
 )
 
 // A plain float64 marshals its zero value, so a host that cannot measure
@@ -21,7 +23,7 @@ func TestAgentStatsMsg_NoDiskReadingProducesNoDiskKeys(t *testing.T) {
 func TestAgentStatsMsg_GenuineZeroPercentStaysOnTheWire(t *testing.T) {
 	data, err := json.Marshal(AgentStatsMsg{
 		Type:     TypeHostStats,
-		HostDisk: &HostDisk{DiskPercent: 0, DiskUsedBytes: 0, DiskAvailableBytes: 10, DiskTotalBytes: 10, DiskSource: "/"},
+		HostDisk: &hostdisk.HostDisk{DiskPercent: 0, DiskUsedBytes: 0, DiskAvailableBytes: 10, DiskTotalBytes: 10, DiskSource: "/"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +41,7 @@ func TestAgentStatsMsg_GenuineZeroPercentStaysOnTheWire(t *testing.T) {
 func TestAgentStatsMsg_DiskFieldsAreFlatAndComplete(t *testing.T) {
 	data, err := json.Marshal(AgentStatsMsg{
 		Type:     TypeHostStats,
-		HostDisk: &HostDisk{DiskPercent: 54.7, DiskUsedBytes: 1, DiskAvailableBytes: 2, DiskTotalBytes: 4, DiskSource: "/var/lib/docker"},
+		HostDisk: &hostdisk.HostDisk{DiskPercent: 54.7, DiskUsedBytes: 1, DiskAvailableBytes: 2, DiskTotalBytes: 4, DiskSource: "/var/lib/docker"},
 	})
 	if err != nil {
 		t.Fatal(err)

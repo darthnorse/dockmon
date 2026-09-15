@@ -55,21 +55,19 @@ func NewAggregator(cache *StatsCache, streamManager *StreamManager, interval tim
 		aggregateInterval: interval,
 		hostProcReader:    hostProcReader,
 		diskProber:        diskProber,
+		diskReaders:       make(map[string]*hostdisk.Reader),
 	}
 }
 
 // localHostDisk reads the local host's disk usage, or nil when it cannot be
 // measured. Independent of /host/proc: a host with /hostfs but no /host/proc
 // still gets disk, and a disk failure never suppresses CPU and memory.
-func (a *Aggregator) localHostDisk(hostID string) *HostDisk {
+func (a *Aggregator) localHostDisk(hostID string) *hostdisk.HostDisk {
 	if a.diskProber == nil || !a.cache.IsHostLocal(hostID) {
 		return nil
 	}
 	reader, ok := a.diskReaders[hostID]
 	if !ok {
-		if a.diskReaders == nil {
-			a.diskReaders = make(map[string]*hostdisk.Reader)
-		}
 		reader = hostdisk.NewReader(a.diskProber, func(ctx context.Context) (string, error) {
 			return a.streamManager.DockerRootDir(ctx, hostID)
 		}, log.Printf)
@@ -82,7 +80,17 @@ func (a *Aggregator) localHostDisk(hostID string) *HostDisk {
 	if err != nil {
 		return nil
 	}
-	return hostDiskFromReading(reading)
+	return reading.Wire()
+}
+
+// pruneDiskReaders drops readers for hosts that are no longer local, so a
+// removed host does not leave its reader behind.
+func (a *Aggregator) pruneDiskReaders() {
+	for hostID := range a.diskReaders {
+		if !a.cache.IsHostLocal(hostID) {
+			delete(a.diskReaders, hostID)
+		}
+	}
 }
 
 // dockerInfoTimeout bounds the one-off data-root lookup so a wedged daemon
@@ -122,6 +130,7 @@ func (a *Aggregator) Start(ctx context.Context) {
 
 // aggregate calculates host-level stats from container stats
 func (a *Aggregator) aggregate() {
+	a.pruneDiskReaders()
 	containerStats := a.cache.GetAllContainerStats()
 
 	// Group containers by host

@@ -2,21 +2,31 @@ package client
 
 import (
 	"context"
+	"time"
 
 	"github.com/darthnorse/dockmon-agent/internal/docker"
 	"github.com/darthnorse/dockmon-shared/hostdisk"
 	"github.com/sirupsen/logrus"
 )
 
+// dataRootLookupTimeout bounds the docker info call behind the data-root
+// lookup. It runs inside the host-stats tick while the handler lock is held,
+// so a wedged daemon must not stall host CPU/memory sampling.
+const dataRootLookupTimeout = 5 * time.Second
+
 // newHostDiskReader measures the filesystem holding Docker's data-root under
 // hostRoot ("" on a systemd host, /hostfs in a container), falling back to the
 // host root. The reader itself throttles its warnings.
 func newHostDiskReader(dockerClient *docker.Client, hostRoot string, log *logrus.Logger) *hostdisk.Reader {
-	var dataRoot func(context.Context) (string, error)
-	if dockerClient != nil {
-		dataRoot = dockerClient.GetDockerRootDir
+	return hostdisk.NewReader(hostdisk.NewProber(hostRoot), boundedLookup(dockerClient.GetDockerRootDir), log.Warnf)
+}
+
+func boundedLookup(lookup func(context.Context) (string, error)) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		ctx, cancel := context.WithTimeout(ctx, dataRootLookupTimeout)
+		defer cancel()
+		return lookup(ctx)
 	}
-	return hostdisk.NewReader(hostdisk.NewProber(hostRoot), dataRoot, log.Warnf)
 }
 
 // warnIfHostRootUnmounted says once at startup why a containerized agent will

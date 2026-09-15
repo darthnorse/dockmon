@@ -429,7 +429,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
     targetedHosts,
     formData.metric,
   )
-  const showProcMountRemedy = anyAgentHost(hostsWithoutMetric, targetedHosts)
+  const showMountRemedy = anyAgentHost(hostsWithoutMetric, targetedHosts)
 
   // Filter hosts/containers based on search
   const filteredHosts = hosts.filter(
@@ -1097,7 +1097,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                       {hostsWithoutMetric.map((h) => h.host_name).join(', ')}
                     </span>
                   </p>
-                  {showProcMountRemedy && (
+                  {showMountRemedy && (
                     <p className="mt-1 text-amber-300/80">
                       A containerized agent needs <code className="text-amber-200">{agentMountRemedy(formData.metric)}</code> to
                       collect this metric.

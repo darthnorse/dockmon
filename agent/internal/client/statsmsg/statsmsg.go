@@ -6,6 +6,8 @@
 // WebSocket client, so a direct reverse import would create a cycle.
 package statsmsg
 
+import "github.com/darthnorse/dockmon-shared/hostdisk"
+
 // Message types carried in AgentStatsMsg.Type. A stats-service predating the
 // typed format ignores the field and drops host samples on their empty
 // container_id, so adding it is backward-compatible in both directions.
@@ -38,19 +40,7 @@ type AgentStatsMsg struct {
 	MemoryUsedBytes  uint64 `json:"memory_used_bytes,omitempty"`
 	MemoryLimitBytes uint64 `json:"memory_limit_bytes,omitempty"`
 
-	*HostDisk
-}
-
-// HostDisk is the host filesystem reading on a host-stats sample. It is
-// embedded as a pointer so a host that cannot measure disk sends none of the
-// keys: a plain float64 would marshal 0% and read as an empty disk, while a
-// genuine 0% still serializes. The five fields travel together or not at all.
-type HostDisk struct {
-	DiskPercent        float64 `json:"disk_percent"`
-	DiskUsedBytes      uint64  `json:"disk_used_bytes"`
-	DiskAvailableBytes uint64  `json:"disk_available_bytes"`
-	DiskTotalBytes     uint64  `json:"disk_total_bytes"`
-	// DiskSource is the logical host path measured (Docker's data-root, or
-	// "/" when that fell back), so an operator can tell which disk it is.
-	DiskSource string `json:"disk_source"`
+	// Nil when the host could not measure disk, so none of the disk_* keys
+	// reach the wire; a genuine 0% still serializes.
+	*hostdisk.HostDisk
 }

@@ -27,7 +27,7 @@ func TestHostStats_NoDiskReadingProducesNoDiskKeys(t *testing.T) {
 }
 
 func TestHostStats_GenuineZeroPercentSerializes(t *testing.T) {
-	data, err := json.Marshal(&HostStats{HostID: "h", HostDisk: &HostDisk{DiskSource: "/"}})
+	data, err := json.Marshal(&HostStats{HostID: "h", HostDisk: &hostdisk.HostDisk{DiskSource: "/"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,6 +126,7 @@ func localHostFixture(t *testing.T, hostProc *HostProcReader, prober *hostdisk.P
 		aggregateInterval: time.Second,
 		hostProcReader:    hostProc,
 		diskProber:        prober,
+		diskReaders:       make(map[string]*hostdisk.Reader),
 	}
 }
 
@@ -140,6 +141,9 @@ func localContainers(agg *Aggregator) []*ContainerStats {
 func TestAggregator_LocalHostDiskMeasuresDataRootAndRidesOnHostProcBranch(t *testing.T) {
 	fs := &fakeHostFS{stats: map[string]hostdisk.Statfs{}}
 	prober, hostRoot := newTestDiskProber(t, true, fs)
+	if err := os.MkdirAll(filepath.Join(hostRoot, "var/lib/docker"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	fs.stats[filepath.Join(hostRoot, "var/lib/docker")] = testDataRootFS
 	fs.stats[hostRoot] = testHostRootFS
 	agg := localHostFixture(t, newTestHostProcReader(t), prober, localHostStreamManager{dataRoot: "/var/lib/docker"})
@@ -262,5 +266,24 @@ func TestAggregator_StaleDiskIsClearedFromTheCache(t *testing.T) {
 	}
 	if second.MemoryLimitBytes == 0 {
 		t.Error("CPU/memory were dropped along with disk")
+	}
+}
+
+func TestAggregator_DropsDiskReaderWhenHostStopsBeingLocal(t *testing.T) {
+	fs := &fakeHostFS{stats: map[string]hostdisk.Statfs{}}
+	prober, hostRoot := newTestDiskProber(t, true, fs)
+	fs.stats[hostRoot] = testHostRootFS
+	agg := localHostFixture(t, newTestHostProcReader(t), prober, localHostStreamManager{dataRoot: "/var/lib/docker"})
+
+	agg.aggregate()
+	if _, ok := agg.diskReaders["local-1"]; !ok {
+		t.Fatal("no reader created for the local host")
+	}
+
+	agg.cache.RemoveHostStats("local-1")
+	agg.aggregate()
+
+	if _, ok := agg.diskReaders["local-1"]; ok {
+		t.Error("reader for a removed host was kept")
 	}
 }

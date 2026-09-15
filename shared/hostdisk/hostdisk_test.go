@@ -3,6 +3,7 @@ package hostdisk
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // Real numbers from this machine's root filesystem on 2026-09-15: df said
@@ -247,6 +249,21 @@ var (
 	hostRootFS = Statfs{Blocks: 1000, Bfree: 800, Bavail: 700, Bsize: 4096}
 )
 
+// newHostRoot builds a fake host root on disk containing the given host paths
+// (directories) and returns it with a mountinfo naming it as a mount point.
+func newHostRoot(t *testing.T, dirs ...string) (hostRoot, mountinfo string) {
+	t.Helper()
+	hostRoot = filepath.Join(t.TempDir(), "hostfs")
+	for _, d := range append([]string{"/"}, dirs...) {
+		if err := os.MkdirAll(filepath.Join(hostRoot, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mountinfo = "29 1 0:45 / / rw,relatime - overlay overlay rw\n" +
+		"30 29 8:1 / " + hostRoot + " ro,relatime - ext4 /dev/sda1 rw\n"
+	return hostRoot, mountinfo
+}
+
 func newProber(t *testing.T, hostRoot string, fs *fakeFS, mountinfo string) *Prober {
 	t.Helper()
 	p := NewProber(hostRoot)
@@ -256,11 +273,12 @@ func newProber(t *testing.T, hostRoot string, fs *fakeFS, mountinfo string) *Pro
 }
 
 func TestProber_ContainerModeMeasuresDataRootUnderHostfs(t *testing.T) {
+	hostRoot, mountinfo := newHostRoot(t, "/var/lib/docker")
 	fs := &fakeFS{stats: map[string]Statfs{
-		"/hostfs/var/lib/docker": dataRootFS,
-		"/hostfs":                hostRootFS,
+		filepath.Join(hostRoot, "var/lib/docker"): dataRootFS,
+		hostRoot: hostRootFS,
 	}}
-	p := newProber(t, "/hostfs", fs, mountinfoWithHostfs)
+	p := newProber(t, hostRoot, fs, mountinfo)
 
 	r, err := p.Probe("/var/lib/docker")
 	if err != nil {
@@ -272,32 +290,34 @@ func TestProber_ContainerModeMeasuresDataRootUnderHostfs(t *testing.T) {
 	if r.Source != "/var/lib/docker" {
 		t.Errorf("Source=%q, want the logical host path /var/lib/docker, never the probe path", r.Source)
 	}
-	if len(fs.calls) == 0 || fs.calls[0] != "/hostfs/var/lib/docker" {
-		t.Errorf("statfs calls=%v, want the first under /hostfs", fs.calls)
+	if len(fs.calls) == 0 || fs.calls[0] != filepath.Join(hostRoot, "var/lib/docker") {
+		t.Errorf("statfs calls=%v, want the first under the host root", fs.calls)
 	}
 }
 
 func TestProber_SystemdModeUsesDirectPath(t *testing.T) {
+	dataRoot := t.TempDir()
 	fs := &fakeFS{stats: map[string]Statfs{
-		"/var/lib/docker": dataRootFS,
-		"/":               hostRootFS,
+		dataRoot: dataRootFS,
+		"/":      hostRootFS,
 	}}
 	p := NewProber("")
 	p.Statfs = fs.statfs
 	p.MountinfoPath = filepath.Join(t.TempDir(), "never-read")
 
-	r, err := p.Probe("/var/lib/docker")
+	r, err := p.Probe(dataRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Source != "/var/lib/docker" || r.TotalBytes != 2000*4096 {
+	if r.Source != dataRoot || r.TotalBytes != 2000*4096 {
 		t.Errorf("got %+v, want the data-root reading via the direct path", r)
 	}
 }
 
 func TestProber_MissingDataRootFallsBackToHostRootAndSaysSo(t *testing.T) {
-	fs := &fakeFS{stats: map[string]Statfs{"/hostfs": hostRootFS}}
-	p := newProber(t, "/hostfs", fs, mountinfoWithHostfs)
+	hostRoot, mountinfo := newHostRoot(t)
+	fs := &fakeFS{stats: map[string]Statfs{hostRoot: hostRootFS}}
+	p := newProber(t, hostRoot, fs, mountinfo)
 
 	r, err := p.Probe("/mnt/remote/docker")
 	if err != nil {
@@ -311,9 +331,93 @@ func TestProber_MissingDataRootFallsBackToHostRootAndSaysSo(t *testing.T) {
 	}
 }
 
+// The common way to move Docker to a bigger disk is an absolute symlink at
+// /var/lib/docker. Under /hostfs the kernel would resolve that target against
+// the container's root, so it has to be re-rooted onto the host view.
+func TestProber_AbsoluteSymlinkedDataRootResolvesUnderHostRoot(t *testing.T) {
+	hostRoot, mountinfo := newHostRoot(t, "/var/lib", "/mnt/bigdisk/docker")
+	if err := os.Symlink("/mnt/bigdisk/docker", filepath.Join(hostRoot, "var/lib/docker")); err != nil {
+		t.Fatal(err)
+	}
+	fs := &fakeFS{stats: map[string]Statfs{
+		filepath.Join(hostRoot, "mnt/bigdisk/docker"): dataRootFS,
+		hostRoot: hostRootFS,
+	}}
+	p := newProber(t, hostRoot, fs, mountinfo)
+
+	r, err := p.Probe("/var/lib/docker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.TotalBytes != 2000*4096 {
+		t.Errorf("TotalBytes=%d, want the symlink target's filesystem (%d); Source=%q", r.TotalBytes, 2000*4096, r.Source)
+	}
+	if r.Source != "/var/lib/docker" {
+		t.Errorf("Source=%q, want the data-root as Docker names it", r.Source)
+	}
+	for _, c := range fs.calls {
+		if !strings.HasPrefix(c, hostRoot) {
+			t.Errorf("statfs escaped the host root: %v", fs.calls)
+		}
+	}
+}
+
+func TestProber_RelativeSymlinkInDataRootPathIsFollowed(t *testing.T) {
+	hostRoot, mountinfo := newHostRoot(t, "/var/lib", "/var/docker-data")
+	if err := os.Symlink("../docker-data", filepath.Join(hostRoot, "var/lib/docker")); err != nil {
+		t.Fatal(err)
+	}
+	fs := &fakeFS{stats: map[string]Statfs{
+		filepath.Join(hostRoot, "var/docker-data"): dataRootFS,
+		hostRoot: hostRootFS,
+	}}
+	p := newProber(t, hostRoot, fs, mountinfo)
+
+	r, err := p.Probe("/var/lib/docker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.TotalBytes != 2000*4096 {
+		t.Errorf("TotalBytes=%d, want the symlink target's filesystem", r.TotalBytes)
+	}
+}
+
+func TestProber_SymlinkLoopFallsBackToHostRoot(t *testing.T) {
+	hostRoot, mountinfo := newHostRoot(t, "/var/lib")
+	if err := os.Symlink("/var/lib/docker", filepath.Join(hostRoot, "var/lib/docker")); err != nil {
+		t.Fatal(err)
+	}
+	fs := &fakeFS{stats: map[string]Statfs{hostRoot: hostRootFS}}
+	p := newProber(t, hostRoot, fs, mountinfo)
+
+	r, err := p.Probe("/var/lib/docker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Source != "/" {
+		t.Errorf("Source=%q, want / after a symlink loop", r.Source)
+	}
+}
+
+func TestProber_DotDotInDataRootCannotClimbAboveHostRoot(t *testing.T) {
+	hostRoot, mountinfo := newHostRoot(t)
+	fs := &fakeFS{stats: map[string]Statfs{hostRoot: hostRootFS}}
+	p := newProber(t, hostRoot, fs, mountinfo)
+
+	if _, err := p.Probe("/../../etc"); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range fs.calls {
+		if !strings.HasPrefix(c, hostRoot) {
+			t.Errorf("statfs escaped the host root: %v", fs.calls)
+		}
+	}
+}
+
 func TestProber_EmptyDataRootMeasuresHostRoot(t *testing.T) {
-	fs := &fakeFS{stats: map[string]Statfs{"/hostfs": hostRootFS}}
-	p := newProber(t, "/hostfs", fs, mountinfoWithHostfs)
+	hostRoot, mountinfo := newHostRoot(t)
+	fs := &fakeFS{stats: map[string]Statfs{hostRoot: hostRootFS}}
+	p := newProber(t, hostRoot, fs, mountinfo)
 
 	r, err := p.Probe("")
 	if err != nil {
@@ -325,8 +429,9 @@ func TestProber_EmptyDataRootMeasuresHostRoot(t *testing.T) {
 }
 
 func TestProber_RelativeDataRootIsIgnored(t *testing.T) {
-	fs := &fakeFS{stats: map[string]Statfs{"/hostfs": hostRootFS}}
-	p := newProber(t, "/hostfs", fs, mountinfoWithHostfs)
+	hostRoot, mountinfo := newHostRoot(t, "/var/lib/docker")
+	fs := &fakeFS{stats: map[string]Statfs{hostRoot: hostRootFS}}
+	p := newProber(t, hostRoot, fs, mountinfo)
 
 	r, err := p.Probe("var/lib/docker")
 	if err != nil {
@@ -345,11 +450,12 @@ func TestProber_RelativeDataRootIsIgnored(t *testing.T) {
 // The trap this phase exists for: a bare `mkdir /hostfs` makes Statfs
 // succeed and report the container's own overlay as the host's disk.
 func TestProber_HostfsDirectoryThatIsNotAMountYieldsNothing(t *testing.T) {
+	hostRoot, _ := newHostRoot(t, "/var/lib/docker")
 	fs := &fakeFS{stats: map[string]Statfs{
-		"/hostfs":                {Blocks: 1000, Bfree: 800, Bavail: 700, Bsize: 4096},
-		"/hostfs/var/lib/docker": {Blocks: 1000, Bfree: 800, Bavail: 700, Bsize: 4096},
+		hostRoot: {Blocks: 1000, Bfree: 800, Bavail: 700, Bsize: 4096},
+		filepath.Join(hostRoot, "var/lib/docker"): {Blocks: 1000, Bfree: 800, Bavail: 700, Bsize: 4096},
 	}}
-	p := newProber(t, "/hostfs", fs, mountinfoWithoutHostfs)
+	p := newProber(t, hostRoot, fs, mountinfoWithoutHostfs)
 
 	r, err := p.Probe("/var/lib/docker")
 	if err == nil {
@@ -364,8 +470,9 @@ func TestProber_HostfsDirectoryThatIsNotAMountYieldsNothing(t *testing.T) {
 }
 
 func TestProber_UnreadableMountinfoFailsClosed(t *testing.T) {
-	fs := &fakeFS{stats: map[string]Statfs{"/hostfs": hostRootFS}}
-	p := NewProber("/hostfs")
+	hostRoot, _ := newHostRoot(t)
+	fs := &fakeFS{stats: map[string]Statfs{hostRoot: hostRootFS}}
+	p := NewProber(hostRoot)
 	p.Statfs = fs.statfs
 	p.MountinfoPath = filepath.Join(t.TempDir(), "missing")
 
@@ -375,8 +482,9 @@ func TestProber_UnreadableMountinfoFailsClosed(t *testing.T) {
 }
 
 func TestProber_HostRootStatfsErrorIsReturned(t *testing.T) {
+	hostRoot, mountinfo := newHostRoot(t)
 	fs := &fakeFS{stats: map[string]Statfs{}}
-	p := newProber(t, "/hostfs", fs, mountinfoWithHostfs)
+	p := newProber(t, hostRoot, fs, mountinfo)
 
 	if _, err := p.Probe("/var/lib/docker"); err == nil {
 		t.Fatal("Probe succeeded with no measurable filesystem")
@@ -384,11 +492,12 @@ func TestProber_HostRootStatfsErrorIsReturned(t *testing.T) {
 }
 
 func TestProber_InconsistentDataRootFallsBackToHostRoot(t *testing.T) {
+	hostRoot, mountinfo := newHostRoot(t, "/var/lib/docker")
 	fs := &fakeFS{stats: map[string]Statfs{
-		"/hostfs/var/lib/docker": {Blocks: 0},
-		"/hostfs":                hostRootFS,
+		filepath.Join(hostRoot, "var/lib/docker"): {Blocks: 0},
+		hostRoot: hostRootFS,
 	}}
-	p := newProber(t, "/hostfs", fs, mountinfoWithHostfs)
+	p := newProber(t, hostRoot, fs, mountinfo)
 
 	r, err := p.Probe("/var/lib/docker")
 	if err != nil {
@@ -402,11 +511,12 @@ func TestProber_InconsistentDataRootFallsBackToHostRoot(t *testing.T) {
 // --- Reader ---
 
 func TestReader_ResolvesDataRootOnceAndRetriesAfterFailure(t *testing.T) {
+	hostRoot, mountinfo := newHostRoot(t, "/var/lib/docker")
 	fs := &fakeFS{stats: map[string]Statfs{
-		"/hostfs/var/lib/docker": dataRootFS,
-		"/hostfs":                hostRootFS,
+		filepath.Join(hostRoot, "var/lib/docker"): dataRootFS,
+		hostRoot: hostRootFS,
 	}}
-	p := newProber(t, "/hostfs", fs, mountinfoWithHostfs)
+	p := newProber(t, hostRoot, fs, mountinfo)
 
 	resolves := 0
 	fail := true
@@ -417,6 +527,8 @@ func TestReader_ResolvesDataRootOnceAndRetriesAfterFailure(t *testing.T) {
 		}
 		return "/var/lib/docker", nil
 	}, nil)
+	clock := time.Now()
+	reader.now = func() time.Time { return clock }
 
 	r, err := reader.Read(context.Background())
 	if err != nil {
@@ -427,6 +539,7 @@ func TestReader_ResolvesDataRootOnceAndRetriesAfterFailure(t *testing.T) {
 	}
 
 	fail = false
+	clock = clock.Add(resolveRetryInterval + time.Second)
 	for i := 0; i < 3; i++ {
 		r, err = reader.Read(context.Background())
 		if err != nil {
@@ -441,9 +554,90 @@ func TestReader_ResolvesDataRootOnceAndRetriesAfterFailure(t *testing.T) {
 	}
 }
 
+// A slow-but-alive daemon must not be asked again on every sampling tick: the
+// lookup runs synchronously in the caller's loop.
+func TestReader_BacksOffDataRootResolutionAfterFailure(t *testing.T) {
+	hostRoot, mountinfo := newHostRoot(t)
+	fs := &fakeFS{stats: map[string]Statfs{hostRoot: hostRootFS}}
+	p := newProber(t, hostRoot, fs, mountinfo)
+
+	resolves := 0
+	reader := NewReader(p, func(context.Context) (string, error) {
+		resolves++
+		return "", errors.New("daemon slow")
+	}, nil)
+	clock := time.Now()
+	reader.now = func() time.Time { return clock }
+
+	for i := 0; i < 5; i++ {
+		if _, err := reader.Read(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if resolves != 1 {
+		t.Fatalf("resolver called %d times within the backoff window, want 1", resolves)
+	}
+
+	clock = clock.Add(resolveRetryInterval + time.Second)
+	if _, err := reader.Read(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if resolves != 2 {
+		t.Errorf("resolver called %d times after the window, want 2", resolves)
+	}
+}
+
+// Falling back from a resolved data-root to the host root is a different disk
+// than the operator asked about; it must be said once, not silently.
+func TestReader_WarnsOnceWhenDataRootFallsBackToHostRoot(t *testing.T) {
+	hostRoot, mountinfo := newHostRoot(t)
+	fs := &fakeFS{stats: map[string]Statfs{hostRoot: hostRootFS}}
+	p := newProber(t, hostRoot, fs, mountinfo)
+
+	var warnings []string
+	reader := NewReader(p, func(context.Context) (string, error) {
+		return "/mnt/remote/docker", nil
+	}, func(format string, args ...interface{}) {
+		warnings = append(warnings, fmt.Sprintf(format, args...))
+	})
+
+	for i := 0; i < 3; i++ {
+		r, err := reader.Read(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.Source != "/" {
+			t.Fatalf("Source=%q, want /", r.Source)
+		}
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warned %d times, want 1: %v", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], "/mnt/remote/docker") {
+		t.Errorf("warning does not name the data-root: %q", warnings[0])
+	}
+
+	// The data-root becomes measurable: the next fallback must warn again.
+	if err := os.MkdirAll(filepath.Join(hostRoot, "mnt/remote/docker"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fs.stats[filepath.Join(hostRoot, "mnt/remote/docker")] = dataRootFS
+	if r, err := reader.Read(context.Background()); err != nil || r.Source != "/mnt/remote/docker" {
+		t.Fatalf("r=%+v err=%v, want the data-root reading", r, err)
+	}
+	delete(fs.stats, filepath.Join(hostRoot, "mnt/remote/docker"))
+	if _, err := reader.Read(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 2 {
+		t.Errorf("fallback after recovery was not re-announced: %v", warnings)
+	}
+}
+
 func TestReader_NilDataRootResolverMeasuresHostRoot(t *testing.T) {
-	fs := &fakeFS{stats: map[string]Statfs{"/hostfs": hostRootFS}}
-	p := newProber(t, "/hostfs", fs, mountinfoWithHostfs)
+	hostRoot, mountinfo := newHostRoot(t)
+	fs := &fakeFS{stats: map[string]Statfs{hostRoot: hostRootFS}}
+	p := newProber(t, hostRoot, fs, mountinfo)
 	reader := NewReader(p, nil, nil)
 
 	r, err := reader.Read(context.Background())
@@ -458,8 +652,9 @@ func TestReader_NilDataRootResolverMeasuresHostRoot(t *testing.T) {
 // A persistent failure must not log every sampling interval, and recovery
 // must be announced.
 func TestReader_WarnsOnceUntilTheErrorChanges(t *testing.T) {
+	hostRoot, mountinfo := newHostRoot(t)
 	fs := &fakeFS{stats: map[string]Statfs{}}
-	p := newProber(t, "/hostfs", fs, mountinfoWithoutHostfs)
+	p := newProber(t, hostRoot, fs, mountinfoWithoutHostfs)
 
 	var warnings []string
 	reader := NewReader(p, nil, func(format string, args ...interface{}) {
@@ -475,12 +670,22 @@ func TestReader_WarnsOnceUntilTheErrorChanges(t *testing.T) {
 		t.Fatalf("warned %d times for one unchanged failure, want 1: %v", len(warnings), warnings)
 	}
 
-	p.MountinfoPath = writeMountinfo(t, mountinfoWithHostfs)
-	fs.stats["/hostfs"] = hostRootFS
+	p.MountinfoPath = writeMountinfo(t, mountinfo)
+	fs.stats[hostRoot] = hostRootFS
 	if _, err := reader.Read(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if len(warnings) != 2 {
 		t.Fatalf("recovery was not announced: %v", warnings)
+	}
+}
+
+// --- wire struct ---
+
+func TestReading_WireCarriesEveryField(t *testing.T) {
+	r := Reading{Percent: 54.7, UsedBytes: 1, AvailableBytes: 2, TotalBytes: 4, Source: "/var/lib/docker"}
+	w := r.Wire()
+	if w.DiskPercent != 54.7 || w.DiskUsedBytes != 1 || w.DiskAvailableBytes != 2 || w.DiskTotalBytes != 4 || w.DiskSource != "/var/lib/docker" {
+		t.Errorf("Wire()=%+v, want every Reading field copied", *w)
 	}
 }

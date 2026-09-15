@@ -3,6 +3,8 @@ package compose
 import (
 	"strings"
 	"testing"
+
+	"github.com/darthnorse/dockmon-shared/mountinfo"
 )
 
 func TestParseMountInfoLine(t *testing.T) {
@@ -88,7 +90,7 @@ func TestParseMountInfoLine(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			root, mnt, ok := parseMountInfoLine(tc.line)
+			root, mnt, ok := mountinfo.ParseLine(tc.line)
 			if ok != tc.wantOK {
 				t.Fatalf("ok=%v, want %v", ok, tc.wantOK)
 			}

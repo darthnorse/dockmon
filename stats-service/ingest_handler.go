@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/darthnorse/dockmon-shared/hostdisk"
 	"github.com/dockmon/stats-service/persistence"
 	"github.com/gorilla/websocket"
 )
@@ -83,12 +84,12 @@ type agentStatsMsg struct {
 // hostDisk returns the message's disk reading only when all five fields are
 // present. A partial set is dropped: filling the gaps with zeros would turn
 // it into a plausible measurement.
-func (m *agentStatsMsg) hostDisk() *HostDisk {
+func (m *agentStatsMsg) hostDisk() *hostdisk.HostDisk {
 	if m.DiskPercent == nil || m.DiskUsedBytes == nil || m.DiskAvailableBytes == nil ||
 		m.DiskTotalBytes == nil || m.DiskSource == nil {
 		return nil
 	}
-	return &HostDisk{
+	return &hostdisk.HostDisk{
 		DiskPercent:        *m.DiskPercent,
 		DiskUsedBytes:      *m.DiskUsedBytes,
 		DiskAvailableBytes: *m.DiskAvailableBytes,

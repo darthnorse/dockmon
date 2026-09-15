@@ -11,9 +11,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/darthnorse/dockmon-shared/mountinfo"
 )
 
 // DefaultHostRoot is where a containerized process expects the host root
@@ -57,6 +59,29 @@ type Reading struct {
 	Source string
 }
 
+// HostDisk is the wire and cache form of a Reading: the five fields the
+// stats-service ingests and the alert evaluator reads. Embed it as a pointer
+// so a sample without a reading carries none of the keys; a value-typed zero
+// would marshal as 0% used and read as an empty disk.
+type HostDisk struct {
+	DiskPercent        float64 `json:"disk_percent"`
+	DiskUsedBytes      uint64  `json:"disk_used_bytes"`
+	DiskAvailableBytes uint64  `json:"disk_available_bytes"`
+	DiskTotalBytes     uint64  `json:"disk_total_bytes"`
+	DiskSource         string  `json:"disk_source"`
+}
+
+// Wire converts the reading to its wire form.
+func (r Reading) Wire() *HostDisk {
+	return &HostDisk{
+		DiskPercent:        r.Percent,
+		DiskUsedBytes:      r.UsedBytes,
+		DiskAvailableBytes: r.AvailableBytes,
+		DiskTotalBytes:     r.TotalBytes,
+		DiskSource:         r.Source,
+	}
+}
+
 // Compute derives a Reading from raw statfs counters.
 func Compute(s Statfs) (Reading, error) {
 	unit := s.Frsize
@@ -82,9 +107,8 @@ func Compute(s Statfs) (Reading, error) {
 		return Reading{}, fmt.Errorf("%w: no space usable by a non-root writer", ErrInvalidStatfs)
 	}
 
-	pct := float64(usedBlocks) / float64(denominator) * 100
 	return Reading{
-		Percent:        math.Min(100, math.Max(0, pct)),
+		Percent:        float64(usedBlocks) / float64(denominator) * 100,
 		UsedBytes:      usedBlocks * unit,
 		AvailableBytes: s.Bavail * unit,
 		TotalBytes:     s.Blocks * unit,
@@ -123,18 +147,25 @@ func (p *Prober) HostRootMounted() (bool, error) {
 // relative, absent under the host view, or unreadable. Reading.Source says
 // which was measured.
 func (p *Prober) Probe(dataRoot string) (Reading, error) {
+	r, _, err := p.probe(dataRoot)
+	return r, err
+}
+
+// probe is Probe with the reason the data-root was not measured, for callers
+// that want to report the fallback.
+func (p *Prober) probe(dataRoot string) (r Reading, dataRootErr error, err error) {
 	mounted, err := p.HostRootMounted()
 	if err != nil {
-		return Reading{}, fmt.Errorf("verify %s mount: %w", p.HostRoot, err)
+		return Reading{}, nil, fmt.Errorf("verify %s mount: %w", p.HostRoot, err)
 	}
 	if !mounted {
-		return Reading{}, fmt.Errorf("%w: %s", ErrHostRootNotMounted, p.HostRoot)
+		return Reading{}, nil, fmt.Errorf("%w: %s", ErrHostRootNotMounted, p.HostRoot)
 	}
 
 	if dataRoot != "" && filepath.IsAbs(dataRoot) {
-		if r, err := p.measure(filepath.Join(p.HostRoot, dataRoot)); err == nil {
-			r.Source = filepath.Clean(dataRoot)
-			return r, nil
+		r, dataRootErr = p.measureDataRoot(dataRoot)
+		if dataRootErr == nil {
+			return r, nil, nil
 		}
 	}
 
@@ -142,11 +173,24 @@ func (p *Prober) Probe(dataRoot string) (Reading, error) {
 	if rootPath == "" {
 		rootPath = "/"
 	}
-	r, err := p.measure(rootPath)
+	r, err = p.measure(rootPath)
+	if err != nil {
+		return Reading{}, dataRootErr, err
+	}
+	r.Source = "/"
+	return r, dataRootErr, nil
+}
+
+func (p *Prober) measureDataRoot(dataRoot string) (Reading, error) {
+	path, err := resolveUnderRoot(p.HostRoot, dataRoot)
+	if err != nil {
+		return Reading{}, fmt.Errorf("resolve %s under %s: %w", dataRoot, p.HostRoot, err)
+	}
+	r, err := p.measure(path)
 	if err != nil {
 		return Reading{}, err
 	}
-	r.Source = "/"
+	r.Source = filepath.Clean(dataRoot)
 	return r, nil
 }
 
@@ -162,8 +206,65 @@ func (p *Prober) measure(path string) (Reading, error) {
 	return r, nil
 }
 
+// maxSymlinkHops mirrors the kernel's resolution limit.
+const maxSymlinkHops = 40
+
+// resolveUnderRoot maps hostPath, an absolute path in the host's namespace,
+// onto the container view rooted at root, following symlinks the way the
+// host kernel would: an absolute link target re-roots at root, never at the
+// container's own /. With an empty root the kernel already resolves
+// correctly and the path is used as-is.
+func resolveUnderRoot(root, hostPath string) (string, error) {
+	if root == "" {
+		return filepath.Clean(hostPath), nil
+	}
+	root = filepath.Clean(root)
+	cur := root
+	rest := splitPath(hostPath)
+	hops := 0
+	for len(rest) > 0 {
+		comp := rest[0]
+		rest = rest[1:]
+		switch comp {
+		case "", ".":
+			continue
+		case "..":
+			if cur != root {
+				cur = filepath.Dir(cur)
+			}
+			continue
+		}
+		next := filepath.Join(cur, comp)
+		fi, err := os.Lstat(next)
+		if err != nil {
+			return "", err
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			cur = next
+			continue
+		}
+		hops++
+		if hops > maxSymlinkHops {
+			return "", fmt.Errorf("too many levels of symbolic links in %s", hostPath)
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return "", err
+		}
+		if filepath.IsAbs(target) {
+			cur = root
+		}
+		rest = append(splitPath(target), rest...)
+	}
+	return cur, nil
+}
+
+func splitPath(p string) []string {
+	return strings.Split(strings.Trim(filepath.ToSlash(p), "/"), "/")
+}
+
 // isMountPoint scans mountinfo for an entry whose mount point is exactly
-// mountPoint. Field 5 carries octal escapes for whitespace and backslashes.
+// mountPoint.
 func isMountPoint(mountinfoPath, mountPoint string) (bool, error) {
 	f, err := os.Open(mountinfoPath)
 	if err != nil {
@@ -173,34 +274,14 @@ func isMountPoint(mountinfoPath, mountPoint string) (bool, error) {
 
 	want := filepath.Clean(mountPoint)
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) < 5 {
-			continue
-		}
-		if filepath.Clean(unescapeMountinfo(fields[4])) == want {
+		_, mp, ok := mountinfo.ParseLine(scanner.Text())
+		if ok && filepath.Clean(mp) == want {
 			return true, nil
 		}
 	}
 	return false, scanner.Err()
-}
-
-func unescapeMountinfo(s string) string {
-	if !strings.Contains(s, `\`) {
-		return s
-	}
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\\' && i+3 < len(s) {
-			if v, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
-				b.WriteByte(byte(v))
-				i += 3
-				continue
-			}
-		}
-		b.WriteByte(s[i])
-	}
-	return b.String()
 }
 
 // Reader probes on every Read, resolving Docker's data-root once via
@@ -211,16 +292,24 @@ type Reader struct {
 	prober   *Prober
 	dataRoot func(context.Context) (string, error)
 	warnf    func(format string, args ...interface{})
+	now      func() time.Time
 
-	mu           sync.Mutex
-	resolvedRoot string
-	resolved     bool
-	lastErr      string
+	mu             sync.Mutex
+	resolvedRoot   string
+	resolved       bool
+	nextResolve    time.Time
+	lastErr        string
+	fallbackWarned bool
 }
+
+// resolveRetryInterval spaces out data-root lookups after a failure. The
+// lookup is a synchronous daemon call in the caller's sampling loop, so a
+// slow-but-alive daemon must not be asked on every tick.
+const resolveRetryInterval = 30 * time.Second
 
 // NewReader wires a Prober to an optional data-root resolver and logger.
 func NewReader(p *Prober, dataRoot func(context.Context) (string, error), warnf func(string, ...interface{})) *Reader {
-	return &Reader{prober: p, dataRoot: dataRoot, warnf: warnf}
+	return &Reader{prober: p, dataRoot: dataRoot, warnf: warnf, now: time.Now}
 }
 
 // Read returns the current reading, or an error when nothing trustworthy
@@ -229,14 +318,16 @@ func (r *Reader) Read(ctx context.Context) (*Reading, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if !r.resolved && r.dataRoot != nil {
+	if !r.resolved && r.dataRoot != nil && !r.now().Before(r.nextResolve) {
 		if root, err := r.dataRoot(ctx); err == nil {
 			r.resolvedRoot = root
 			r.resolved = true
+		} else {
+			r.nextResolve = r.now().Add(resolveRetryInterval)
 		}
 	}
 
-	reading, err := r.prober.Probe(r.resolvedRoot)
+	reading, dataRootErr, err := r.prober.probe(r.resolvedRoot)
 	if err != nil {
 		if msg := err.Error(); msg != r.lastErr {
 			r.lastErr = msg
@@ -247,6 +338,16 @@ func (r *Reader) Read(ctx context.Context) (*Reading, error) {
 	if r.lastErr != "" {
 		r.lastErr = ""
 		r.warn("Host disk usage available again (measuring %s)", reading.Source)
+	}
+
+	if dataRootErr != nil {
+		if !r.fallbackWarned {
+			r.fallbackWarned = true
+			r.warn("Host disk usage: Docker data-root %s is not measurable (%v); measuring the host root instead",
+				r.resolvedRoot, dataRootErr)
+		}
+	} else {
+		r.fallbackWarned = false
 	}
 	return &reading, nil
 }

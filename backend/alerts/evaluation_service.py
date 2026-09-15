@@ -127,7 +127,6 @@ class AlertEvaluationService:
         "memory_percent": _AGENT_HOST_PROC_MOUNT,
         "disk_percent": "-v /:/hostfs:ro",
     }
-    # The DockMon container's own compose mounts, per metric.
     _LOCAL_METRIC_MOUNTS = {
         "cpu_percent": "/proc at /host/proc",
         "memory_percent": "/proc at /host/proc",
@@ -1282,7 +1281,6 @@ class AlertEvaluationService:
         )
 
     async def _evaluate_host_metrics(self, rules_by_metric: Dict[str, List[AlertRuleV2]]):
-        """Evaluate host metric rules"""
         try:
             # Get all host stats from stats service
             stats = await self.stats_client.get_host_stats() or {}

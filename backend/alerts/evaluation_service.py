@@ -18,7 +18,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 
 from database import DatabaseManager, AlertRuleV2, AlertV2, DockerHostDB
-from alerts.capabilities import STATS_MAX_AGE_SECONDS, sample_age_seconds
+from alerts.capabilities import HOST_METRIC_FIELDS, STATS_MAX_AGE_SECONDS, sample_age_seconds
 from alerts.metrics import PRODUCED_METRICS_BY_SCOPE, is_produced
 from alerts.safe_regex import active_quarantines
 from alerts.engine import AlertEngine, EvaluationContext
@@ -119,6 +119,20 @@ class AlertEvaluationService:
     - Process event-driven rules via event logger integration
     - Coordinate with notification system
     """
+
+    # /host/proc carries the host sample itself; disk additionally needs the host root.
+    _AGENT_HOST_PROC_MOUNT = "-v /proc:/host/proc:ro"
+    _AGENT_METRIC_MOUNTS = {
+        "cpu_percent": _AGENT_HOST_PROC_MOUNT,
+        "memory_percent": _AGENT_HOST_PROC_MOUNT,
+        "disk_percent": "-v /:/hostfs:ro",
+    }
+    # The DockMon container's own compose mounts, per metric.
+    _LOCAL_METRIC_MOUNTS = {
+        "cpu_percent": "/proc at /host/proc",
+        "memory_percent": "/proc at /host/proc",
+        "disk_percent": "the host root at /hostfs",
+    }
 
     def __init__(
         self,
@@ -1207,22 +1221,13 @@ class AlertEvaluationService:
         metrics = sorted({rule.metric for rule in matching})
         remedy = ""
         if getattr(host, "connection_type", None) == "agent":
-            # /host/proc carries the host sample itself, so it is needed
-            # whatever the metric; disk additionally needs the host root.
-            mounts = {self._AGENT_METRIC_MOUNTS["cpu_percent"]}
+            mounts = {self._AGENT_HOST_PROC_MOUNT}
             mounts.update(self._AGENT_METRIC_MOUNTS[m] for m in metrics if m in self._AGENT_METRIC_MOUNTS)
             remedy = f" Containerized agents need {' '.join(sorted(mounts))} to collect host metrics."
         logger.warning(
             f"Host {host.name} reports no host metrics ({reason}); "
             f"{len(matching)} host-scope rule(s) on {', '.join(metrics)} cannot be evaluated.{remedy}"
         )
-
-    # Bind mount a containerized agent needs to report a host metric.
-    _AGENT_METRIC_MOUNTS = {
-        "cpu_percent": "-v /proc:/host/proc:ro",
-        "memory_percent": "-v /proc:/host/proc:ro",
-        "disk_percent": "-v /:/hostfs:ro",
-    }
 
     def _report_host_missing_metrics(
         self,
@@ -1238,7 +1243,7 @@ class AlertEvaluationService:
         is the per-metric gap - a host with /host/proc but no /hostfs reports
         CPU and memory and silently never evaluates its disk rule.
         """
-        for metric in PRODUCED_METRICS_BY_SCOPE["host"]:
+        for metric in HOST_METRIC_FIELDS:
             key = (host.id, metric)
             if stats.get(metric) is not None:
                 self._host_metric_missing_reported.discard(key)
@@ -1254,17 +1259,13 @@ class AlertEvaluationService:
                 continue
 
             self._host_metric_missing_reported.add(key)
-            connection_type = getattr(host, "connection_type", None)
-            if connection_type == "agent":
-                remedy = (
-                    f" A containerized agent needs {self._AGENT_METRIC_MOUNTS.get(metric, '')} "
-                    f"to report it."
-                )
+            if getattr(host, "connection_type", None) == "agent":
+                remedy = f" A containerized agent needs {self._AGENT_METRIC_MOUNTS[metric]} to report it."
             elif str(getattr(host, "url", "")).startswith("unix://"):
                 # The same test the monitor uses to register the host as local.
-                remedy = " Mount the host root at /hostfs in docker-compose.yml to report it."
+                remedy = f" Mount {self._LOCAL_METRIC_MOUNTS[metric]} in docker-compose.yml to report it."
             else:
-                remedy = " Docker API hosts cannot report this metric."
+                remedy = f" Docker API hosts cannot report {metric}."
             logger.warning(
                 f"Host {host.name} reports host metrics but not {metric}; "
                 f"{len(matching)} host-scope rule(s) on it cannot be evaluated for this host.{remedy}"

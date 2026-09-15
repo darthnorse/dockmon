@@ -338,3 +338,30 @@ async def test_missing_metric_warning_for_local_host_names_the_compose_mount(db,
     assert len(records) == 1
     assert "docker-compose.yml" in records[0].message
     assert "/hostfs" in records[0].message
+
+
+# The remedy is keyed by the missing metric, so the local host is never told
+# to mount the host root for a metric /host/proc serves.
+async def test_missing_metric_remedy_for_local_host_follows_the_metric(db, caplog):
+    with db.get_session() as session:
+        session.add(AlertRuleV2(
+            id="cpu-rule", name="cpu", kind="cpu_high", enabled=True, scope="host",
+            metric="cpu_percent", operator=">=", threshold=80.0, occurrences=1,
+            severity="warning", host_selector_json=json.dumps({"include_all": True}),
+        ))
+        session.commit()
+    sample = _sample()
+    del sample["cpu_percent"]
+    service = _service(
+        db,
+        [_host(SILENT_HOST, "Local Docker", connection_type="remote", url="unix:///var/run/docker.sock")],
+        {SILENT_HOST: sample},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        await _evaluate(service)
+
+    records = [r for r in caplog.records if "Local Docker" in r.message]
+    assert len(records) == 1
+    assert "/host/proc" in records[0].message
+    assert "hostfs" not in records[0].message

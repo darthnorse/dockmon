@@ -186,3 +186,13 @@ class TestValidateMetricFields:
         validate_metric_fields("system", None, None, None, None)
         with pytest.raises(ValueError):
             validate_metric_fields("system", "cpu_percent", 90.0, None, ">=")
+
+
+# The evaluator's remedy tables are indexed directly by produced host metric, so
+# a metric added to the registry without a mount entry must fail here, not as a
+# KeyError in the evaluation loop.
+def test_remedy_tables_cover_every_produced_host_metric():
+    from alerts.evaluation_service import AlertEvaluationService
+
+    assert set(AlertEvaluationService._AGENT_METRIC_MOUNTS) == PRODUCED_METRICS_BY_SCOPE["host"]
+    assert set(AlertEvaluationService._LOCAL_METRIC_MOUNTS) == PRODUCED_METRICS_BY_SCOPE["host"]

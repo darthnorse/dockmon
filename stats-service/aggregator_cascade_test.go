@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -13,6 +15,9 @@ import (
 type stubStreamManager struct{}
 
 func (s stubStreamManager) HasHost(string) bool { return true }
+func (s stubStreamManager) DockerRootDir(context.Context, string) (string, error) {
+	return "", errors.New("stub")
+}
 
 func TestAggregator_FeedsCascade(t *testing.T) {
 	// Default is off; this test exercises the on-state path.
@@ -181,6 +186,9 @@ func TestAggregator_HostNetBpsSumsContainerRates(t *testing.T) {
 type agentHostStreamManager struct{}
 
 func (agentHostStreamManager) HasHost(string) bool { return false }
+func (agentHostStreamManager) DockerRootDir(context.Context, string) (string, error) {
+	return "", errors.New("agent host has no Docker client")
+}
 
 func agentHostFixture(t *testing.T, agentSample *HostStats) (*Aggregator, []*ContainerStats) {
 	t.Helper()

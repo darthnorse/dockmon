@@ -698,3 +698,151 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 	defer s.mu.Unlock()
 	return s.w.Write(p)
 }
+
+// --- host disk (Fix D) ---
+
+func hostStatsWithDisk() map[string]interface{} {
+	return map[string]interface{}{
+		"type":                 "host_stats",
+		"cpu_percent":          37.5,
+		"memory_percent":       61.25,
+		"memory_used_bytes":    8_589_934_592,
+		"memory_limit_bytes":   17_179_869_184,
+		"disk_percent":         54.7,
+		"disk_used_bytes":      53_000_000_000,
+		"disk_available_bytes": 44_000_000_000,
+		"disk_total_bytes":     103_000_000_000,
+		"disk_source":          "/var/lib/docker",
+	}
+}
+
+func waitForHostStats(t *testing.T, cache *StatsCache, cond func(*HostStats) bool) *HostStats {
+	t.Helper()
+	var stats *HostStats
+	if !waitFor(t, func() bool {
+		s, ok := cache.GetHostStats("host-1")
+		if ok && cond(s) {
+			stats = s
+			return true
+		}
+		return false
+	}) {
+		t.Fatal("expected host stats never reached the cache")
+	}
+	return stats
+}
+
+func TestIngestHandler_HostStatsCarryDiskIntoCacheAndAPI(t *testing.T) {
+	cache, db, h := makeIngestFixture(t)
+	conn := dialIngest(t, h, db)
+
+	writeIngestJSON(t, conn, hostStatsWithDisk())
+
+	stats := waitForHostStats(t, cache, func(*HostStats) bool { return true })
+	if stats.HostDisk == nil {
+		t.Fatal("disk fields did not reach the cache")
+	}
+	if stats.DiskPercent != 54.7 || stats.DiskUsedBytes != 53_000_000_000 ||
+		stats.DiskAvailableBytes != 44_000_000_000 || stats.DiskTotalBytes != 103_000_000_000 ||
+		stats.DiskSource != "/var/lib/docker" {
+		t.Errorf("disk=%+v, want the message's values", *stats.HostDisk)
+	}
+	if stats.HostID != "host-1" {
+		t.Errorf("HostID=%q, want host-1 from auth", stats.HostID)
+	}
+
+	data, err := json.Marshal(cache.GetAllHostStats())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"disk_percent":54.7`) {
+		t.Errorf("API payload lost disk_percent: %s", data)
+	}
+}
+
+// An old agent sends no disk fields; the cache must not hold zeros for it,
+// and the API payload must not carry the key.
+func TestIngestHandler_HostStatsWithoutDiskLeavesDiskUnsetEndToEnd(t *testing.T) {
+	cache, db, h := makeIngestFixture(t)
+	conn := dialIngest(t, h, db)
+
+	msg := hostStatsWithDisk()
+	for k := range msg {
+		if strings.HasPrefix(k, "disk_") {
+			delete(msg, k)
+		}
+	}
+	writeIngestJSON(t, conn, msg)
+
+	stats := waitForHostStats(t, cache, func(*HostStats) bool { return true })
+	if stats.HostDisk != nil {
+		t.Errorf("disk fields fabricated for an old agent: %+v", *stats.HostDisk)
+	}
+
+	data, err := json.Marshal(cache.GetAllHostStats())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "disk_") {
+		t.Errorf("API payload carries disk keys for a host that reported none: %s", data)
+	}
+}
+
+// The five fields are all-or-none: a partial set could be read as a real
+// measurement with zeros filled in.
+func TestIngestHandler_PartialDiskFieldsAreDropped(t *testing.T) {
+	cache, db, h := makeIngestFixture(t)
+	conn := dialIngest(t, h, db)
+
+	msg := hostStatsWithDisk()
+	delete(msg, "disk_available_bytes")
+	writeIngestJSON(t, conn, msg)
+
+	stats := waitForHostStats(t, cache, func(*HostStats) bool { return true })
+	if stats.HostDisk != nil {
+		t.Errorf("partial disk set accepted: %+v", *stats.HostDisk)
+	}
+}
+
+func TestIngestHandler_GenuineZeroDiskPercentIsKept(t *testing.T) {
+	cache, db, h := makeIngestFixture(t)
+	conn := dialIngest(t, h, db)
+
+	msg := hostStatsWithDisk()
+	msg["disk_percent"] = 0
+	msg["disk_used_bytes"] = 0
+	writeIngestJSON(t, conn, msg)
+
+	stats := waitForHostStats(t, cache, func(*HostStats) bool { return true })
+	if stats.HostDisk == nil {
+		t.Fatal("a genuine 0% reading was dropped")
+	}
+	data, _ := json.Marshal(stats)
+	if !strings.Contains(string(data), `"disk_percent":0`) {
+		t.Errorf("0%% did not serialize: %s", data)
+	}
+}
+
+// A host that stops reporting disk (agent downgrade, unmounted /hostfs, read
+// failure) must lose its cached values rather than keep a last-known-good.
+func TestIngestHandler_DiskClearedWhenLaterSampleOmitsIt(t *testing.T) {
+	cache, db, h := makeIngestFixture(t)
+	conn := dialIngest(t, h, db)
+
+	writeIngestJSON(t, conn, hostStatsWithDisk())
+	waitForHostStats(t, cache, func(s *HostStats) bool { return s.HostDisk != nil })
+
+	msg := hostStatsWithDisk()
+	for k := range msg {
+		if strings.HasPrefix(k, "disk_") {
+			delete(msg, k)
+		}
+	}
+	msg["cpu_percent"] = 99.0
+	writeIngestJSON(t, conn, msg)
+
+	stats := waitForHostStats(t, cache, func(s *HostStats) bool { return s.CPUPercent == 99.0 })
+	if stats.HostDisk != nil {
+		t.Errorf("stale disk reading merged into the newer sample: %+v", *stats.HostDisk)
+	}
+}

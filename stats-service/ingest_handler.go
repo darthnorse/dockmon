@@ -70,6 +70,31 @@ type agentStatsMsg struct {
 	// agent, not container aggregates.
 	MemoryUsedBytes  uint64 `json:"memory_used_bytes"`
 	MemoryLimitBytes uint64 `json:"memory_limit_bytes"`
+
+	// Host disk fields are pointers so presence is observable: an agent
+	// that cannot measure disk omits them, and a genuine 0% still arrives.
+	DiskPercent        *float64 `json:"disk_percent"`
+	DiskUsedBytes      *uint64  `json:"disk_used_bytes"`
+	DiskAvailableBytes *uint64  `json:"disk_available_bytes"`
+	DiskTotalBytes     *uint64  `json:"disk_total_bytes"`
+	DiskSource         *string  `json:"disk_source"`
+}
+
+// hostDisk returns the message's disk reading only when all five fields are
+// present. A partial set is dropped: filling the gaps with zeros would turn
+// it into a plausible measurement.
+func (m *agentStatsMsg) hostDisk() *HostDisk {
+	if m.DiskPercent == nil || m.DiskUsedBytes == nil || m.DiskAvailableBytes == nil ||
+		m.DiskTotalBytes == nil || m.DiskSource == nil {
+		return nil
+	}
+	return &HostDisk{
+		DiskPercent:        *m.DiskPercent,
+		DiskUsedBytes:      *m.DiskUsedBytes,
+		DiskAvailableBytes: *m.DiskAvailableBytes,
+		DiskTotalBytes:     *m.DiskTotalBytes,
+		DiskSource:         *m.DiskSource,
+	}
 }
 
 // HasActiveSession reports whether an agent currently holds an ingest
@@ -184,6 +209,7 @@ func (h *IngestHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) 
 				MemoryPercent:    msg.MemoryPercent,
 				MemoryUsedBytes:  msg.MemoryUsedBytes,
 				MemoryLimitBytes: msg.MemoryLimitBytes,
+				HostDisk:         msg.hostDisk(),
 			})
 		case "", msgTypeContainerStats:
 			// Empty type is an agent predating the typed wire format.

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	dockerpkg "github.com/darthnorse/dockmon-shared/docker"
+	"github.com/darthnorse/dockmon-shared/hostdisk"
 	"github.com/dockmon/stats-service/persistence"
 )
 
@@ -14,6 +15,7 @@ import (
 // StreamManager (which requires Docker clients).
 type streamManagerIface interface {
 	HasHost(hostID string) bool
+	DockerRootDir(ctx context.Context, hostID string) (string, error)
 }
 
 // Aggregator aggregates container stats into host-level metrics
@@ -23,6 +25,12 @@ type Aggregator struct {
 	aggregateInterval time.Duration
 	hostProcReader    *HostProcReader
 	cascade           *persistence.Cascade // optional; nil disables persistence ingest
+
+	// diskProber measures the local host's filesystem through /hostfs; nil
+	// disables disk. diskReaders memoize the data-root per local host and are
+	// only touched from the aggregation goroutine.
+	diskProber  *hostdisk.Prober
+	diskReaders map[string]*hostdisk.Reader
 }
 
 // NewAggregator creates a new aggregator
@@ -32,13 +40,54 @@ func NewAggregator(cache *StatsCache, streamManager *StreamManager, interval tim
 		log.Println("Host /proc mounted at /host/proc - using actual host CPU/memory stats for local host")
 	}
 
+	diskProber := hostdisk.NewProber(hostdisk.DefaultHostRoot)
+	if mounted, err := diskProber.HostRootMounted(); err != nil {
+		log.Printf("Could not verify the %s mount (%v) - host disk usage will not be reported for the local host", hostdisk.DefaultHostRoot, err)
+	} else if !mounted {
+		log.Printf("Host root not mounted at %s - host disk usage unavailable for the local host; add -v /:/hostfs:ro to enable disk_percent alerts", hostdisk.DefaultHostRoot)
+	} else {
+		log.Printf("Host root mounted at %s - reporting host disk usage for the local host", hostdisk.DefaultHostRoot)
+	}
+
 	return &Aggregator{
 		cache:             cache,
 		streamManager:     streamManager,
 		aggregateInterval: interval,
 		hostProcReader:    hostProcReader,
+		diskProber:        diskProber,
 	}
 }
+
+// localHostDisk reads the local host's disk usage, or nil when it cannot be
+// measured. Independent of /host/proc: a host with /hostfs but no /host/proc
+// still gets disk, and a disk failure never suppresses CPU and memory.
+func (a *Aggregator) localHostDisk(hostID string) *HostDisk {
+	if a.diskProber == nil || !a.cache.IsHostLocal(hostID) {
+		return nil
+	}
+	reader, ok := a.diskReaders[hostID]
+	if !ok {
+		if a.diskReaders == nil {
+			a.diskReaders = make(map[string]*hostdisk.Reader)
+		}
+		reader = hostdisk.NewReader(a.diskProber, func(ctx context.Context) (string, error) {
+			return a.streamManager.DockerRootDir(ctx, hostID)
+		}, log.Printf)
+		a.diskReaders[hostID] = reader
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), dockerInfoTimeout)
+	defer cancel()
+	reading, err := reader.Read(ctx)
+	if err != nil {
+		return nil
+	}
+	return hostDiskFromReading(reading)
+}
+
+// dockerInfoTimeout bounds the one-off data-root lookup so a wedged daemon
+// cannot stall the aggregation loop.
+const dockerInfoTimeout = 5 * time.Second
 
 // SetCascade enables persistence ingest. Pass nil to disable.
 //
@@ -176,6 +225,17 @@ func (a *Aggregator) freshAgentSample(hostID string) *HostStats {
 // agentSample is the host's own reading when it is agent-owned and fresh, read
 // once by the caller so freshness and the persisted values cannot disagree.
 func (a *Aggregator) aggregateHostStats(hostID string, containers []*ContainerStats, agentSample *HostStats) *HostStats {
+	stats := a.aggregateHostCPUMemory(hostID, containers, agentSample)
+	// Rebuilt every cycle, so a failed read clears the previous value instead
+	// of leaving a last-known-good number for alerts to keep firing on.
+	stats.HostDisk = a.localHostDisk(hostID)
+	return stats
+}
+
+// aggregateHostCPUMemory picks the CPU/memory source for a host: /host/proc
+// for the local host, the agent's own reading for an agent host, otherwise a
+// container aggregate.
+func (a *Aggregator) aggregateHostCPUMemory(hostID string, containers []*ContainerStats, agentSample *HostStats) *HostStats {
 	var (
 		totalNetRx      uint64
 		totalNetTx      uint64

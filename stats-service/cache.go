@@ -4,6 +4,8 @@ import (
 	"math"
 	"sync"
 	"time"
+
+	"github.com/darthnorse/dockmon-shared/hostdisk"
 )
 
 // ContainerStats holds real-time stats for a single container
@@ -34,6 +36,37 @@ type HostStats struct {
 	NetworkTxBytes   uint64    `json:"network_tx_bytes"`
 	ContainerCount   int       `json:"container_count"`
 	LastUpdate       time.Time `json:"last_update"`
+
+	// Embedded pointer: nil serializes to no disk keys at all, so the
+	// evaluator sees the metric as absent rather than as 0% used. A
+	// value-typed zero would look exactly like an empty disk.
+	*HostDisk
+}
+
+// HostDisk is a host filesystem reading. Percent follows df's Use%
+// (used / (used + available)); TotalBytes is the true size and exceeds
+// used + available on a filesystem with root-reserved blocks.
+type HostDisk struct {
+	DiskPercent        float64 `json:"disk_percent"`
+	DiskUsedBytes      uint64  `json:"disk_used_bytes"`
+	DiskAvailableBytes uint64  `json:"disk_available_bytes"`
+	DiskTotalBytes     uint64  `json:"disk_total_bytes"`
+	// DiskSource is the logical host path measured (Docker's data-root, or
+	// "/" after a fallback), so the two are distinguishable.
+	DiskSource string `json:"disk_source"`
+}
+
+func hostDiskFromReading(r *hostdisk.Reading) *HostDisk {
+	if r == nil {
+		return nil
+	}
+	return &HostDisk{
+		DiskPercent:        r.Percent,
+		DiskUsedBytes:      r.UsedBytes,
+		DiskAvailableBytes: r.AvailableBytes,
+		DiskTotalBytes:     r.TotalBytes,
+		DiskSource:         r.Source,
+	}
 }
 
 // networkBaseline tracks previous network values for rate calculation

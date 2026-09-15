@@ -385,6 +385,16 @@ func (c *Client) GetEngineID(ctx context.Context) (string, error) {
 	return info.ID, nil
 }
 
+// GetDockerRootDir returns the daemon's data-root (e.g. /var/lib/docker),
+// the filesystem that fills up and takes containers down.
+func (c *Client) GetDockerRootDir(ctx context.Context) (string, error) {
+	info, err := c.cli.Info(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get Docker info: %w", err)
+	}
+	return info.DockerRootDir, nil
+}
+
 // GetSystemInfo collects system information from Docker daemon
 // Matches the data collected by legacy hosts in monitor.py
 func (c *Client) GetSystemInfo(ctx context.Context) (*SystemInfo, error) {

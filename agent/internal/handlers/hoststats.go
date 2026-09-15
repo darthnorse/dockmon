@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/darthnorse/dockmon-agent/internal/client/statsmsg"
+	"github.com/darthnorse/dockmon-shared/hostdisk"
 	"github.com/sirupsen/logrus"
 )
 
@@ -23,10 +24,17 @@ const bytesPerKB = 1024
 // counters to diff against and therefore no usable percentage.
 var errCPUBaseline = errors.New("first CPU reading is a baseline")
 
+// DiskReader supplies the host filesystem reading for the host sample.
+// *hostdisk.Reader satisfies it; nil disables disk reporting.
+type DiskReader interface {
+	Read(ctx context.Context) (*hostdisk.Reading, error)
+}
+
 // HostStatsHandler collects host-level metrics from /proc (or /host/proc in container mode)
 type HostStatsHandler struct {
 	log      *logrus.Logger
 	sendJSON func(payload interface{}) error
+	disk     DiskReader
 
 	// Paths to proc and sys filesystems (auto-detected)
 	procPath string // /proc or /host/proc
@@ -68,7 +76,7 @@ type netStats struct {
 
 // NewHostStatsHandler creates a new host stats handler
 // Auto-detects /host/proc (container mode) vs /proc (systemd mode)
-func NewHostStatsHandler(log *logrus.Logger, sendJSON func(interface{}) error) *HostStatsHandler {
+func NewHostStatsHandler(log *logrus.Logger, sendJSON func(interface{}) error, disk DiskReader) *HostStatsHandler {
 	procPath := "/proc"
 	sysPath := "/sys"
 
@@ -87,6 +95,7 @@ func NewHostStatsHandler(log *logrus.Logger, sendJSON func(interface{}) error) *
 	return &HostStatsHandler{
 		log:      log,
 		sendJSON: sendJSON,
+		disk:     disk,
 		procPath: procPath,
 		sysPath:  sysPath,
 		prevNet:  make(map[string]netStats),
@@ -98,7 +107,7 @@ func (h *HostStatsHandler) StartCollection(ctx context.Context, interval time.Du
 	h.log.Infof("Starting host stats collection every %v", interval)
 
 	// Initial collection to set baseline
-	h.collect()
+	h.collect(ctx)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -109,12 +118,12 @@ func (h *HostStatsHandler) StartCollection(ctx context.Context, interval time.Du
 			h.log.Info("Stopping host stats collection")
 			return
 		case <-ticker.C:
-			h.collect()
+			h.collect(ctx)
 		}
 	}
 }
 
-func (h *HostStatsHandler) collect() {
+func (h *HostStatsHandler) collect(ctx context.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -168,7 +177,28 @@ func (h *HostStatsHandler) collect() {
 			MemoryUsedBytes:  mem.usedBytes,
 			MemoryLimitBytes: mem.totalBytes,
 			Timestamp:        now.UTC().Format(time.RFC3339),
+			HostDisk:         h.readDisk(ctx),
 		})
+	}
+}
+
+// readDisk returns the host disk fields for the sample, or nil when they
+// cannot be measured. Unlike a /proc failure, a disk failure must not skip the
+// sample: that would silence host CPU and memory alerting to add disk.
+func (h *HostStatsHandler) readDisk(ctx context.Context) *statsmsg.HostDisk {
+	if h.disk == nil {
+		return nil
+	}
+	r, err := h.disk.Read(ctx)
+	if err != nil {
+		return nil
+	}
+	return &statsmsg.HostDisk{
+		DiskPercent:        r.Percent,
+		DiskUsedBytes:      r.UsedBytes,
+		DiskAvailableBytes: r.AvailableBytes,
+		DiskTotalBytes:     r.TotalBytes,
+		DiskSource:         r.Source,
 	}
 }
 

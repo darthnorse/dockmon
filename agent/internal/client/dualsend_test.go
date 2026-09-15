@@ -77,7 +77,7 @@ func newDualSendTestClient(t *testing.T, token string) (*WebSocketClient, *fakeD
 		log:              log,
 		procCtx:          ctx,
 		statsHandler:     handlers.NewStatsHandler(nil, log, nil),
-		hostStatsHandler: handlers.NewHostStatsHandler(log, nil),
+		hostStatsHandler: handlers.NewHostStatsHandler(log, nil, nil),
 	}
 	c.newStatsService = func(url, token string, insecure bool, log *logrus.Logger) statsServiceClient {
 		fake.mu.Lock()

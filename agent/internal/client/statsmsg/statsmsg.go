@@ -37,4 +37,20 @@ type AgentStatsMsg struct {
 	// control WebSocket's mem_percent is a different, UI-only wire.
 	MemoryUsedBytes  uint64 `json:"memory_used_bytes,omitempty"`
 	MemoryLimitBytes uint64 `json:"memory_limit_bytes,omitempty"`
+
+	*HostDisk
+}
+
+// HostDisk is the host filesystem reading on a host-stats sample. It is
+// embedded as a pointer so a host that cannot measure disk sends none of the
+// keys: a plain float64 would marshal 0% and read as an empty disk, while a
+// genuine 0% still serializes. The five fields travel together or not at all.
+type HostDisk struct {
+	DiskPercent        float64 `json:"disk_percent"`
+	DiskUsedBytes      uint64  `json:"disk_used_bytes"`
+	DiskAvailableBytes uint64  `json:"disk_available_bytes"`
+	DiskTotalBytes     uint64  `json:"disk_total_bytes"`
+	// DiskSource is the logical host path measured (Docker's data-root, or
+	// "/" when that fell back), so an operator can tell which disk it is.
+	DiskSource string `json:"disk_source"`
 }

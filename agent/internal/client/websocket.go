@@ -16,6 +16,7 @@ import (
 	"github.com/darthnorse/dockmon-agent/internal/handlers"
 	"github.com/darthnorse/dockmon-agent/internal/protocol"
 	"github.com/darthnorse/dockmon-agent/pkg/types"
+	"github.com/darthnorse/dockmon-shared/hostdisk"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 )
@@ -107,6 +108,7 @@ func NewWebSocketClient(
 		client.hostStatsHandler = handlers.NewHostStatsHandler(
 			log,
 			client.sendJSON,
+			newHostDiskReader(dockerClient, "", log),
 		)
 		log.Info("Host stats handler initialized (systemd mode)")
 	} else if _, err := os.Stat("/host/proc/stat"); err == nil {
@@ -114,11 +116,16 @@ func NewWebSocketClient(
 		client.hostStatsHandler = handlers.NewHostStatsHandler(
 			log,
 			client.sendJSON,
+			newHostDiskReader(dockerClient, hostdisk.DefaultHostRoot, log),
 		)
 		log.Info("Host stats handler initialized (container mode with /host/proc mount)")
 	} else {
 		log.Warn("Host stats disabled: /host/proc is not mounted. Host CPU/memory will be missing " +
 			"and host-scope metric alerts cannot fire. Add -v /proc:/host/proc:ro to the agent container.")
+	}
+
+	if myContainerID != "" {
+		warnIfHostRootUnmounted(log)
 	}
 
 	// Initialize update handler with sendEvent callback

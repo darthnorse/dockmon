@@ -32,6 +32,7 @@ docker run -d \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v dockmon-agent-data:/data \
   -v /proc:/host/proc:ro \
+  -v /:/hostfs:ro \
   -e DOCKMON_URL=wss://your-dockmon-instance.com \
   -e REGISTRATION_TOKEN=your-token-here \
   ghcr.io/darthnorse/dockmon-agent:2.2.0
@@ -49,6 +50,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - dockmon-agent-data:/data
       - /proc:/host/proc:ro
+      - /:/hostfs:ro
     environment:
       - DOCKMON_URL=wss://your-dockmon-instance.com
       - REGISTRATION_TOKEN=your-token-here
@@ -67,6 +69,17 @@ Do **not** use bind mounts or omit this volume, as it will break agent persisten
 memory. Without it the agent reports container stats only, host-scope metric alert
 rules on that host can never fire, and the agent logs a warning at startup.
 Systemd agents read `/proc` directly and need no mount.
+
+`-v /:/hostfs:ro` is what lets a containerized agent measure host disk usage
+(`disk_percent`, the "Low Disk Space" rule). The agent measures the filesystem
+holding Docker's data-root (`/var/lib/docker` by default) and falls back to the host
+root; `disk_source` in the sample says which. It needs `/host/proc` as well, because
+disk rides on the same host sample. Without the mount the agent reports no disk at all
+(never a zero) and logs a warning at startup. Note that this exposes the whole host
+filesystem read-only to the agent container, and on kernels before 5.12 the `:ro` flag
+does not propagate to submounts; use
+`--mount type=bind,src=/,dst=/hostfs,readonly,bind-recursive=readonly` (Docker 25+)
+where the kernel supports it.
 
 3. The agent will automatically register with DockMon and appear in your hosts list
 

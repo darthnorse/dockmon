@@ -76,7 +76,7 @@ class TestMetricCapabilities:
             headers={"Authorization": f"Bearer {test_api_key_read}"},
         )
         assert resp.status_code == 200
-        assert set(resp.json()["host_metrics"]) == {"cpu_percent", "memory_percent"}
+        assert set(resp.json()["host_metrics"]) == {"cpu_percent", "memory_percent", "disk_percent"}
 
     def test_stats_service_failure_degrades_to_no_capability(
         self, client, test_api_key_read, two_agent_hosts, monkeypatch

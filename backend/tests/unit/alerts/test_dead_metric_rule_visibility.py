@@ -192,15 +192,15 @@ class TestDeadRuleWarning:
 
         assert len(_dead_warnings(caplog)) == 2
 
-    async def test_pending_disk_percent_warns_too(self, db, caplog):
-        """disk_percent has no producer until Fix D; saying so is deliberate."""
+    async def test_disk_percent_is_served_and_not_warned(self, db, caplog):
+        """Fix D gave disk_percent a producer; the warning naming it must be gone."""
         _add_rule(db, "disk-rule", "disk_percent", scope="host")
         service = _service(db)
 
         with caplog.at_level(logging.WARNING):
             await service._evaluate_all_rules()
 
-        assert len(_dead_warnings(caplog)) == 1
+        assert _dead_warnings(caplog) == []
 
     async def test_silent_when_every_rule_is_servable(self, db, caplog):
         _add_rule(db, "cpu-rule", "cpu_percent")

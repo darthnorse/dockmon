@@ -355,6 +355,7 @@ def test_capabilities_come_from_observed_fresh_fields():
         AGENT_HOST: {
             "cpu_percent": 12.0,
             "memory_percent": 55.0,
+            "disk_percent": 54.7,
             "last_update": _now_iso(),
         },
     }

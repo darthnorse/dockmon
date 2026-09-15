@@ -1204,7 +1204,10 @@ class AlertEvaluationService:
         metrics = sorted({rule.metric for rule in matching})
         remedy = ""
         if getattr(host, "connection_type", None) == "agent":
-            remedy = " Containerized agents need -v /proc:/host/proc:ro to collect host metrics."
+            remedy = " Containerized agents need -v /proc:/host/proc:ro to collect host metrics"
+            if "disk_percent" in metrics:
+                remedy += " and -v /:/hostfs:ro for disk usage"
+            remedy += "."
         logger.warning(
             f"Host {host.name} reports no host metrics ({reason}); "
             f"{len(matching)} host-scope rule(s) on {', '.join(metrics)} cannot be evaluated.{remedy}"

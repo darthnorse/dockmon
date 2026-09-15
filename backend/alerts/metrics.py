@@ -12,17 +12,18 @@ import math
 from typing import Any, Dict, FrozenSet, Optional, Tuple
 
 # Metrics with a live producer, by rule scope. No group-scope evaluator exists.
+# disk_percent is used-percentage of the filesystem holding Docker's data-root
+# (host root when that is unavailable), as df reports it.
 PRODUCED_METRICS_BY_SCOPE: Dict[str, FrozenSet[str]] = {
-    "host": frozenset({"cpu_percent", "memory_percent"}),
+    "host": frozenset({"cpu_percent", "memory_percent", "disk_percent"}),
     "container": frozenset({"cpu_percent", "memory_percent", "memory_usage", "memory_limit"}),
     "group": frozenset(),
 }
 
-# Accepted on rules but served by nothing yet: the rule form has shipped a
-# "Low Disk Space" kind for a while, and refusing it would break that before
-# there is a replacement to offer.
+# Accepted on rules but served by nothing yet. Empty today; kept so a metric
+# the UI ships ahead of its producer has somewhere to live.
 PENDING_METRICS_BY_SCOPE: Dict[str, FrozenSet[str]] = {
-    "host": frozenset({"disk_percent"}),
+    "host": frozenset(),
     "container": frozenset(),
     "group": frozenset(),
 }

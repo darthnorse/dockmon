@@ -17,6 +17,7 @@ from auth.api_key_auth import (
     require_capability,
     get_current_user_or_api_key,
     invalidate_group_permissions_cache,
+    invalidate_group_tag_scopes_cache,
     invalidate_user_groups_cache,
     get_effective_capabilities,
 )
@@ -629,6 +630,7 @@ async def delete_group(
         # Phase 4: Invalidate caches
         invalidate_group_permissions_cache()
         invalidate_user_groups_cache()  # All users, since we don't know who was affected
+        invalidate_group_tag_scopes_cache()
         await _refresh_ws_capabilities()
 
         return DeleteGroupResponse(

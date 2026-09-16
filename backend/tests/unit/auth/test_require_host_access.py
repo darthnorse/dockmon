@@ -5,6 +5,8 @@ capability gets 403 for every host, hidden or not - the status code must not
 reveal whether a host id exists.
 """
 
+import logging
+
 import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
@@ -31,6 +33,10 @@ def _app(current_user: dict) -> TestClient:
     @app.get("/migrate/{agent_id}/from/{source_host_id}", dependencies=[Depends(require_source_host_access)])
     async def source_route(agent_id: str, source_host_id: str):
         return {"source_host_id": source_host_id}
+
+    @app.post("/deploy/{id}", dependencies=[Depends(require_host_access)])
+    async def miswired_route(id: str):
+        return {"id": id}
 
     @app.get(
         "/guarded/{host_id}",
@@ -98,3 +104,28 @@ class TestGuardOrder:
         resolver(set())
         monkeypatch.setattr(api_key_auth, "check_auth_capability", lambda user, cap: True)
         assert _app(SESSION_USER).get("/guarded/hidden").status_code == 404
+
+
+class TestFailClosedBinding:
+    def test_route_without_host_id_path_param_rejects_query_value(self, resolver):
+        """A guard on a mis-wired route must not read ?host_id= from the query string,
+        or a scoped caller could name any visible host to act on a hidden one."""
+        resolver({"visible"})
+        client = _app(SESSION_USER)
+        assert client.post("/deploy/hidden").status_code == 422
+        assert client.post("/deploy/hidden?host_id=visible").status_code == 422
+
+    def test_correctly_wired_route_ignores_query_override(self, resolver):
+        resolver({"visible"})
+        assert _app(SESSION_USER).get("/hosts/hidden?host_id=visible").status_code == 404
+
+
+class TestDenialLog:
+    def test_host_id_cannot_forge_a_log_line(self, resolver, caplog):
+        resolver(set())
+        with caplog.at_level(logging.INFO, logger="auth.api_key_auth"):
+            assert _app(SESSION_USER).get("/hosts/x%0AINFO%20forged%20line").status_code == 404
+        messages = [r.getMessage() for r in caplog.records if "denied host scope" in r.getMessage()]
+        assert len(messages) == 1
+        assert "\n" not in messages[0]
+        assert "'x\\nINFO forged line'" in messages[0]

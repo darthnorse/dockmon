@@ -3578,6 +3578,7 @@ class DatabaseManager:
         A tag is considered unused if:
         1. It has no current assignments (assignment count = 0)
         2. Its last_used_at timestamp is older than days_unused
+        3. It does not scope any group's host visibility (GroupTagScope)
 
         Args:
             days_unused: Remove tags not used in this many days (0 = never delete)

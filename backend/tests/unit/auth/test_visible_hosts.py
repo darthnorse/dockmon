@@ -6,6 +6,7 @@ whole principal unrestricted.
 """
 
 import uuid
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy.orm import Session
@@ -16,6 +17,7 @@ from auth.api_key_auth import (
     get_visible_host_ids_for_groups,
     invalidate_group_tag_scopes_cache,
 )
+from auth.custom_groups_routes import delete_group
 from database import CustomGroup, GroupTagScope, Tag, TagAssignment, User, UserGroupMembership
 
 
@@ -188,3 +190,21 @@ class TestScopeCacheInvalidation:
         s.commit()
 
         assert get_visible_host_ids_for_groups([group.id]) == {"h-dev-2", "h-both", "h-new"}
+
+    @pytest.mark.asyncio
+    async def test_group_delete_route_invalidates_scope_cache(self, fleet):
+        """custom_groups.id has no AUTOINCREMENT, so SQLite reuses the highest deleted
+        rowid: without invalidation the next group created inherits the dead scope."""
+        s = fleet["session"]
+        doomed = _group(s, "Doomed", fleet["dev"])
+        s.commit()
+        assert get_visible_host_ids_for_groups([doomed.id]) == {"h-dev-1", "h-dev-2", "h-both"}
+
+        admin = _user(s, "admin")
+        with patch("auth.custom_groups_routes._refresh_ws_capabilities", AsyncMock()):
+            await delete_group(doomed.id, current_user={"auth_type": "session", "user_id": admin.id, "username": "admin"})
+
+        reborn = _group(s, "Reborn")
+        s.commit()
+        assert reborn.id == doomed.id
+        assert get_visible_host_ids_for_groups([reborn.id]) is None

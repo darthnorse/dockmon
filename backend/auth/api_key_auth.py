@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple
 from ipaddress import ip_address, ip_network
 
-from fastapi import Header, Cookie, Request, HTTPException, Depends
+from fastapi import Header, Cookie, Request, HTTPException, Depends, Path
 from sqlalchemy.orm import Session
 
 from database import ApiKey, User, DatabaseManager, GroupPermission, UserGroupMembership, CustomGroup, GroupTagScope, TagAssignment
@@ -525,17 +525,30 @@ def require_capability(capability: str):
     return check_capability
 
 
-async def require_host_access(host_id: str, current_user: dict = Depends(get_current_user_or_api_key)):
-    """404 (not 403) when the caller cannot see host_id, so hidden ids are not enumerable.
-    Always listed AFTER require_capability in dependencies=[...]."""
+def _check_host_access(host_id: str, current_user: dict) -> None:
     visible = get_visible_host_ids_for_auth(current_user)
     if visible is not None and host_id not in visible:
-        logger.info(f"{_get_auth_identifier(current_user, include_group=True)} denied host scope on {host_id}")
+        # repr: the id is caller-controlled and percent-decoded, so a raw newline would forge a log line
+        logger.info(f"{_get_auth_identifier(current_user, include_group=True)} denied host scope on {host_id!r}")
         raise HTTPException(status_code=404, detail="Not found")
 
 
-async def require_source_host_access(source_host_id: str, current_user: dict = Depends(get_current_user_or_api_key)):
-    await require_host_access(source_host_id, current_user)
+async def require_host_access(
+    host_id: str = Path(),
+    current_user: dict = Depends(get_current_user_or_api_key),
+):
+    """404 (not 403) when the caller cannot see host_id, so hidden ids are not enumerable.
+    Always listed AFTER require_capability in dependencies=[...].
+    Path() pins the id to the route's {host_id}; on a route without that param FastAPI
+    would otherwise bind a bare parameter to a caller-supplied ?host_id= query value."""
+    _check_host_access(host_id, current_user)
+
+
+async def require_source_host_access(
+    source_host_id: str = Path(),
+    current_user: dict = Depends(get_current_user_or_api_key),
+):
+    _check_host_access(source_host_id, current_user)
 
 
 # ==================== Group-Based Permissions ====================
@@ -559,8 +572,9 @@ _user_groups_cache: dict[int, list[int]] = {}
 _user_groups_lock = threading.RLock()  # RLock allows reentrant acquisition
 
 # Host-visibility scopes: group_id -> set of tag ids. Holds ONLY groups that have
-# scope rows; a group absent from the cache is unrestricted, so group creation and
-# deletion need no hook.
+# scope rows; a group absent from the cache is unrestricted, so group creation needs
+# no hook. Group delete MUST invalidate: SQLite reuses the rowid of the highest
+# deleted group, so a stale entry would restrict the next group created.
 _group_tag_scopes_cache: dict[int, set[str]] = {}
 _group_tag_scopes_loaded = False
 _group_tag_scopes_lock = threading.RLock()

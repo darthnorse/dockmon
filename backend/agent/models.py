@@ -85,8 +85,6 @@ class AgentRegistrationRequest(AgentSystemInfo):
         ),
     )
 
-    # System information fields are inherited from AgentSystemInfo.
-
     # Agent platform fields (for self-update binary selection)
     agent_os: Optional[str] = Field(None, max_length=20, description="Agent OS (GOOS: linux, darwin, windows)")
     agent_arch: Optional[str] = Field(None, max_length=20, description="Agent architecture (GOARCH: amd64, arm64, arm)")

@@ -195,6 +195,18 @@ async def test_out_of_bounds_values_are_rejected_whole(monitor, executor, caplog
     assert "A" * 100 not in warning[0].message, "the raw agent payload must not be dumped into the log"
 
 
+# A value that sanitizes down to nothing ("<>", whitespace) is empty too.
+@pytest.mark.parametrize("empty_after_sanitizing", ["<>", "   ", "\x00\x01"])
+async def test_values_that_sanitize_to_empty_do_not_clobber(monitor, executor, empty_after_sanitizing):
+    executor.execute_command.return_value = _result(response={
+        **NEW_INFO, "daemon_started_at": empty_after_sanitizing,
+    })
+
+    await monitor._refresh_agent_hosts_system_info()
+
+    assert _host(monitor.db).daemon_started_at == "2026-08-01T00:00:00Z"
+
+
 async def test_markup_is_stripped_like_registration(monitor, executor):
     executor.execute_command.return_value = _result(response={
         **NEW_INFO, "os_version": "Debian <script>alert(1)</script> 13",

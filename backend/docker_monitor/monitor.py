@@ -2569,7 +2569,11 @@ class DockerMonitor:
             if k in AgentSystemInfo.model_fields and v not in (None, "", 0)
         }
         try:
-            sys_info = AgentSystemInfo(**incoming).model_dump(exclude_none=True)
+            # Sanitizing can empty a value ("<>" -> ""), so filter again after it.
+            sys_info = {
+                k: v for k, v in AgentSystemInfo(**incoming).model_dump().items()
+                if v not in (None, "", 0)
+            }
         except ValidationError as e:
             logger.warning(
                 f"Agent {agent_id[:8]}... returned invalid system info: "

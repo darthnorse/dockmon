@@ -141,6 +141,27 @@ class GroupPermission(Base):
     )
 
 
+class GroupTagScope(Base):
+    """Restricts a group's host visibility to hosts carrying any listed tag.
+    Zero rows for a group = unrestricted."""
+    __tablename__ = "group_tag_scopes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    group_id = Column(Integer, ForeignKey('custom_groups.id', ondelete='CASCADE'), nullable=False)
+    # RESTRICT: losing a scope must be an explicit admin action, never a tag-cleanup side effect
+    tag_id = Column(String, ForeignKey('tags.id', ondelete='RESTRICT'), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+    group = relationship("CustomGroup", back_populates="tag_scopes")
+    tag = relationship("Tag")
+
+    __table_args__ = (
+        UniqueConstraint('group_id', 'tag_id', name='uq_group_tag_scope'),
+        Index('idx_group_tag_scopes_group', 'group_id'),
+        Index('idx_group_tag_scopes_tag', 'tag_id'),
+    )
+
+
 class PasswordResetToken(Base):
     """
     Password reset tokens for self-service password recovery (v2.3.0).
@@ -275,6 +296,7 @@ class CustomGroup(Base):
     # Relationships
     memberships = relationship("UserGroupMembership", back_populates="group", cascade="all, delete-orphan")
     permissions = relationship("GroupPermission", back_populates="group", cascade="all, delete-orphan")
+    tag_scopes = relationship("GroupTagScope", back_populates="group", cascade="all, delete-orphan")
 
 
 class UserGroupMembership(Base):
@@ -3570,11 +3592,13 @@ class DatabaseManager:
             from datetime import timedelta
             cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_unused)
 
-            # Find tags with no assignments and not used recently
+            # Find tags with no assignments and not used recently; a tag that scopes a
+            # group's host visibility is in use even with zero assignments (RESTRICT FK)
             tags_to_delete = session.query(Tag).outerjoin(TagAssignment).group_by(Tag.id).having(
                 func.count(TagAssignment.tag_id) == 0
             ).filter(
-                Tag.last_used_at < cutoff_date
+                Tag.last_used_at < cutoff_date,
+                ~Tag.id.in_(session.query(GroupTagScope.tag_id)),
             ).limit(1000).all()  # Add safety limit to prevent memory exhaustion
 
             deleted_count = 0

@@ -76,7 +76,7 @@ from models.request_models import (
 from audit.audit_logger import AuditAction, AuditEntityType, log_audit, log_container_action, log_host_change, log_settings_change, get_client_info
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, get_capabilities_for_user, Capabilities, get_visible_host_ids_for_auth, get_visible_host_ids_for_user, filter_visible_hosts, require_host_access, require_source_host_access
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, get_capabilities_for_user, Capabilities, get_visible_host_ids_for_auth, get_visible_host_ids_for_user, filter_visible_hosts, require_host_access, require_source_host_access, check_host_access
 from auth.utils import get_auditable_user_info
 from websocket.connection import ConnectionManager, DateTimeEncoder
 from websocket.rate_limiter import ws_rate_limiter
@@ -6022,14 +6022,10 @@ async def migrate_agent_from_host(
 
     Requires admin scope as it modifies host state.
     """
-    # Both ends of a migration must be visible: the source is guarded by the path dependency,
-    # the target is the agent's own host and is not in the path
-    visible = get_visible_host_ids_for_auth(current_user)
-    if visible is not None:
-        with monitor.db.get_session() as db:
-            target_host_id = db.query(Agent.host_id).filter(Agent.id == agent_id).scalar()
-        if target_host_id not in visible:
-            raise HTTPException(status_code=404, detail="Not found")
+    # The target host is not in the path, so the route dependency cannot cover it
+    with monitor.db.get_session() as db:
+        target_host_id = db.query(Agent.host_id).filter(Agent.id == agent_id).scalar()
+    check_host_access(target_host_id, current_user)
 
     try:
         agent_manager = AgentManager(monitor=monitor)

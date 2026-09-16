@@ -525,7 +525,9 @@ def require_capability(capability: str):
     return check_capability
 
 
-def _check_host_access(host_id: str, current_user: dict) -> None:
+def check_host_access(host_id: Optional[str], current_user: dict) -> None:
+    """Inline form of require_host_access for host ids that are not path params
+    (records, bodies). 404 when the caller cannot see host_id; None never matches."""
     visible = get_visible_host_ids_for_auth(current_user)
     if visible is not None and host_id not in visible:
         # repr: the id is caller-controlled and percent-decoded, so a raw newline would forge a log line
@@ -541,14 +543,14 @@ async def require_host_access(
     Always listed AFTER require_capability in dependencies=[...].
     Path() pins the id to the route's {host_id}; on a route without that param FastAPI
     would otherwise bind a bare parameter to a caller-supplied ?host_id= query value."""
-    _check_host_access(host_id, current_user)
+    check_host_access(host_id, current_user)
 
 
 async def require_source_host_access(
     source_host_id: str = Path(),
     current_user: dict = Depends(get_current_user_or_api_key),
 ):
-    _check_host_access(source_host_id, current_user)
+    check_host_access(source_host_id, current_user)
 
 
 # ==================== Group-Based Permissions ====================

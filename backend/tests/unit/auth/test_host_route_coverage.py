@@ -2,8 +2,9 @@
 require_host_access (or the source variant) AFTER its capability guard.
 
 Runs over app.routes, so it covers main.py and every included router, single-
-and multi-line decorators alike. It does not cover WebSocket routes (Task 7
-integration tests) or body/record-addressed surfaces (each has its own test).
+and multi-line decorators alike. It does not cover WebSocket routes (guarded
+in-handler, covered by the WS integration tests) or body/record-addressed
+surfaces (each has its own test).
 """
 
 from fastapi.routing import APIRoute
@@ -11,13 +12,13 @@ from fastapi.routing import APIRoute
 from auth.api_key_auth import require_host_access, require_source_host_access
 from main import app
 
-HOST_PARAMS = {"host_id", "source_host_id"}
-GUARDS = {require_host_access, require_source_host_access}
+GUARD_FOR_PARAM = {"host_id": require_host_access, "source_host_id": require_source_host_access}
+GUARDS = set(GUARD_FOR_PARAM.values())
 EXPECTED_HOST_ROUTE_COUNT = 44
 
 
 def _host_routes():
-    return [r for r in app.routes if isinstance(r, APIRoute) and HOST_PARAMS & set(r.param_convertors)]
+    return [r for r in app.routes if isinstance(r, APIRoute) and set(GUARD_FOR_PARAM) & set(r.param_convertors)]
 
 
 def _route_deps(route):
@@ -25,8 +26,14 @@ def _route_deps(route):
 
 
 def test_every_host_path_route_is_guarded():
-    missing = [f"{sorted(r.methods)} {r.path}" for r in _host_routes() if not GUARDS & set(_route_deps(r))]
-    assert not missing, "host routes without require_host_access:\n" + "\n".join(missing)
+    """Each host param needs its own guard: the guards are Path()-bound to their param name."""
+    missing = [
+        f"{sorted(r.methods)} {r.path} (needs {guard.__name__})"
+        for r in _host_routes()
+        for param, guard in GUARD_FOR_PARAM.items()
+        if param in r.param_convertors and guard not in _route_deps(r)
+    ]
+    assert not missing, "host routes without the matching guard:\n" + "\n".join(missing)
 
 
 def test_host_guard_runs_after_capability_guard():

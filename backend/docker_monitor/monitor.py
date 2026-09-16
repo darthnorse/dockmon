@@ -19,6 +19,8 @@ from fastapi import HTTPException
 
 from config.paths import DATABASE_PATH, CERTS_DIR
 from database import DatabaseManager, AutoRestartConfig, GlobalSettings, DockerHostDB, Agent
+from agent.models import AgentSystemInfo
+from pydantic import ValidationError
 from models.docker_models import DockerHost, DockerHostConfig, Container
 from models.settings_models import NotificationSettings
 from websocket.connection import ConnectionManager
@@ -2490,6 +2492,12 @@ class DockerMonitor:
         else:
             logger.debug("Host system info refresh complete: no changes detected")
 
+    # Concurrent get_system_info requests during the nightly refresh. Bounded so
+    # a large fleet does not fan out unboundedly, but wide enough that one
+    # unresponsive agent's timeout does not stall the maintenance job behind it.
+    _AGENT_SYSTEM_INFO_CONCURRENCY = 5
+    _AGENT_SYSTEM_INFO_TIMEOUT = 10.0
+
     async def _refresh_agent_hosts_system_info(self) -> int:
         """
         Refresh system information for all connected agent hosts.
@@ -2506,74 +2514,86 @@ class DockerMonitor:
         from agent.connection_manager import agent_connection_manager
 
         executor = get_agent_command_executor()
-        updated_count = 0
 
-        # Get all agents from database
         with self.db.get_session() as session:
-            agents = session.query(Agent).all()
-            agent_data = [(a.id, a.host_id) for a in agents]
+            agent_data = [(a.id, a.host_id) for a in session.query(Agent).all()]
 
-        for agent_id, host_id in agent_data:
-            try:
-                # Check if agent is connected
-                if not agent_connection_manager.is_connected(agent_id):
-                    logger.debug(f"Agent {agent_id[:8]}... not connected, skipping system info refresh")
-                    continue
+        connected = [
+            (agent_id, host_id) for agent_id, host_id in agent_data
+            if agent_connection_manager.is_connected(agent_id)
+        ]
+        semaphore = asyncio.Semaphore(self._AGENT_SYSTEM_INFO_CONCURRENCY)
 
-                result = await executor.execute_command(
-                    agent_id,
-                    {"type": "command", "command": "get_system_info"},
-                    timeout=10.0,
-                )
+        async def refresh_one(agent_id: str, host_id: str) -> int:
+            async with semaphore:
+                try:
+                    return await self._refresh_agent_host_system_info(executor, agent_id, host_id)
+                except Exception as e:
+                    logger.error(f"Failed to refresh system info for agent {agent_id[:8]}...: {e}")
+                    return 0
 
-                if not result.success:
-                    # Agents predating the command answer "unknown command"; that is a
-                    # fleet mid-upgrade, and registration keeps their record fresh.
-                    if result.error and "unknown command" in result.error:
-                        logger.debug(f"Agent {agent_id[:8]}... predates get_system_info, skipping")
-                    else:
-                        logger.warning(f"Agent {agent_id[:8]}... returned error for system info: {result.error}")
-                    continue
-
-                sys_info = result.response
-                if not isinstance(sys_info, dict) or not sys_info:
-                    logger.warning(f"Agent {agent_id[:8]}... returned malformed system info: {sys_info!r}")
-                    continue
-
-                # Update database host record
-                with self.db.get_session() as session:
-                    db_host = session.query(DockerHostDB).filter(DockerHostDB.id == host_id).first()
-                    if db_host:
-                        # Check if anything changed (avoid unnecessary writes)
-                        changed = (
-                            sys_info.get('os_type') != db_host.os_type or
-                            sys_info.get('os_version') != db_host.os_version or
-                            sys_info.get('kernel_version') != db_host.kernel_version or
-                            sys_info.get('docker_version') != db_host.docker_version or
-                            sys_info.get('daemon_started_at') != db_host.daemon_started_at or
-                            sys_info.get('total_memory') != db_host.total_memory or
-                            sys_info.get('num_cpus') != db_host.num_cpus
-                        )
-
-                        if changed:
-                            db_host.os_type = sys_info.get('os_type')
-                            db_host.os_version = sys_info.get('os_version')
-                            db_host.kernel_version = sys_info.get('kernel_version')
-                            db_host.docker_version = sys_info.get('docker_version')
-                            db_host.daemon_started_at = sys_info.get('daemon_started_at')
-                            db_host.total_memory = sys_info.get('total_memory')
-                            db_host.num_cpus = sys_info.get('num_cpus')
-                            session.commit()
-
-                            logger.info(f"Refreshed system info for agent host {db_host.name} ({host_id[:8]}): {sys_info.get('os_version')} / Docker {sys_info.get('docker_version')}")
-                            updated_count += 1
-                        else:
-                            logger.debug(f"System info unchanged for agent host {db_host.name} ({host_id[:8]})")
-
-            except Exception as e:
-                logger.error(f"Failed to refresh system info for agent {agent_id[:8]}...: {e}")
+        results = await asyncio.gather(*(refresh_one(a, h) for a, h in connected))
+        updated_count = sum(results)
 
         if updated_count > 0:
             logger.info(f"Agent host system info refresh: {updated_count} updated")
 
         return updated_count
+
+    async def _refresh_agent_host_system_info(self, executor, agent_id: str, host_id: str) -> int:
+        """Ask one agent for its host facts and apply them. Returns 1 if the row changed."""
+        result = await executor.execute_command(
+            agent_id,
+            {"type": "command", "command": "get_system_info"},
+            timeout=self._AGENT_SYSTEM_INFO_TIMEOUT,
+        )
+
+        if not result.success:
+            # Agents predating the command answer "unknown command"; that is a
+            # fleet mid-upgrade, and registration keeps their record fresh.
+            if result.error and "unknown command" in result.error:
+                logger.debug(f"Agent {agent_id[:8]}... predates get_system_info, skipping")
+            else:
+                logger.warning(f"Agent {agent_id[:8]}... returned error for system info: {result.error}")
+            return 0
+
+        if not isinstance(result.response, dict):
+            logger.warning(f"Agent {agent_id[:8]}... returned malformed system info ({type(result.response).__name__})")
+            return 0
+
+        # The agent's payload carries every key, zero-valued when unknown (e.g. no
+        # daemon start time without a "bridge" network). Like registration, an
+        # empty value never overwrites a stored one.
+        incoming = {
+            k: v for k, v in result.response.items()
+            if k in AgentSystemInfo.model_fields and v not in (None, "", 0)
+        }
+        try:
+            sys_info = AgentSystemInfo(**incoming).model_dump(exclude_none=True)
+        except ValidationError as e:
+            logger.warning(
+                f"Agent {agent_id[:8]}... returned invalid system info: "
+                f"{'; '.join(f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors())}"
+            )
+            return 0
+        if not sys_info:
+            return 0
+
+        with self.db.get_session() as session:
+            db_host = session.query(DockerHostDB).filter(DockerHostDB.id == host_id).first()
+            if not db_host:
+                return 0
+
+            changed = {k: v for k, v in sys_info.items() if getattr(db_host, k) != v}
+            if not changed:
+                logger.debug(f"System info unchanged for agent host {db_host.name} ({host_id[:8]})")
+                return 0
+
+            for k, v in changed.items():
+                setattr(db_host, k, v)
+            session.commit()
+            logger.info(
+                f"Refreshed system info for agent host {db_host.name} ({host_id[:8]}): "
+                f"{sys_info.get('os_version')} / Docker {sys_info.get('docker_version')}"
+            )
+            return 1

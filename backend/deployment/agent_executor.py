@@ -870,9 +870,11 @@ class AgentDeploymentExecutor:
             deployment_id: Deployment composite ID
             services: List of service status dicts with name, status, image, message
         """
+        host_id, _ = self._parse_transient_id(deployment_id)
         payload = {
             "type": "deployment_service_progress",
             "deployment_id": deployment_id,
+            "host_id": host_id,
             "services": services,
         }
 

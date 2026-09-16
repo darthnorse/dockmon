@@ -76,7 +76,7 @@ from models.request_models import (
 from audit.audit_logger import AuditAction, AuditEntityType, log_audit, log_container_action, log_host_change, log_settings_change, get_client_info
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, get_capabilities_for_user, Capabilities, get_visible_host_ids_for_auth, filter_visible_hosts
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, get_capabilities_for_user, Capabilities, get_visible_host_ids_for_auth, get_visible_host_ids_for_groups, get_user_group_ids, filter_visible_hosts
 from auth.utils import get_auditable_user_info
 from websocket.connection import ConnectionManager, DateTimeEncoder
 from websocket.rate_limiter import ws_rate_limiter
@@ -87,7 +87,7 @@ from utils.keys import make_composite_key
 from utils.encryption import encrypt_password, decrypt_password
 from utils.async_docker import async_docker_call, async_client_ping, async_client_version, async_containers_list
 from utils.base_path import get_base_path
-from utils.response_filtering import filter_container_env, filter_container_inspect_env, filter_ws_container_message
+from utils.response_filtering import filter_container_env, filter_container_inspect_env, filter_ws_container_message, filter_ws_host_visibility
 from utils.host_ips import deserialize_host_ips
 from utils.client_ip import get_client_ip_ws
 from utils.networks import BUILTIN_NETWORKS, format_network, create_network_local
@@ -6089,6 +6089,21 @@ async def _validate_ws_user(db_manager, websocket: WebSocket, user_id: int, labe
     return True
 
 
+def _find_container_host(containers, container_id: str) -> Optional[str]:
+    """Host of a container by short or full id; None if unknown."""
+    for c in containers:
+        if c.short_id == container_id or c.id == container_id:
+            return c.host_id
+    return None
+
+
+def _resolve_ws_visible_hosts(user_id: Optional[int]) -> Optional[set]:
+    """WebSocket auth is session-only, so scope resolves through the user's groups."""
+    if user_id is None:
+        return set()
+    return get_visible_host_ids_for_groups(get_user_group_ids(user_id))
+
+
 @app.websocket("/ws")
 @app.websocket("/ws/")
 async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = Cookie(None)):
@@ -6127,7 +6142,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
     try:
         # Accept connection and subscribe to events
         # Pass user_id for per-connection capability filtering
-        await monitor.manager.connect(websocket, user_id=user_id, capabilities=user_caps)
+        generation = monitor.manager.visibility_generation
+        visible_hosts = _resolve_ws_visible_hosts(user_id)
+        await monitor.manager.connect(websocket, user_id=user_id, capabilities=user_caps, visible_host_ids=visible_hosts)
+        if monitor.manager.visibility_generation != generation:
+            # A scope/membership refresh ran while we resolved: re-resolve so it is not lost
+            visible_hosts = _resolve_ws_visible_hosts(user_id)
+            await monitor.manager.set_visible_hosts(websocket, visible_hosts)
         await monitor.realtime.subscribe_to_events(websocket)
 
         # Event-driven stats control: Start stats streams when first viewer connects
@@ -6182,11 +6203,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         # Get current blackout window status
         is_blackout, window_name = monitor.notification_service.blackout_manager.is_in_blackout_window()
 
-        containers_data = await monitor.get_containers()
+        visible_hosts = monitor.manager.get_visible_hosts(websocket)
+        containers_data = filter_visible_hosts(await monitor.get_containers(), visible_hosts, lambda c: c.host_id)
+        visible_host_models = [h for host_id, h in monitor.hosts.items() if visible_hosts is None or host_id in visible_hosts]
         initial_state = {
             "type": "initial_state",
             "data": {
-                "hosts": [h.dict() for h in monitor.hosts.values()] if "hosts.view" in user_caps else [],
+                "hosts": [h.dict() for h in visible_host_models] if "hosts.view" in user_caps else [],
                 "containers": filter_container_env(containers_data, can_view_env) if "containers.view" in user_caps else [],
                 "settings": settings_dict,
                 "blackout": {
@@ -6241,19 +6264,22 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
             if message.get("type") == "subscribe_stats":
                 container_id = message.get("container_id")
                 if container_id and "containers.view" in user_caps:
-                    await monitor.realtime.subscribe_to_stats(websocket, container_id)
-                    # Find the host and start monitoring
-                    # CRITICAL: Use async wrapper to prevent blocking event loop
-                    for host_id, client in monitor.clients.items():
+                    host_id = _find_container_host(await monitor.get_containers(), container_id)
+                    visible_hosts = monitor.manager.get_visible_hosts(websocket)
+                    if host_id is None or (visible_hosts is not None and host_id not in visible_hosts):
+                        logger.info(f"subscribe_stats refused for {container_id[:12]}: container not visible to user {user_id}")
+                        continue
+                    await monitor.realtime.subscribe_to_stats(websocket, container_id, host_id)
+                    client = monitor.clients.get(host_id)
+                    if client is not None:
                         try:
+                            # CRITICAL: Use async wrapper to prevent blocking event loop
                             await async_docker_call(client.containers.get, container_id)
                             await monitor.realtime.start_container_stats_stream(
                                 client, container_id, interval=2
                             )
-                            break
                         except Exception as e:
                             logger.debug(f"Container {container_id} not found on host {host_id[:8]}: {e}")
-                            continue
 
             elif message.get("type") == "unsubscribe_stats":
                 container_id = message.get("container_id")
@@ -6268,8 +6294,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
                     # Verify container exists and user has access to it
                     try:
                         containers = await monitor.get_containers()  # Must await async function
+                        visible_hosts = monitor.manager.get_visible_hosts(websocket)
                         # Match by short_id (12 chars) or full id (64 chars) - agent containers use both
-                        container_exists = any(
+                        container_exists = (visible_hosts is None or host_id in visible_hosts) and any(
                             (c.short_id == container_id or c.id == container_id) and c.host_id == host_id
                             for c in containers
                         )
@@ -6390,6 +6417,12 @@ async def websocket_shell_endpoint(
             }
         )
         await websocket.close(code=4003, reason="Shell access denied - requires containers.shell capability")
+        return
+
+    visible_hosts = _resolve_ws_visible_hosts(user_id)
+    if visible_hosts is not None and host_id not in visible_hosts:
+        logger.info(f"Shell WebSocket refused for user {username}: host {host_id!r} not visible")
+        await websocket.close(code=4404, reason="Not found")
         return
 
     # Validate host exists

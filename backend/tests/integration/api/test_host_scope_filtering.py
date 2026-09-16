@@ -20,7 +20,7 @@ from auth.api_key_auth import (
     invalidate_user_groups_cache,
 )
 from auth.capabilities import ALL_CAPABILITIES
-from database import Agent, ApiKey, CustomGroup, DockerHostDB, GroupPermission, GroupTagScope, Tag, TagAssignment, User
+from database import Agent, ApiKey, CustomGroup, DockerHostDB, GroupPermission, GroupTagScope, Tag, TagAssignment, User, UserGroupMembership
 from main import app
 from models.docker_models import Container, DockerHost
 
@@ -240,3 +240,114 @@ class TestAgentListEndpoint:
         assert response.json()["agents"] == []
         assert response.json()["total"] == 0
         assert response.json()["connected_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# WebSocket /ws: session-cookie auth, per-connection visible set
+# ---------------------------------------------------------------------------
+
+def _session_user(session, username: str, group: CustomGroup) -> User:
+    user = User(username=username, password_hash="$2b$12$test_hash_not_real", created_at=datetime.now(timezone.utc))
+    session.add(user)
+    session.flush()
+    session.add(UserGroupMembership(user_id=user.id, group_id=group.id))
+    session.commit()
+    return user
+
+
+@pytest.fixture
+def ws_sessions(db_session, seeded_hosts, monkeypatch):
+    """Map cookie value -> session dict for the users below; monkeypatches session validation."""
+    admin = _session_user(db_session, "ws_admin", _group_with_all_caps(db_session, "WS Unrestricted"))
+    dev = _session_user(db_session, "ws_dev", _group_with_all_caps(db_session, "WS Dev", seeded_hosts["dev"]))
+    sessions = {
+        "admin-cookie": {"user_id": admin.id, "username": admin.username},
+        "dev-cookie": {"user_id": dev.id, "username": dev.username},
+    }
+    monkeypatch.setattr(
+        "auth.cookie_sessions.cookie_session_manager.validate_session",
+        lambda session_id, client_ip: sessions.get(session_id),
+    )
+    monkeypatch.setattr(main_module.monitor, "get_last_containers", lambda: [])
+    return {"admin": admin, "dev": dev}
+
+
+def _connect(client: TestClient, cookie: str):
+    return client.websocket_connect("/ws", cookies={"session_id": cookie})
+
+
+def _drain_until(ws, msg_type: str, limit: int = 5):
+    for _ in range(limit):
+        message = ws.receive_json()
+        if message["type"] == msg_type:
+            return message
+    raise AssertionError(f"no {msg_type} message received")
+
+
+@pytest.mark.integration
+class TestWebSocketVisibility:
+    def test_initial_state_and_immediate_update_are_scoped(self, client, ws_sessions):
+        with _connect(client, "dev-cookie") as ws:
+            initial = _drain_until(ws, "initial_state")
+            assert [h["id"] for h in initial["data"]["hosts"]] == ["h1"]
+            assert {c["host_id"] for c in initial["data"]["containers"]} == {"h1"}
+            update = _drain_until(ws, "containers_update")
+            assert {c["host_id"] for c in update["data"]["containers"]} == {"h1"}
+            assert all(k.startswith("h1:") for k in update["data"]["container_sparklines"])
+
+    def test_unrestricted_initial_state_has_everything(self, client, ws_sessions):
+        with _connect(client, "admin-cookie") as ws:
+            initial = _drain_until(ws, "initial_state")
+            assert {h["id"] for h in initial["data"]["hosts"]} == {"h1", "h2", "h3"}
+            assert {c["host_id"] for c in initial["data"]["containers"]} == {"h1", "h2", "h3"}
+
+    def test_broadcasts_for_hidden_hosts_are_not_delivered(self, client, ws_sessions):
+        manager = main_module.monitor.manager
+        with _connect(client, "dev-cookie") as ws:
+            _drain_until(ws, "containers_update")
+            ws.portal.call(manager.broadcast, {"type": "host_status_changed", "data": {"host_id": "h2", "status": "offline"}})
+            ws.portal.call(manager.broadcast, {"type": "new_event", "event": {"category": "container", "host_id": "h2", "container_id": "x"}})
+            ws.portal.call(manager.broadcast, {"type": "host_status_changed", "data": {"host_id": "h1", "status": "offline"}})
+            delivered = ws.receive_json()
+            assert delivered == {"type": "host_status_changed", "data": {"host_id": "h1", "status": "offline"}}
+
+    def test_subscribe_stats_for_hidden_container_is_refused(self, client, ws_sessions):
+        realtime = main_module.monitor.realtime
+        with _connect(client, "dev-cookie") as ws:
+            _drain_until(ws, "containers_update")
+            ws.send_json({"type": "subscribe_stats", "container_id": "ccc333333333"})
+            ws.send_json({"type": "subscribe_stats", "container_id": "aaa111111111"})
+            ws.send_json({"type": "ping"})
+            assert ws.receive_json() == {"type": "pong"}
+            assert set(realtime.stats_subscribers) == {"aaa111111111"}
+            assert realtime.subscription_hosts[(next(iter(realtime.stats_subscribers["aaa111111111"])), "aaa111111111")] == "h1"
+
+    def test_scope_tightened_while_subscribed_revokes_stream(self, client, ws_sessions, db_session):
+        realtime = main_module.monitor.realtime
+        manager = main_module.monitor.manager
+        with _connect(client, "dev-cookie") as ws:
+            _drain_until(ws, "containers_update")
+            ws.send_json({"type": "subscribe_stats", "container_id": "aaa111111111"})
+            ws.send_json({"type": "ping"})
+            assert ws.receive_json() == {"type": "pong"}
+            assert "aaa111111111" in realtime.stats_subscribers
+
+            db_session.query(TagAssignment).filter_by(subject_id="h1").delete()
+            db_session.commit()
+            ws.portal.call(manager.refresh_visible_hosts_for_user, ws_sessions["dev"].id)
+
+            assert "aaa111111111" not in realtime.stats_subscribers
+            ws.send_json({"type": "subscribe_stats", "container_id": "aaa111111111"})
+            ws.send_json({"type": "ping"})
+            assert ws.receive_json() == {"type": "pong"}
+            assert "aaa111111111" not in realtime.stats_subscribers
+
+
+@pytest.mark.integration
+class TestShellWebSocketVisibility:
+    def test_hidden_host_closes_with_4404(self, client, ws_sessions):
+        from starlette.websockets import WebSocketDisconnect
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect("/ws/shell/h2/ccc333333333", cookies={"session_id": "dev-cookie"}):
+                pass
+        assert exc.value.code == 4404

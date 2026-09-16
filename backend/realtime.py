@@ -44,20 +44,32 @@ class RealtimeMonitor:
 
     def __init__(self):
         self.stats_subscribers: Dict[str, Set[Any]] = {}  # container_id -> set of websockets
+        self.subscription_hosts: Dict[tuple, str] = {}  # (websocket, container_id) -> host_id, for scope revocation
         self.event_subscribers: Set[Any] = set()  # websockets listening to all events
         self.monitoring_tasks: Dict[str, asyncio.Task] = {}
         self.connection_manager = None  # Set by monitor after initialization
 
-    async def subscribe_to_stats(self, websocket: Any, container_id: str):
+    async def subscribe_to_stats(self, websocket: Any, container_id: str, host_id: Optional[str] = None):
         """Subscribe a websocket to container stats"""
         if container_id not in self.stats_subscribers:
             self.stats_subscribers[container_id] = set()
 
         self.stats_subscribers[container_id].add(websocket)
+        if host_id is not None:
+            self.subscription_hosts[(websocket, container_id)] = host_id
         logger.info(f"WebSocket subscribed to stats for container {container_id}")
+
+    async def revoke_hidden_subscriptions(self, websocket: Any, visible: Optional[Set[str]]):
+        """Drop this socket's stats subscriptions whose host is no longer visible."""
+        if visible is None:
+            return
+        for (ws, container_id), host_id in list(self.subscription_hosts.items()):
+            if ws is websocket and host_id not in visible:
+                await self.unsubscribe_from_stats(websocket, container_id)
 
     async def unsubscribe_from_stats(self, websocket: Any, container_id: str):
         """Unsubscribe a websocket from container stats"""
+        self.subscription_hosts.pop((websocket, container_id), None)
         if container_id in self.stats_subscribers:
             self.stats_subscribers[container_id].discard(websocket)
             if not self.stats_subscribers[container_id]:
@@ -111,10 +123,15 @@ class RealtimeMonitor:
                 dead_sockets = []
                 for websocket in self.stats_subscribers.get(container_id, []):
                     try:
-                        # Defense-in-depth: verify subscriber still has containers.view
+                        # Defense-in-depth: verify subscriber still has containers.view and host scope
                         if self.connection_manager:
                             caps = self.connection_manager._connection_capabilities.get(websocket, set())
                             if "containers.view" not in caps:
+                                dead_sockets.append(websocket)
+                                continue
+                            visible = self.connection_manager.get_visible_hosts(websocket)
+                            host_id = self.subscription_hosts.get((websocket, container_id))
+                            if visible is not None and host_id not in visible:
                                 dead_sockets.append(websocket)
                                 continue
                         await websocket.send_text(json.dumps({

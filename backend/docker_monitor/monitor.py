@@ -298,6 +298,7 @@ class DockerMonitor:
         self.manager = ConnectionManager()
         self.realtime = RealtimeMonitor()  # Real-time monitoring
         self.realtime.connection_manager = self.manager
+        self.manager.realtime = self.realtime
         self.event_logger = EventLogger(self.db, self.manager)  # Event logging service with WebSocket support
         self.notification_service = NotificationService(self.db, self.event_logger)  # Notification service (v1 - for channels only)
         self._container_states: Dict[str, str] = {}  # Track container states for change detection
@@ -2115,6 +2116,7 @@ class DockerMonitor:
                 await self.manager.broadcast({
                     "type": "auto_restart_success",
                     "data": {
+                        "host_id": container.host_id,
                         "container_id": container_id,
                         "container_name": container.name,
                         "host": container.host_name
@@ -2141,6 +2143,7 @@ class DockerMonitor:
                 await self.manager.broadcast({
                     "type": "auto_restart_failed",
                     "data": {
+                        "host_id": container.host_id,
                         "container_id": container_id,
                         "container_name": container.name,
                         "attempts": attempt,

@@ -76,7 +76,7 @@ from models.request_models import (
 from audit.audit_logger import AuditAction, AuditEntityType, log_audit, log_container_action, log_host_change, log_settings_change, get_client_info
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, get_capabilities_for_user, Capabilities
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, get_capabilities_for_user, Capabilities, get_visible_host_ids_for_auth, filter_visible_hosts
 from auth.utils import get_auditable_user_info
 from websocket.connection import ConnectionManager, DateTimeEncoder
 from websocket.rate_limiter import ws_rate_limiter
@@ -631,7 +631,8 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
     - connection_type: "agent" or "remote"
     - agent: {id, version, capabilities, status, connected, last_seen_at, registered_at}
     """
-    hosts = list(monitor.hosts.values())
+    visible = get_visible_host_ids_for_auth(current_user)
+    hosts = [h for host_id, h in monitor.hosts.items() if visible is None or host_id in visible]
 
     # Enrich hosts with agent information
     with monitor.db.get_session() as db:
@@ -705,7 +706,7 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
             enriched_hosts.append(host_dict)
 
         # Add agent-only hosts that aren't in monitor.hosts
-        for agent_host in agent_hosts_db:
+        for agent_host in filter_visible_hosts(agent_hosts_db, visible, lambda h: h.id):
             if agent_host.id not in seen_host_ids:
                 agent = agent_by_host.get(agent_host.id)
 
@@ -1961,6 +1962,7 @@ async def get_containers(host_id: Optional[str] = None, current_user: dict = Dep
     Note: Environment variables are filtered for users without containers.view_env capability (v2.3.0+).
     """
     containers = await monitor.get_containers(host_id)
+    containers = filter_visible_hosts(containers, get_visible_host_ids_for_auth(current_user), lambda c: c.host_id)
 
     # Filter env vars for users without containers.view_env capability
     can_view_env = check_auth_capability(current_user, Capabilities.CONTAINERS_VIEW_ENV)

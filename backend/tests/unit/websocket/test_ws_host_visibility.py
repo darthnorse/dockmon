@@ -11,12 +11,12 @@ event_type). A new emitter must be added here AND classified in both maps.
 """
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import websocket.connection as connection_module
-from realtime import RealtimeMonitor
+from realtime import ContainerStats, RealtimeMonitor
 from utils.response_filtering import DROP, PRUNE, WS_HOST_VISIBILITY, filter_ws_host_visibility
 from websocket.connection import MESSAGE_CAPABILITY_MAP, ConnectionManager
 
@@ -331,3 +331,37 @@ class TestRealtimeRevocation:
         assert realtime.stats_subscribers == {"h1:aaa111111111": {ws1}, "h2:aaa111111111": {ws2}}
         await realtime.unsubscribe_from_stats(ws1, "aaa111111111")
         assert realtime.stats_subscribers == {"h2:aaa111111111": {ws2}}
+
+
+class TestBroadcastResilience:
+    async def test_transform_failure_skips_only_that_connection(self):
+        broken, healthy = FakeWebSocket(), FakeWebSocket()
+        manager = await _manager_with((broken, 1, ALL_CAPS, None), (healthy, 2, ALL_CAPS, None))
+
+        def explode(message, user_id):
+            if user_id == 1:
+                raise RuntimeError("cache down")
+            return message
+
+        with patch.object(manager, "_filter_container_message", side_effect=explode):
+            await manager.broadcast(CONTAINERS_UPDATE, filter_containers=True)
+        assert broken.sent == []
+        assert healthy.sent == [CONTAINERS_UPDATE]
+        assert broken in manager.active_connections
+
+
+class TestLegacyStatsStream:
+    async def test_container_stats_payload_names_its_host(self):
+        ws = FakeWebSocket()
+        ws.send_text = AsyncMock(side_effect=[None, RuntimeError("closed")])
+        realtime = RealtimeMonitor()
+        await realtime.subscribe_to_stats(ws, "aaa111111111", "h1")
+        client = MagicMock()
+        client.containers.get.return_value = MagicMock(status="running")
+        stats = ContainerStats("aaa111111111", 1.0, 1.0, 1.0, 1.0, 0, 0, 0, 0, 1, "t")
+        with patch.object(realtime, "_calculate_container_stats_async", AsyncMock(return_value=stats)):
+            await realtime._monitor_container_stats(client, "aaa111111111", "h1", interval=0)
+        first = json.loads(ws.send_text.await_args_list[0].args[0])
+        assert first["type"] == "container_stats"
+        assert first["host_id"] == "h1"
+        assert first["data"]["container_id"] == "aaa111111111"

@@ -152,6 +152,7 @@ class RealtimeMonitor:
                                 continue
                         await websocket.send_text(json.dumps({
                             "type": "container_stats",
+                            "host_id": host_id,
                             "data": asdict(stats)
                         }, cls=DateTimeEncoder))
                     except Exception as e:

@@ -321,6 +321,20 @@ class TestWebSocketVisibility:
             assert ws.receive_json() == {"type": "pong"}
             assert set(realtime.stats_subscribers) == {"h1:aaa111111111"}
 
+    def test_subscribe_with_explicit_host_must_match_the_pair(self, client, ws_sessions):
+        realtime = main_module.monitor.realtime
+        with _connect(client, "admin-cookie") as ws:
+            _drain_until(ws, "containers_update")
+            ws.send_json({"type": "subscribe_stats", "container_id": "aaa111111111", "host_id": "h2"})
+            ws.send_json({"type": "subscribe_stats", "container_id": "ccc333333333", "host_id": "h2"})
+            ws.send_json({"type": "ping"})
+            assert ws.receive_json() == {"type": "pong"}
+            assert set(realtime.stats_subscribers) == {"h2:ccc333333333"}
+            ws.send_json({"type": "unsubscribe_stats", "container_id": "ccc333333333", "host_id": "h1"})
+            ws.send_json({"type": "ping"})
+            assert ws.receive_json() == {"type": "pong"}
+            assert set(realtime.stats_subscribers) == {"h2:ccc333333333"}
+
     def test_non_string_container_id_does_not_close_the_socket(self, client, ws_sessions):
         with _connect(client, "dev-cookie") as ws:
             _drain_until(ws, "containers_update")

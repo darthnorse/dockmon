@@ -6089,10 +6089,11 @@ async def _validate_ws_user(db_manager, websocket: WebSocket, user_id: int, labe
     return True
 
 
-def _find_container_host(containers, container_id: str) -> Optional[str]:
-    """Host of a container by short or full id; None if unknown."""
+def _find_container_host(containers, container_id: str, host_id: Optional[str] = None) -> Optional[str]:
+    """Host of a container by short id; None if unknown. With host_id the pair must
+    match exactly (equal short ids can exist on cloned hosts)."""
     for c in containers:
-        if c.short_id == container_id or c.id == container_id:
+        if c.short_id == container_id and (host_id is None or c.host_id == host_id):
             return c.host_id
     return None
 
@@ -6256,8 +6257,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
             # Handle different message types
             if message.get("type") == "subscribe_stats":
                 container_id = message.get("container_id")
+                requested_host = message.get("host_id")
                 if isinstance(container_id, str) and container_id and "containers.view" in user_caps:
-                    host_id = _find_container_host(await monitor.get_containers(), container_id)
+                    container_id = normalize_container_id(container_id)
+                    host_id = _find_container_host(
+                        await monitor.get_containers(), container_id,
+                        requested_host if isinstance(requested_host, str) else None,
+                    )
                     visible_hosts = monitor.manager.get_visible_hosts(websocket)
                     if host_id is None or (visible_hosts is not None and host_id not in visible_hosts):
                         logger.info(f"subscribe_stats refused for {container_id[:12]}: container not visible to user {user_id}")
@@ -6276,8 +6282,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
 
             elif message.get("type") == "unsubscribe_stats":
                 container_id = message.get("container_id")
+                requested_host = message.get("host_id")
                 if isinstance(container_id, str) and container_id:
-                    await monitor.realtime.unsubscribe_from_stats(websocket, container_id)
+                    await monitor.realtime.unsubscribe_from_stats(
+                        websocket, normalize_container_id(container_id),
+                        requested_host if isinstance(requested_host, str) else None,
+                    )
 
             elif message.get("type") == "modal_opened":
                 # Track that a container modal is open - keep stats running for this container

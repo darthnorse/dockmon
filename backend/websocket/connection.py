@@ -172,13 +172,19 @@ class ConnectionManager:
                 if required_cap not in conn_caps:
                     continue
 
-            outgoing = self._scope_message(message, msg_type, visible_snapshot.get(connection))
-            if outgoing is None:
-                continue
-            if filter_containers and msg_type == "containers_update":
-                outgoing = self._filter_container_message(outgoing, user_ids_snapshot.get(connection))
             try:
-                await connection.send_text(json.dumps(outgoing, cls=DateTimeEncoder))
+                outgoing = self._scope_message(message, msg_type, visible_snapshot.get(connection))
+                if outgoing is None:
+                    continue
+                if filter_containers and msg_type == "containers_update":
+                    outgoing = self._filter_container_message(outgoing, user_ids_snapshot.get(connection))
+                payload = json.dumps(outgoing, cls=DateTimeEncoder)
+            except Exception:
+                # Withhold this message from this connection; only a failed send marks it dead
+                logger.exception(f"Failed to prepare WS message '{msg_type}' for a connection; skipped")
+                continue
+            try:
+                await connection.send_text(payload)
             except Exception as e:
                 logger.error(f"Error sending message: {e}")
                 dead_connections.append(connection)
@@ -204,14 +210,9 @@ class ConnectionManager:
         if rule is None:
             _warn_unmapped(msg_type)
             return None
-        try:
-            if rule is PRUNE:
-                return filter_ws_host_visibility(message, visible)
-            hosts = rule(message)
-        except Exception:
-            # A malformed server-side payload must not evict the connection; just withhold it
-            logger.exception(f"Host-visibility rule failed for WS type '{msg_type}'; message dropped")
-            return None
+        if rule is PRUNE:
+            return filter_ws_host_visibility(message, visible)
+        hosts = rule(message)
         if hosts is DROP or not hosts <= visible:
             return None
         return message

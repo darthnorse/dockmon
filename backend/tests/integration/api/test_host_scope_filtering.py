@@ -242,6 +242,45 @@ class TestAgentListEndpoint:
         assert response.json()["connected_count"] == 0
 
 
+@pytest.mark.integration
+class TestHostPathRoutesGuarded:
+    """require_host_access on real routes: hidden host -> 404, visible host -> not 404,
+    missing capability -> 403 regardless of visibility."""
+
+    def test_hidden_host_is_404_on_read_and_mutation_routes(self, dev_scoped_client):
+        assert dev_scoped_client.get("/api/hosts/h2/metrics").status_code == 404
+        assert dev_scoped_client.get("/api/hosts/h2/containers/ccc333333333/logs").status_code == 404
+        assert dev_scoped_client.post("/api/hosts/h2/containers/ccc333333333/restart").status_code == 404
+        assert dev_scoped_client.post("/api/deployments/scan-compose-dirs/h2", json={"path": "/tmp"}).status_code == 404
+
+    def test_visible_host_passes_the_guard(self, dev_scoped_client):
+        assert dev_scoped_client.get("/api/hosts/h1/metrics").status_code != 404
+
+    def test_orphan_gets_404_everywhere(self, orphan_client):
+        assert orphan_client.get("/api/hosts/h1/metrics").status_code == 404
+        assert orphan_client.get("/api/hosts/h3/metrics").status_code == 404
+
+    def test_unrestricted_reaches_every_host(self, unrestricted_client):
+        for host_id in ("h1", "h2", "h3"):
+            assert unrestricted_client.get(f"/api/hosts/{host_id}/metrics").status_code != 404
+
+    def test_missing_capability_is_403_even_for_hidden_host(self, client, db_session, seeded_hosts):
+        group = CustomGroup(name="NoCaps", description="scope test")
+        db_session.add(group)
+        db_session.flush()
+        db_session.add(GroupTagScope(group_id=group.id, tag_id=seeded_hosts["dev"].id))
+        db_session.flush()
+        nocaps = ScopedClient(client, _api_key_for(db_session, "nocaps_user", group))
+        assert nocaps.get("/api/hosts/h2/metrics").status_code == 403
+        assert nocaps.get("/api/hosts/h1/metrics").status_code == 403
+
+    def test_migrate_requires_both_ends_visible(self, dev_scoped_client, unrestricted_client, seeded_agents):
+        assert dev_scoped_client.post("/api/agent/agent-h2/migrate-from/h1").status_code == 404
+        assert dev_scoped_client.post("/api/agent/agent-h1/migrate-from/h2").status_code == 404
+        assert dev_scoped_client.post("/api/agent/agent-h1/migrate-from/h1").status_code != 404
+        assert unrestricted_client.post("/api/agent/agent-h2/migrate-from/h1").status_code != 404
+
+
 # ---------------------------------------------------------------------------
 # WebSocket /ws: session-cookie auth, per-connection visible set
 # ---------------------------------------------------------------------------

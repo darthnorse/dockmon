@@ -23,7 +23,7 @@ from database import Deployment, DatabaseManager, DeploymentMetadata, DockerHost
 from deployment import DeploymentExecutor
 from deployment import stack_storage
 from deployment.compose_generator import generate_compose_from_deployment, generate_compose_from_containers
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, require_host_access
 from audit.audit_logger import AuditAction, log_stack_change
 from auth.utils import get_auditable_user_info
 from utils.keys import parse_composite_key
@@ -1218,7 +1218,7 @@ async def import_deployment(
 
 # ==================== Scan Compose Dirs Endpoint ====================
 
-@router.post("/scan-compose-dirs/{host_id}", response_model=ScanComposeDirsResponse, dependencies=[Depends(require_capability("stacks.view"))])
+@router.post("/scan-compose-dirs/{host_id}", response_model=ScanComposeDirsResponse, dependencies=[Depends(require_capability("stacks.view")), Depends(require_host_access)])
 async def scan_compose_dirs(
     host_id: str,
     request: Optional[ScanComposeDirsRequest] = None,
@@ -1434,7 +1434,7 @@ async def _scan_agent_dirs(host_id: str, request: Optional[ScanComposeDirsReques
 
 # ==================== Read Compose File Endpoint ====================
 
-@router.post("/read-compose-file/{host_id}", response_model=ReadComposeFileResponse, dependencies=[Depends(require_capability("stacks.view_env"))])
+@router.post("/read-compose-file/{host_id}", response_model=ReadComposeFileResponse, dependencies=[Depends(require_capability("stacks.view_env")), Depends(require_host_access)])
 async def read_compose_file(
     host_id: str,
     request: ReadComposeFileRequest,

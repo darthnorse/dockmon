@@ -428,13 +428,9 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 
 	// Add system information if available (aligns with DockerHostDB schema)
 	if systemInfo != nil {
-		regMsg["os_type"] = systemInfo.OSType
-		regMsg["os_version"] = systemInfo.OSVersion
-		regMsg["kernel_version"] = systemInfo.KernelVersion
-		regMsg["docker_version"] = systemInfo.DockerVersion
-		regMsg["daemon_started_at"] = systemInfo.DaemonStartedAt
-		regMsg["total_memory"] = systemInfo.TotalMemory
-		regMsg["num_cpus"] = systemInfo.NumCPUs
+		for k, v := range systemInfoPayload(systemInfo) {
+			regMsg[k] = v
+		}
 
 		// Collect host IPs from all available sources
 		var hostIPs []string
@@ -956,6 +952,14 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 	case "prune_volumes":
 		// Prune all unused volumes (including named volumes)
 		result, err = c.docker.PruneVolumes(ctx)
+
+	case "get_system_info":
+		// The backend's nightly host-card refresh; registration sends the
+		// same payload, so a long-lived connection does not go stale.
+		var info *docker.SystemInfo
+		if info, err = c.docker.GetSystemInfo(ctx); err == nil {
+			result = systemInfoPayload(info)
+		}
 
 	default:
 		err = fmt.Errorf("unknown command: %s", msg.Command)

@@ -2420,6 +2420,8 @@ class DockerMonitor:
 
         # Refresh legacy hosts (existing logic)
         for host_id, host in list(self.hosts.items()):  # Use list() to avoid dict iteration issues
+            if host.connection_type == "agent":
+                continue  # handled above over the agent WebSocket; there is no Docker client
             try:
                 # Get client for this host
                 client = self.clients.get(host_id)
@@ -2493,13 +2495,17 @@ class DockerMonitor:
         Refresh system information for all connected agent hosts.
 
         Sends "get_system_info" command to each connected agent and updates database.
-        Aligns with legacy host refresh behavior (daily updates).
+        Aligns with legacy host refresh behavior (daily updates). Registration also
+        refreshes these fields, so this only matters for a connection that has
+        stayed up across a Docker or OS upgrade.
 
         Returns:
-            Number of agent hosts successfully refreshed
+            Number of agent hosts whose record changed
         """
+        from agent.command_executor import get_agent_command_executor
         from agent.connection_manager import agent_connection_manager
 
+        executor = get_agent_command_executor()
         updated_count = 0
 
         # Get all agents from database
@@ -2514,22 +2520,24 @@ class DockerMonitor:
                     logger.debug(f"Agent {agent_id[:8]}... not connected, skipping system info refresh")
                     continue
 
-                # Send get_system_info command
-                response = await agent_connection_manager.send_command(
+                result = await executor.execute_command(
                     agent_id,
-                    "get_system_info",
-                    {},
-                    timeout=10
+                    {"type": "command", "command": "get_system_info"},
+                    timeout=10.0,
                 )
 
-                if response.get("error"):
-                    logger.warning(f"Agent {agent_id[:8]}... returned error for system info: {response['error']}")
+                if not result.success:
+                    # Agents predating the command answer "unknown command"; that is a
+                    # fleet mid-upgrade, and registration keeps their record fresh.
+                    if result.error and "unknown command" in result.error:
+                        logger.debug(f"Agent {agent_id[:8]}... predates get_system_info, skipping")
+                    else:
+                        logger.warning(f"Agent {agent_id[:8]}... returned error for system info: {result.error}")
                     continue
 
-                # Extract system info from response
-                sys_info = response.get("result", {})
-                if not sys_info:
-                    logger.warning(f"Agent {agent_id[:8]}... returned empty system info")
+                sys_info = result.response
+                if not isinstance(sys_info, dict) or not sys_info:
+                    logger.warning(f"Agent {agent_id[:8]}... returned malformed system info: {sys_info!r}")
                     continue
 
                 # Update database host record

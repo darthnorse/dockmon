@@ -525,6 +525,19 @@ def require_capability(capability: str):
     return check_capability
 
 
+async def require_host_access(host_id: str, current_user: dict = Depends(get_current_user_or_api_key)):
+    """404 (not 403) when the caller cannot see host_id, so hidden ids are not enumerable.
+    Always listed AFTER require_capability in dependencies=[...]."""
+    visible = get_visible_host_ids_for_auth(current_user)
+    if visible is not None and host_id not in visible:
+        logger.info(f"{_get_auth_identifier(current_user, include_group=True)} denied host scope on {host_id}")
+        raise HTTPException(status_code=404, detail="Not found")
+
+
+async def require_source_host_access(source_host_id: str, current_user: dict = Depends(get_current_user_or_api_key)):
+    await require_host_access(source_host_id, current_user)
+
+
 # ==================== Group-Based Permissions ====================
 #
 # Group-based permission system for fine-grained access control.

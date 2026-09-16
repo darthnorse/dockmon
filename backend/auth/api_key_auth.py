@@ -23,7 +23,7 @@ from ipaddress import ip_address, ip_network
 from fastapi import Header, Cookie, Request, HTTPException, Depends
 from sqlalchemy.orm import Session
 
-from database import ApiKey, User, DatabaseManager, GroupPermission, UserGroupMembership, CustomGroup
+from database import ApiKey, User, DatabaseManager, GroupPermission, UserGroupMembership, CustomGroup, GroupTagScope, TagAssignment
 from sqlalchemy.orm import joinedload
 from auth.cookie_sessions import cookie_session_manager
 from auth.shared import db
@@ -545,6 +545,13 @@ _group_cache_lock = threading.RLock()  # RLock allows reentrant acquisition
 _user_groups_cache: dict[int, list[int]] = {}
 _user_groups_lock = threading.RLock()  # RLock allows reentrant acquisition
 
+# Host-visibility scopes: group_id -> set of tag ids. Holds ONLY groups that have
+# scope rows; a group absent from the cache is unrestricted, so group creation and
+# deletion need no hook.
+_group_tag_scopes_cache: dict[int, set[str]] = {}
+_group_tag_scopes_loaded = False
+_group_tag_scopes_lock = threading.RLock()
+
 
 def _load_group_permissions_cache() -> None:
     """
@@ -612,6 +619,81 @@ def invalidate_user_groups_cache(user_id: int = None) -> None:
         elif user_id in _user_groups_cache:
             del _user_groups_cache[user_id]
             logger.debug(f"User groups cache invalidated for user {user_id}")
+
+
+def _load_group_tag_scopes_cache() -> None:
+    global _group_tag_scopes_loaded
+
+    with _group_tag_scopes_lock:
+        _group_tag_scopes_cache.clear()
+        with db.get_session() as session:
+            for row in session.query(GroupTagScope.group_id, GroupTagScope.tag_id).all():
+                _group_tag_scopes_cache.setdefault(row.group_id, set()).add(row.tag_id)
+        _group_tag_scopes_loaded = True
+        logger.debug(f"Loaded group tag scopes cache: {len(_group_tag_scopes_cache)} scoped groups")
+
+
+def invalidate_group_tag_scopes_cache() -> None:
+    """Call after every GroupTagScope write and after a group delete."""
+    global _group_tag_scopes_loaded
+
+    with _group_tag_scopes_lock:
+        _group_tag_scopes_cache.clear()
+        _group_tag_scopes_loaded = False
+        logger.debug("Group tag scopes cache invalidated")
+
+
+def _hosts_with_any_tag(tag_ids: set[str]) -> set[str]:
+    if not tag_ids:
+        return set()
+    with db.get_session() as session:
+        rows = session.query(TagAssignment.subject_id).filter(
+            TagAssignment.subject_type == "host",
+            TagAssignment.tag_id.in_(tag_ids),
+        ).all()
+        return {r[0] for r in rows}
+
+
+def get_visible_host_ids_for_groups(group_ids) -> Optional[set[str]]:
+    """Union of the groups' tag scopes resolved to host ids.
+
+    None = unrestricted (any group without scope rows); set() = sees nothing;
+    non-empty = filter to these hosts. Callers must distinguish None from set().
+    Host tag assignments are read live, so re-tagging needs no invalidation.
+    """
+    if not group_ids:
+        return set()
+    accumulated: set[str] = set()
+    with _group_tag_scopes_lock:
+        if not _group_tag_scopes_loaded:
+            _load_group_tag_scopes_cache()
+        for gid in group_ids:
+            scope = _group_tag_scopes_cache.get(gid)
+            if not scope:
+                return None
+            accumulated |= scope
+    return _hosts_with_any_tag(accumulated)
+
+
+def get_visible_host_ids_for_auth(current_user: dict) -> Optional[set[str]]:
+    """API key -> its single group; session -> union of the user's groups.
+
+    Same principal model as get_effective_capabilities().
+    """
+    if current_user.get("auth_type") == "api_key":
+        group_id = current_user.get("group_id")
+        return get_visible_host_ids_for_groups([group_id]) if group_id is not None else set()
+    user_id = current_user.get("user_id")
+    if user_id is None:
+        return set()
+    return get_visible_host_ids_for_groups(get_user_group_ids(user_id))
+
+
+def filter_visible_hosts(items, visible: Optional[set[str]], key):
+    """Keep items whose key(item) host id is visible. None = pass through unchanged."""
+    if visible is None:
+        return items
+    return [item for item in items if key(item) in visible]
 
 
 def has_capability_for_group(group_id: int, capability: str) -> bool:

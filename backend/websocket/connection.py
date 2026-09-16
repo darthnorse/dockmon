@@ -166,7 +166,6 @@ class ConnectionManager:
         # Send messages without lock (IO can block)
         dead_connections = []
         for connection in connections:
-            # Skip connections that lack the required capability for this message type
             if required_cap is not None:
                 conn_caps = caps_snapshot.get(connection, set())
                 if required_cap not in conn_caps:

@@ -89,7 +89,6 @@ class RealtimeMonitor:
         subscribers.discard(websocket)
         if not subscribers:
             del self.stats_subscribers[key]
-            # Stop monitoring if no subscribers
             if key in self.monitoring_tasks:
                 self.monitoring_tasks[key].cancel()
                 del self.monitoring_tasks[key]

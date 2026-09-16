@@ -146,3 +146,45 @@ class TestFilterVisibleHosts:
         assert filter_visible_hosts(items, {"a", "c"}, lambda i: i["host_id"]) == [
             {"host_id": "a"}, {"host_id": "c"},
         ]
+
+
+class TestScopeCacheInvalidation:
+    """Scope rows are cached until invalidate_group_tag_scopes_cache(); host tag
+    assignments are never cached."""
+
+    def test_new_scope_row_is_stale_until_invalidated(self, fleet):
+        s = fleet["session"]
+        group = _group(s, "Grp")
+        assert get_visible_host_ids_for_groups([group.id]) is None
+
+        s.add(GroupTagScope(group_id=group.id, tag_id=fleet["dev"].id))
+        s.commit()
+        assert get_visible_host_ids_for_groups([group.id]) is None
+
+        invalidate_group_tag_scopes_cache()
+        assert get_visible_host_ids_for_groups([group.id]) == {"h-dev-1", "h-dev-2", "h-both"}
+
+    def test_deleting_last_scope_row_makes_group_unrestricted_after_invalidation(self, fleet):
+        s = fleet["session"]
+        group = _group(s, "Grp", fleet["dev"])
+        s.commit()
+        assert get_visible_host_ids_for_groups([group.id]) == {"h-dev-1", "h-dev-2", "h-both"}
+
+        s.query(GroupTagScope).filter_by(group_id=group.id).delete()
+        s.commit()
+        assert get_visible_host_ids_for_groups([group.id]) == {"h-dev-1", "h-dev-2", "h-both"}
+
+        invalidate_group_tag_scopes_cache()
+        assert get_visible_host_ids_for_groups([group.id]) is None
+
+    def test_host_retagging_is_visible_without_invalidation(self, fleet):
+        s = fleet["session"]
+        group = _group(s, "Grp", fleet["dev"])
+        s.commit()
+        assert "h-new" not in get_visible_host_ids_for_groups([group.id])
+
+        _tag_host(s, "h-new", fleet["dev"])
+        s.query(TagAssignment).filter_by(subject_id="h-dev-1").delete()
+        s.commit()
+
+        assert get_visible_host_ids_for_groups([group.id]) == {"h-dev-2", "h-both", "h-new"}

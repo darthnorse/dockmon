@@ -20,7 +20,7 @@ from auth.api_key_auth import (
     invalidate_user_groups_cache,
 )
 from auth.capabilities import ALL_CAPABILITIES
-from database import ApiKey, CustomGroup, GroupPermission, GroupTagScope, Tag, TagAssignment, User
+from database import Agent, ApiKey, CustomGroup, DockerHostDB, GroupPermission, GroupTagScope, Tag, TagAssignment, User
 from main import app
 from models.docker_models import Container, DockerHost
 
@@ -182,3 +182,61 @@ class TestContainersEndpoint:
         response = orphan_client.get("/api/containers")
         assert response.status_code == 200
         assert response.json() == []
+
+
+@pytest.fixture
+def seeded_agents(db_session, seeded_hosts):
+    for host_id, host in HOSTS.items():
+        db_session.add(DockerHostDB(id=host_id, name=host.name, url=host.url, connection_type="agent"))
+    db_session.flush()
+    for host_id in ("h1", "h2"):
+        db_session.add(Agent(
+            id=f"agent-{host_id}", host_id=host_id, engine_id=f"engine-{host_id}", version="1.0.0",
+            proto_version="1", capabilities={}, status="online",
+        ))
+    db_session.commit()
+
+
+@pytest.mark.integration
+class TestDashboardHostsEndpoint:
+    def test_unrestricted_sees_all_hosts(self, unrestricted_client):
+        response = unrestricted_client.get("/api/dashboard/hosts")
+        assert response.status_code == 200
+        data = response.json()
+        assert {h["id"] for h in data["groups"]["All Hosts"]} == {"h1", "h2", "h3"}
+        assert data["total_hosts"] == 3
+
+    def test_dev_scoped_sees_only_dev_host(self, dev_scoped_client):
+        response = dev_scoped_client.get("/api/dashboard/hosts")
+        assert response.status_code == 200
+        data = response.json()
+        assert {h["id"] for h in data["groups"]["All Hosts"]} == {"h1"}
+        assert data["total_hosts"] == 1
+
+    def test_orphan_sees_no_hosts(self, orphan_client):
+        response = orphan_client.get("/api/dashboard/hosts")
+        assert response.status_code == 200
+        assert response.json()["groups"]["All Hosts"] == []
+        assert response.json()["total_hosts"] == 0
+
+
+@pytest.mark.integration
+class TestAgentListEndpoint:
+    def test_unrestricted_sees_all_agents(self, unrestricted_client, seeded_agents):
+        response = unrestricted_client.get("/api/agent/list")
+        assert response.status_code == 200
+        assert {a["host_id"] for a in response.json()["agents"]} == {"h1", "h2"}
+        assert response.json()["total"] == 2
+
+    def test_dev_scoped_sees_only_dev_agent(self, dev_scoped_client, seeded_agents):
+        response = dev_scoped_client.get("/api/agent/list")
+        assert response.status_code == 200
+        assert [a["host_id"] for a in response.json()["agents"]] == ["h1"]
+        assert response.json()["total"] == 1
+
+    def test_orphan_sees_no_agents(self, orphan_client, seeded_agents):
+        response = orphan_client.get("/api/agent/list")
+        assert response.status_code == 200
+        assert response.json()["agents"] == []
+        assert response.json()["total"] == 0
+        assert response.json()["connected_count"] == 0

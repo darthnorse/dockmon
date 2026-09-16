@@ -5215,8 +5215,8 @@ async def get_dashboard_hosts(
     - Container count, alerts, updates
     """
     try:
-        # Get all hosts
-        hosts_list = list(monitor.hosts.values())
+        visible = get_visible_host_ids_for_auth(current_user)
+        hosts_list = [h for host_id, h in monitor.hosts.items() if visible is None or host_id in visible]
 
         # Filter by status if specified
         if status:
@@ -5928,8 +5928,9 @@ async def list_agents(
     try:
         from agent.connection_manager import agent_connection_manager
 
+        visible = get_visible_host_ids_for_auth(current_user)
         with monitor.db.get_session() as db:
-            agents = db.query(Agent).join(DockerHostDB).all()
+            agents = filter_visible_hosts(db.query(Agent).join(DockerHostDB).all(), visible, lambda a: a.host_id)
 
             agents_data = []
             for agent in agents:
@@ -5947,11 +5948,16 @@ async def list_agents(
                     "registered_at": agent.registered_at.isoformat() + 'Z' if agent.registered_at else None
                 })
 
+            if visible is None:
+                connected_count = agent_connection_manager.get_connection_count()
+            else:
+                connected_count = sum(1 for a in agents_data if a["connected"])
+
             return {
                 "success": True,
                 "agents": agents_data,
                 "total": len(agents_data),
-                "connected_count": agent_connection_manager.get_connection_count()
+                "connected_count": connected_count
             }
 
     except Exception as e:

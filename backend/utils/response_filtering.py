@@ -154,6 +154,10 @@ def _global(message: Dict) -> Set[str]:
     return set()
 
 
+def _host_of_composite_key(key: str) -> str:
+    return key.split(":", 1)[0]
+
+
 def _data(*keys: str) -> HostRule:
     def rule(message: Dict):
         data = message.get("data") or {}
@@ -179,7 +183,7 @@ def _event(message: Dict):
     # Container alert events are logged with host_id=None and a host_id:short_id container_id
     container_id = event.get("container_id") or ""
     if ":" in container_id:
-        return {container_id.split(":", 1)[0]}
+        return {_host_of_composite_key(container_id)}
     if event.get("category") == "system":
         return set()
     return DROP
@@ -224,10 +228,6 @@ WS_HOST_VISIBILITY: Dict[str, Union[HostRule, object]] = {
     "deployment_service_progress": _top,
     "deployment_layer_progress": _data("host_id"),
 }
-
-
-def _host_of_composite_key(key: str) -> str:
-    return key.split(":", 1)[0]
 
 
 def filter_ws_host_visibility(message: Dict, visible: Optional[Set[str]]) -> Dict:

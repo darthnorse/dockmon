@@ -6,7 +6,6 @@ Handles WebSocket connections and message broadcasting
 import asyncio
 import json
 import logging
-import time
 from datetime import datetime
 from typing import Optional
 
@@ -15,8 +14,7 @@ from fastapi import WebSocket
 from auth.api_key_auth import (
     Capabilities,
     get_capabilities_for_user,
-    get_user_group_ids,
-    get_visible_host_ids_for_groups,
+    get_visible_host_ids_for_user,
     has_capability_for_user,
 )
 from utils.response_filtering import DROP, PRUNE, WS_HOST_VISIBILITY, filter_ws_container_message, filter_ws_host_visibility
@@ -90,7 +88,6 @@ class ConnectionManager:
         # concurrently with a scope change can detect the lost update.
         self._visibility_generation = 0
         self._lock = asyncio.Lock()
-        self.update_executor = None  # Set by monitor after initialization
         self.realtime = None  # Set by monitor after initialization
 
     @property
@@ -117,9 +114,6 @@ class ConnectionManager:
             self._connection_visible_hosts[websocket] = visible_host_ids
         logger.debug(f"New WebSocket connection. Total connections: {len(self.active_connections)}")
 
-        # Send active pull progress to newly connected client
-        await self.send_active_pull_progress(websocket)
-
     async def disconnect(self, websocket: WebSocket):
         async with self._lock:
             if websocket in self.active_connections:
@@ -135,8 +129,9 @@ class ConnectionManager:
         return self._connection_user_ids.get(websocket)
 
     def get_visible_hosts(self, websocket: WebSocket) -> Optional[set]:
-        """Current host scope of a connection; None = unrestricted."""
-        return self._connection_visible_hosts.get(websocket)
+        """Current host scope of a connection; None = unrestricted. A socket this
+        manager does not know (already evicted) sees nothing, never everything."""
+        return self._connection_visible_hosts.get(websocket, set())
 
     async def set_visible_hosts(self, websocket: WebSocket, visible_host_ids: Optional[set]) -> None:
         async with self._lock:
@@ -171,38 +166,19 @@ class ConnectionManager:
         # Send messages without lock (IO can block)
         dead_connections = []
         for connection in connections:
+            # Skip connections that lack the required capability for this message type
+            if required_cap is not None:
+                conn_caps = caps_snapshot.get(connection, set())
+                if required_cap not in conn_caps:
+                    continue
+
+            outgoing = self._scope_message(message, msg_type, visible_snapshot.get(connection))
+            if outgoing is None:
+                continue
+            if filter_containers and msg_type == "containers_update":
+                outgoing = self._filter_container_message(outgoing, user_ids_snapshot.get(connection))
             try:
-                # Skip connections that lack the required capability for this message type
-                if required_cap is not None:
-                    conn_caps = caps_snapshot.get(connection, set())
-                    if required_cap not in conn_caps:
-                        continue
-
-                visible = visible_snapshot.get(connection)
-                if visible is None:
-                    # Unrestricted: env filter only, payload otherwise untouched
-                    if filter_containers and msg_type == "containers_update":
-                        user_id = user_ids_snapshot.get(connection)
-                        filtered_message = self._filter_container_message(message, user_id)
-                        await connection.send_text(json.dumps(filtered_message, cls=DateTimeEncoder))
-                    else:
-                        await connection.send_text(json.dumps(message, cls=DateTimeEncoder))
-                    continue
-
-                rule = WS_HOST_VISIBILITY.get(msg_type)
-                if rule is None:
-                    _warn_unmapped(msg_type)
-                    continue
-                scoped_message = message
-                if filter_containers and msg_type == "containers_update":
-                    scoped_message = self._filter_container_message(message, user_ids_snapshot.get(connection))
-                if rule is PRUNE:
-                    scoped_message = filter_ws_host_visibility(scoped_message, visible)
-                else:
-                    hosts = rule(message)
-                    if hosts is DROP or not hosts <= visible:
-                        continue
-                await connection.send_text(json.dumps(scoped_message, cls=DateTimeEncoder))
+                await connection.send_text(json.dumps(outgoing, cls=DateTimeEncoder))
             except Exception as e:
                 logger.error(f"Error sending message: {e}")
                 dead_connections.append(connection)
@@ -217,6 +193,29 @@ class ConnectionManager:
                     self._connection_capabilities.pop(conn, None)
                     self._connection_visible_hosts.pop(conn, None)
 
+    @staticmethod
+    def _scope_message(message: dict, msg_type: str, visible: Optional[set]) -> Optional[dict]:
+        """Apply the connection's host scope; None = drop. Unrestricted connections
+        get the message back untouched. Pruning runs before the env filter so the
+        env filter's deep copy only covers the visible subset."""
+        if visible is None:
+            return message
+        rule = WS_HOST_VISIBILITY.get(msg_type)
+        if rule is None:
+            _warn_unmapped(msg_type)
+            return None
+        try:
+            if rule is PRUNE:
+                return filter_ws_host_visibility(message, visible)
+            hosts = rule(message)
+        except Exception:
+            # A malformed server-side payload must not evict the connection; just withhold it
+            logger.exception(f"Host-visibility rule failed for WS type '{msg_type}'; message dropped")
+            return None
+        if hosts is DROP or not hosts <= visible:
+            return None
+        return message
+
     def _filter_container_message(self, message: dict, user_id: Optional[int]) -> dict:
         """Filter container data based on user capabilities.
 
@@ -225,37 +224,6 @@ class ConnectionManager:
         """
         can_view_env = user_id is not None and has_capability_for_user(user_id, Capabilities.CONTAINERS_VIEW_ENV)
         return filter_ws_container_message(message, can_view_env)
-
-    async def send_active_pull_progress(self, websocket: WebSocket):
-        """
-        Send current pull progress for all active pulls to newly connected client.
-
-        Called when WebSocket connects/reconnects to restore progress state.
-        Thread-safe: uses lock to prevent race with thread pool workers.
-        """
-        async with self._lock:
-            conn_caps = self._connection_capabilities.get(websocket, set())
-        if "containers.view" not in conn_caps:
-            return
-
-        if not self.update_executor or not hasattr(self.update_executor, '_active_pulls'):
-            return
-
-        try:
-            # Thread-safe: create snapshot while holding lock
-            with self.update_executor._active_pulls_lock:
-                active_pulls_snapshot = dict(self.update_executor._active_pulls)
-
-            # Send messages without holding lock (IO can block)
-            for composite_key, progress in active_pulls_snapshot.items():
-                # Only send if updated within last 10 minutes (still active)
-                if time.time() - progress['updated'] < 600:
-                    await websocket.send_text(json.dumps({
-                        "type": "container_update_layer_progress",
-                        "data": progress
-                    }, cls=DateTimeEncoder))
-        except Exception as e:
-            logger.error(f"Error sending active pull progress: {e}", exc_info=True)
 
     async def refresh_capabilities_for_user(self, user_id: int):
         """Re-fetch cached capabilities for all connections belonging to a user."""
@@ -295,7 +263,7 @@ class ConnectionManager:
         per_user: dict[int, Optional[set]] = {}
         for _, uid in ws_user_ids:
             if uid not in per_user:
-                per_user[uid] = get_visible_host_ids_for_groups(get_user_group_ids(uid))
+                per_user[uid] = get_visible_host_ids_for_user(uid)
 
         async with self._lock:
             refreshed = [(ws, per_user[uid]) for ws, uid in ws_user_ids if ws in self._connection_capabilities]

@@ -76,7 +76,7 @@ from models.request_models import (
 from audit.audit_logger import AuditAction, AuditEntityType, log_audit, log_container_action, log_host_change, log_settings_change, get_client_info
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, get_capabilities_for_user, Capabilities, get_visible_host_ids_for_auth, get_visible_host_ids_for_groups, get_user_group_ids, filter_visible_hosts
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, get_capabilities_for_user, Capabilities, get_visible_host_ids_for_auth, get_visible_host_ids_for_user, filter_visible_hosts
 from auth.utils import get_auditable_user_info
 from websocket.connection import ConnectionManager, DateTimeEncoder
 from websocket.rate_limiter import ws_rate_limiter
@@ -632,7 +632,7 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
     - agent: {id, version, capabilities, status, connected, last_seen_at, registered_at}
     """
     visible = get_visible_host_ids_for_auth(current_user)
-    hosts = [h for host_id, h in monitor.hosts.items() if visible is None or host_id in visible]
+    hosts = filter_visible_hosts(list(monitor.hosts.values()), visible, lambda h: h.id)
 
     # Enrich hosts with agent information
     with monitor.db.get_session() as db:
@@ -5216,7 +5216,7 @@ async def get_dashboard_hosts(
     """
     try:
         visible = get_visible_host_ids_for_auth(current_user)
-        hosts_list = [h for host_id, h in monitor.hosts.items() if visible is None or host_id in visible]
+        hosts_list = filter_visible_hosts(list(monitor.hosts.values()), visible, lambda h: h.id)
 
         # Filter by status if specified
         if status:
@@ -6097,13 +6097,6 @@ def _find_container_host(containers, container_id: str) -> Optional[str]:
     return None
 
 
-def _resolve_ws_visible_hosts(user_id: Optional[int]) -> Optional[set]:
-    """WebSocket auth is session-only, so scope resolves through the user's groups."""
-    if user_id is None:
-        return set()
-    return get_visible_host_ids_for_groups(get_user_group_ids(user_id))
-
-
 @app.websocket("/ws")
 @app.websocket("/ws/")
 async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = Cookie(None)):
@@ -6143,11 +6136,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         # Accept connection and subscribe to events
         # Pass user_id for per-connection capability filtering
         generation = monitor.manager.visibility_generation
-        visible_hosts = _resolve_ws_visible_hosts(user_id)
+        visible_hosts = get_visible_host_ids_for_user(user_id)
         await monitor.manager.connect(websocket, user_id=user_id, capabilities=user_caps, visible_host_ids=visible_hosts)
         if monitor.manager.visibility_generation != generation:
             # A scope/membership refresh ran while we resolved: re-resolve so it is not lost
-            visible_hosts = _resolve_ws_visible_hosts(user_id)
+            visible_hosts = get_visible_host_ids_for_user(user_id)
             await monitor.manager.set_visible_hosts(websocket, visible_hosts)
         await monitor.realtime.subscribe_to_events(websocket)
 
@@ -6205,7 +6198,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
 
         visible_hosts = monitor.manager.get_visible_hosts(websocket)
         containers_data = filter_visible_hosts(await monitor.get_containers(), visible_hosts, lambda c: c.host_id)
-        visible_host_models = [h for host_id, h in monitor.hosts.items() if visible_hosts is None or host_id in visible_hosts]
+        visible_host_models = filter_visible_hosts(list(monitor.hosts.values()), visible_hosts, lambda h: h.id)
         initial_state = {
             "type": "initial_state",
             "data": {
@@ -6263,7 +6256,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
             # Handle different message types
             if message.get("type") == "subscribe_stats":
                 container_id = message.get("container_id")
-                if container_id and "containers.view" in user_caps:
+                if isinstance(container_id, str) and container_id and "containers.view" in user_caps:
                     host_id = _find_container_host(await monitor.get_containers(), container_id)
                     visible_hosts = monitor.manager.get_visible_hosts(websocket)
                     if host_id is None or (visible_hosts is not None and host_id not in visible_hosts):
@@ -6276,14 +6269,14 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
                             # CRITICAL: Use async wrapper to prevent blocking event loop
                             await async_docker_call(client.containers.get, container_id)
                             await monitor.realtime.start_container_stats_stream(
-                                client, container_id, interval=2
+                                client, container_id, host_id, interval=2
                             )
                         except Exception as e:
                             logger.debug(f"Container {container_id} not found on host {host_id[:8]}: {e}")
 
             elif message.get("type") == "unsubscribe_stats":
                 container_id = message.get("container_id")
-                if container_id:
+                if isinstance(container_id, str) and container_id:
                     await monitor.realtime.unsubscribe_from_stats(websocket, container_id)
 
             elif message.get("type") == "modal_opened":
@@ -6325,9 +6318,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         # Always cleanup, regardless of how we exited
         await monitor.manager.disconnect(websocket)
         await monitor.realtime.unsubscribe_from_events(websocket)
-        # Unsubscribe from all stats
-        for container_id in list(monitor.realtime.stats_subscribers):
-            await monitor.realtime.unsubscribe_from_stats(websocket, container_id)
+        await monitor.realtime.unsubscribe_all_stats(websocket)
         # Clear modal containers for this connection only (not all users)
         monitor.stats_manager.clear_modal_containers_for_connection(connection_id)
 
@@ -6419,7 +6410,7 @@ async def websocket_shell_endpoint(
         await websocket.close(code=4003, reason="Shell access denied - requires containers.shell capability")
         return
 
-    visible_hosts = _resolve_ws_visible_hosts(user_id)
+    visible_hosts = get_visible_host_ids_for_user(user_id)
     if visible_hosts is not None and host_id not in visible_hosts:
         logger.info(f"Shell WebSocket refused for user {username}: host {host_id!r} not visible")
         await websocket.close(code=4404, reason="Not found")

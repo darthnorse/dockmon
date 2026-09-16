@@ -262,9 +262,8 @@ class TestVisibilityRefresh:
         ws_a, ws_b = FakeWebSocket(), FakeWebSocket()
         manager = await _manager_with((ws_a, 1, ALL_CAPS, {"h1"}), (ws_b, 2, ALL_CAPS, None))
         gen = manager.visibility_generation
-        with patch.object(connection_module, "get_user_group_ids", side_effect=lambda uid: [uid]), \
-             patch.object(connection_module, "get_visible_host_ids_for_groups",
-                          side_effect=lambda gids: {"h2"} if gids == [1] else None):
+        with patch.object(connection_module, "get_visible_host_ids_for_user",
+                          side_effect=lambda uid: {"h2"} if uid == 1 else None):
             await manager.refresh_visible_hosts_for_user(1)
         assert manager.visibility_generation == gen + 1
         assert manager.get_visible_hosts(ws_a) == {"h2"}
@@ -278,16 +277,28 @@ class TestVisibilityRefresh:
         manager.realtime = realtime
         await realtime.subscribe_to_stats(ws, "aaa111111111", "h1")
         await realtime.subscribe_to_stats(ws, "ccc333333333", "h2")
-        with patch.object(connection_module, "get_user_group_ids", return_value=[1]), \
-             patch.object(connection_module, "get_visible_host_ids_for_groups", return_value={"h1"}):
+        with patch.object(connection_module, "get_visible_host_ids_for_user", return_value={"h1"}):
             await manager.refresh_all_visible_hosts()
-        assert set(realtime.stats_subscribers) == {"aaa111111111"}
+        assert set(realtime.stats_subscribers) == {"h1:aaa111111111"}
 
     async def test_disconnect_forgets_visible_set(self):
         ws = FakeWebSocket()
         manager = await _manager_with((ws, 1, ALL_CAPS, {"h1"}))
         await manager.disconnect(ws)
         assert ws not in manager._connection_visible_hosts
+
+    async def test_unknown_socket_sees_nothing_not_everything(self):
+        manager = ConnectionManager()
+        assert manager.get_visible_hosts(FakeWebSocket()) == set()
+
+    async def test_rule_exception_drops_message_but_keeps_connection(self):
+        scoped = FakeWebSocket()
+        manager = await _manager_with((scoped, 1, ALL_CAPS, {"h1"}))
+        with patch.dict(WS_HOST_VISIBILITY, {"host_added": lambda m: 1 / 0}):
+            await manager.broadcast({"type": "host_added", "data": {"host_id": "h1"}})
+        assert scoped.sent == []
+        assert scoped in manager.active_connections
+        assert manager.get_visible_hosts(scoped) == {"h1"}
 
 
 class TestRealtimeRevocation:
@@ -298,12 +309,25 @@ class TestRealtimeRevocation:
         await realtime.subscribe_to_stats(ws1, "ccc333333333", "h2")
         await realtime.subscribe_to_stats(ws2, "ccc333333333", "h2")
         await realtime.revoke_hidden_subscriptions(ws1, {"h1"})
-        assert realtime.stats_subscribers["aaa111111111"] == {ws1}
-        assert realtime.stats_subscribers["ccc333333333"] == {ws2}
+        assert realtime.stats_subscribers["h1:aaa111111111"] == {ws1}
+        assert realtime.stats_subscribers["h2:ccc333333333"] == {ws2}
 
     async def test_unrestricted_revokes_nothing(self):
         ws = FakeWebSocket()
         realtime = RealtimeMonitor()
         await realtime.subscribe_to_stats(ws, "aaa111111111", "h1")
         await realtime.revoke_hidden_subscriptions(ws, None)
-        assert set(realtime.stats_subscribers) == {"aaa111111111"}
+        assert set(realtime.stats_subscribers) == {"h1:aaa111111111"}
+
+    async def test_same_short_id_on_two_hosts_never_shares_a_stream(self):
+        """Cloned VMs can carry identical container short ids; a user scoped to h2
+        must not be attached to h1's stream (and vice versa)."""
+        ws1, ws2 = FakeWebSocket(), FakeWebSocket()
+        realtime = RealtimeMonitor()
+        await realtime.subscribe_to_stats(ws1, "aaa111111111", "h1")
+        await realtime.subscribe_to_stats(ws2, "aaa111111111", "h2")
+        assert realtime.stats_subscribers == {"h1:aaa111111111": {ws1}, "h2:aaa111111111": {ws2}}
+        await realtime.revoke_hidden_subscriptions(ws2, {"h2"})
+        assert realtime.stats_subscribers == {"h1:aaa111111111": {ws1}, "h2:aaa111111111": {ws2}}
+        await realtime.unsubscribe_from_stats(ws1, "aaa111111111")
+        assert realtime.stats_subscribers == {"h2:aaa111111111": {ws2}}

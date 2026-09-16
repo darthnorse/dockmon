@@ -702,6 +702,13 @@ def get_visible_host_ids_for_groups(group_ids) -> Optional[set[str]]:
     return _hosts_with_any_tag(accumulated)
 
 
+def get_visible_host_ids_for_user(user_id: Optional[int]) -> Optional[set[str]]:
+    """Session principal: union of the user's groups. No user = sees nothing."""
+    if user_id is None:
+        return set()
+    return get_visible_host_ids_for_groups(get_user_group_ids(user_id))
+
+
 def get_visible_host_ids_for_auth(current_user: dict) -> Optional[set[str]]:
     """API key -> its single group; session -> union of the user's groups.
 
@@ -710,10 +717,7 @@ def get_visible_host_ids_for_auth(current_user: dict) -> Optional[set[str]]:
     if current_user.get("auth_type") == "api_key":
         group_id = current_user.get("group_id")
         return get_visible_host_ids_for_groups([group_id]) if group_id is not None else set()
-    user_id = current_user.get("user_id")
-    if user_id is None:
-        return set()
-    return get_visible_host_ids_for_groups(get_user_group_ids(user_id))
+    return get_visible_host_ids_for_user(current_user.get("user_id"))
 
 
 def filter_visible_hosts(items, visible: Optional[set[str]], key):

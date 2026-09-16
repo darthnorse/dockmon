@@ -43,41 +43,56 @@ class RealtimeMonitor:
     """Manages real-time container monitoring and events"""
 
     def __init__(self):
-        self.stats_subscribers: Dict[str, Set[Any]] = {}  # container_id -> set of websockets
-        self.subscription_hosts: Dict[tuple, str] = {}  # (websocket, container_id) -> host_id, for scope revocation
+        # Keyed by host_id:container_id so equal short ids on two hosts never share a stream
+        self.stats_subscribers: Dict[str, Set[Any]] = {}
         self.event_subscribers: Set[Any] = set()  # websockets listening to all events
         self.monitoring_tasks: Dict[str, asyncio.Task] = {}
         self.connection_manager = None  # Set by monitor after initialization
 
-    async def subscribe_to_stats(self, websocket: Any, container_id: str, host_id: Optional[str] = None):
-        """Subscribe a websocket to container stats"""
-        if container_id not in self.stats_subscribers:
-            self.stats_subscribers[container_id] = set()
+    @staticmethod
+    def _key(host_id: str, container_id: str) -> str:
+        return f"{host_id}:{container_id}"
 
-        self.stats_subscribers[container_id].add(websocket)
-        if host_id is not None:
-            self.subscription_hosts[(websocket, container_id)] = host_id
-        logger.info(f"WebSocket subscribed to stats for container {container_id}")
+    @staticmethod
+    def _host_of(key: str) -> str:
+        return key.split(":", 1)[0]
+
+    async def subscribe_to_stats(self, websocket: Any, container_id: str, host_id: str):
+        """Subscribe a websocket to container stats"""
+        key = self._key(host_id, container_id)
+        self.stats_subscribers.setdefault(key, set()).add(websocket)
+        logger.info(f"WebSocket subscribed to stats for container {key}")
 
     async def revoke_hidden_subscriptions(self, websocket: Any, visible: Optional[Set[str]]):
         """Drop this socket's stats subscriptions whose host is no longer visible."""
         if visible is None:
             return
-        for (ws, container_id), host_id in list(self.subscription_hosts.items()):
-            if ws is websocket and host_id not in visible:
-                await self.unsubscribe_from_stats(websocket, container_id)
+        for key in list(self.stats_subscribers):
+            if self._host_of(key) not in visible:
+                await self._drop_subscriber(websocket, key)
 
-    async def unsubscribe_from_stats(self, websocket: Any, container_id: str):
-        """Unsubscribe a websocket from container stats"""
-        self.subscription_hosts.pop((websocket, container_id), None)
-        if container_id in self.stats_subscribers:
-            self.stats_subscribers[container_id].discard(websocket)
-            if not self.stats_subscribers[container_id]:
-                del self.stats_subscribers[container_id]
-                # Stop monitoring if no subscribers
-                if container_id in self.monitoring_tasks:
-                    self.monitoring_tasks[container_id].cancel()
-                    del self.monitoring_tasks[container_id]
+    async def unsubscribe_from_stats(self, websocket: Any, container_id: str, host_id: Optional[str] = None):
+        """Unsubscribe a websocket from container stats; host_id=None covers every host
+        (the client's unsubscribe carries only the container id)."""
+        for key in list(self.stats_subscribers):
+            if key == self._key(host_id, container_id) or (host_id is None and key.endswith(f":{container_id}")):
+                await self._drop_subscriber(websocket, key)
+
+    async def unsubscribe_all_stats(self, websocket: Any):
+        for key in list(self.stats_subscribers):
+            await self._drop_subscriber(websocket, key)
+
+    async def _drop_subscriber(self, websocket: Any, key: str):
+        subscribers = self.stats_subscribers.get(key)
+        if subscribers is None:
+            return
+        subscribers.discard(websocket)
+        if not subscribers:
+            del self.stats_subscribers[key]
+            # Stop monitoring if no subscribers
+            if key in self.monitoring_tasks:
+                self.monitoring_tasks[key].cancel()
+                del self.monitoring_tasks[key]
 
     async def subscribe_to_events(self, websocket: Any):
         """Subscribe a websocket to all Docker events"""
@@ -89,25 +104,27 @@ class RealtimeMonitor:
         self.event_subscribers.discard(websocket)
 
     async def start_container_stats_stream(self, client: docker.DockerClient,
-                                          container_id: str, interval: int = 2):
+                                          container_id: str, host_id: str, interval: int = 2):
         """Start streaming stats for a specific container"""
-        if container_id in self.monitoring_tasks:
+        key = self._key(host_id, container_id)
+        if key in self.monitoring_tasks:
             return  # Already monitoring
 
         task = asyncio.create_task(
-            self._monitor_container_stats(client, container_id, interval)
+            self._monitor_container_stats(client, container_id, host_id, interval)
         )
-        self.monitoring_tasks[container_id] = task
+        self.monitoring_tasks[key] = task
 
     async def _monitor_container_stats(self, client: docker.DockerClient,
-                                      container_id: str, interval: int):
+                                      container_id: str, host_id: str, interval: int):
         """
         Monitor and broadcast container stats.
         NOTE: This is a legacy implementation. New code should use the Go stats service instead.
         """
-        logger.info(f"Starting stats monitoring for container {container_id}")
+        key = self._key(host_id, container_id)
+        logger.info(f"Starting stats monitoring for container {key}")
 
-        while container_id in self.stats_subscribers and self.stats_subscribers[container_id]:
+        while self.stats_subscribers.get(key):
             try:
                 # CRITICAL: Use async wrapper to prevent blocking event loop (CLAUDE.md standard)
                 container = await async_docker_call(client.containers.get, container_id)
@@ -121,7 +138,7 @@ class RealtimeMonitor:
 
                 # Broadcast to all subscribers (with capability check)
                 dead_sockets = []
-                for websocket in self.stats_subscribers.get(container_id, []):
+                for websocket in list(self.stats_subscribers.get(key, ())):
                     try:
                         # Defense-in-depth: verify subscriber still has containers.view and host scope
                         if self.connection_manager:
@@ -130,7 +147,6 @@ class RealtimeMonitor:
                                 dead_sockets.append(websocket)
                                 continue
                             visible = self.connection_manager.get_visible_hosts(websocket)
-                            host_id = self.subscription_hosts.get((websocket, container_id))
                             if visible is not None and host_id not in visible:
                                 dead_sockets.append(websocket)
                                 continue
@@ -144,7 +160,7 @@ class RealtimeMonitor:
 
                 # Clean up dead sockets
                 for ws in dead_sockets:
-                    await self.unsubscribe_from_stats(ws, container_id)
+                    await self._drop_subscriber(ws, key)
 
             except docker.errors.NotFound:
                 logger.warning(f"Container {container_id} not found")
@@ -154,7 +170,7 @@ class RealtimeMonitor:
 
             await asyncio.sleep(interval)
 
-        logger.info(f"Stopped stats monitoring for container {container_id}")
+        logger.info(f"Stopped stats monitoring for container {key}")
 
     async def _calculate_container_stats_async(self, container: DockerContainer) -> ContainerStats:
         """

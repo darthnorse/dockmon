@@ -319,8 +319,15 @@ class TestWebSocketVisibility:
             ws.send_json({"type": "subscribe_stats", "container_id": "aaa111111111"})
             ws.send_json({"type": "ping"})
             assert ws.receive_json() == {"type": "pong"}
-            assert set(realtime.stats_subscribers) == {"aaa111111111"}
-            assert realtime.subscription_hosts[(next(iter(realtime.stats_subscribers["aaa111111111"])), "aaa111111111")] == "h1"
+            assert set(realtime.stats_subscribers) == {"h1:aaa111111111"}
+
+    def test_non_string_container_id_does_not_close_the_socket(self, client, ws_sessions):
+        with _connect(client, "dev-cookie") as ws:
+            _drain_until(ws, "containers_update")
+            ws.send_json({"type": "subscribe_stats", "container_id": 123})
+            ws.send_json({"type": "unsubscribe_stats", "container_id": ["x"]})
+            ws.send_json({"type": "ping"})
+            assert ws.receive_json() == {"type": "pong"}
 
     def test_scope_tightened_while_subscribed_revokes_stream(self, client, ws_sessions, db_session):
         realtime = main_module.monitor.realtime
@@ -330,17 +337,17 @@ class TestWebSocketVisibility:
             ws.send_json({"type": "subscribe_stats", "container_id": "aaa111111111"})
             ws.send_json({"type": "ping"})
             assert ws.receive_json() == {"type": "pong"}
-            assert "aaa111111111" in realtime.stats_subscribers
+            assert "h1:aaa111111111" in realtime.stats_subscribers
 
             db_session.query(TagAssignment).filter_by(subject_id="h1").delete()
             db_session.commit()
             ws.portal.call(manager.refresh_visible_hosts_for_user, ws_sessions["dev"].id)
 
-            assert "aaa111111111" not in realtime.stats_subscribers
+            assert "h1:aaa111111111" not in realtime.stats_subscribers
             ws.send_json({"type": "subscribe_stats", "container_id": "aaa111111111"})
             ws.send_json({"type": "ping"})
             assert ws.receive_json() == {"type": "pong"}
-            assert "aaa111111111" not in realtime.stats_subscribers
+            assert "h1:aaa111111111" not in realtime.stats_subscribers
 
 
 @pytest.mark.integration

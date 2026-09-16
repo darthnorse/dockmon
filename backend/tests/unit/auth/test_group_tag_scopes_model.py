@@ -8,6 +8,7 @@ admin action, never a tag-cleanup side effect.
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -32,15 +33,15 @@ def _group(session: Session, name: str) -> CustomGroup:
     return group
 
 
-def _db_manager_over(session: Session) -> DatabaseManager:
-    manager = DatabaseManager.__new__(DatabaseManager)
-
+def _cleanup_unused_tags(session: Session, days_unused: int) -> int:
+    """Run DatabaseManager.cleanup_unused_tags against the test session without
+    touching the process-wide DatabaseManager singleton."""
     @contextmanager
     def get_session():
         yield session
 
-    manager.get_session = get_session
-    return manager
+    stand_in = SimpleNamespace(get_session=get_session)
+    return DatabaseManager.cleanup_unused_tags(stand_in, days_unused=days_unused)
 
 
 class TestGroupTagScopeModel:
@@ -103,7 +104,7 @@ class TestCleanupExcludesScopedTags:
         db_session.add(GroupTagScope(group_id=group.id, tag_id=scoped.id))
         db_session.commit()
 
-        deleted = _db_manager_over(db_session).cleanup_unused_tags(days_unused=1)
+        deleted = _cleanup_unused_tags(db_session, days_unused=1)
 
         assert deleted == 1
         remaining = {t.name for t in db_session.query(Tag).all()}
@@ -115,7 +116,7 @@ class TestCleanupExcludesScopedTags:
         db_session.add(TagAssignment(tag_id=assigned.id, subject_type="host", subject_id="h1"))
         db_session.commit()
 
-        deleted = _db_manager_over(db_session).cleanup_unused_tags(days_unused=1)
+        deleted = _cleanup_unused_tags(db_session, days_unused=1)
 
         assert deleted == 1
         assert {t.name for t in db_session.query(Tag).all()} == {"assigned"}

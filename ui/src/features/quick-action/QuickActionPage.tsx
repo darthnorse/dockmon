@@ -119,7 +119,7 @@ export function QuickActionPage() {
     try {
       // Step 1: Consume the token (validates and marks as used)
       const consumeData = await apiClient.post<ConsumeResponse>(
-        `/v2/action-tokens/${encodeURIComponent(token!)}/consume`,
+        `/v2/action-tokens/${encodeURIComponent(token)}/consume`,
         { confirmed: true }
       )
 

@@ -260,7 +260,7 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
                     <span className="text-sm text-muted-foreground">No tags</span>
                   ) : (
                     <div className="flex flex-wrap gap-2">
-                      {(currentTags as string[]).map((tag) => (
+                      {currentTags.map((tag) => (
                         <TagChip key={tag} tag={tag} size="sm" />
                       ))}
                     </div>

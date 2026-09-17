@@ -71,7 +71,7 @@ export function RolesSettings() {
   // Initialize edited permissions from server data
   useEffect(() => {
     if (permissionsData?.permissions) {
-      setEditedPermissions(permissionsData.permissions as Record<RoleType, Record<string, boolean>>)
+      setEditedPermissions(permissionsData.permissions)
     }
   }, [permissionsData])
 
@@ -188,7 +188,7 @@ export function RolesSettings() {
   // Discard changes
   const handleDiscard = () => {
     if (permissionsData?.permissions) {
-      setEditedPermissions(permissionsData.permissions as Record<RoleType, Record<string, boolean>>)
+      setEditedPermissions(permissionsData.permissions)
     }
   }
 

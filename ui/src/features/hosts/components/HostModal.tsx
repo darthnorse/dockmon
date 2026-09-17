@@ -299,7 +299,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
     const config: HostConfig = {
       name: data.name,
       // For agent hosts, keep the existing URL (agent://)
-      url: isAgentHost ? host!.url : data.url,
+      url: isAgentHost ? host.url : data.url,
       tags: [],
       description: data.description || null,
     }

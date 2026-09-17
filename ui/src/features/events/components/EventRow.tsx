@@ -43,7 +43,7 @@ const getStateColor = (state: string): string => {
 
 // Format message with colored state transitions
 const formatMessage = (event: Event) => {
-  let message = event.message || ''
+  const message = event.message || ''
 
   // Replace state names in the message with colored versions
   if (event.old_state && event.new_state) {

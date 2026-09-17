@@ -82,7 +82,7 @@ describe('Input', () => {
 
       render(<Input data-testid="input" />)
 
-      const input = screen.getByTestId('input') as HTMLInputElement
+      const input = screen.getByTestId('input')
       await user.type(input, 'test input')
 
       expect(input.value).toBe('test input')
@@ -106,7 +106,7 @@ describe('Input', () => {
 
       render(<Input onChange={handleChange} disabled data-testid="input" />)
 
-      const input = screen.getByTestId('input') as HTMLInputElement
+      const input = screen.getByTestId('input')
       await user.type(input, 'test')
 
       expect(input.value).toBe('')
@@ -121,7 +121,7 @@ describe('Input', () => {
         <Input value="initial" onChange={handleChange} data-testid="input" />
       )
 
-      const input = screen.getByTestId('input') as HTMLInputElement
+      const input = screen.getByTestId('input')
       expect(input.value).toBe('initial')
 
       await user.type(input, 'a')

@@ -199,7 +199,7 @@ export function ExpandedHostCard({ host, cardRef, onHostClick, onViewDetails, on
     if (action === 'start' || action === 'stop' || action === 'restart') {
       // Execute container lifecycle action
       executeAction({
-        type: action as 'start' | 'stop' | 'restart',
+        type: action,
         host_id: host.id,
         container_id: containerId, // Short 12-char ID
       })

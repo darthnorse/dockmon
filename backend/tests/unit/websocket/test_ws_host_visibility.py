@@ -47,7 +47,7 @@ FIXTURES = {
     "host_removed": ({"type": "host_removed", "data": {"host_id": "h1"}}, {"h1"}),
     "host_status_changed": ({"type": "host_status_changed", "data": {"host_id": "h1", "status": "online"}}, {"h1"}),
     "host_migrated": ({"type": "host_migrated", "data": {
-        "old_host_id": "h1", "old_host_name": "Old", "new_host_id": "h2", "new_host_name": None}}, {"h1", "h2"}),
+        "old_host_id": "h1", "old_host_name": "Old", "new_host_id": "h2", "new_host_name": None}}, {"h2"}),
     "migration_choice_needed": ({"type": "migration_choice_needed", "data": {
         "agent_id": "a1", "host_id": "h9", "host_name": "new",
         "candidates": [{"host_id": "h1", "host_name": "A"}, {"host_id": "h2", "host_name": "B"}]}}, {"h9", "h1", "h2"}),

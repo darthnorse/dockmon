@@ -243,7 +243,8 @@ WS_HOST_VISIBILITY: Dict[str, Union[HostRule, object]] = {
     "host_added": _data("host_id"),
     "host_removed": _data("host_id"),
     "host_status_changed": _data("host_id"),
-    "host_migrated": _data("old_host_id", "new_host_id"),
+    # Tags move with the host, so after a migration only the new id can be visible
+    "host_migrated": _data("new_host_id"),
     "migration_choice_needed": _migration_choice,
     "container_recreated": _data("host_id"),
     "container_update_progress": _data("host_id"),

@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 import main as main_module
 from auth.api_key_auth import (
@@ -28,6 +29,7 @@ from database import (
     DeploymentMetadata, DockerHostDB, EventLog, GroupPermission, GroupTagScope, Tag, TagAssignment, User,
     UserGroupMembership,
 )
+from agent.manager import AgentManager
 from deployment import routes as deployment_routes, stack_storage
 from main import app
 from models.docker_models import Container, DockerHost
@@ -832,6 +834,44 @@ class TestWebSocketVisibility:
             ws.send_json({"type": "ping"})
             assert ws.receive_json() == {"type": "pong"}
             assert "h1:aaa111111111" not in realtime.stats_subscribers
+
+
+@pytest.mark.integration
+class TestMigrationVisibility:
+    def test_scoped_user_keeps_seeing_a_migrated_host_and_gets_host_migrated(
+        self, client, ws_sessions, seeded_agents, db_session, monkeypatch
+    ):
+        """h1 (tag dev) migrates to the agent host h9: its tag follows, the dev user's
+        socket is refreshed, and the host_migrated message (both ids) is delivered."""
+        db_session.add(DockerHostDB(id="h9", name="Agent Host", url="agent://", connection_type="agent"))
+        db_session.add(Agent(id="agent-h9", host_id="h9", engine_id="engine-h9", version="1.0.0",
+                             proto_version="1", capabilities={}, status="online"))
+        db_session.commit()
+
+        def fake_migrate(self, agent_id, source_host_id):
+            AgentManager._transfer_tag_assignments(db_session, source_host_id, "h9")
+            db_session.commit()
+            return {"success": True, "host_id": "h9", "migrated_from": {"host_id": source_host_id, "host_name": "Dev Host"}}
+
+        monkeypatch.setattr("agent.manager.AgentManager.migrate_from_host", fake_migrate)
+        manager = main_module.monitor.manager
+        with _connect(client, "dev-cookie") as ws:
+            _drain_until(ws, "containers_update")
+            assert manager.get_visible_hosts(next(iter(manager.active_connections))) == {"h1"}
+
+            # The admin runs the migration (the dev user cannot see the target agent host yet).
+            # Invoked on the socket's own loop: the handler broadcasts to this socket.
+            admin = {"auth_type": "session", "user_id": ws_sessions["admin"].id, "username": "ws_admin"}
+            http_request = Request({"type": "http", "headers": [], "client": ("127.0.0.1", 1), "method": "POST", "path": "/"})
+            result = ws.portal.call(
+                lambda: main_module.migrate_agent_from_host("agent-h9", "h1", http_request, admin)
+            )
+            assert result["success"] is True
+
+            message = ws.receive_json()
+            assert message["type"] == "host_migrated"
+            assert message["data"] == {"old_host_id": "h1", "old_host_name": "Dev Host", "new_host_id": "h9", "new_host_name": None}
+            assert manager.get_visible_hosts(next(iter(manager.active_connections))) == {"h9"}
 
 
 @pytest.mark.integration

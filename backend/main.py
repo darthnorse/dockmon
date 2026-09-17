@@ -6081,6 +6081,8 @@ async def migrate_agent_from_host(
 
         # Broadcast migration notification to frontend
         try:
+            # Host tags moved with the host: refresh scoped sockets so both ids are visible
+            await monitor.manager.refresh_all_visible_hosts()
             await monitor.manager.broadcast({
                 "type": "host_migrated",
                 "data": {

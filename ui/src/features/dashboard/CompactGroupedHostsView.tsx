@@ -28,7 +28,7 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { CompactHostCard } from './components/CompactHostCard'
 import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
-import { useDndSensors } from '@/features/dashboard/hooks/useDndSensors'
+import { useDndSensors, type DragHandleProps } from '@/features/dashboard/hooks/useDndSensors'
 import type { CompactHost } from '@/features/dashboard/types'
 
 interface CompactGroupedHostsViewProps {
@@ -183,7 +183,7 @@ interface CompactGroupSectionProps {
   isCollapsed: boolean
   onToggle: () => void
   onHostClick: ((hostId: string) => void) | undefined
-  dragHandleProps?: Pick<ReturnType<typeof useSortable>, 'attributes' | 'listeners'>
+  dragHandleProps?: DragHandleProps
 }
 
 function CompactGroupSection({

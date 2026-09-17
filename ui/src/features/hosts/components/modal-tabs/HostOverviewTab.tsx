@@ -65,13 +65,12 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
   })
 
   // Reset updateTriggered when agent reconnects with new version (update_available becomes false)
-  const agentLoaded = agent !== undefined
   const agentUpdateAvailable = agent?.update_available
   useEffect(() => {
-    if (updateTriggered && agentLoaded && !agentUpdateAvailable) {
+    if (updateTriggered && agentUpdateAvailable === false) {
       setUpdateTriggered(false)
     }
-  }, [agentLoaded, agentUpdateAvailable, updateTriggered])
+  }, [agentUpdateAvailable, updateTriggered])
 
   // Trigger agent update mutation
   const triggerUpdate = useMutation({

@@ -512,9 +512,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
       {isUpdating && container.host_id && (
         <LayerProgressDisplay
           hostId={container.host_id}
-          entityId={containerShortId}
-          eventType="container_update_layer_progress"
-          simpleProgressEventType="container_update_progress"
+          containerId={containerShortId}
           initialProgress={0}
           initialMessage="Initializing update..."
         />

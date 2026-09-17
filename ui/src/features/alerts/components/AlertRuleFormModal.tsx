@@ -19,7 +19,8 @@ import {
   agentMountRemedy,
 } from '../hooks/useMetricCapabilities'
 import { maxThresholdFor } from '../utils/metricBounds'
-import type { AlertRule, AlertSeverity, AlertScope, AlertRuleRequest, SelectorJson } from '@/types/alerts'
+import type { AlertRule, AlertSeverity, AlertScope, AlertRuleRequest } from '@/types/alerts'
+import { parseSelectorJson } from '../utils/selectorJson'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import type { Host } from '@/types/api'
 import type { Container } from '@/features/containers/types'
@@ -246,17 +247,10 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
   const containers: Container[] = containersData || []
   const configuredChannels = useMemo(() => channelsData?.channels ?? [], [channelsData])
 
-  // Parse existing selectors
   const parseSelector = (json: string | null | undefined) => {
-    if (!json) return { all: true, selected: [] }
-    try {
-      const parsed = JSON.parse(json) as SelectorJson
-      if (parsed.include_all) return { all: true, selected: [] }
-      if (parsed.include) return { all: false, selected: parsed.include }
-      return { all: true, selected: [] }
-    } catch {
-      return { all: true, selected: [] }
-    }
+    const parsed = parseSelectorJson(json)
+    if (!parsed.include_all && parsed.include) return { all: false, selected: parsed.include }
+    return { all: true, selected: [] }
   }
 
   const [formData, setFormData] = useState<AlertRuleFormData>(() => {
@@ -265,30 +259,15 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
     const kindConfig = RULE_KINDS.find((k) => k.value === ruleKind)
     const isMetricDriven = kindConfig?.requiresMetric ?? true
 
-    // Parse container selector to extract should_run filter and include list
     const parseContainerSelector = (json: string | null | undefined) => {
-      if (!json) return { all: true, included: [], should_run: null }
-      try {
-        const parsed = JSON.parse(json) as SelectorJson
-        if (parsed.include_all) {
-          return {
-            all: true,
-            included: [],
-            should_run: parsed.should_run || null
-          }
-        }
-        if (parsed.include) {
-          // Explicit include list for manual selection
-          return {
-            all: false,
-            included: parsed.include,
-            should_run: parsed.should_run || null
-          }
-        }
-        return { all: true, included: [], should_run: null }
-      } catch {
-        return { all: true, included: [], should_run: null }
+      const parsed = parseSelectorJson(json)
+      if (parsed.include_all) {
+        return { all: true, included: [], should_run: parsed.should_run || null }
       }
+      if (parsed.include) {
+        return { all: false, included: parsed.include, should_run: parsed.should_run || null }
+      }
+      return { all: true, included: [], should_run: null }
     }
 
     const containerSelector = parseContainerSelector(rule?.container_selector_json)
@@ -361,22 +340,10 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
   const [tagSearchInput, setTagSearchInput] = useState('')
   const [availableTags, setAvailableTags] = useState<TagWithSource[]>([])
   const [selectedTags, setSelectedTags] = useState<string[]>(() => {
-    // Initialize with existing tags if editing - check selectors not labels_json
-    if (rule) {
-      try {
-        // Check host_selector for tags
-        if (rule.host_selector_json) {
-          const parsed = JSON.parse(rule.host_selector_json) as SelectorJson
-          if (parsed.tags && Array.isArray(parsed.tags)) return parsed.tags
-        }
-        // Check container_selector for tags
-        if (rule.container_selector_json) {
-          const parsed = JSON.parse(rule.container_selector_json) as SelectorJson
-          if (parsed.tags && Array.isArray(parsed.tags)) return parsed.tags
-        }
-      } catch {
-        // Parsing failed, fall through
-      }
+    // Tags live in the selectors, not labels_json
+    for (const json of [rule?.host_selector_json, rule?.container_selector_json]) {
+      const { tags } = parseSelectorJson(json)
+      if (Array.isArray(tags)) return tags
     }
     return []
   })

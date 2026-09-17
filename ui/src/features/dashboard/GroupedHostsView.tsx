@@ -28,7 +28,7 @@ import { CSS } from '@dnd-kit/utilities'
 import { ExpandedHostCardContainer } from './components/ExpandedHostCardContainer'
 import { HostCardContainer } from './components/HostCardContainer'
 import { useUserPreferences, useUpdatePreferences, type UserPreferences, type DashboardPreferences } from '@/lib/hooks/useUserPreferences'
-import { useDndSensors } from '@/features/dashboard/hooks/useDndSensors'
+import { useDndSensors, type DragHandleProps } from '@/features/dashboard/hooks/useDndSensors'
 import type { Host } from '@/types/api'
 import 'react-grid-layout/css/styles.css'
 
@@ -328,8 +328,6 @@ interface GroupSectionProps {
   hasLoadedPrefs: boolean
   dragHandleProps?: DragHandleProps
 }
-
-type DragHandleProps = Pick<ReturnType<typeof useSortable>, 'attributes' | 'listeners'>
 
 function GroupSection({
   group,

@@ -161,6 +161,13 @@ class TestPerTypeRules:
         payload = {"type": "new_event", "event": {"category": category, "host_id": None, "container_id": None}}
         assert WS_HOST_VISIBILITY["new_event"](payload) is DROP
 
+    def test_new_event_hostless_triggered_alert_is_admin_only(self):
+        """A host-less rule_triggered event is a system alert firing: its text names the
+        scopes the evaluation engine failed on, so it never reaches scoped users."""
+        payload = {"type": "new_event", "event": {"category": "alert", "event_type": "rule_triggered",
+                                                  "host_id": None, "container_id": None}}
+        assert WS_HOST_VISIBILITY["new_event"](payload) is DROP
+
     def test_new_event_admin_category_naming_a_container_is_not_global(self):
         payload = {"type": "new_event", "event": {"category": "alert", "host_id": None, "container_id": "aaa111111111"}}
         assert WS_HOST_VISIBILITY["new_event"](payload) is DROP

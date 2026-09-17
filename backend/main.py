@@ -4903,7 +4903,7 @@ async def get_event_by_id(
     try:
         event = monitor.db.get_event_by_id(event_id)
         if not event or not event_is_visible(event.host_id, event.container_id, event.category,
-                                             get_visible_host_ids_for_auth(current_user)):
+                                             get_visible_host_ids_for_auth(current_user), event.event_type):
             raise HTTPException(status_code=404, detail="Event not found")
 
         return {
@@ -4941,7 +4941,7 @@ async def get_events_by_correlation(
     try:
         visible = get_visible_host_ids_for_auth(current_user)
         events = [e for e in monitor.db.get_events_by_correlation(correlation_id)
-                  if event_is_visible(e.host_id, e.container_id, e.category, visible)]
+                  if event_is_visible(e.host_id, e.container_id, e.category, visible, e.event_type)]
 
         events_json = []
         for event in events:

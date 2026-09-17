@@ -15,7 +15,7 @@ import uuid
 
 from auth.capabilities import ALL_CAPABILITIES, OPERATOR_CAPABILITIES, READONLY_CAPABILITIES
 from utils.keys import make_composite_key
-from utils.response_filtering import GLOBAL_EVENT_CATEGORIES
+from utils.response_filtering import ADMIN_ONLY_EVENT_TYPES, GLOBAL_EVENT_CATEGORIES
 
 logger = logging.getLogger(__name__)
 
@@ -1470,13 +1470,15 @@ host_stats_history = Table(
 def event_visibility_predicate(visible_host_ids: set):
     """SQL twin of utils.response_filtering.event_scope: an event is visible when its
     host is visible, or it has no host but its host_id:short_id container is, or it
-    is host-less bookkeeping in a global category. Every other null-host row is hidden."""
+    is host-less bookkeeping in a global category (a host-less rule_triggered is the
+    system alert firing: admin-only). Every other null-host row is hidden."""
     composite_host = func.substr(EventLog.container_id, 1, func.instr(EventLog.container_id, ':') - 1)
     return or_(
         EventLog.host_id.in_(visible_host_ids),
         and_(EventLog.host_id.is_(None), EventLog.container_id.isnot(None), composite_host.in_(visible_host_ids)),
         and_(EventLog.host_id.is_(None), EventLog.container_id.is_(None),
-             EventLog.category.in_(GLOBAL_EVENT_CATEGORIES)),
+             EventLog.category.in_(GLOBAL_EVENT_CATEGORIES),
+             EventLog.event_type.notin_(ADMIN_ONLY_EVENT_TYPES)),
     )
 
 
@@ -1491,10 +1493,9 @@ def scoped_alert_query(session, visible_host_ids: Optional[set]):
 def alert_visibility_predicate(visible_host_ids: set):
     """SQL twin of utils.response_filtering.alert_is_visible. Splits the container
     scope_id on ':' rather than assuming a 36-char host UUID: sanitize_host_id admits
-    any [A-Za-z0-9-]+ id."""
+    any [A-Za-z0-9-]+ id. System-scope alerts have no host and stay admin-only."""
     composite_host = func.substr(AlertV2.scope_id, 1, func.instr(AlertV2.scope_id, ':') - 1)
     return or_(
-        AlertV2.scope_type == 'system',
         AlertV2.host_id.in_(visible_host_ids),
         and_(AlertV2.scope_type == 'host', AlertV2.scope_id.in_(visible_host_ids)),
         and_(AlertV2.scope_type == 'container', composite_host.in_(visible_host_ids)),

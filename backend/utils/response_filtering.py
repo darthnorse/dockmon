@@ -182,8 +182,13 @@ def _data_host_ids(message: Dict):
 # users: it may concern a host whose id the emitter failed to record.
 GLOBAL_EVENT_CATEGORIES = frozenset({"system", "alert", "notification", "user"})
 
+# A triggered alert always concerns a scope; host-less, it is the system-scope alert
+# (evaluation-engine failures) whose text names the hosts it failed on: admin-only.
+ADMIN_ONLY_EVENT_TYPES = frozenset({"rule_triggered"})
 
-def event_scope(host_id: Optional[str], container_id: Optional[str], category: Optional[str]) -> Optional[Set[str]]:
+
+def event_scope(host_id: Optional[str], container_id: Optional[str], category: Optional[str],
+                event_type: Optional[str] = None) -> Optional[Set[str]]:
     """Hosts an event concerns: a set (empty = global), or None when it must stay hidden.
     Mirrors database.event_visibility_predicate; keep the two in step."""
     if host_id:
@@ -191,25 +196,26 @@ def event_scope(host_id: Optional[str], container_id: Optional[str], category: O
     # Container alert events are logged with host_id=None and a host_id:short_id container_id
     if container_id and ":" in container_id:
         return {_host_of_composite_key(container_id)}
-    if not container_id and category in GLOBAL_EVENT_CATEGORIES:
+    if not container_id and category in GLOBAL_EVENT_CATEGORIES and event_type not in ADMIN_ONLY_EVENT_TYPES:
         return set()
     return None
 
 
 def event_is_visible(host_id: Optional[str], container_id: Optional[str], category: Optional[str],
-                     visible: Optional[Set[str]]) -> bool:
+                     visible: Optional[Set[str]], event_type: Optional[str] = None) -> bool:
     if visible is None:
         return True
-    hosts = event_scope(host_id, container_id, category)
+    hosts = event_scope(host_id, container_id, category, event_type)
     return hosts is not None and hosts <= visible
 
 
 def alert_is_visible(scope_type: Optional[str], scope_id: Optional[str], host_id: Optional[str],
                      visible: Optional[Set[str]]) -> bool:
     """Python twin of database.alert_visibility_predicate; keep the two in step.
-    System-scope alerts are global; a host is derived from host_id, a host scope_id or
-    the host_id:short_id prefix of a container scope_id. No derivable host = hidden."""
-    if visible is None or scope_type == "system":
+    A host is derived from host_id, a host scope_id or the host_id:short_id prefix of
+    a container scope_id. No derivable host = hidden; that includes system-scope alerts,
+    whose text names the scopes the evaluation engine failed on (admin-only)."""
+    if visible is None:
         return True
     candidates = set()
     if host_id:
@@ -223,7 +229,7 @@ def alert_is_visible(scope_type: Optional[str], scope_id: Optional[str], host_id
 
 def _event(message: Dict):
     event = message.get("event") or {}
-    hosts = event_scope(event.get("host_id"), event.get("container_id"), event.get("category"))
+    hosts = event_scope(event.get("host_id"), event.get("container_id"), event.get("category"), event.get("event_type"))
     return DROP if hosts is None else hosts
 
 

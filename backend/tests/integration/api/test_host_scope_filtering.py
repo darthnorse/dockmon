@@ -299,6 +299,8 @@ def seeded_events(db_session, seeded_hosts):
                                        container_id="aaa111111111", title="orphan container event"),
         "system": EventLog(category="system", event_type="startup", title="DockMon started"),
         "rule_created": EventLog(category="alert", event_type="rule_created", title="Alert rule 'High CPU' created"),
+        "system_alert_fired": EventLog(category="alert", event_type="rule_triggered",
+                                       title="Alert triggered: evaluation failed. Affected: Test Host"),
         "channel_created": EventLog(category="notification", event_type="channel_created", title="Channel created"),
         "user_login": EventLog(category="user", event_type="login", title="admin logged in"),
     }
@@ -341,12 +343,14 @@ class TestEventsScoped:
         assert dev_scoped_client.get("/api/events/statistics").json()["total_events"] == 6
         assert orphan_client.get("/api/events/statistics").json()["total_events"] == 4
 
-    def test_single_event_on_hidden_host_is_404(self, dev_scoped_client, seeded_events):
+    def test_single_event_on_hidden_host_is_404(self, dev_scoped_client, unrestricted_client, seeded_events):
         assert dev_scoped_client.get(f"/api/events/{seeded_events['test_host']}").status_code == 404
         assert dev_scoped_client.get(f"/api/events/{seeded_events['hostless_container']}").status_code == 404
         assert dev_scoped_client.get(f"/api/events/{seeded_events['dev_host']}").status_code == 200
         assert dev_scoped_client.get(f"/api/events/{seeded_events['dev_alert_composite']}").status_code == 200
         assert dev_scoped_client.get(f"/api/events/{seeded_events['rule_created']}").status_code == 200
+        assert dev_scoped_client.get(f"/api/events/{seeded_events['system_alert_fired']}").status_code == 404
+        assert unrestricted_client.get(f"/api/events/{seeded_events['system_alert_fired']}").status_code == 200
 
     def test_correlation_group_is_filtered(self, dev_scoped_client, unrestricted_client, seeded_events):
         assert {e["title"] for e in unrestricted_client.get("/api/events/correlation/corr-1").json()["events"]} == {"h1 up", "h2 up"}
@@ -529,15 +533,15 @@ class TestAlertsScoped:
     def test_list_and_total_are_scoped(self, dev_scoped_client, unrestricted_client, seeded_alerts):
         assert unrestricted_client.get("/api/alerts/").json()["total"] == 6
         scoped = dev_scoped_client.get("/api/alerts/").json()
-        assert {a["id"] for a in scoped["alerts"]} == {"a-host-h1", "a-cont-h1", "a-system"}
-        assert scoped["total"] == 3
+        assert {a["id"] for a in scoped["alerts"]} == {"a-host-h1", "a-cont-h1"}
+        assert scoped["total"] == 2
 
     def test_stats_are_scoped(self, dev_scoped_client, unrestricted_client, seeded_alerts):
         assert unrestricted_client.get("/api/alerts/stats/").json()["total"] == 6
         scoped = dev_scoped_client.get("/api/alerts/stats/").json()
-        assert scoped["total"] == 3
-        assert scoped["by_state"]["open"] == 3
-        assert scoped["by_severity"]["warning"] == 3
+        assert scoped["total"] == 2
+        assert scoped["by_state"]["open"] == 2
+        assert scoped["by_severity"]["warning"] == 2
 
     @pytest.mark.parametrize("path,method", [
         ("/api/alerts/{id}", "get"), ("/api/alerts/{id}/annotations", "get"),
@@ -547,7 +551,7 @@ class TestAlertsScoped:
     def test_alert_routes_404_on_hidden_and_underivable_hosts(self, path, method, dev_scoped_client, seeded_alerts):
         bodies = {"resolve": {"reason": "x"}, "snooze": {"duration_minutes": 5}, "annotations": {"text": "note"}}
         kwargs = {"json": bodies.get(path.rsplit("/", 1)[-1], {})} if method == "post" else {}
-        for hidden in ("a-host-h2", "a-cont-h2", "a-orphan"):
+        for hidden in ("a-host-h2", "a-cont-h2", "a-orphan", "a-system"):
             response = getattr(dev_scoped_client, method)(path.format(id=hidden), **kwargs)
             assert response.status_code == 404, (path, hidden, response.text)
         visible = getattr(dev_scoped_client, method)(path.format(id="a-host-h1"), **kwargs)

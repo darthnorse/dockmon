@@ -246,6 +246,17 @@ class ConnectionManager:
                 if ws in self._connection_capabilities:
                     self._connection_capabilities[ws] = caps
 
+    async def disconnect_user(self, user_id: int):
+        """Close every connection belonging to a user (account deleted)."""
+        async with self._lock:
+            sockets = [ws for ws, uid in self._connection_user_ids.items() if uid == user_id]
+        for ws in sockets:
+            try:
+                await ws.close(code=4401, reason="User account deleted")
+            except Exception as e:
+                logger.debug(f"Closing socket of deleted user {user_id}: {e}")
+            await self.disconnect(ws)
+
     async def refresh_visible_hosts_for_user(self, user_id: int):
         """Recompute the host scope of every connection belonging to a user and
         revoke stats subscriptions that fell outside it."""

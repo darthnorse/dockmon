@@ -466,8 +466,8 @@ async def update_user(
 
     # Refresh WS capabilities outside the DB session
     if _needs_ws_refresh is not None:
-        from auth.custom_groups_routes import _refresh_ws_capabilities
-        await _refresh_ws_capabilities(_needs_ws_refresh)
+        from auth.custom_groups_routes import _refresh_ws_auth_state
+        await _refresh_ws_auth_state(_needs_ws_refresh)
 
     return response
 
@@ -584,7 +584,12 @@ async def delete_user(
 
         logger.info(f"User '{username}' deleted by {display_name}")
 
-        return {"message": f"User '{username}' has been deleted"}
+    # Session eviction only stops new requests; open WebSockets keep streaming until closed
+    from main import monitor
+    if monitor and monitor.manager:
+        await monitor.manager.disconnect_user(target_user_id)
+
+    return {"message": f"User '{username}' has been deleted"}
 
 
 @router.post("/{user_id}/reset-password", dependencies=[Depends(require_capability("users.manage"))])

@@ -201,7 +201,7 @@ class TestScopeCacheInvalidation:
         assert get_visible_host_ids_for_groups([doomed.id]) == {"h-dev-1", "h-dev-2", "h-both"}
 
         admin = _user(s, "admin")
-        with patch("auth.custom_groups_routes._refresh_ws_capabilities", AsyncMock()):
+        with patch("auth.custom_groups_routes._refresh_ws_auth_state", AsyncMock()):
             await delete_group(doomed.id, current_user={"auth_type": "session", "user_id": admin.id, "username": "admin"})
 
         reborn = _group(s, "Reborn")

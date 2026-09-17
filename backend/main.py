@@ -984,6 +984,8 @@ async def update_host_tags(
 
     # Update in-memory host object so changes are immediately visible
     host.tags = updated_tags
+    # Host tags drive tag-scoped visibility; open sockets re-resolve their host sets
+    await monitor.manager.refresh_all_visible_hosts()
 
     _safe_audit(current_user, log_host_change, AuditAction.UPDATE, host_id, host.name, http_request, details={'tags_to_add': request.tags_to_add, 'tags_to_remove': request.tags_to_remove})
 

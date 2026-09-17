@@ -176,17 +176,37 @@ def _data_host_ids(message: Dict):
     return DROP if host_ids is None else set(host_ids)
 
 
+# Event categories that carry no host identity by construction (rule, channel and
+# user bookkeeping). A host-less event in any other category is hidden from scoped
+# users: it may concern a host whose id the emitter failed to record.
+GLOBAL_EVENT_CATEGORIES = frozenset({"system", "alert", "notification", "user"})
+
+
+def event_scope(host_id: Optional[str], container_id: Optional[str], category: Optional[str]) -> Optional[Set[str]]:
+    """Hosts an event concerns: a set (empty = global), or None when it must stay hidden.
+    Mirrors the SQL predicate in DatabaseManager.get_events; keep the two in step."""
+    if host_id:
+        return {host_id}
+    # Container alert events are logged with host_id=None and a host_id:short_id container_id
+    if container_id and ":" in container_id:
+        return {_host_of_composite_key(container_id)}
+    if not container_id and category in GLOBAL_EVENT_CATEGORIES:
+        return set()
+    return None
+
+
+def event_is_visible(host_id: Optional[str], container_id: Optional[str], category: Optional[str],
+                     visible: Optional[Set[str]]) -> bool:
+    if visible is None:
+        return True
+    hosts = event_scope(host_id, container_id, category)
+    return hosts is not None and hosts <= visible
+
+
 def _event(message: Dict):
     event = message.get("event") or {}
-    if event.get("host_id"):
-        return {event["host_id"]}
-    # Container alert events are logged with host_id=None and a host_id:short_id container_id
-    container_id = event.get("container_id") or ""
-    if ":" in container_id:
-        return {_host_of_composite_key(container_id)}
-    if event.get("category") == "system":
-        return set()
-    return DROP
+    hosts = event_scope(event.get("host_id"), event.get("container_id"), event.get("category"))
+    return DROP if hosts is None else hosts
 
 
 def _migration_choice(message: Dict):

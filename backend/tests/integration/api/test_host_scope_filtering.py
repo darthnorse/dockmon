@@ -20,7 +20,10 @@ from auth.api_key_auth import (
     invalidate_user_groups_cache,
 )
 from auth.capabilities import ALL_CAPABILITIES
-from database import Agent, ApiKey, CustomGroup, DockerHostDB, GroupPermission, GroupTagScope, Tag, TagAssignment, User, UserGroupMembership
+from database import (
+    Agent, ApiKey, ContainerHttpHealthCheck, ContainerUpdate, CustomGroup, DeploymentMetadata, DockerHostDB,
+    EventLog, GroupPermission, GroupTagScope, Tag, TagAssignment, User, UserGroupMembership,
+)
 from main import app
 from models.docker_models import Container, DockerHost
 
@@ -279,6 +282,101 @@ class TestHostPathRoutesGuarded:
         assert dev_scoped_client.post("/api/agent/agent-h1/migrate-from/h2").status_code == 404
         assert dev_scoped_client.post("/api/agent/agent-h1/migrate-from/h1").status_code != 404
         assert unrestricted_client.post("/api/agent/agent-h2/migrate-from/h1").status_code != 404
+
+
+@pytest.fixture
+def seeded_events(db_session, seeded_hosts):
+    """One event per visibility class. Keys name the class; values are the event ids."""
+    rows = {
+        "dev_host": EventLog(category="host", event_type="connected", host_id="h1", title="h1 up", correlation_id="corr-1"),
+        "test_host": EventLog(category="host", event_type="connected", host_id="h2", title="h2 up", correlation_id="corr-1"),
+        "untagged_host": EventLog(category="host", event_type="connected", host_id="h3", title="h3 up"),
+        "dev_alert_composite": EventLog(category="container", event_type="alert", host_id=None,
+                                        container_id="h1:aaa111111111", title="dev container alert"),
+        "test_alert_composite": EventLog(category="container", event_type="alert", host_id=None,
+                                         container_id="h2:ccc333333333", title="test container alert"),
+        "hostless_container": EventLog(category="container", event_type="state_change", host_id=None,
+                                       container_id="aaa111111111", title="orphan container event"),
+        "system": EventLog(category="system", event_type="startup", title="DockMon started"),
+        "rule_created": EventLog(category="alert", event_type="rule_created", title="Alert rule 'High CPU' created"),
+        "channel_created": EventLog(category="notification", event_type="channel_created", title="Channel created"),
+        "user_login": EventLog(category="user", event_type="login", title="admin logged in"),
+    }
+    for row in rows.values():
+        db_session.add(row)
+    db_session.commit()
+    return {name: row.id for name, row in rows.items()}
+
+
+@pytest.mark.integration
+class TestEventsScoped:
+    def _titles(self, client, **params):
+        response = client.get("/api/events", params={"limit": 100, **params})
+        assert response.status_code == 200
+        return {e["title"] for e in response.json()["events"]}, response.json()["total_count"]
+
+    def test_unrestricted_sees_everything(self, unrestricted_client, seeded_events):
+        titles, total = self._titles(unrestricted_client)
+        assert total == len(seeded_events)
+
+    def test_dev_scoped_sees_own_host_composite_and_global_admin_events(self, dev_scoped_client, seeded_events):
+        titles, total = self._titles(dev_scoped_client)
+        assert titles == {
+            "h1 up", "dev container alert", "DockMon started",
+            "Alert rule 'High CPU' created", "Channel created", "admin logged in",
+        }
+        assert total == 6
+
+    def test_total_count_is_computed_over_the_scoped_set(self, dev_scoped_client, seeded_events):
+        response = dev_scoped_client.get("/api/events", params={"limit": 2, "offset": 0})
+        assert response.json()["total_count"] == 6
+        assert response.json()["has_more"] is True
+
+    def test_orphan_sees_only_global_admin_events(self, orphan_client, seeded_events):
+        titles, total = self._titles(orphan_client)
+        assert titles == {"DockMon started", "Alert rule 'High CPU' created", "Channel created", "admin logged in"}
+
+    def test_single_event_on_hidden_host_is_404(self, dev_scoped_client, seeded_events):
+        assert dev_scoped_client.get(f"/api/events/{seeded_events['test_host']}").status_code == 404
+        assert dev_scoped_client.get(f"/api/events/{seeded_events['hostless_container']}").status_code == 404
+        assert dev_scoped_client.get(f"/api/events/{seeded_events['dev_host']}").status_code == 200
+        assert dev_scoped_client.get(f"/api/events/{seeded_events['dev_alert_composite']}").status_code == 200
+        assert dev_scoped_client.get(f"/api/events/{seeded_events['rule_created']}").status_code == 200
+
+    def test_correlation_group_is_filtered(self, dev_scoped_client, unrestricted_client, seeded_events):
+        assert {e["title"] for e in unrestricted_client.get("/api/events/correlation/corr-1").json()["events"]} == {"h1 up", "h2 up"}
+        scoped = dev_scoped_client.get("/api/events/correlation/corr-1").json()
+        assert [e["title"] for e in scoped["events"]] == ["h1 up"]
+        assert scoped["count"] == 1
+
+
+@pytest.fixture
+def seeded_container_configs(db_session, seeded_hosts):
+    """A ContainerUpdate, DeploymentMetadata and ContainerHttpHealthCheck row for one container per host."""
+    for host_id, host in HOSTS.items():
+        db_session.add(DockerHostDB(id=host_id, name=host.name, url=host.url))
+    db_session.flush()
+    for c in CONTAINERS[:1] + CONTAINERS[2:]:
+        key = f"{c.host_id}:{c.short_id}"
+        db_session.add(ContainerUpdate(container_id=key, host_id=c.host_id, current_image="nginx:latest",
+                                       current_digest="sha256:x", update_available=True))
+        db_session.add(DeploymentMetadata(container_id=key, host_id=c.host_id, is_managed=True))
+        db_session.add(ContainerHttpHealthCheck(container_id=key, host_id=c.host_id, url="http://x"))
+    db_session.commit()
+
+
+@pytest.mark.integration
+class TestCompositeKeyDictsScoped:
+    @pytest.mark.parametrize("path", ["/api/auto-update-configs", "/api/deployment-metadata", "/api/health-check-configs"])
+    def test_dict_keys_pruned_to_visible_hosts(self, path, dev_scoped_client, unrestricted_client, seeded_container_configs):
+        assert {k.split(":")[0] for k in unrestricted_client.get(path).json()} == {"h1", "h2", "h3"}
+        assert {k.split(":")[0] for k in dev_scoped_client.get(path).json()} == {"h1"}
+
+    def test_updates_summary_counts_only_visible(self, dev_scoped_client, unrestricted_client, seeded_container_configs):
+        assert unrestricted_client.get("/api/updates/summary").json()["total_updates"] == 3
+        scoped = dev_scoped_client.get("/api/updates/summary").json()
+        assert scoped["total_updates"] == 1
+        assert scoped["containers_with_updates"] == ["h1:aaa111111111"]
 
 
 # ---------------------------------------------------------------------------

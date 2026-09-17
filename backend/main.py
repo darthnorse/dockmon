@@ -87,7 +87,7 @@ from utils.keys import make_composite_key
 from utils.encryption import encrypt_password, decrypt_password
 from utils.async_docker import async_docker_call, async_client_ping, async_client_version, async_containers_list
 from utils.base_path import get_base_path
-from utils.response_filtering import filter_container_env, filter_container_inspect_env, filter_ws_container_message, filter_ws_host_visibility
+from utils.response_filtering import filter_container_env, filter_container_inspect_env, filter_ws_container_message, filter_ws_host_visibility, event_is_visible
 from utils.host_ips import deserialize_host_ips
 from utils.client_ip import get_client_ip_ws
 from utils.networks import BUILTIN_NETWORKS, format_network, create_network_local
@@ -2747,8 +2747,11 @@ async def get_updates_summary(current_user: dict = Depends(get_current_user)):
             ContainerUpdate.update_available == True
         ).all()
 
-        # Filter to only include containers that still exist
-        valid_updates = [u for u in updates if u.container_id in current_container_keys]
+        # Filter to only include containers that still exist (stale cleanup below stays fleet-wide)
+        valid_updates = filter_visible_hosts(
+            [u for u in updates if u.container_id in current_container_keys],
+            get_visible_host_ids_for_auth(current_user), lambda u: u.host_id,
+        )
 
         # Clean up stale entries - but ONLY for hosts that are online (Issue #116)
         # If a host is offline/disconnected, we can't confirm the container is gone
@@ -2792,7 +2795,7 @@ async def get_all_auto_update_configs(current_user: dict = Depends(get_current_u
     """
 
     with monitor.db.get_session() as session:
-        configs = session.query(ContainerUpdate).all()
+        configs = filter_visible_hosts(session.query(ContainerUpdate).all(), get_visible_host_ids_for_auth(current_user), lambda r: r.host_id)
 
         return {
             record.container_id: {
@@ -2826,7 +2829,7 @@ async def get_all_deployment_metadata(current_user: dict = Depends(get_current_u
     """
 
     with monitor.db.get_session() as session:
-        metadata_records = session.query(DeploymentMetadata).all()
+        metadata_records = filter_visible_hosts(session.query(DeploymentMetadata).all(), get_visible_host_ids_for_auth(current_user), lambda r: r.host_id)
 
         return {
             record.container_id: {
@@ -2860,7 +2863,7 @@ async def get_all_health_check_configs(current_user: dict = Depends(get_current_
     """
 
     with monitor.db.get_session() as session:
-        configs = session.query(ContainerHttpHealthCheck).all()
+        configs = filter_visible_hosts(session.query(ContainerHttpHealthCheck).all(), get_visible_host_ids_for_auth(current_user), lambda r: r.host_id)
 
         return {
             record.container_id: {
@@ -4786,7 +4789,8 @@ async def get_events(
             search=search,
             limit=limit,
             offset=offset,
-            sort_order=sort_order
+            sort_order=sort_order,
+            visible_host_ids=get_visible_host_ids_for_auth(current_user),
         )
 
         # Convert to JSON-serializable format
@@ -4834,7 +4838,8 @@ async def get_event_by_id(
     """Get a specific event by ID"""
     try:
         event = monitor.db.get_event_by_id(event_id)
-        if not event:
+        if not event or not event_is_visible(event.host_id, event.container_id, event.category,
+                                             get_visible_host_ids_for_auth(current_user)):
             raise HTTPException(status_code=404, detail="Event not found")
 
         return {
@@ -4870,7 +4875,9 @@ async def get_events_by_correlation(
 ):
     """Get all events with the same correlation ID (related events)"""
     try:
-        events = monitor.db.get_events_by_correlation(correlation_id)
+        visible = get_visible_host_ids_for_auth(current_user)
+        events = [e for e in monitor.db.get_events_by_correlation(correlation_id)
+                  if event_is_visible(e.host_id, e.container_id, e.category, visible)]
 
         events_json = []
         for event in events:

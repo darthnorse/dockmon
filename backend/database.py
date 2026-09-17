@@ -5,7 +5,7 @@ Uses SQLite for persistent storage of configuration and settings
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
-from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, DateTime, JSON, ForeignKey, Text, Table, UniqueConstraint, CheckConstraint, text, Float, func, Index
+from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, DateTime, JSON, ForeignKey, Text, Table, UniqueConstraint, CheckConstraint, text, Float, func, Index, and_, or_
 from sqlalchemy.orm import sessionmaker, Session, relationship, declarative_base
 from sqlalchemy.pool import StaticPool
 import os
@@ -15,6 +15,7 @@ import uuid
 
 from auth.capabilities import ALL_CAPABILITIES, OPERATOR_CAPABILITIES, READONLY_CAPABILITIES
 from utils.keys import make_composite_key
+from utils.response_filtering import GLOBAL_EVENT_CATEGORIES
 
 logger = logging.getLogger(__name__)
 
@@ -1464,6 +1465,19 @@ host_stats_history = Table(
     Column("container_count", Integer, nullable=True),
     UniqueConstraint("host_id", "resolution", "timestamp", name="uq_host_stats"),
 )
+
+
+def event_visibility_predicate(visible_host_ids: set):
+    """SQL twin of utils.response_filtering.event_scope: an event is visible when its
+    host is visible, or it has no host but its host_id:short_id container is, or it
+    is host-less bookkeeping in a global category. Every other null-host row is hidden."""
+    composite_host = func.substr(EventLog.container_id, 1, func.instr(EventLog.container_id, ':') - 1)
+    return or_(
+        EventLog.host_id.in_(visible_host_ids),
+        and_(EventLog.host_id.is_(None), EventLog.container_id.isnot(None), composite_host.in_(visible_host_ids)),
+        and_(EventLog.host_id.is_(None), EventLog.container_id.is_(None),
+             EventLog.category.in_(GLOBAL_EVENT_CATEGORIES)),
+    )
 
 
 class DatabaseManager:
@@ -3955,13 +3969,17 @@ class DatabaseManager:
                    search: Optional[str] = None,
                    limit: int = 100,
                    offset: int = 0,
-                   sort_order: str = 'desc') -> tuple[List[EventLog], int]:
+                   sort_order: str = 'desc',
+                   visible_host_ids: Optional[set] = None) -> tuple[List[EventLog], int]:
         """Get events with filtering and pagination - returns (events, total_count)
 
         Multi-select filters (category, severity, host_id, container_id) accept lists for OR filtering.
+        visible_host_ids restricts the caller's view (None = unrestricted) before pagination.
         """
         with self.get_session() as session:
             query = session.query(EventLog)
+            if visible_host_ids is not None:
+                query = query.filter(event_visibility_predicate(visible_host_ids))
 
             # Apply filters - use IN clause for lists
             if category:

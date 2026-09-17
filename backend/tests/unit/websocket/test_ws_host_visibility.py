@@ -150,9 +150,20 @@ class TestPerTypeRules:
                                                   "container_id": "h7:aaa111111111"}}
         assert WS_HOST_VISIBILITY["new_event"](payload) == {"h7"}
 
-    def test_new_event_system_category_without_host_is_global(self):
-        payload = {"type": "new_event", "event": {"category": "system", "host_id": None, "container_id": None}}
+    @pytest.mark.parametrize("category", ["system", "alert", "notification", "user"])
+    def test_new_event_hostless_admin_categories_are_global(self, category):
+        """Rule/channel/user bookkeeping reveals nothing about hidden hosts."""
+        payload = {"type": "new_event", "event": {"category": category, "host_id": None, "container_id": None}}
         assert WS_HOST_VISIBILITY["new_event"](payload) == set()
+
+    @pytest.mark.parametrize("category", ["container", "host", "health_check"])
+    def test_new_event_hostless_host_categories_are_dropped(self, category):
+        payload = {"type": "new_event", "event": {"category": category, "host_id": None, "container_id": None}}
+        assert WS_HOST_VISIBILITY["new_event"](payload) is DROP
+
+    def test_new_event_admin_category_naming_a_container_is_not_global(self):
+        payload = {"type": "new_event", "event": {"category": "alert", "host_id": None, "container_id": "aaa111111111"}}
+        assert WS_HOST_VISIBILITY["new_event"](payload) is DROP
 
     def test_new_event_without_host_or_composite_is_dropped(self):
         payload = {"type": "new_event", "event": {"category": "container", "host_id": None, "container_id": "aaa111111111"}}

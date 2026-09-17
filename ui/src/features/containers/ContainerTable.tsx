@@ -354,20 +354,6 @@ interface ContainerTableProps {
   scrollElement?: HTMLElement | null | undefined
 }
 
-/**
- * Format network byte counters (rx/tx) into human-readable units,
- * mirrors `docker stats` NET I/O formatting.
- */
-function formatNetworkBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes.toFixed(0)} B`
-  const kb = bytes / 1024
-  if (kb < 1024) return `${kb.toFixed(1)} KB`
-  const mb = kb / 1024
-  if (mb < 1024) return `${mb.toFixed(1)} MB`
-  const gb = mb / 1024
-  return `${gb.toFixed(2)} GB`
-}
-
 export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerTableProps = {}) {
   const { hasCapability } = useAuth()
   const canOperate = hasCapability('containers.operate')
@@ -1298,36 +1284,49 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
         },
         enableSorting: true,
       },
-      // 9b. NETWORK (Down/Up traffic)
+      // 9b. NETWORK (received / sent since the container started)
       {
         id: 'network',
-        header: 'NETWORK',
+        header: ({ column }) => {
+          const sortDirection = column.getIsSorted()
+          return (
+            <Button
+              variant="ghost"
+              onClick={() => column.toggleSorting(sortDirection === 'asc')}
+              className="h-8 px-2 hover:bg-surface-2"
+            >
+              NETWORK
+              <ArrowUpDown className={`ml-2 h-4 w-4 ${sortDirection ? 'text-primary' : 'text-muted-foreground'}`} />
+            </Button>
+          )
+        },
+        accessorFn: (row) => (row.network_rx ?? 0) + (row.network_tx ?? 0),
         cell: ({ row }) => {
           const container = row.original
-          const rx = container.network_rx
-          const tx = container.network_tx
+          const { network_rx: rx, network_tx: tx } = container
 
-          if (rx === undefined && tx === undefined) {
-            return <span className="text-xs text-muted-foreground">-</span>
+          if (container.state !== 'running' || (rx == null && tx == null)) {
+            return <span className="text-sm text-muted-foreground">-</span>
           }
 
           return (
             <div
               className="flex flex-col gap-0.5 text-xs text-muted-foreground leading-tight"
-              title={`Received: ${formatNetworkBytes(rx ?? 0)} / Sent: ${formatNetworkBytes(tx ?? 0)}`}
+              title={`Received ${formatBytes(rx)} / Sent ${formatBytes(tx)}`}
               data-testid="network-io"
             >
               <span className="flex items-center gap-1">
                 <ArrowDown className="h-3 w-3 text-info shrink-0" />
-                {formatNetworkBytes(rx ?? 0)}
+                {formatBytes(rx)}
               </span>
               <span className="flex items-center gap-1">
                 <ArrowUp className="h-3 w-3 text-warning shrink-0" />
-                {formatNetworkBytes(tx ?? 0)}
+                {formatBytes(tx)}
               </span>
             </div>
           )
         },
+        enableSorting: true,
       },
       // 10. RAM (memory usage)
       {

@@ -76,7 +76,7 @@ class TestRequireHostAccess:
         resolver({"h2"})
         response = _app(SESSION_USER).get("/hosts/h1")
         assert response.status_code == 404
-        assert response.json() == {"detail": "Not found"}
+        assert response.json() == {"detail": "Host not found"}
 
     def test_orphan_caller_gets_404(self, resolver):
         resolver(set())
@@ -129,3 +129,15 @@ class TestDenialLog:
         assert len(messages) == 1
         assert "\n" not in messages[0]
         assert "'x\\nINFO forged line'" in messages[0]
+
+
+def test_hidden_host_message_matches_unknown_host_message():
+    """A scoped caller must not be able to tell 'exists but hidden' from 'does not exist'."""
+    import re
+    from pathlib import Path
+    main_src = Path(__file__).resolve().parents[3].joinpath("main.py").read_text()
+    unknown_messages = set(re.findall(r'status_code=404, detail="(Host not found)"', main_src))
+    assert unknown_messages == {"Host not found"}
+    from auth import api_key_auth
+    assert 'detail="Host not found"' in Path(api_key_auth.__file__).read_text()
+    assert 'detail="Not found"' not in Path(api_key_auth.__file__).read_text()

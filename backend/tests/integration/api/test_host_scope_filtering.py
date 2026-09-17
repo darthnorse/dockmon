@@ -669,7 +669,7 @@ def _api_key_user_id(db_session, username):
 @pytest.mark.integration
 class TestDeploymentsScoped:
     def test_body_host_ids_must_be_visible(self, dev_scoped_client, deployment_deps):
-        hidden = {"detail": "Not found"}
+        hidden = {"detail": "Host not found"}
         assert dev_scoped_client.post("/api/deployments/deploy", json={"stack_name": "web", "host_id": "h2", "action": "up"}).json() == hidden
         assert dev_scoped_client.post("/api/deployments", json={"stack_name": "web", "host_id": "h2"}).json() == hidden
         assert dev_scoped_client.post("/api/deployments/generate-from-containers",
@@ -1128,7 +1128,7 @@ class TestOIDCUserScopeFlow:
         assert two_tenants.a.get("/api/hosts/dev-0/metrics").status_code != 404
         assert two_tenants.b.post("/api/hosts/dev-0/containers/a00000000000/restart").status_code == 404
         assert two_tenants.a.post("/api/deployments/deploy",
-                                  json={"stack_name": "web", "host_id": "t1-2", "action": "up"}).json() == {"detail": "Not found"}
+                                  json={"stack_name": "web", "host_id": "t1-2", "action": "up"}).json() == {"detail": "Host not found"}
 
     def test_alert_metric_capabilities_lists_only_own_hosts(self, two_tenants):
         caps = two_tenants.a.get("/api/alerts/metrics/capabilities").json()["hosts"]

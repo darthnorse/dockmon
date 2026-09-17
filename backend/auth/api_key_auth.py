@@ -540,7 +540,7 @@ def check_host_ids_visible(host_ids, current_user: dict) -> None:
         if not host_is_visible(host_id, visible):
             # repr: the id is caller-controlled and percent-decoded, so a raw newline would forge a log line
             logger.info(f"{_get_auth_identifier(current_user, include_group=True)} denied host scope on {host_id!r}")
-            raise HTTPException(status_code=404, detail="Not found")
+            raise HTTPException(status_code=404, detail="Host not found")
 
 
 def check_composite_keys_visible(keys, current_user: dict) -> None:

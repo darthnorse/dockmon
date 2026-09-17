@@ -923,7 +923,7 @@ async def update_host(host_id: str, config: DockerHostConfig, request: Request, 
     if get_visible_host_ids_for_auth(current_user) is not None:
         existing = monitor.db.get_host(host_id)  # persisted record, not the mutable in-memory map
         if existing is None or config.url != existing.url:
-            raise HTTPException(status_code=404, detail="Not found")
+            raise HTTPException(status_code=404, detail="Host not found")
     host = await asyncio.to_thread(monitor.update_host, host_id, config)
     _safe_audit(current_user, log_host_change, AuditAction.UPDATE, host_id, config.name, request)
     return host

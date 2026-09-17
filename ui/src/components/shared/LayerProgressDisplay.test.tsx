@@ -27,7 +27,8 @@ describe('LayerProgressDisplay', () => {
       data: { host_id: 'h1', container_id: 'aaa111111111', stage: 'backup', progress: 40, message: 'Creating backup' },
     })
 
-    expect(screen.getByText('backup')).toBeInTheDocument()
+    expect(screen.getByText('Creating backup')).toBeInTheDocument()
+    expect(screen.queryByText('backup')).not.toBeInTheDocument()
     expect(screen.getByText('40%')).toBeInTheDocument()
   })
 
@@ -51,7 +52,7 @@ describe('LayerProgressDisplay', () => {
       data: { host_id: 'h1', container_id: 'aaa111111111', stage: 'health', message: 'Waiting for health check' },
     })
 
-    expect(screen.getByText('health')).toBeInTheDocument()
+    expect(screen.getByText('Waiting for health check')).toBeInTheDocument()
     expect(screen.queryByText(/%$/)).not.toBeInTheDocument()
   })
 })

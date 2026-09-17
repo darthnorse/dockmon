@@ -84,7 +84,7 @@ export function LayerProgressDisplay({
         setUpdateProgress({
           stage: message.data.stage,
           progress: message.data.progress,
-          message: message.data.stage || message.data.message || 'Processing...',
+          message: message.data.message || message.data.stage || 'Processing...',
         })
         if (message.data.stage === 'completed') {
           clearProgressAfterDelay()

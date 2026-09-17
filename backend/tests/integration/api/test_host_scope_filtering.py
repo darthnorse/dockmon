@@ -24,9 +24,11 @@ from auth.api_key_auth import (
 )
 from auth.capabilities import ALL_CAPABILITIES
 from database import (
-    Agent, AlertRuleV2, AlertV2, ApiKey, ContainerHttpHealthCheck, ContainerUpdate, CustomGroup, DeploymentMetadata,
-    DockerHostDB, EventLog, GroupPermission, GroupTagScope, Tag, TagAssignment, User, UserGroupMembership,
+    Agent, AlertRuleV2, AlertV2, ApiKey, ContainerHttpHealthCheck, ContainerUpdate, CustomGroup, Deployment,
+    DeploymentMetadata, DockerHostDB, EventLog, GroupPermission, GroupTagScope, Tag, TagAssignment, User,
+    UserGroupMembership,
 )
+from deployment import routes as deployment_routes, stack_storage
 from main import app
 from models.docker_models import Container, DockerHost
 
@@ -560,6 +562,116 @@ class TestAlertsScoped:
                             lambda: SimpleNamespace(get_host_stats=AsyncMock(return_value={})))
         assert {h["host_id"] for h in unrestricted_client.get("/api/alerts/metrics/capabilities").json()["hosts"]} == {"h1", "h2", "h3"}
         assert [h["host_id"] for h in dev_scoped_client.get("/api/alerts/metrics/capabilities").json()["hosts"]] == ["h1"]
+
+
+def _compose_container(cid, host_id, project, service):
+    c = _container(cid, host_id)
+    c.labels = {"com.docker.compose.project": project, "com.docker.compose.service": service}
+    return c
+
+
+COMPOSE_CONTAINERS = [
+    _compose_container("aaa111111111", "h1", "web", "nginx"),
+    _compose_container("ccc333333333", "h2", "web", "nginx"),
+    _compose_container("ddd444444444", "h3", "db", "postgres"),
+]
+
+
+@pytest.fixture
+def deployment_deps(db_session, seeded_hosts, monkeypatch):
+    """Point the deployment/stack routers at the test monitor + database and seed
+    compose-labelled containers on every host."""
+    for host_id, host in HOSTS.items():
+        db_session.add(DockerHostDB(id=host_id, name=host.name, url=host.url))
+    db_session.commit()
+    monkeypatch.setattr(deployment_routes, "_docker_monitor", main_module.monitor)
+    monkeypatch.setattr(deployment_routes, "_database_manager", main_module.monitor.db)
+    monkeypatch.setattr(main_module.monitor, "get_last_containers", lambda: list(COMPOSE_CONTAINERS))
+    monkeypatch.setattr(stack_storage, "stack_exists", AsyncMock(return_value=True))
+    monkeypatch.setattr(stack_storage, "list_stacks", AsyncMock(return_value=["web", "db"]))
+    monkeypatch.setattr(stack_storage, "read_stack", AsyncMock(return_value=("services:\n  nginx:\n    image: nginx\n", {})))
+    monkeypatch.setattr(deployment_routes, "_deployment_executor", SimpleNamespace(
+        create_deployment=AsyncMock(return_value="h1:dep000000009"),
+        execute_deployment=AsyncMock(),
+    ))
+
+
+def _seed_deployments(db_session, user_id):
+    for host_id, stack in (("h1", "web"), ("h2", "db")):
+        db_session.add(Deployment(id=f"{host_id}:dep000000001", host_id=host_id, user_id=user_id,
+                                  stack_name=stack, status="planning"))
+    db_session.commit()
+
+
+def _api_key_user_id(db_session, username):
+    return db_session.query(User).filter_by(username=username).one().id
+
+
+@pytest.mark.integration
+class TestDeploymentsScoped:
+    def test_body_host_ids_must_be_visible(self, dev_scoped_client, deployment_deps):
+        hidden = {"detail": "Not found"}
+        assert dev_scoped_client.post("/api/deployments/deploy", json={"stack_name": "web", "host_id": "h2", "action": "up"}).json() == hidden
+        assert dev_scoped_client.post("/api/deployments", json={"stack_name": "web", "host_id": "h2"}).json() == hidden
+        assert dev_scoped_client.post("/api/deployments/generate-from-containers",
+                                      json={"project_name": "web", "host_id": "h2"}).json() == hidden
+        assert dev_scoped_client.post("/api/stacks/web/validate-ports", json={"host_id": "h2"}).json() == hidden
+        assert dev_scoped_client.post("/api/deployments/generate-from-containers",
+                                      json={"project_name": "web", "host_id": "h1"}).status_code == 200
+
+    def test_list_and_record_routes_are_scoped(self, dev_scoped_client, deployment_deps, db_session):
+        _seed_deployments(db_session, _api_key_user_id(db_session, "dev_user"))
+        assert [d["host_id"] for d in dev_scoped_client.get("/api/deployments").json()] == ["h1"]
+        assert dev_scoped_client.get("/api/deployments/h1:dep000000001").status_code == 200
+        for method, path, body in (
+            ("get", "/api/deployments/h2:dep000000001", None),
+            ("get", "/api/deployments/h2:dep000000001/compose-preview", None),
+            ("put", "/api/deployments/h2:dep000000001", {"stack_name": "web"}),
+            ("delete", "/api/deployments/h2:dep000000001", None),
+            ("post", "/api/deployments/h2:dep000000001/execute", None),
+        ):
+            kwargs = {"json": body} if body is not None else {}
+            assert getattr(dev_scoped_client, method)(path, **kwargs).status_code == 404, (method, path)
+        assert db_session.query(Deployment).filter_by(id="h2:dep000000001").count() == 1
+
+    def test_put_cannot_move_a_deployment_to_a_hidden_host(self, dev_scoped_client, deployment_deps, db_session):
+        _seed_deployments(db_session, _api_key_user_id(db_session, "dev_user"))
+        response = dev_scoped_client.put("/api/deployments/h1:dep000000001", json={"host_id": "h2"})
+        assert response.status_code == 404
+        db_session.expire_all()
+        assert db_session.query(Deployment).filter_by(id="h1:dep000000001").one().host_id == "h1"
+
+    def test_known_stacks_and_running_projects_are_scoped(self, dev_scoped_client, unrestricted_client, deployment_deps):
+        known = {k["name"]: k["hosts"] for k in unrestricted_client.get("/api/deployments/known-stacks").json()}
+        assert known == {"web": ["h1", "h2"], "db": ["h3"]}
+        known = {k["name"]: k["hosts"] for k in dev_scoped_client.get("/api/deployments/known-stacks").json()}
+        assert known == {"web": ["h1"]}
+        projects = dev_scoped_client.get("/api/deployments/running-projects").json()
+        assert [(p["project_name"], p["host_id"]) for p in projects] == [("web", "h1")]
+
+    def test_import_creates_records_only_for_visible_hosts(self, dev_scoped_client, deployment_deps, db_session, monkeypatch):
+        monkeypatch.setattr(stack_storage, "stack_exists", AsyncMock(return_value=False))
+        monkeypatch.setattr(stack_storage, "write_stack", AsyncMock())
+        compose = "name: web\nservices:\n  nginx:\n    image: nginx\n"
+        response = dev_scoped_client.post("/api/deployments/import", json={"compose_content": compose})
+        assert response.status_code == 201, response.text
+        assert {d["host_id"] for d in response.json()["deployments_created"]} == {"h1"}
+        assert {d.host_id for d in db_session.query(Deployment).all()} == {"h1"}
+
+    def test_import_as_stopped_on_hidden_host_is_404(self, dev_scoped_client, deployment_deps, monkeypatch):
+        monkeypatch.setattr(main_module.monitor, "get_last_containers", lambda: [])
+        compose = "name: web\nservices:\n  nginx:\n    image: nginx\n"
+        assert dev_scoped_client.post("/api/deployments/import", json={"compose_content": compose, "host_id": "h2"}).status_code == 404
+
+
+@pytest.mark.integration
+class TestStacksScoped:
+    def test_deployed_to_is_scoped_everywhere(self, dev_scoped_client, unrestricted_client, deployment_deps):
+        admin = {s["name"]: [h["host_id"] for h in s["deployed_to"]] for s in unrestricted_client.get("/api/stacks").json()}
+        assert admin == {"web": ["h1", "h2"], "db": ["h3"]}
+        scoped = {s["name"]: [h["host_id"] for h in s["deployed_to"]] for s in dev_scoped_client.get("/api/stacks").json()}
+        assert scoped == {"web": ["h1"], "db": []}
+        assert [h["host_id"] for h in dev_scoped_client.get("/api/stacks/web").json()["deployed_to"]] == ["h1"]
 
 
 @pytest.mark.integration

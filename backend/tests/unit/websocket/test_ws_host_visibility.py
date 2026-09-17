@@ -422,3 +422,26 @@ class TestShellSockets:
         with patch.object(connection_module, "get_visible_host_ids_for_user", return_value=None):
             await manager.refresh_all_visible_hosts()
         assert shell.closed is None
+
+    async def test_losing_shell_capability_closes_the_shell(self):
+        shell, keeper = FakeWebSocket(), FakeWebSocket()
+        manager = ConnectionManager()
+        await manager.register_shell(shell, 1, "h1")
+        await manager.register_shell(keeper, 2, "h1")
+        caps = {1: set(), 2: {"containers.shell"}}
+        with patch.object(connection_module, "get_capabilities_for_user", side_effect=lambda uid: caps[uid]):
+            await manager.refresh_all_capabilities()
+        assert shell.closed == (4403, "Shell access revoked")
+        assert keeper.closed is None
+        with patch.object(connection_module, "get_capabilities_for_user", return_value=set()):
+            await manager.refresh_capabilities_for_user(2)
+        assert keeper.closed == (4403, "Shell access revoked")
+
+    async def test_revocations_bump_the_generation_so_a_registering_shell_rechecks(self):
+        manager = ConnectionManager()
+        before = manager.visibility_generation
+        await manager.disconnect_user(1)
+        with patch.object(connection_module, "get_capabilities_for_user", return_value=set()):
+            await manager.refresh_capabilities_for_user(1)
+            await manager.refresh_all_capabilities()
+        assert manager.visibility_generation == before + 3

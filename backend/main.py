@@ -6406,6 +6406,20 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         logger.debug(f"WebSocket cleanup completed for {connection_id}")
 
 
+async def _shell_still_authorized(websocket: WebSocket, user_id: int, host_id: str) -> bool:
+    """Re-run the connect-time checks after an auth refresh raced the shell's registration."""
+    if not await _validate_ws_user(monitor.db, websocket, user_id, "Shell WebSocket"):
+        return False
+    if not has_capability_for_user(user_id, Capabilities.CONTAINERS_SHELL):
+        await websocket.close(code=4403, reason="Shell access revoked")
+        return False
+    visible_hosts = get_visible_host_ids_for_user(user_id)
+    if visible_hosts is not None and host_id not in visible_hosts:
+        await websocket.close(code=4404, reason="Not found")
+        return False
+    return True
+
+
 @app.websocket("/ws/shell/{host_id}/{container_id}")
 async def websocket_shell_endpoint(
     websocket: WebSocket,
@@ -6471,6 +6485,9 @@ async def websocket_shell_endpoint(
         await websocket.close(code=4003, reason="Shell access denied - requires containers.shell capability")
         return
 
+    # Snapshot the auth generation before validating: a revoke that lands between these
+    # checks and register_shell() would otherwise miss this socket
+    auth_generation = monitor.manager.visibility_generation
     visible_hosts = get_visible_host_ids_for_user(user_id)
     if visible_hosts is not None and host_id not in visible_hosts:
         logger.info(f"Shell WebSocket refused for user {username}: host {host_id!r} not visible")
@@ -6502,8 +6519,14 @@ async def websocket_shell_endpoint(
     except Exception:
         logger.error("Shell audit logging failed", exc_info=True)
 
-    # Route based on connection type
     await monitor.manager.register_shell(websocket, user_id, host_id)
+    if monitor.manager.visibility_generation != auth_generation and not await _shell_still_authorized(
+        websocket, user_id, host_id
+    ):
+        await monitor.manager.unregister_shell(websocket)
+        return
+
+    # Route based on connection type
     try:
         if host.connection_type == 'agent':
             # Agent-based host: route through agent WebSocket

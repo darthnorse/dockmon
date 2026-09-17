@@ -902,3 +902,23 @@ class TestShellWebSocketVisibility:
                 ws.receive_text()
             assert exc.value.code == 4404
         assert manager._shell_sockets == {}
+
+    def test_revoke_racing_the_shell_registration_is_not_missed(self, client, ws_sessions, db_session, monkeypatch):
+        """A scope change between the connect-time checks and register_shell() would leave
+        the shell untracked; the generation guard re-runs the checks after registering."""
+        from starlette.websockets import WebSocketDisconnect
+        manager = main_module.monitor.manager
+        original_register = manager.register_shell
+
+        async def register_after_revoke(websocket, user_id, host_id):
+            db_session.query(TagAssignment).filter_by(subject_id="h1").delete()
+            db_session.commit()
+            await manager.refresh_visible_hosts_for_user(user_id)
+            await original_register(websocket, user_id, host_id)
+
+        monkeypatch.setattr(manager, "register_shell", register_after_revoke)
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect("/ws/shell/h1/aaa111111111", cookies={"session_id": "dev-cookie"}):
+                pass
+        assert exc.value.code == 4404
+        assert manager._shell_sockets == {}

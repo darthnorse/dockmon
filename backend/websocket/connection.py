@@ -232,9 +232,11 @@ class ConnectionManager:
         """Re-fetch cached capabilities for all connections belonging to a user."""
         caps = set(get_capabilities_for_user(user_id))
         async with self._lock:
+            self._visibility_generation += 1
             for ws, uid in self._connection_user_ids.items():
                 if uid == user_id:
                     self._connection_capabilities[ws] = caps
+        await self._close_shells_without_capability({user_id: caps})
 
     async def refresh_all_capabilities(self):
         """Re-fetch cached capabilities for all connected users."""
@@ -245,9 +247,21 @@ class ConnectionManager:
         new_caps = {ws: set(get_capabilities_for_user(uid)) for ws, uid in ws_user_ids}
 
         async with self._lock:
+            self._visibility_generation += 1
             for ws, caps in new_caps.items():
                 if ws in self._connection_capabilities:
                     self._connection_capabilities[ws] = caps
+            shell_users = {uid for uid, _ in self._shell_sockets.values()}
+        await self._close_shells_without_capability({uid: set(get_capabilities_for_user(uid)) for uid in shell_users})
+
+    async def _close_shells_without_capability(self, caps_by_user: dict[int, set]) -> None:
+        """An open shell is root-equivalent on its container; losing containers.shell ends it."""
+        async with self._lock:
+            revoked = [ws for ws, (uid, _) in self._shell_sockets.items()
+                       if uid in caps_by_user and Capabilities.CONTAINERS_SHELL not in caps_by_user[uid]]
+        for ws in revoked:
+            await self._close(ws, 4403, "Shell access revoked")
+            await self.unregister_shell(ws)
 
     async def register_shell(self, websocket: WebSocket, user_id: int, host_id: str):
         async with self._lock:
@@ -266,6 +280,7 @@ class ConnectionManager:
     async def disconnect_user(self, user_id: int):
         """Close every connection belonging to a user (account deleted), shells included."""
         async with self._lock:
+            self._visibility_generation += 1
             sockets = [ws for ws, uid in self._connection_user_ids.items() if uid == user_id]
             shells = [ws for ws, (uid, _) in self._shell_sockets.items() if uid == user_id]
         for ws in sockets:

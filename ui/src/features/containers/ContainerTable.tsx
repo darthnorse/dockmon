@@ -1295,12 +1295,16 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
               onClick={() => column.toggleSorting(sortDirection === 'asc')}
               className="h-8 px-2 hover:bg-surface-2"
             >
-              NETWORK
+              Network
               <ArrowUpDown className={`ml-2 h-4 w-4 ${sortDirection ? 'text-primary' : 'text-muted-foreground'}`} />
             </Button>
           )
         },
-        accessorFn: (row) => (row.network_rx ?? 0) + (row.network_tx ?? 0),
+        // -1 sinks rows the cell renders as a dash below a running container with zero traffic
+        accessorFn: (row) =>
+          row.state !== 'running' || (row.network_rx == null && row.network_tx == null)
+            ? -1
+            : (row.network_rx ?? 0) + (row.network_tx ?? 0),
         cell: ({ row }) => {
           const container = row.original
           const { network_rx: rx, network_tx: tx } = container

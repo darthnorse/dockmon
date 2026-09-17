@@ -237,6 +237,37 @@ describe('ContainerTable', () => {
     })
   })
 
+  describe('network column', () => {
+    it('shows received and sent bytes for a running container and a dash for a stopped one', async () => {
+      vi.mocked(apiClient.apiClient.get).mockResolvedValue([
+        { ...mockContainers[0], network_rx: 1536, network_tx: 2 * 1024 * 1024 },
+        { ...mockContainers[1], network_rx: 999999, network_tx: 999999 },
+      ])
+
+      renderTable()
+
+      await waitFor(() => {
+        expect(screen.getByText('Network')).toBeInTheDocument()
+      })
+      const cells = screen.getAllByTestId('network-io')
+      expect(cells).toHaveLength(1)
+      expect(cells[0]).toHaveTextContent('1.5 KB')
+      expect(cells[0]).toHaveTextContent('2.0 MB')
+      expect(cells[0]).toHaveAttribute('title', 'Received 1.5 KB / Sent 2.0 MB')
+    })
+
+    it('shows a dash when a running container has no counters yet', async () => {
+      vi.mocked(apiClient.apiClient.get).mockResolvedValue([mockContainers[0]])
+
+      renderTable()
+
+      await waitFor(() => {
+        expect(screen.getByText('nginx')).toBeInTheDocument()
+      })
+      expect(screen.queryByTestId('network-io')).not.toBeInTheDocument()
+    })
+  })
+
   describe('table structure', () => {
     it('should render table with proper columns', async () => {
       vi.mocked(apiClient.apiClient.get).mockResolvedValue(mockContainers)

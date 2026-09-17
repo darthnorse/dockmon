@@ -87,7 +87,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
     setAutoRestart(container.auto_restart ?? false)
 
     const validStates: Array<'should_run' | 'on_demand' | 'unspecified'> = ['should_run', 'on_demand', 'unspecified']
-    const containerState = container.desired_state as 'should_run' | 'on_demand' | 'unspecified' | undefined
+    const containerState = container.desired_state
     const newState = containerState && validStates.includes(containerState) ? containerState : 'unspecified'
     setDesiredState(newState)
 

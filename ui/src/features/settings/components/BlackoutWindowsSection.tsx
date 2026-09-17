@@ -50,7 +50,7 @@ export function BlackoutWindowsSection() {
         days: [0, 1, 2, 3, 4],
       })
       toast.success('Blackout window created')
-    } catch (error) {
+    } catch {
       toast.error('Failed to create blackout window')
     }
   }
@@ -64,7 +64,7 @@ export function BlackoutWindowsSection() {
       setView('list')
       setEditIndex(null)
       toast.success('Blackout window updated')
-    } catch (error) {
+    } catch {
       toast.error('Failed to update blackout window')
     }
   }
@@ -74,7 +74,7 @@ export function BlackoutWindowsSection() {
       const newWindows = windows.filter((_, i) => i !== index)
       await updateSettings.mutateAsync({ blackout_windows: newWindows })
       toast.success('Blackout window deleted')
-    } catch (error) {
+    } catch {
       toast.error('Failed to delete blackout window')
     }
   }
@@ -87,7 +87,7 @@ export function BlackoutWindowsSection() {
       newWindows[index] = { ...window, enabled: !window.enabled }
       await updateSettings.mutateAsync({ blackout_windows: newWindows })
       toast.success(newWindows[index].enabled ? 'Window enabled' : 'Window disabled')
-    } catch (error) {
+    } catch {
       toast.error('Failed to toggle window')
     }
   }

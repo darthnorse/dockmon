@@ -59,8 +59,8 @@ export function MigrationChoiceModal() {
         description: `Settings transferred from ${migratedFrom?.host_name || 'previous host'}`,
       })
       // Invalidate queries to refresh data
-      queryClient.invalidateQueries({ queryKey: ['hosts'] })
-      queryClient.invalidateQueries({ queryKey: ['containers'] })
+      void queryClient.invalidateQueries({ queryKey: ['hosts'] })
+      void queryClient.invalidateQueries({ queryKey: ['containers'] })
       // Close modal
       setChoiceData(null)
       setSelectedHostId(null)

@@ -27,8 +27,8 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { ExpandedHostCardContainer } from './components/ExpandedHostCardContainer'
 import { HostCardContainer } from './components/HostCardContainer'
-import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
-import { useDndSensors } from '@/features/dashboard/hooks/useDndSensors'
+import { useUserPreferences, useUpdatePreferences, type UserPreferences, type DashboardPreferences } from '@/lib/hooks/useUserPreferences'
+import { useDndSensors, type DragHandleProps } from '@/features/dashboard/hooks/useDndSensors'
 import type { Host } from '@/types/api'
 import 'react-grid-layout/css/styles.css'
 
@@ -323,13 +323,10 @@ interface GroupSectionProps {
   onHostClick?: (hostId: string) => void
   onViewDetails?: (hostId: string) => void
   onEditHost?: (hostId: string) => void
-  dashboardPrefs: any
-  updateDashboardPrefs: (updates: any) => void
+  dashboardPrefs: UserPreferences | undefined
+  updateDashboardPrefs: (updates: Partial<DashboardPreferences>) => void
   hasLoadedPrefs: boolean
-  dragHandleProps?: {
-    attributes: any
-    listeners: any
-  }
+  dragHandleProps?: DragHandleProps
 }
 
 function GroupSection({

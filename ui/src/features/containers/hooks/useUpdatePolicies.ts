@@ -71,7 +71,7 @@ export function useTogglePolicyCategory() {
     },
     onSuccess: () => {
       // Invalidate policies list to refetch
-      queryClient.invalidateQueries({ queryKey: updatePolicyKeys.lists() })
+      void queryClient.invalidateQueries({ queryKey: updatePolicyKeys.lists() })
     }
   })
 }
@@ -95,7 +95,7 @@ export function useCreateCustomPattern() {
     },
     onSuccess: () => {
       // Invalidate policies list to refetch
-      queryClient.invalidateQueries({ queryKey: updatePolicyKeys.lists() })
+      void queryClient.invalidateQueries({ queryKey: updatePolicyKeys.lists() })
     }
   })
 }
@@ -118,7 +118,7 @@ export function useDeleteCustomPattern() {
     },
     onSuccess: () => {
       // Invalidate policies list to refetch
-      queryClient.invalidateQueries({ queryKey: updatePolicyKeys.lists() })
+      void queryClient.invalidateQueries({ queryKey: updatePolicyKeys.lists() })
     }
   })
 }
@@ -142,7 +142,7 @@ export function useUpdatePolicyAction() {
     },
     onSuccess: () => {
       // Invalidate policies list to refetch
-      queryClient.invalidateQueries({ queryKey: updatePolicyKeys.lists() })
+      void queryClient.invalidateQueries({ queryKey: updatePolicyKeys.lists() })
     }
   })
 }
@@ -180,11 +180,11 @@ export function useSetContainerUpdatePolicy() {
     },
     onSuccess: (_, variables) => {
       // Invalidate container-specific queries
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: ['container', variables.hostId, variables.containerId]
       })
       // Invalidate update status
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: ['container-update-status', variables.hostId, variables.containerId]
       })
     }

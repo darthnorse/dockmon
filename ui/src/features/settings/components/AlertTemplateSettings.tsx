@@ -58,7 +58,7 @@ export function AlertTemplateSettings() {
       })
       setHasChanges(false)
       toast.success('Alert templates saved successfully')
-    } catch (error) {
+    } catch {
       toast.error('Failed to save alert templates')
     }
   }
@@ -80,7 +80,7 @@ export function AlertTemplateSettings() {
   }
 
   const handleCopyVariable = (variable: string) => {
-    navigator.clipboard.writeText(variable)
+    void navigator.clipboard.writeText(variable)
     setCopiedVar(variable)
     setTimeout(() => setCopiedVar(null), 2000)
     toast.success('Variable copied to clipboard')

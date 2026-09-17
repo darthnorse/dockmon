@@ -18,6 +18,7 @@ import { json as jsonLang } from '@codemirror/lang-json'
 import * as themes from '@uiw/codemirror-themes-all'
 import { Button } from '@/components/ui/button'
 import { useGlobalSettings } from '@/hooks/useSettings'
+import { findIndentationTab } from '../utils'
 
 // Type guard for services object
 function isServicesRecord(value: unknown): value is Record<string, unknown> {
@@ -62,30 +63,6 @@ function validateComposeContent(parsed: unknown): { error?: string; warning?: st
   return {}
 }
 
-/**
- * First line whose indentation uses a tab (1-based), or null. Block-scalar
- * (| / >) content is skipped — a tab there is literal, valid YAML.
- */
-export function findIndentationTab(value: string): number | null {
-  const lines = value.split('\n')
-  let blockParentIndent: number | null = null
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? ''
-    if (blockParentIndent !== null) {
-      if (line.trim() === '') continue
-      const spaces = /^ */.exec(line)?.[0].length ?? 0
-      if (spaces > blockParentIndent) continue
-      blockParentIndent = null
-    }
-    const leading = /^[ \t]*/.exec(line)?.[0] ?? ''
-    if (leading.includes('\t')) return i + 1
-    if (/(?::|^\s*-)\s+[|>][+\-0-9]*\s*(#.*)?$/.test(line)) {
-      blockParentIndent = leading.length
-    }
-  }
-  return null
-}
-
 // Theme mapping for CodeMirror (dark themes only)
 const EDITOR_THEMES = {
   'github-dark': themes.githubDark,
@@ -112,7 +89,6 @@ interface ConfigurationEditorProps {
   type: 'container' | 'stack' | 'env'
   value: string
   onChange: (value: string) => void
-  mode?: 'json'  // Future: add 'form' mode for structured editing
   error?: string | undefined
   className?: string
   rows?: number
@@ -135,8 +111,6 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
   type,
   value,
   onChange,
-  // @ts-expect-error - mode reserved for future 'form' editing mode
-  mode = 'json',
   error,
   className = '',
   rows = 12,
@@ -286,7 +260,7 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
         }
       } else {
         // Parse and format JSON
-        const parsed = JSON.parse(value)
+        const parsed: unknown = JSON.parse(value)
         const formatted = JSON.stringify(parsed, null, 2)
         return formatted
       }

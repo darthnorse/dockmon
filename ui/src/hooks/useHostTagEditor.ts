@@ -70,7 +70,7 @@ export function useHostTagEditor({
         console.error('Failed to fetch tag suggestions:', error)
       }
     }
-    fetchSuggestions()
+    void fetchSuggestions()
   }, [])
 
   const handleStartEdit = () => {
@@ -123,8 +123,8 @@ export function useHostTagEditor({
       setIsEditing(false)
 
       // Refetch hosts to get updated tags; the group editor's host-tag list follows
-      queryClient.invalidateQueries({ queryKey: ['hosts'] })
-      queryClient.invalidateQueries({ queryKey: ['group-host-tags'] })
+      void queryClient.invalidateQueries({ queryKey: ['hosts'] })
+      void queryClient.invalidateQueries({ queryKey: ['group-host-tags'] })
     } catch (error) {
       console.error('Failed to update host tags:', error)
       toast.error('Failed to update host tags')

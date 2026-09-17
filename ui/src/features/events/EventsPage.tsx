@@ -84,11 +84,11 @@ export function EventsPage() {
         if (data.sort_order) {
           setSortOrder(data.sort_order)
         }
-      } catch (err) {
+      } catch {
         // Silently fail - will use default sort order
       }
     }
-    fetchSortOrder()
+    void fetchSortOrder()
   }, [])
 
   const events = eventsData?.events ?? []
@@ -160,7 +160,7 @@ export function EventsPage() {
 
     try {
       await apiClient.post('/user/event-sort-order', { sort_order: newOrder })
-      queryClient.invalidateQueries({ queryKey: ['events'] })
+      void queryClient.invalidateQueries({ queryKey: ['events'] })
     } catch (err) {
       debug.error('EventsPage', 'Failed to save sort order:', err)
     }

@@ -77,8 +77,8 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
       clearTimeout(eventsInvalidateTimerRef.current)
     }
     eventsInvalidateTimerRef.current = setTimeout(() => {
-      queryClient.invalidateQueries({ queryKey: ['events'] })
-      queryClient.invalidateQueries({ queryKey: ['host-events'] })
+      void queryClient.invalidateQueries({ queryKey: ['events'] })
+      void queryClient.invalidateQueries({ queryKey: ['host-events'] })
       eventsInvalidateTimerRef.current = null
     }, 1500)
   }, [queryClient])
@@ -106,8 +106,8 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
       switch (message.type) {
         case 'initial_state':
           debug.log('WebSocket', 'Received initial state')
-          queryClient.invalidateQueries({ queryKey: ['containers'] })
-          queryClient.invalidateQueries({ queryKey: ['hosts'] })
+          void queryClient.invalidateQueries({ queryKey: ['containers'] })
+          void queryClient.invalidateQueries({ queryKey: ['hosts'] })
           break
 
         case 'containers_update':
@@ -126,36 +126,36 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
 
         case 'host_added':
         case 'host_removed':
-          queryClient.invalidateQueries({ queryKey: ['hosts'] })
-          queryClient.invalidateQueries({ queryKey: ['containers'] })
+          void queryClient.invalidateQueries({ queryKey: ['hosts'] })
+          void queryClient.invalidateQueries({ queryKey: ['containers'] })
           break
 
         // Host status change (online/offline) - Real-time dashboard updates
         case 'host_status_changed':
-          queryClient.invalidateQueries({ queryKey: ['hosts'] })
-          queryClient.invalidateQueries({ queryKey: ['dashboard', 'hosts'] })
+          void queryClient.invalidateQueries({ queryKey: ['hosts'] })
+          void queryClient.invalidateQueries({ queryKey: ['dashboard', 'hosts'] })
           break
 
         // Host migration (mTLS to agent) - handled by MigrationBanner component
         case 'host_migrated':
-          queryClient.invalidateQueries({ queryKey: ['hosts'] })
-          queryClient.invalidateQueries({ queryKey: ['containers'] })
-          queryClient.invalidateQueries({ queryKey: ['dashboard', 'hosts'] })
+          void queryClient.invalidateQueries({ queryKey: ['hosts'] })
+          void queryClient.invalidateQueries({ queryKey: ['containers'] })
+          void queryClient.invalidateQueries({ queryKey: ['dashboard', 'hosts'] })
           break
 
         // Migration choice needed (cloned VMs) - handled by MigrationChoiceModal component
         case 'migration_choice_needed':
-          queryClient.invalidateQueries({ queryKey: ['hosts'] })
+          void queryClient.invalidateQueries({ queryKey: ['hosts'] })
           break
 
         case 'auto_restart_success':
         case 'auto_restart_failed':
-          queryClient.invalidateQueries({ queryKey: ['containers'] })
-          queryClient.invalidateQueries({ queryKey: ['events'] })
+          void queryClient.invalidateQueries({ queryKey: ['containers'] })
+          void queryClient.invalidateQueries({ queryKey: ['events'] })
           break
 
         case 'blackout_status_changed':
-          queryClient.invalidateQueries({ queryKey: ['settings'] })
+          void queryClient.invalidateQueries({ queryKey: ['settings'] })
           break
 
         // Batch job updates (handled by BatchJobPanel component)
@@ -191,7 +191,7 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
 
         // Container update complete - refresh container data and show warning if dependents failed
         case 'container_update_complete':
-          queryClient.invalidateQueries({ queryKey: ['containers'] })
+          void queryClient.invalidateQueries({ queryKey: ['containers'] })
           if (message.data.failed_dependents && message.data.failed_dependents.length > 0) {
             toast.warning(`Update warning for ${message.data.container_name}`, {
               description: message.data.warning || `Failed to recreate ${message.data.failed_dependents.length} dependent container(s)`,

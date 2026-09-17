@@ -300,8 +300,10 @@ export function LogViewer({
   useEffect(() => {
     if (containersChanged && containers.length > 0) {
       setLogs([])
-      fetchLogs()
+      void fetchLogs()
     }
+    // fetchLogs is rebuilt every render; containersChanged is the real trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [containersChanged, containers.length])
 
   // Auto-refresh polling - only when autoRefresh is enabled
@@ -314,7 +316,7 @@ export function LogViewer({
 
     // Start polling if conditions are met
     if (autoRefresh && containers.length > 0) {
-      intervalRef.current = setInterval(fetchLogs, 2000) // Poll every 2 seconds
+      intervalRef.current = setInterval(() => void fetchLogs(), 2000)
     }
 
     // Cleanup on unmount or when dependencies change

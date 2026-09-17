@@ -4,7 +4,7 @@
  * Form for creating and editing alert rules
  */
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { X, Search, Check, Bell, BellRing, Send, MessageSquare, MessageCircle, Hash, Smartphone, Mail, Globe, Users, AlertTriangle } from 'lucide-react'
 import { RemoveScroll } from 'react-remove-scroll'
@@ -20,6 +20,7 @@ import {
 } from '../hooks/useMetricCapabilities'
 import { maxThresholdFor } from '../utils/metricBounds'
 import type { AlertRule, AlertSeverity, AlertScope, AlertRuleRequest } from '@/types/alerts'
+import { parseSelectorJson } from '../utils/selectorJson'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import type { Host } from '@/types/api'
 import type { Container } from '@/features/containers/types'
@@ -244,19 +245,12 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
 
   const hosts: Host[] = hostsData || []
   const containers: Container[] = containersData || []
-  const configuredChannels = channelsData?.channels || []
+  const configuredChannels = useMemo(() => channelsData?.channels ?? [], [channelsData])
 
-  // Parse existing selectors
   const parseSelector = (json: string | null | undefined) => {
-    if (!json) return { all: true, selected: [] }
-    try {
-      const parsed = JSON.parse(json)
-      if (parsed.include_all) return { all: true, selected: [] }
-      if (parsed.include) return { all: false, selected: parsed.include }
-      return { all: true, selected: [] }
-    } catch {
-      return { all: true, selected: [] }
-    }
+    const parsed = parseSelectorJson(json)
+    if (!parsed.include_all && parsed.include) return { all: false, selected: parsed.include }
+    return { all: true, selected: [] }
   }
 
   const [formData, setFormData] = useState<AlertRuleFormData>(() => {
@@ -265,30 +259,15 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
     const kindConfig = RULE_KINDS.find((k) => k.value === ruleKind)
     const isMetricDriven = kindConfig?.requiresMetric ?? true
 
-    // Parse container selector to extract should_run filter and include list
     const parseContainerSelector = (json: string | null | undefined) => {
-      if (!json) return { all: true, included: [], should_run: null }
-      try {
-        const parsed = JSON.parse(json)
-        if (parsed.include_all) {
-          return {
-            all: true,
-            included: [],
-            should_run: parsed.should_run || null
-          }
-        }
-        if (parsed.include) {
-          // Explicit include list for manual selection
-          return {
-            all: false,
-            included: parsed.include,
-            should_run: parsed.should_run || null
-          }
-        }
-        return { all: true, included: [], should_run: null }
-      } catch {
-        return { all: true, included: [], should_run: null }
+      const parsed = parseSelectorJson(json)
+      if (parsed.include_all) {
+        return { all: true, included: [], should_run: parsed.should_run || null }
       }
+      if (parsed.include) {
+        return { all: false, included: parsed.include, should_run: parsed.should_run || null }
+      }
+      return { all: true, included: [], should_run: null }
     }
 
     const containerSelector = parseContainerSelector(rule?.container_selector_json)
@@ -361,22 +340,10 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
   const [tagSearchInput, setTagSearchInput] = useState('')
   const [availableTags, setAvailableTags] = useState<TagWithSource[]>([])
   const [selectedTags, setSelectedTags] = useState<string[]>(() => {
-    // Initialize with existing tags if editing - check selectors not labels_json
-    if (rule) {
-      try {
-        // Check host_selector for tags
-        if (rule.host_selector_json) {
-          const parsed = JSON.parse(rule.host_selector_json)
-          if (parsed.tags && Array.isArray(parsed.tags)) return parsed.tags
-        }
-        // Check container_selector for tags
-        if (rule.container_selector_json) {
-          const parsed = JSON.parse(rule.container_selector_json)
-          if (parsed.tags && Array.isArray(parsed.tags)) return parsed.tags
-        }
-      } catch {
-        // Parsing failed, fall through
-      }
+    // Tags live in the selectors, not labels_json
+    for (const json of [rule?.host_selector_json, rule?.container_selector_json]) {
+      const { tags } = parseSelectorJson(json)
+      if (Array.isArray(tags)) return tags
     }
     return []
   })
@@ -402,7 +369,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       }
     }
 
-    const timer = setTimeout(fetchTags, 300)
+    const timer = setTimeout(() => void fetchTags(), 300)
     return () => clearTimeout(timer)
   }, [tagSearchInput, formData.scope])
 
@@ -466,8 +433,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  // Clean up non-existent channel IDs when editing a rule (#166)
-  // This handles orphaned references from channels deleted before the backend fix
+  // Drop channel ids orphaned by channels deleted before the backend cascaded them
   useEffect(() => {
     if (isEditing && configuredChannels.length > 0 && formData.notify_channels.length > 0) {
       const validChannelIds = new Set(configuredChannels.map(c => c.id))
@@ -476,7 +442,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         setFormData(prev => ({ ...prev, notify_channels: cleanedChannels }))
       }
     }
-  }, [isEditing, configuredChannels]) // Only run when channels load, not on every formData change
+  }, [isEditing, configuredChannels, formData.notify_channels])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -714,8 +680,6 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       if (scopeText) {
         parts.push(`Scope: ${scopeText}`)
       }
-    } else {
-      parts.push(`Scope: ${formData.scope}`)
     }
 
     // Severity
@@ -1368,7 +1332,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                 </div>
                 <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-3">
                   <p className="text-xs text-blue-300">
-                    All containers with run mode "{formData.container_run_mode === 'should_run' ? 'Should Run' : 'On-Demand'}" will be monitored automatically.
+                    All containers with run mode &quot;{formData.container_run_mode === 'should_run' ? 'Should Run' : 'On-Demand'}&quot; will be monitored automatically.
                     To exclude specific containers from this rule, change their run mode in the container settings.
                   </p>
                 </div>
@@ -1551,7 +1515,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                   Resolve immediately after notification
                 </label>
                 <p className="mt-1 text-xs text-gray-400">
-                  Alert will be auto-resolved immediately after sending notification. Use this for notification-only mode if you don't want alerts to accumulate in the DockMon alert list.
+                  Alert will be auto-resolved immediately after sending notification. Use this for notification-only mode if you don&apos;t want alerts to accumulate in the DockMon alert list.
                 </p>
               </div>
             </div>
@@ -1598,7 +1562,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                   Suppress alert during container updates
                 </label>
                 <p className="mt-1 text-xs text-gray-400">
-                  Don't trigger this alert while a container is being updated. The alert will be re-evaluated after the update completes - only firing if the issue persists (e.g., container still stopped after update).
+                  Don&apos;t trigger this alert while a container is being updated. The alert will be re-evaluated after the update completes - only firing if the issue persists (e.g., container still stopped after update).
                 </p>
               </div>
             </div>

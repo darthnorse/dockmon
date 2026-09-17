@@ -389,7 +389,7 @@ function ContainerHealthCheckTabInternal({ container }: ContainerHealthCheckTabP
               disabled={!enabled}
             />
             <p className="text-xs text-muted-foreground">
-              e.g., "200" or "200-299" or "200,201,204"
+              e.g., &quot;200&quot; or &quot;200-299&quot; or &quot;200,201,204&quot;
             </p>
           </div>
         </div>

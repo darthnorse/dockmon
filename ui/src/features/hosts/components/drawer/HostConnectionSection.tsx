@@ -7,14 +7,7 @@
 import { Shield, CheckCircle2, XCircle, AlertCircle } from 'lucide-react'
 import { DrawerSection } from '@/components/ui/drawer'
 import { formatDistanceToNow } from 'date-fns'
-
-interface Host {
-  id: string
-  url: string
-  status: 'online' | 'offline' | 'degraded'
-  security_status?: string | null  // "secure", "insecure", "unknown"
-  last_checked: string
-}
+import type { Host } from '@/types/api'
 
 interface HostConnectionSectionProps {
   host: Host
@@ -49,6 +42,8 @@ export function HostConnectionSection({ host }: HostConnectionSectionProps) {
         return <XCircle className="h-5 w-5 text-red-500" />
       case 'degraded':
         return <AlertCircle className="h-5 w-5 text-yellow-500" />
+      default:
+        return <AlertCircle className="h-5 w-5 text-muted-foreground" />
     }
   }
 
@@ -60,6 +55,8 @@ export function HostConnectionSection({ host }: HostConnectionSectionProps) {
         return 'Disconnected'
       case 'degraded':
         return 'Connection Issues'
+      default:
+        return 'Unknown'
     }
   }
 

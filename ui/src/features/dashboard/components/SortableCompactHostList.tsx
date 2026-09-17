@@ -35,7 +35,7 @@ interface SortableCompactHostListProps {
 
 export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactHostListProps) {
   const { data: prefs, isLoading } = useUserPreferences()
-  const updatePreferences = useUpdatePreferences()
+  const { mutate: savePreferences } = useUpdatePreferences()
   const hasLoadedPrefs = useRef(false)
   const [isDragging, setIsDragging] = useState(false)
   const frozenHostsRef = useRef<CompactHost[]>([])
@@ -115,7 +115,7 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
           debug.log('DnD', 'Saving new order', { oldIndex, newIndex, order: newOrder })
 
           if (hasLoadedPrefs.current) {
-            updatePreferences.mutate({
+            savePreferences({
               dashboard: {
                 ...prefs?.dashboard,
                 compactHostOrder: newOrder,
@@ -125,7 +125,7 @@ export function SortableCompactHostList({ hosts, onHostClick }: SortableCompactH
         }
       }
     },
-    [updatePreferences.mutate, prefs?.dashboard]
+    [savePreferences, prefs?.dashboard]
   )
 
   if (isLoading) {

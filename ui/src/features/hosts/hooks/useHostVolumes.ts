@@ -110,7 +110,7 @@ export function useDeleteVolume() {
     },
     onSettled: (_data, _error, variables) => {
       // Refetch to sync with actual state
-      queryClient.invalidateQueries({ queryKey: ['host-volumes', variables.hostId] })
+      void queryClient.invalidateQueries({ queryKey: ['host-volumes', variables.hostId] })
     },
   })
 }
@@ -152,7 +152,7 @@ export function usePruneVolumes(hostId: string) {
     },
     onSettled: () => {
       // Refetch to sync with actual state
-      queryClient.invalidateQueries({ queryKey: ['host-volumes', hostId] })
+      void queryClient.invalidateQueries({ queryKey: ['host-volumes', hostId] })
     },
   })
 }
@@ -207,7 +207,7 @@ export function useDeleteVolumes() {
     },
     onSettled: (_data, _error, variables) => {
       // Refetch to sync with actual state
-      queryClient.invalidateQueries({ queryKey: ['host-volumes', variables.hostId] })
+      void queryClient.invalidateQueries({ queryKey: ['host-volumes', variables.hostId] })
     },
   })
 }

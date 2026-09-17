@@ -39,7 +39,7 @@ export function useCreateAlertRule() {
       return apiClient.post<AlertRule>(API_BASE, rule)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['alert-rules'] })
+      void queryClient.invalidateQueries({ queryKey: ['alert-rules'] })
     },
   })
 }
@@ -53,7 +53,7 @@ export function useUpdateAlertRule() {
       return apiClient.put<AlertRule>(`${API_BASE}/${ruleId}`, rule)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['alert-rules'] })
+      void queryClient.invalidateQueries({ queryKey: ['alert-rules'] })
     },
   })
 }
@@ -67,7 +67,7 @@ export function useDeleteAlertRule() {
       return apiClient.delete<{ success: boolean }>(`${API_BASE}/${ruleId}`)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['alert-rules'] })
+      void queryClient.invalidateQueries({ queryKey: ['alert-rules'] })
     },
   })
 }
@@ -81,7 +81,7 @@ export function useToggleAlertRule() {
       return apiClient.patch<AlertRule>(`${API_BASE}/${ruleId}/toggle`, { enabled })
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['alert-rules'] })
+      void queryClient.invalidateQueries({ queryKey: ['alert-rules'] })
     },
   })
 }

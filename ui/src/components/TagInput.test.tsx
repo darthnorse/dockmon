@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, within, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { TagInput } from './TagInput'
 
@@ -161,7 +161,7 @@ describe('TagInput', () => {
         <TagInput value={[]} onChange={handleChange} />
       )
 
-      const input = screen.getByRole('textbox') as HTMLInputElement
+      const input = screen.getByRole('textbox')
       await user.type(input, 'production{Enter}')
 
       expect(input.value).toBe('')
@@ -398,8 +398,6 @@ describe('TagInput', () => {
     })
 
     it('should not show suggestions when disabled', async () => {
-      const user = userEvent.setup()
-
       render(
         <TagInput
           value={[]}
@@ -416,7 +414,6 @@ describe('TagInput', () => {
 
   describe('max tags validation', () => {
     it('should not add tag when max limit reached', async () => {
-      const user = userEvent.setup()
       const handleChange = vi.fn()
 
       render(

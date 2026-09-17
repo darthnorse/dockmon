@@ -9,7 +9,7 @@
  * - Router for navigation with sidebar layout
  */
 
-import { QueryCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter, Routes, Route, Navigate, useSearchParams } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import { AuthProvider, useAuth } from '@/features/auth/AuthContext'
@@ -31,34 +31,8 @@ import { StacksPage } from '@/features/deployments/StacksPage'
 import { QuickActionPage } from '@/features/quick-action/QuickActionPage'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { LoadingSkeleton } from '@/components/layout/LoadingSkeleton'
-import { ApiError } from '@/lib/api/client'
+import { queryClient } from '@/lib/queryClient'
 import { useState, useEffect } from 'react'
-
-// Module-level so the cache persists across remounts (HMR, route changes,
-// etc.) — exported for tests that need to clear it between cases.
-export const queryClient = new QueryClient({
-  queryCache: new QueryCache({
-    // Global session-expiry handling: a 401 on any data query means the session
-    // is gone. Invalidate the current-user query (unless it's the one that
-    // failed, to avoid a refetch loop) so ProtectedRoute redirects to /login.
-    onError: (error, query) => {
-      if (
-        error instanceof ApiError &&
-        error.status === 401 &&
-        query.queryKey[0] !== 'auth'
-      ) {
-        void queryClient.invalidateQueries({ queryKey: ['auth', 'currentUser'] })
-      }
-    },
-  }),
-  defaultOptions: {
-    queries: {
-      staleTime: 1000 * 60, // 1 minute
-      retry: 1,
-      refetchOnWindowFocus: false,
-    },
-  },
-})
 
 // Capability-gated route wrapper — redirects to / if user lacks the required capability
 function RequireCapability({ capability, children }: { capability: string; children: React.ReactNode }) {

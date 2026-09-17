@@ -40,7 +40,7 @@ export function ApiKeysSettings() {
 
   const handleCopyKeyToClipboard = () => {
     if (newKey?.key) {
-      navigator.clipboard.writeText(newKey.key)
+      void navigator.clipboard.writeText(newKey.key)
       toast.success('API key copied to clipboard!')
     }
   }
@@ -123,7 +123,7 @@ export function ApiKeysSettings() {
           <Key className="h-12 w-12 text-gray-600 mx-auto mb-3" />
           <h3 className="text-gray-400 font-medium">All keys are revoked</h3>
           <p className="text-sm text-gray-500 mt-1">
-            Enable "Show revoked keys" to view them, or create a new key
+            Enable &quot;Show revoked keys&quot; to view them, or create a new key
           </p>
         </div>
       ) : (

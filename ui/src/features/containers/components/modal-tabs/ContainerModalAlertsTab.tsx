@@ -8,7 +8,7 @@ import { useState } from 'react'
 import { useAlerts, useResolveAlert, useSnoozeAlert } from '@/features/alerts/hooks/useAlerts'
 import type { AlertFilters, AlertState, AlertSeverity } from '@/types/alerts'
 import type { Container } from '@/features/containers/types'
-import { AlertTriangle, Bell, CheckCircle2, Clock, ChevronLeft, ChevronRight, AlertCircle, Info, ChevronDown } from 'lucide-react'
+import { AlertTriangle, Bell, CheckCircle2, Clock, ChevronLeft, ChevronRight, AlertCircle, Info, ChevronDown, type LucideIcon } from 'lucide-react'
 import { AlertDetailsDrawer } from '@/features/alerts/components/AlertDetailsDrawer'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
 
@@ -23,7 +23,7 @@ const SNOOZE_DURATIONS = [
   { label: '24 hours', value: 1440 },
 ]
 
-const STATE_OPTIONS: { value: AlertState; label: string; icon: any }[] = [
+const STATE_OPTIONS: { value: AlertState; label: string; icon: LucideIcon }[] = [
   { value: 'open', label: 'Open', icon: AlertCircle },
   { value: 'snoozed', label: 'Snoozed', icon: Clock },
   { value: 'resolved', label: 'Resolved', icon: CheckCircle2 },
@@ -62,7 +62,7 @@ export function ContainerModalAlertsTab({ container }: ContainerModalAlertsTabPr
   const currentPage = alertsData?.page ?? 1
   const totalPages = Math.ceil(totalCount / (filters.page_size ?? 10))
 
-  const handleFilterChange = (key: keyof AlertFilters, value: any) => {
+  const handleFilterChange = <K extends keyof AlertFilters>(key: K, value: AlertFilters[K]) => {
     setFilters((prev) => ({
       ...prev,
       [key]: value === prev[key] ? undefined : value, // Toggle off if same

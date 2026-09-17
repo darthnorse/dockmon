@@ -70,7 +70,7 @@ export function UpgradeWelcomeModal({
 
             {/* Highlights */}
             <div>
-              <h4 className="font-semibold text-base mb-3">What's New</h4>
+              <h4 className="font-semibold text-base mb-3">What&apos;s New</h4>
               <div className="grid gap-2">
                 {[
                   'Customizable dashboard with drag-and-drop widgets',
@@ -115,7 +115,7 @@ export function UpgradeWelcomeModal({
                     <div>
                       <div className="font-semibold mb-2">2. mTLS Certificates (if applicable)</div>
                       <p className="mb-2">
-                        If you have remote Docker hosts with mTLS enabled, you need to regenerate certificates due to Alpine's stricter security requirements.
+                        If you have remote Docker hosts with mTLS enabled, you need to regenerate certificates due to Alpine&apos;s stricter security requirements.
                       </p>
                       <ol className="list-decimal list-inside space-y-2 pl-2">
                         <li>
@@ -155,7 +155,7 @@ export function UpgradeWelcomeModal({
 
             <div className="text-sm text-muted-foreground bg-muted/30 p-4 rounded-md">
               <p>
-                We don't like breaking changes, but this was necessary to provide better
+                We don&apos;t like breaking changes, but this was necessary to provide better
                 security and enable future features. Thank you for your understanding!
               </p>
             </div>

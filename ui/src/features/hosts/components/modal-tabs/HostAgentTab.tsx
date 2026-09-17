@@ -65,11 +65,12 @@ export function HostAgentTab({ hostId }: HostAgentTabProps) {
   })
 
   // Reset updateTriggered when agent reconnects with new version (update_available becomes false)
+  const agentUpdateAvailable = agent?.update_available
   useEffect(() => {
-    if (updateTriggered && agent && !agent.update_available) {
+    if (updateTriggered && agentUpdateAvailable === false) {
       setUpdateTriggered(false)
     }
-  }, [agent?.update_available, updateTriggered])
+  }, [agentUpdateAvailable, updateTriggered])
 
   // Trigger agent update
   const triggerUpdate = useMutation({
@@ -79,7 +80,7 @@ export function HostAgentTab({ hostId }: HostAgentTabProps) {
     },
     onSuccess: () => {
       setUpdateTriggered(true)
-      queryClient.invalidateQueries({ queryKey: ['host-agent', hostId] })
+      void queryClient.invalidateQueries({ queryKey: ['host-agent', hostId] })
     },
   })
 

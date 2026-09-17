@@ -20,6 +20,7 @@ import {
 
 // Extend TanStack Table's ColumnMeta to include our custom align property
 declare module '@tanstack/react-table' {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- declaration merging requires the upstream parameter names
   interface ColumnMeta<TData, TValue> {
     align?: 'left' | 'center' | 'right'
   }
@@ -355,7 +356,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
   const { hasCapability } = useAuth()
   const canOperate = hasCapability('containers.operate')
   const { data: preferences } = useUserPreferences()
-  const updatePreferences = useUpdatePreferences()
+  const { mutate: savePreferences } = useUpdatePreferences()
   const [sorting, setSorting] = useState<SortingState>(preferences?.container_table_sort || [])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   const [globalFilter, setGlobalFilter] = useState('')
@@ -425,11 +426,11 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
 
     // Debounce to avoid too many updates
     const timer = setTimeout(() => {
-      updatePreferences.mutate({ container_table_sort: sorting })
+      savePreferences({ container_table_sort: sorting })
     }, 500)
 
     return () => clearTimeout(timer)
-  }, [sorting])
+  }, [sorting, preferences?.container_table_sort, savePreferences])
 
   // Initialize column visibility from preferences when loaded
   useEffect(() => {
@@ -448,11 +449,11 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
 
     // Debounce to avoid too many updates
     const timer = setTimeout(() => {
-      updatePreferences.mutate({ container_table_column_visibility: columnVisibility })
+      savePreferences({ container_table_column_visibility: columnVisibility })
     }, 500)
 
     return () => clearTimeout(timer)
-  }, [columnVisibility])
+  }, [columnVisibility, preferences?.container_table_column_visibility, savePreferences])
 
   // Initialize column order from preferences when loaded
   useEffect(() => {
@@ -476,11 +477,11 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
 
     // Debounce to avoid too many updates
     const timer = setTimeout(() => {
-      updatePreferences.mutate({ container_table_column_order: orderWithoutSelect })
+      savePreferences({ container_table_column_order: orderWithoutSelect })
     }, 500)
 
     return () => clearTimeout(timer)
-  }, [columnOrder])
+  }, [columnOrder, preferences?.container_table_column_order, savePreferences])
 
   // Fetch all alert counts in one batched request
   const { data: alertCounts } = useAlertCounts('container')
@@ -769,7 +770,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
       // Open batch job progress panel
       setBatchJobId(jobId)
       setShowJobPanel(true)
-      queryClient.invalidateQueries({ queryKey: ['containers'] })
+      void queryClient.invalidateQueries({ queryKey: ['containers'] })
     },
     onError: (error) => {
       debug.error('ContainerTable', 'Batch action failed:', error)
@@ -854,7 +855,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
 
       return true
     })
-  }, [data, filters, updatesSummary, allAutoUpdateConfigs, allHealthCheckConfigs])
+  }, [data, filters, propHostId, updatesSummary, allAutoUpdateConfigs, allHealthCheckConfigs])
 
   // Single source for both the columns memo and the global filter.
   const customColumnIds = useMemo<string[]>(
@@ -1124,7 +1125,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
           return (
             <button
               className="text-sm text-left hover:text-primary transition-colors cursor-pointer"
-              onClick={(e) => { e.stopPropagation(); host_id && setHostModalHostId(host_id) }}
+              onClick={(e) => { e.stopPropagation(); if (host_id) setHostModalHostId(host_id) }}
             >
               {host_name || 'localhost'}
             </button>
@@ -1625,7 +1626,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
     return (
       <div className="space-y-4">
         <div className="animate-pulse space-y-2">
-          {[...Array(5)].map((_, i) => (
+          {Array.from({ length: 5 }, (_, i) => (
             <div key={i} className="h-14 rounded-lg bg-surface-1" />
           ))}
         </div>

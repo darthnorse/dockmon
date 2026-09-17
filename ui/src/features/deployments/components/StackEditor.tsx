@@ -52,7 +52,6 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { cn } from '@/lib/utils'
-import { ApiError } from '@/lib/api/client'
 import { toast } from 'sonner'
 import {
   useStack,
@@ -71,7 +70,7 @@ import { DeploymentProgress } from './DeploymentProgress'
 import { PortConflictBanner } from './PortConflictBanner'
 import { validateStackName, MAX_STACK_NAME_LENGTH } from '../types'
 import type { DeployedHost, PortConflict } from '../types'
-import { handleApiError, getErrorMessage, envFilesEqual, validateEnvFileName, normalizeEnvFileName } from '../utils'
+import { handleApiError, getErrorMessage, envFilesEqual, validateEnvFileName, normalizeEnvFileName, blockingComposeErrorMessage } from '../utils'
 import { useAuth } from '@/features/auth/AuthContext'
 
 // Base path for stack storage (matches backend STACKS_DIR)
@@ -82,21 +81,6 @@ function dropEnvFile(map: Record<string, string>, key: string): Record<string, s
   const next = { ...map }
   delete next[key]
   return next
-}
-
-/**
- * Message to surface for a malformed-compose (400) port-check failure, or null.
- * With unsaved edits, returns null so the save-first flow re-validates instead
- * of blocking a user who just fixed a bad saved stack in the editor.
- */
-export function blockingComposeErrorMessage(
-  err: unknown,
-  hasUnsavedChanges: boolean,
-): string | null {
-  if (err instanceof ApiError && err.status === 400 && !hasUnsavedChanges) {
-    return err.message
-  }
-  return null
 }
 
 type DialogType = 'delete' | 'copy' | 'save-changes' | 'remove-confirm' | 'add-env-file' | 'remove-env-file' | null
@@ -946,7 +930,7 @@ export function StackEditor({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Stack</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete stack "<strong>{selectedStackName}</strong>"?
+              Are you sure you want to delete stack &quot;<strong>{selectedStackName}</strong>&quot;?
               This will remove the compose.yaml and .env files from the filesystem,
               along with any deployment records. Running containers will not be affected.
               This action cannot be undone.
@@ -1011,7 +995,7 @@ export function StackEditor({
           <DialogHeader>
             <DialogTitle>Clone Stack</DialogTitle>
             <DialogDescription>
-              Create a copy of "<strong>{selectedStackName}</strong>" with a new name.
+              Create a copy of &quot;<strong>{selectedStackName}</strong>&quot; with a new name.
             </DialogDescription>
           </DialogHeader>
 
@@ -1114,7 +1098,7 @@ export function StackEditor({
           <AlertDialogHeader>
             <AlertDialogTitle>Remove Stack</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to remove stack "<strong>{selectedStackName}</strong>"
+              Are you sure you want to remove stack &quot;<strong>{selectedStackName}</strong>&quot;
               from <strong>{sortedHosts.find((h) => h.id === hostId)?.name || hostId}</strong>?
               This will stop and remove all containers, networks, <strong>and volumes</strong>.
               Data stored in volumes will be permanently lost. This action cannot be undone.
@@ -1125,7 +1109,7 @@ export function StackEditor({
             <AlertDialogAction
               onClick={() => {
                 setActiveDialog(null)
-                executeDeployment(selectedStackName, 'down', true)
+                void executeDeployment(selectedStackName, 'down', true)
               }}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >

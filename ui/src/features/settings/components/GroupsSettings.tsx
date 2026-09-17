@@ -224,7 +224,7 @@ export function GroupsSettings() {
           <DialogHeader>
             <DialogTitle>Delete Group</DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete the group "{deletingGroup?.name}"?
+              Are you sure you want to delete the group &quot;{deletingGroup?.name}&quot;?
               {deletingGroup && deletingGroup.member_count > 0 && (
                 <span className="mt-2 block text-yellow-400">
                   This group has {deletingGroup.member_count} member(s) who will be removed.
@@ -263,7 +263,7 @@ export function GroupsSettings() {
           <DialogHeader>
             <DialogTitle>Remove Member</DialogTitle>
             <DialogDescription>
-              Are you sure you want to remove user "{removingMember?.username}" from this group?
+              Are you sure you want to remove user &quot;{removingMember?.username}&quot; from this group?
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

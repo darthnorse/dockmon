@@ -65,7 +65,7 @@ export function AppLayout() {
       }
     }
 
-    checkUpgradeNotice()
+    void checkUpgradeNotice()
   }, [])
 
   // Listen for sidebar toggle events (for immediate UI updates)

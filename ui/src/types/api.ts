@@ -62,7 +62,7 @@ export interface Host {
   id: string
   name: string
   url: string
-  status: 'online' | 'offline' | 'degraded' | string
+  status: 'online' | 'offline' | 'degraded' | 'unknown'
   security_status?: 'secure' | 'insecure' | 'unknown' | null
   last_checked: string  // ISO timestamp
   container_count: number
@@ -104,7 +104,7 @@ export interface Container {
   id: string
   short_id: string
   name: string
-  state: 'running' | 'stopped' | 'paused' | 'restarting' | 'removing' | 'exited' | 'created' | 'dead' | string
+  state: 'running' | 'stopped' | 'paused' | 'restarting' | 'removing' | 'exited' | 'created' | 'dead' | 'unknown'
   status: string
   host_id: string
   host_name: string

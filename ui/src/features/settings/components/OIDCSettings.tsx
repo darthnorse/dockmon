@@ -360,7 +360,7 @@ export function OIDCSettings() {
                 size="icon"
                 className="shrink-0"
                 onClick={() => {
-                  navigator.clipboard.writeText(callbackUrl)
+                  void navigator.clipboard.writeText(callbackUrl)
                   setCallbackCopied(true)
                   if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
                   copyTimerRef.current = setTimeout(() => setCallbackCopied(false), 2000)
@@ -758,7 +758,7 @@ export function OIDCSettings() {
           <div className="text-sm">
             <p className="font-medium text-yellow-300">Default Group</p>
             <p className="text-yellow-200/70">
-              Users whose OIDC groups don't match any mapping will be assigned to{' '}
+              Users whose OIDC groups don&apos;t match any mapping will be assigned to{' '}
               {config?.default_group_name ? (
                 <strong>{config.default_group_name}</strong>
               ) : (

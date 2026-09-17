@@ -41,6 +41,8 @@ export default tseslint.config(
       // React rules
       ...react.configs.recommended.rules,
       ...react.configs['jsx-runtime'].rules,
+      // TypeScript already checks props; the rule also misreads Th/TdHTMLAttributes generics
+      'react/prop-types': 'off',
 
       // React Hooks rules
       ...reactHooks.configs.recommended.rules,
@@ -48,7 +50,7 @@ export default tseslint.config(
       // React Refresh
       'react-refresh/only-export-components': [
         'warn',
-        { allowConstantExport: true },
+        { allowConstantExport: true, allowExportNames: ['buttonVariants', 'badgeVariants'] },
       ],
 
       // TypeScript rules
@@ -65,10 +67,19 @@ export default tseslint.config(
     },
   },
   {
+    // Provider modules export their context and hooks next to the Provider; they live
+    // for the app's lifetime, so a full reload instead of a hot swap changes nothing
+    files: ['src/**/*Provider.tsx', 'src/**/*Context.tsx'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
+  {
     // Vitest suites stub modules with vi.mock/vi.mocked and pass MagicMocks around;
     // the "unsafe" family and unbound-method fire on every mock and prove nothing there
     files: ['src/**/*.test.{ts,tsx}', 'src/test/**/*.{ts,tsx}'],
     rules: {
+      'react-refresh/only-export-components': 'off',
       '@typescript-eslint/no-unsafe-call': 'off',
       '@typescript-eslint/no-unsafe-argument': 'off',
       '@typescript-eslint/no-unsafe-assignment': 'off',

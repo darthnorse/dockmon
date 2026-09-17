@@ -45,7 +45,7 @@ describe('App Integration Tests', () => {
     render(<App />)
 
     // Wait for login page to load
-    const usernameInput = await screen.findByLabelText(/username/i) as HTMLInputElement
+    const usernameInput = await screen.findByLabelText(/username/i)
 
     // In a real browser, this would be focused due to autoFocus attribute
     // We can verify the attribute is present (React renders as lowercase in DOM)

@@ -29,3 +29,20 @@ async def test_host_ids_limits_the_check_to_those_hosts():
 
     assert stats["total"] == 1
     assert checked == ["h1"]
+
+
+async def test_scoped_manual_check_does_not_advance_the_fleet_watermark():
+    """The scheduler runs the fleet-wide sweep only when its last occurrence is newer
+    than _last_update_check; a partial (scoped) manual check must not count."""
+    from docker_monitor.periodic_jobs import PeriodicJobsManager
+
+    jobs = PeriodicJobsManager(MagicMock(), MagicMock())
+    jobs.monitor = MagicMock()
+    checker = MagicMock()
+    checker.check_all_containers = AsyncMock(return_value={"total": 0, "checked": 0, "updates_found": 0, "errors": 0})
+    with patch("updates.update_checker.get_update_checker", return_value=checker):
+        await jobs.check_updates_now(host_ids={"h1"})
+        assert jobs._last_update_check is None
+        await jobs.check_updates_now()
+        assert jobs._last_update_check is not None
+    assert checker.check_all_containers.await_args_list[0].kwargs == {"host_ids": {"h1"}}

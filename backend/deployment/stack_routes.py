@@ -24,6 +24,7 @@ from auth.api_key_auth import (
     Capabilities,
     check_host_access,
     get_visible_host_ids_for_auth,
+    filter_visible_hosts,
 )
 from audit.audit_logger import AuditAction, log_stack_change
 from auth.utils import get_auditable_user_info
@@ -164,7 +165,7 @@ def _deployed_to(user, name: Optional[str] = None):
     visible = get_visible_host_ids_for_auth(user)
     by_name = {
         stack: [DeployedHost(host_id=h.host_id, host_name=h.host_name)
-                for h in info.hosts if visible is None or h.host_id in visible]
+                for h in filter_visible_hosts(info.hosts, visible, lambda h: h.host_id)]
         for stack, info in deployed_stacks.items()
     }
     return by_name if name is None else by_name.get(name, [])

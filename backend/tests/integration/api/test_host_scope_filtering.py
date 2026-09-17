@@ -18,11 +18,6 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 import main as main_module
-from auth.api_key_auth import (
-    invalidate_group_permissions_cache,
-    invalidate_group_tag_scopes_cache,
-    invalidate_user_groups_cache,
-)
 from auth.capabilities import ALL_CAPABILITIES
 from database import (
     Agent, AlertRuleV2, AlertV2, ApiKey, ContainerHttpHealthCheck, ContainerUpdate, CustomGroup, Deployment,
@@ -108,17 +103,6 @@ class ScopedClient:
 
     def delete(self, url: str, **kwargs):
         return self._client.delete(url, headers=self._headers, **kwargs)
-
-
-@pytest.fixture(autouse=True)
-def reset_auth_caches():
-    invalidate_group_permissions_cache()
-    invalidate_user_groups_cache()
-    invalidate_group_tag_scopes_cache()
-    yield
-    invalidate_group_permissions_cache()
-    invalidate_user_groups_cache()
-    invalidate_group_tag_scopes_cache()
 
 
 @pytest.fixture
@@ -352,6 +336,14 @@ class TestEventsScoped:
         titles, total = self._titles(orphan_client)
         assert titles == {"DockMon started", "Alert rule 'High CPU' created", "Channel created", "admin logged in"}
 
+    def test_statistics_count_the_scoped_set(self, seeded_events):
+        # The /api/events/statistics route is shadowed by /api/events/{event_id} (pre-existing),
+        # so the scoping is asserted on the query it delegates to
+        db = main_module.monitor.db
+        assert db.get_event_statistics()["total_events"] == len(seeded_events)
+        assert db.get_event_statistics(visible_host_ids={"h1"})["total_events"] == 6
+        assert db.get_event_statistics(visible_host_ids=set())["total_events"] == 4
+
     def test_single_event_on_hidden_host_is_404(self, dev_scoped_client, seeded_events):
         assert dev_scoped_client.get(f"/api/events/{seeded_events['test_host']}").status_code == 404
         assert dev_scoped_client.get(f"/api/events/{seeded_events['hostless_container']}").status_code == 404
@@ -408,13 +400,16 @@ class TestBatchScoped:
         assert dev_scoped_client.post("/api/batch/validate-update", json={"container_ids": ["h1:aaa111111111"]}).status_code != 404
 
     def test_job_items_pruned_to_visible_hosts(self, dev_scoped_client, unrestricted_client, orphan_client, monkeypatch):
-        job = {"job_id": "j1", "status": "completed", "total_items": 2, "items": [
+        job = {"job_id": "j1", "status": "completed", "total_items": 2, "completed_items": 2, "success_items": 2,
+               "error_items": 0, "skipped_items": 0, "items": [
             {"id": 1, "container_id": "aaa111111111", "host_id": "h1", "status": "success"},
             {"id": 2, "container_id": "ccc333333333", "host_id": "h2", "status": "success"},
         ]}
         monkeypatch.setattr(main_module, "batch_manager", SimpleNamespace(get_job_status=lambda job_id: dict(job, items=[dict(i) for i in job["items"]])))
         assert [i["host_id"] for i in unrestricted_client.get("/api/batch/j1").json()["items"]] == ["h1", "h2"]
-        assert [i["host_id"] for i in dev_scoped_client.get("/api/batch/j1").json()["items"]] == ["h1"]
+        scoped = dev_scoped_client.get("/api/batch/j1").json()
+        assert [i["host_id"] for i in scoped["items"]] == ["h1"]
+        assert (scoped["total_items"], scoped["completed_items"], scoped["success_items"]) == (1, 1, 1)
         assert orphan_client.get("/api/batch/j1").status_code == 404
 
 
@@ -480,6 +475,9 @@ class TestAlertRuleSelectorsScoped:
             host_selector_json=json.dumps({"include": ["h1", "h2"]}))).status_code == 404
         assert dev_scoped_client.post("/api/alerts/rules", json=_rule_body(
             host_selector_json=json.dumps({"host_id": "h2"}))).status_code == 404
+        # A bare string include is a substring match in the engine, so it names that host
+        assert dev_scoped_client.post("/api/alerts/rules", json=_rule_body(
+            host_selector_json=json.dumps({"include": "h2"}))).status_code == 404
         assert dev_scoped_client.post("/api/alerts/rules", json=_rule_body(
             scope="container", kind="container_stopped",
             container_selector_json=json.dumps({"include": ["h2:web"]}))).status_code == 404

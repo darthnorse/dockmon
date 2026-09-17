@@ -528,11 +528,7 @@ def require_capability(capability: str):
 def check_host_access(host_id: Optional[str], current_user: dict) -> None:
     """Inline form of require_host_access for host ids that are not path params
     (records, bodies). 404 when the caller cannot see host_id; None never matches."""
-    visible = get_visible_host_ids_for_auth(current_user)
-    if visible is not None and host_id not in visible:
-        # repr: the id is caller-controlled and percent-decoded, so a raw newline would forge a log line
-        logger.info(f"{_get_auth_identifier(current_user, include_group=True)} denied host scope on {host_id!r}")
-        raise HTTPException(status_code=404, detail="Not found")
+    check_host_ids_visible([host_id], current_user)
 
 
 def check_host_ids_visible(host_ids, current_user: dict) -> None:
@@ -543,6 +539,7 @@ def check_host_ids_visible(host_ids, current_user: dict) -> None:
         return
     for host_id in host_ids:
         if host_id not in visible:
+            # repr: the id is caller-controlled and percent-decoded, so a raw newline would forge a log line
             logger.info(f"{_get_auth_identifier(current_user, include_group=True)} denied host scope on {host_id!r}")
             raise HTTPException(status_code=404, detail="Not found")
 

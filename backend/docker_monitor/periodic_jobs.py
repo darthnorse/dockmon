@@ -739,7 +739,8 @@ class PeriodicJobsManager:
             )
 
             # Update last check time
-            self._last_update_check = datetime.now(timezone.utc)
+            if host_ids is None:
+                self._last_update_check = datetime.now(timezone.utc)
             logger.info(f"Manual update check complete: {stats}")
 
             # Also check DockMon and Agent updates (tied to container update schedule)

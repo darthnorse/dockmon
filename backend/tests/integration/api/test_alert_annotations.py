@@ -43,20 +43,6 @@ from database import (
 UNRESTRICTED_CALLER = {"auth_type": "api_key", "group_id": 1, "api_key_name": "test"}
 
 
-@pytest.fixture(autouse=True)
-def _reset_auth_caches():
-    """User/group ids repeat across the fresh databases below; the auth caches are
-    process-global, so a lookup made by one test must not leak into the next."""
-    for reset in (api_key_auth_mod.invalidate_group_permissions_cache,
-                  api_key_auth_mod.invalidate_user_groups_cache,
-                  api_key_auth_mod.invalidate_group_tag_scopes_cache):
-        reset()
-    yield
-    for reset in (api_key_auth_mod.invalidate_group_permissions_cache,
-                  api_key_auth_mod.invalidate_user_groups_cache,
-                  api_key_auth_mod.invalidate_group_tag_scopes_cache):
-        reset()
-
 
 def _make_alert(db_session) -> str:
     """Create an open alert and return its id."""

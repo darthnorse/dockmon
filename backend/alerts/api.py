@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Any
 from fastapi import APIRouter, HTTPException, Depends, Query, status
 from pydantic import BaseModel, Field, ConfigDict, field_serializer
 
-from database import DatabaseManager, AlertV2, AlertAnnotation, User, alert_visibility_predicate
+from database import DatabaseManager, AlertV2, AlertAnnotation, User, scoped_alert_query
 from alerts.capabilities import HOST_METRIC_FIELDS, host_metric_capabilities
 from alerts.engine import AlertEngine
 from stats_client import get_stats_client
@@ -132,9 +132,10 @@ def get_alert_engine(db: DatabaseManager = Depends(get_db)) -> AlertEngine:
     return AlertEngine(db)
 
 
-def _require_alert_visible(alert: Optional[AlertV2], current_user: dict) -> AlertV2:
+def _require_alert_visible(session, alert_id: str, current_user: dict) -> AlertV2:
     """404 for a missing alert and, identically, for one whose host the caller
     cannot see (no derivable host = hidden)."""
+    alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
     if alert is None or not alert_is_visible(
         alert.scope_type, alert.scope_id, alert.host_id, get_visible_host_ids_for_auth(current_user)
     ):
@@ -143,11 +144,7 @@ def _require_alert_visible(alert: Optional[AlertV2], current_user: dict) -> Aler
 
 
 def _scoped_alert_query(session, current_user: dict):
-    query = session.query(AlertV2)
-    visible = get_visible_host_ids_for_auth(current_user)
-    if visible is not None:
-        query = query.filter(alert_visibility_predicate(visible))
-    return query
+    return scoped_alert_query(session, get_visible_host_ids_for_auth(current_user))
 
 
 # ==================== Alert Endpoints ====================
@@ -259,7 +256,7 @@ async def get_alert(
 ):
     """Get alert details by ID"""
     with db.get_session() as session:
-        alert = _require_alert_visible(session.query(AlertV2).filter(AlertV2.id == alert_id).first(), current_user)
+        alert = _require_alert_visible(session, alert_id, current_user)
 
         labels = json.loads(alert.labels_json) if alert.labels_json else None
 
@@ -280,7 +277,7 @@ async def resolve_alert(
     """Manually resolve an alert"""
     user_id, display_name = get_auditable_user_info(current_user)
     with db.get_session() as session:
-        alert = _require_alert_visible(session.query(AlertV2).filter(AlertV2.id == alert_id).first(), current_user)
+        alert = _require_alert_visible(session, alert_id, current_user)
 
         if alert.state == "resolved":
             raise HTTPException(status_code=400, detail="Alert already resolved")
@@ -316,7 +313,7 @@ async def snooze_alert(
     """Snooze an alert for a specified duration"""
     user_id, display_name = get_auditable_user_info(current_user)
     with db.get_session() as session:
-        alert = _require_alert_visible(session.query(AlertV2).filter(AlertV2.id == alert_id).first(), current_user)
+        alert = _require_alert_visible(session, alert_id, current_user)
 
         if alert.state == "resolved":
             raise HTTPException(status_code=400, detail="Cannot snooze resolved alert")
@@ -353,7 +350,7 @@ async def unsnooze_alert(
     """Unsnooze an alert"""
     user_id, display_name = get_auditable_user_info(current_user)
     with db.get_session() as session:
-        alert = _require_alert_visible(session.query(AlertV2).filter(AlertV2.id == alert_id).first(), current_user)
+        alert = _require_alert_visible(session, alert_id, current_user)
 
         if alert.state != "snoozed":
             raise HTTPException(status_code=400, detail="Alert is not snoozed")
@@ -396,7 +393,7 @@ async def add_annotation(
         author = current_user.get("username")
 
     with db.get_session() as session:
-        alert = _require_alert_visible(session.query(AlertV2).filter(AlertV2.id == alert_id).first(), current_user)
+        alert = _require_alert_visible(session, alert_id, current_user)
 
         annotation = AlertAnnotation(
             alert_id=alert_id,
@@ -428,7 +425,7 @@ async def get_annotations(
 ):
     """List annotations; resolves stored usernames to current display names."""
     with db.get_session() as session:
-        _require_alert_visible(session.query(AlertV2).filter(AlertV2.id == alert_id).first(), current_user)
+        _require_alert_visible(session, alert_id, current_user)
 
         annotations = session.query(AlertAnnotation).filter(
             AlertAnnotation.alert_id == alert_id,

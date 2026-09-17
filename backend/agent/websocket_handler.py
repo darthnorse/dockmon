@@ -253,8 +253,8 @@ class AgentWebSocketHandler:
                         new_host_name = validated_data.hostname
 
                         try:
-                            # Host tags moved with the host: scoped sockets must see the new id
-                            # before the host_migrated rule requires both ids to be visible
+                            # Tags moved to the new host id; refresh scoped sockets so the
+                            # host_migrated broadcast (keyed on new_host_id) reaches them
                             await self.monitor.manager.refresh_all_visible_hosts()
                             await self.monitor.manager.broadcast({
                                 "type": "host_migrated",

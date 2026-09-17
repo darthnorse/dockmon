@@ -1480,6 +1480,14 @@ def event_visibility_predicate(visible_host_ids: set):
     )
 
 
+def scoped_alert_query(session, visible_host_ids: Optional[set]):
+    """AlertV2 query limited to the caller's visible hosts (None = unrestricted)."""
+    query = session.query(AlertV2)
+    if visible_host_ids is not None:
+        query = query.filter(alert_visibility_predicate(visible_host_ids))
+    return query
+
+
 def alert_visibility_predicate(visible_host_ids: set):
     """SQL twin of utils.response_filtering.alert_is_visible. Splits the container
     scope_id on ':' rather than assuming a 36-char host UUID: sanitize_host_id admits
@@ -4205,16 +4213,20 @@ class DatabaseManager:
 
     def get_event_statistics(self,
                            start_date: Optional[datetime] = None,
-                           end_date: Optional[datetime] = None) -> Dict[str, Any]:
+                           end_date: Optional[datetime] = None,
+                           visible_host_ids: Optional[set] = None) -> Dict[str, Any]:
         """Get event statistics for dashboard
 
         BUG FIX: Apply date filters to ALL queries to ensure consistent counts.
         Previously, category_counts and severity_counts ignored the date filters,
         causing total_events to differ from the sum of categories/severities.
+        visible_host_ids restricts the counts like get_events (None = unrestricted).
         """
         with self.get_session() as session:
             # Build base query with date filters
             query = session.query(EventLog)
+            if visible_host_ids is not None:
+                query = query.filter(event_visibility_predicate(visible_host_ids))
 
             if start_date:
                 query = query.filter(EventLog.timestamp >= start_date)
@@ -4228,7 +4240,7 @@ class DatabaseManager:
             category_counts = {}
             for category, count in query.with_entities(
                 EventLog.category,
-                session.func.count(EventLog.id)
+                func.count(EventLog.id)
             ).group_by(EventLog.category).all():
                 category_counts[category] = count
 
@@ -4237,7 +4249,7 @@ class DatabaseManager:
             severity_counts = {}
             for severity, count in query.with_entities(
                 EventLog.severity,
-                session.func.count(EventLog.id)
+                func.count(EventLog.id)
             ).group_by(EventLog.severity).all():
                 severity_counts[severity] = count
 

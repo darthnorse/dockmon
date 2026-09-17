@@ -577,9 +577,7 @@ class AgentManager:
             TagAssignment.subject_type == 'container',
             TagAssignment.subject_id.like(f"{old_host_id}:%")
         ).all():
-            if ':' not in tag_assignment.subject_id:
-                continue
-            _, short_container_id = tag_assignment.subject_id.split(':', 1)
+            short_container_id = tag_assignment.subject_id[len(old_host_id) + 1:]
             session.add(TagAssignment(
                 tag_id=tag_assignment.tag_id,
                 subject_type='container',
@@ -588,6 +586,7 @@ class AgentManager:
                 compose_service=tag_assignment.compose_service,
                 host_id_at_attach=new_host_id,
                 container_name_at_attach=tag_assignment.container_name_at_attach,
+                order_index=tag_assignment.order_index,
                 last_seen_at=tag_assignment.last_seen_at
             ))
             session.delete(tag_assignment)

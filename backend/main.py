@@ -33,7 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html
 from fastapi.responses import FileResponse, JSONResponse
 from database import (
-    alert_visibility_predicate,
+    scoped_alert_query,
     DatabaseManager,
     GlobalSettings as GlobalSettingsDB,
     ContainerUpdate,
@@ -3415,6 +3415,11 @@ async def get_batch_job(job_id: str, current_user: dict = Depends(get_current_us
         if job_status.get("items") and not items:
             raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
         job_status["items"] = items
+        # Counters must not reveal how much work ran on hidden hosts
+        job_status["total_items"] = len(items)
+        for key, status in (("success_items", "success"), ("error_items", "error"), ("skipped_items", "skipped")):
+            job_status[key] = sum(1 for i in items if i.get("status") == status)
+        job_status["completed_items"] = sum(1 for i in items if i.get("status") in ("success", "error", "skipped"))
 
     return job_status
 
@@ -4271,7 +4276,9 @@ async def update_alert_rule_v2(
         # We don't filter out None/0/False because those are valid values (e.g., cooldown_seconds=0)
         update_data = updates.dict(exclude_unset=True)
 
-        _require_alert_rule_hosts_visible(rule_id, current_user)
+        existing = _require_alert_rule_hosts_visible(rule_id, current_user)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Alert rule not found")
         check_host_ids_visible(
             selector_host_ids(update_data.get("host_selector_json"), update_data.get("container_selector_json")),
             current_user,
@@ -4281,10 +4288,6 @@ async def update_alert_rule_v2(
         # model omits scope and metric on a partial edit, so this can't run as a
         # model validator and must be done here.
         if METRIC_RULE_FIELDS & update_data.keys():
-            existing = monitor.db.get_alert_rule_v2(rule_id)
-            if not existing:
-                raise HTTPException(status_code=404, detail="Alert rule not found")
-
             merged = {
                 field: update_data.get(field, getattr(existing, field))
                 for field in METRIC_RULE_FIELDS
@@ -5462,13 +5465,10 @@ async def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
             updates_available = updates_query.count()
 
             # Count active alerts (state='open', not snoozed, not resolved)
-            alerts_query = session.query(AlertV2).filter(
+            active_alerts = scoped_alert_query(session, visible).filter(
                 AlertV2.state == 'open',
                 AlertV2.resolved_at == None
-            )
-            if visible is not None:
-                alerts_query = alerts_query.filter(alert_visibility_predicate(visible))
-            active_alerts = alerts_query.count()
+            ).count()
 
         # Build response (with both detailed and flattened formats for dashboard compatibility)
         running_containers = state_counts.get('running', 0)
@@ -5539,7 +5539,8 @@ async def get_event_statistics(start_date: Optional[str] = None,
 
         stats = monitor.db.get_event_statistics(
             start_date=parsed_start_date,
-            end_date=parsed_end_date
+            end_date=parsed_end_date,
+            visible_host_ids=get_visible_host_ids_for_auth(current_user),
         )
 
         return stats
@@ -6081,7 +6082,7 @@ async def migrate_agent_from_host(
 
         # Broadcast migration notification to frontend
         try:
-            # Host tags moved with the host: refresh scoped sockets so both ids are visible
+            # Tags moved to the new host id; refresh scoped sockets before broadcasting host_migrated
             await monitor.manager.refresh_all_visible_hosts()
             await monitor.manager.broadcast({
                 "type": "host_migrated",

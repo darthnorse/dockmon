@@ -185,7 +185,7 @@ GLOBAL_EVENT_CATEGORIES = frozenset({"system", "alert", "notification", "user"})
 
 def event_scope(host_id: Optional[str], container_id: Optional[str], category: Optional[str]) -> Optional[Set[str]]:
     """Hosts an event concerns: a set (empty = global), or None when it must stay hidden.
-    Mirrors the SQL predicate in DatabaseManager.get_events; keep the two in step."""
+    Mirrors database.event_visibility_predicate; keep the two in step."""
     if host_id:
         return {host_id}
     # Container alert events are logged with host_id=None and a host_id:short_id container_id
@@ -301,16 +301,23 @@ def selector_host_ids(host_selector_json: Optional[str], container_selector_json
     name no host. Unparseable JSON names nothing; the selector validator rejects it."""
     ids: Set[str] = set()
     host_selector = _load_selector(host_selector_json)
-    include = host_selector.get("include")
-    if isinstance(include, list):
-        ids.update(x for x in include if isinstance(x, str))
+    ids.update(_include_entries(host_selector))
     if isinstance(host_selector.get("host_id"), str):
         ids.add(host_selector["host_id"])
     container_selector = _load_selector(container_selector_json)
-    include = container_selector.get("include")
-    if isinstance(include, list):
-        ids.update(_host_of_composite_key(x) for x in include if isinstance(x, str) and ":" in x)
+    ids.update(_host_of_composite_key(x) for x in _include_entries(container_selector) if ":" in x)
     return ids
+
+
+def _include_entries(selector: Dict) -> List[str]:
+    """`include` as the engine will read it: a list of strings, or a bare string
+    (which `x in "..."` turns into a substring match, so it must count as naming itself)."""
+    include = selector.get("include")
+    if isinstance(include, str):
+        return [include]
+    if isinstance(include, list):
+        return [x for x in include if isinstance(x, str)]
+    return []
 
 
 def _load_selector(selector_json: Optional[str]) -> Dict:

@@ -614,6 +614,30 @@ def test_agent_migration_carries_host_tags(agent_manager, registration_token, ex
     assert _host_tag_subjects(db_manager, tag_id) == {result["host_id"]}
 
 
+def test_migration_keeps_container_tag_order(agent_manager, registration_token, existing_mtls_host, db_manager):
+    from database import Tag, TagAssignment
+    import uuid
+    with db_manager.get_session() as session:
+        tag = Tag(id=str(uuid.uuid4()), name="secondary", kind="user")
+        session.add(tag)
+        session.flush()
+        session.add(TagAssignment(tag_id=tag.id, subject_type="container", subject_id="existing-host-id:abc123456789",
+                                  order_index=2))
+        session.commit()
+        tag_id = tag.id
+
+    result = agent_manager.register_agent({
+        "token": registration_token, "engine_id": "engine-12345", "hostname": "remote-agent",
+        "version": "1.0.0", "proto_version": "1.0", "capabilities": {}, "os_type": "linux",
+    })
+    assert result["success"] is True
+
+    with db_manager.get_session() as session:
+        moved = session.query(TagAssignment).filter_by(tag_id=tag_id, subject_type="container").one()
+        assert moved.subject_id == f"{result['host_id']}:abc123456789"
+        assert moved.order_index == 2
+
+
 def test_delayed_migration_carries_host_tags(agent_manager, db_manager, existing_mtls_host):
     """The migrate-from-host path (user picks the source among cloned VMs) transfers
     host tags the same way."""

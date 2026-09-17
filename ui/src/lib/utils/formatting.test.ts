@@ -56,16 +56,12 @@ describe('formatBytes', () => {
 
   describe('Real-world container examples', () => {
     it('should format typical container memory values correctly', () => {
-      // Small container
       expect(formatBytes(128 * 1024 * 1024)).toBe('128.0 MB')
 
-      // Medium container
       expect(formatBytes(512 * 1024 * 1024)).toBe('512.0 MB')
 
-      // Large container (Issue #58 example: 2.41GB)
       expect(formatBytes(2.41 * 1024 * 1024 * 1024)).toBe('2.41 GB')
 
-      // Very large container
       expect(formatBytes(16 * 1024 * 1024 * 1024)).toBe('16.00 GB')
     })
 

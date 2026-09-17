@@ -86,7 +86,7 @@ export function useAddHost() {
     mutationFn: addHost,
     onSuccess: (data) => {
       void queryClient.invalidateQueries({ queryKey: ['hosts'] })
-      void queryClient.invalidateQueries({ queryKey: ['tags'] }) // Invalidate tags cache
+      void queryClient.invalidateQueries({ queryKey: ['tags'] })
       toast.success(`Host "${data.name}" added successfully`)
     },
     onError: (error: unknown) => {

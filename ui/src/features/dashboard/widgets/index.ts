@@ -1,10 +1,3 @@
-/**
- * Widget Registry
- *
- * Maps widget types to their components
- * Allows dynamic widget rendering based on configuration
- */
-
 import type { WidgetType } from '../types'
 import { ContainerStatsWidget } from './ContainerStatsWidget'
 import { HostStatsWidget } from './HostStatsWidget'

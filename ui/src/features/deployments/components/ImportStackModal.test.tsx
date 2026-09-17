@@ -1,8 +1,3 @@
-/**
- * Unit tests for ImportStackModal component
- * Tests batch import functionality: selection, select all, progress display
- */
-
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@/test/utils'
 import userEvent from '@testing-library/user-event'
@@ -78,25 +73,21 @@ describe('ImportStackModal', () => {
   beforeEach(() => {
     vi.clearAllMocks()
 
-    // Mock useHosts
     vi.mocked(useHostsModule.useHosts).mockReturnValue({
       data: mockHosts,
       isLoading: false,
     } as any)
 
-    // Mock useScanComposeDirs
     vi.mocked(useDeploymentsModule.useScanComposeDirs).mockReturnValue({
       mutateAsync: mockScanMutateAsync,
       isPending: false,
     } as any)
 
-    // Mock useReadComposeFile
     vi.mocked(useDeploymentsModule.useReadComposeFile).mockReturnValue({
       mutateAsync: mockReadMutateAsync,
       isPending: false,
     } as any)
 
-    // Mock useImportDeployment
     vi.mocked(useDeploymentsModule.useImportDeployment).mockReturnValue({
       mutateAsync: mockImportMutateAsync,
       isPending: false,
@@ -120,11 +111,9 @@ describe('ImportStackModal', () => {
       render(
         <ImportStackModal isOpen={true} onClose={mockOnClose} onSuccess={mockOnSuccess} />)
 
-      // Switch to Browse tab
       const browseTab = screen.getByRole('button', { name: /browse host/i })
       await user.click(browseTab)
 
-      // Should show host selection
       expect(screen.getByText(/select agent host/i)).toBeInTheDocument()
     })
 
@@ -139,21 +128,17 @@ describe('ImportStackModal', () => {
       render(
         <ImportStackModal isOpen={true} onClose={mockOnClose} onSuccess={mockOnSuccess} />)
 
-      // Switch to Browse tab
       const browseTab = screen.getByRole('button', { name: /browse host/i })
       await user.click(browseTab)
 
-      // Select a host
       const hostSelect = screen.getByLabelText(/select agent host/i)
       await user.click(hostSelect)
       const hostOption = screen.getByRole('option', { name: /agent host 1/i })
       await user.click(hostOption)
 
-      // Click scan button
       const scanButton = screen.getByRole('button', { name: /scan for compose files/i })
       await user.click(scanButton)
 
-      // Wait for files to appear
       await waitFor(() => {
         expect(screen.getByText('nginx')).toBeInTheDocument()
         expect(screen.getByText('redis')).toBeInTheDocument()
@@ -172,21 +157,17 @@ describe('ImportStackModal', () => {
       render(
         <ImportStackModal isOpen={true} onClose={mockOnClose} onSuccess={mockOnSuccess} />)
 
-      // Switch to Browse tab
       const browseTab = screen.getByRole('button', { name: /browse host/i })
       await user.click(browseTab)
 
-      // Select a host
       const hostSelect = screen.getByLabelText(/select agent host/i)
       await user.click(hostSelect)
       const hostOption = screen.getByRole('option', { name: /agent host 1/i })
       await user.click(hostOption)
 
-      // Click scan button
       const scanButton = screen.getByRole('button', { name: /scan for compose files/i })
       await user.click(scanButton)
 
-      // Wait for files to appear
       await waitFor(() => {
         expect(screen.getByText('nginx')).toBeInTheDocument()
       })
@@ -208,18 +189,14 @@ describe('ImportStackModal', () => {
       const checkboxes = screen.getAllByRole('checkbox')
       expect(checkboxes).toHaveLength(4) // 1 select all + 3 files
 
-      // Click first file checkbox
       await user.click(checkboxes[1])
 
-      // Should show Import Selected (1)
       await waitFor(() => {
         expect(screen.getByRole('button', { name: /import selected \(1\)/i })).toBeInTheDocument()
       })
 
-      // Click second file checkbox
       await user.click(checkboxes[2])
 
-      // Should show Import Selected (2)
       await waitFor(() => {
         expect(screen.getByRole('button', { name: /import selected \(2\)/i })).toBeInTheDocument()
       })
@@ -229,16 +206,13 @@ describe('ImportStackModal', () => {
       const user = userEvent.setup({ pointerEventsCheck: 0 })
       await setupWithFiles(user)
 
-      // Click Select All
       const selectAllCheckbox = screen.getByLabelText(/select all/i)
       await user.click(selectAllCheckbox)
 
-      // Should show Import Selected (3)
       await waitFor(() => {
         expect(screen.getByRole('button', { name: /import selected \(3\)/i })).toBeInTheDocument()
       })
 
-      // All checkboxes should be checked
       const checkboxes = screen.getAllByRole('checkbox')
       checkboxes.forEach((checkbox) => {
         expect(checkbox).toBeChecked()
@@ -249,7 +223,6 @@ describe('ImportStackModal', () => {
       const user = userEvent.setup({ pointerEventsCheck: 0 })
       await setupWithFiles(user)
 
-      // Select all first
       const selectAllCheckbox = screen.getByLabelText(/select all/i)
       await user.click(selectAllCheckbox)
 
@@ -257,15 +230,12 @@ describe('ImportStackModal', () => {
         expect(screen.getByRole('button', { name: /import selected \(3\)/i })).toBeInTheDocument()
       })
 
-      // Uncheck Select All
       await user.click(selectAllCheckbox)
 
-      // Should show Import Stack button (no selection)
       await waitFor(() => {
         expect(screen.getByRole('button', { name: /^import stack$/i })).toBeInTheDocument()
       })
 
-      // All file checkboxes should be unchecked
       const checkboxes = screen.getAllByRole('checkbox')
       checkboxes.forEach((checkbox) => {
         expect(checkbox).not.toBeChecked()
@@ -276,7 +246,6 @@ describe('ImportStackModal', () => {
       const user = userEvent.setup({ pointerEventsCheck: 0 })
       await setupWithFiles(user)
 
-      // Select all files
       const selectAllCheckbox = screen.getByLabelText(/select all/i)
       await user.click(selectAllCheckbox)
 
@@ -284,7 +253,6 @@ describe('ImportStackModal', () => {
         expect(screen.getByRole('button', { name: /import selected \(3\)/i })).toBeInTheDocument()
       })
 
-      // Mock different files for second host
       mockScanMutateAsync.mockResolvedValue({
         success: true,
         compose_files: [
@@ -300,12 +268,10 @@ describe('ImportStackModal', () => {
       const scanButton = screen.getByRole('button', { name: /scan for compose files/i })
       await user.click(scanButton)
 
-      // Wait for new files
       await waitFor(() => {
         expect(screen.getByText('app')).toBeInTheDocument()
       })
 
-      // Selection should be cleared - should show Import Stack, not Import Selected
       expect(screen.getByRole('button', { name: /^import stack$/i })).toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /import selected/i })).not.toBeInTheDocument()
     })
@@ -321,7 +287,6 @@ describe('ImportStackModal', () => {
       render(
         <ImportStackModal isOpen={true} onClose={mockOnClose} onSuccess={mockOnSuccess} />)
 
-      // Switch to Browse tab and scan
       const browseTab = screen.getByRole('button', { name: /browse host/i })
       await user.click(browseTab)
 
@@ -337,7 +302,6 @@ describe('ImportStackModal', () => {
         expect(screen.getByText('nginx')).toBeInTheDocument()
       })
 
-      // Select all files
       const selectAllCheckbox = screen.getByLabelText(/select all/i)
       await user.click(selectAllCheckbox)
 
@@ -350,7 +314,6 @@ describe('ImportStackModal', () => {
       const user = userEvent.setup({ pointerEventsCheck: 0 })
       await setupWithFilesSelected(user)
 
-      // Mock successful reads and imports
       mockReadMutateAsync.mockResolvedValue({
         success: true,
         content: 'version: "3"\nservices:\n  web:\n    image: nginx',
@@ -361,17 +324,14 @@ describe('ImportStackModal', () => {
         deployments_created: [{ id: 'dep-1', name: 'test', host_id: 'host-1' }],
       })
 
-      // Click Import Selected
       const importButton = screen.getByRole('button', { name: /import selected \(3\)/i })
       await user.click(importButton)
 
-      // Should call read and import for each file
       await waitFor(() => {
         expect(mockReadMutateAsync).toHaveBeenCalledTimes(3)
         expect(mockImportMutateAsync).toHaveBeenCalledTimes(3)
       })
 
-      // Should show success
       await waitFor(() => {
         expect(screen.getByText(/successfully imported/i)).toBeInTheDocument()
       })
@@ -381,7 +341,6 @@ describe('ImportStackModal', () => {
       const user = userEvent.setup({ pointerEventsCheck: 0 })
       await setupWithFilesSelected(user)
 
-      // First file fails, others succeed
       mockReadMutateAsync
         .mockResolvedValueOnce({ success: false, error: 'File not found' })
         .mockResolvedValue({
@@ -394,16 +353,13 @@ describe('ImportStackModal', () => {
         deployments_created: [{ id: 'dep-1', name: 'test', host_id: 'host-1' }],
       })
 
-      // Click Import Selected
       const importButton = screen.getByRole('button', { name: /import selected \(3\)/i })
       await user.click(importButton)
 
-      // Should still import the other 2 files
       await waitFor(() => {
         expect(mockImportMutateAsync).toHaveBeenCalledTimes(2)
       })
 
-      // Should show success with error note
       await waitFor(() => {
         expect(screen.getByText(/successfully imported/i)).toBeInTheDocument()
       })
@@ -413,7 +369,6 @@ describe('ImportStackModal', () => {
       const user = userEvent.setup({ pointerEventsCheck: 0 })
       await setupWithFilesSelected(user)
 
-      // Make the import take time
       let resolveImport: () => void
       mockReadMutateAsync.mockImplementation(
         () =>
@@ -426,16 +381,13 @@ describe('ImportStackModal', () => {
           })
       )
 
-      // Click Import Selected
       const importButton = screen.getByRole('button', { name: /import selected \(3\)/i })
       await user.click(importButton)
 
-      // Cancel button should be disabled during import
       await waitFor(() => {
         expect(screen.getByRole('button', { name: /cancel/i })).toBeDisabled()
       })
 
-      // Resolve to clean up
       resolveImport!()
     })
   })
@@ -452,7 +404,6 @@ describe('ImportStackModal', () => {
       const { rerender } = render(
         <ImportStackModal isOpen={true} onClose={mockOnClose} onSuccess={mockOnSuccess} />)
 
-      // Setup some state
       const browseTab = screen.getByRole('button', { name: /browse host/i })
       await user.click(browseTab)
 
@@ -468,15 +419,12 @@ describe('ImportStackModal', () => {
         expect(screen.getByText('nginx')).toBeInTheDocument()
       })
 
-      // Select files
       const selectAllCheckbox = screen.getByLabelText(/select all/i)
       await user.click(selectAllCheckbox)
 
-      // Close and reopen modal
       rerender(<ImportStackModal isOpen={false} onClose={mockOnClose} onSuccess={mockOnSuccess} />)
       rerender(<ImportStackModal isOpen={true} onClose={mockOnClose} onSuccess={mockOnSuccess} />)
 
-      // Should be back to Paste/Upload tab (default)
       expect(screen.getByPlaceholderText(/paste your docker-compose/i)).toBeInTheDocument()
     })
   })

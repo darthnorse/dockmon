@@ -142,7 +142,6 @@ describe('useStatsHistory', () => {
       const ts = result.current.data!.timestamps
       expect(ts[ts.length - 1]).toBe(newTimestamps[0])
       expect(ts.length).toBeLessThanOrEqual(maxExpected)
-      // oldest has been trimmed
       expect(ts[0]).not.toBe(0)
     })
   })

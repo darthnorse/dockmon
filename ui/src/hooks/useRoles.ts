@@ -1,8 +1,3 @@
-/**
- * useRoles Hook
- * Capabilities with metadata, used by the group permission matrix
- */
-
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api/client'
 import type { CapabilitiesResponse } from '@/types/roles'

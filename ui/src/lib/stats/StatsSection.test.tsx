@@ -70,10 +70,8 @@ describe('StatsSection', () => {
 
   it('renders Live charts when range is live (default)', () => {
     render(<StatsSection hostId="h1" liveData={makeLiveData()} />)
-    // Live selector is active
     expect(screen.getByRole('button', { name: /^Live$/ })).toHaveAttribute(
       'aria-pressed', 'true')
-    // No network call for live mode
     expect(mockGet).not.toHaveBeenCalled()
   })
 

@@ -441,7 +441,6 @@ describe('ansiToHtml', () => {
 
     it('should handle malformed 256-color sequence (missing color index)', () => {
       const result = ansiToHtml('\x1b[38;5mMissing Index\x1b[0m')
-      // Should not crash, should contain text
       expect(result).toContain('Missing Index')
     })
 
@@ -497,7 +496,6 @@ describe('ansiToHtml', () => {
       // Negative values are not valid ANSI - the regex won't match them
       // The sequence will be left unprocessed (not crash)
       const result = ansiToHtml('\x1b[38;2;-10;-20;-30mClamped\x1b[0m')
-      // Should not crash and should contain the text
       expect(result).toContain('Clamped')
     })
 
@@ -515,7 +513,6 @@ describe('ansiToHtml', () => {
 
     it('should handle malformed 24-bit sequence (missing values)', () => {
       const result = ansiToHtml('\x1b[38;2;255;128mMissing Blue\x1b[0m')
-      // Should not crash, should contain text
       expect(result).toContain('Missing Blue')
     })
   })
@@ -525,7 +522,6 @@ describe('ansiToHtml', () => {
       // Generate a sequence with 50 codes (more than MAX_ANSI_CODES=20)
       const manyCodes = Array(50).fill('1').join(';')
       const result = ansiToHtml(`\x1b[${manyCodes}mText\x1b[0m`)
-      // Should not crash and should contain the text
       expect(result).toContain('Text')
     })
   })

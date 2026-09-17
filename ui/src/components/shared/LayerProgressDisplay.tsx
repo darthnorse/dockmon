@@ -1,16 +1,3 @@
-/**
- * Layer Progress Display Component
- *
- * Layer-by-layer pull progress for a container update (ContainerUpdatesTab).
- *
- * Displays:
- * - Overall progress bar with summary
- * - Layer-by-layer download details
- * - Download speeds (MB/s)
- * - Collapsible layer details
- * - Real-time updates via WebSocket
- */
-
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { cn } from '@/lib/utils'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
@@ -142,7 +129,6 @@ export function LayerProgressDisplay({
     }
   }, [])
 
-  // Auto-collapse layer details 2 seconds after reaching 100%.
   // Schedule only when no timer is already pending so the effect can't re-arm itself.
   useEffect(() => {
     if (

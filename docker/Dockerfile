@@ -2,7 +2,7 @@
 # Multi-stage build: Go stats service + Python backend + React frontend
 
 # Stage 1: Build Go services (stats-service and compose-service)
-FROM golang:1.25.11-alpine AS go-builder
+FROM golang:1.26.6-alpine AS go-builder
 
 WORKDIR /build
 
@@ -101,7 +101,9 @@ RUN pip install --no-cache-dir supervisor==4.3.0
 COPY backend/requirements.txt /app/backend/
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt \
     # Remove build dependencies to keep image small
-    && apk del .build-deps
+    && apk del .build-deps \
+    # Nothing installs at runtime; pip's vendored copies of msgpack/setuptools carry advisories
+    && pip uninstall -y pip setuptools 2>/dev/null || true
 
 # Copy backend code
 COPY backend/ /app/backend/

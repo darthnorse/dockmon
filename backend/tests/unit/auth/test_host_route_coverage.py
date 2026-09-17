@@ -17,8 +17,21 @@ GUARDS = set(GUARD_FOR_PARAM.values())
 EXPECTED_HOST_ROUTE_COUNT = 44
 
 
+def _api_routes(routes):
+    # FastAPI 0.14x registers include_router() as an _IncludedRouter entry instead of
+    # flattening its routes into app.routes; descend into it (and any mount) so router
+    # routes stay covered.
+    for route in routes:
+        if isinstance(route, APIRoute):
+            yield route
+        elif getattr(route, "original_router", None) is not None:
+            yield from _api_routes(route.original_router.routes)
+        elif getattr(route, "routes", None):
+            yield from _api_routes(route.routes)
+
+
 def _host_routes():
-    return [r for r in app.routes if isinstance(r, APIRoute) and set(GUARD_FOR_PARAM) & set(r.param_convertors)]
+    return [r for r in _api_routes(app.routes) if set(GUARD_FOR_PARAM) & set(r.param_convertors)]
 
 
 def _route_deps(route):

@@ -9,7 +9,8 @@ import hashlib
 import json
 import secrets
 import uuid
-from datetime import datetime, timezone
+from contextlib import nullcontext
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -20,9 +21,9 @@ from starlette.requests import Request
 import main as main_module
 from auth.capabilities import ALL_CAPABILITIES
 from database import (
-    Agent, AlertRuleV2, AlertV2, ApiKey, ContainerHttpHealthCheck, ContainerUpdate, CustomGroup, Deployment,
-    DeploymentMetadata, DockerHostDB, EventLog, GroupPermission, GroupTagScope, Tag, TagAssignment, User,
-    UserGroupMembership,
+    Agent, AlertRuleV2, AlertV2, ApiKey, ContainerHttpHealthCheck, ContainerUpdate, CustomGroup, DatabaseManager,
+    Deployment, DeploymentMetadata, DockerHostDB, EventLog, GroupPermission, GroupTagScope, Tag, TagAssignment,
+    User, UserGroupMembership,
 )
 from agent.manager import AgentManager
 from deployment import routes as deployment_routes, stack_storage
@@ -36,10 +37,10 @@ HOSTS = {
 }
 
 
-def _container(cid: str, host_id: str, state: str = "running") -> Container:
+def _container(cid: str, host_id: str, state: str = "running", host_name: str | None = None) -> Container:
     return Container(
         id=cid, short_id=cid, name=f"c-{cid}", image="nginx:latest", state=state,
-        status="Up", host_id=host_id, host_name=HOSTS[host_id].name, created="2026-09-16T00:00:00Z",
+        status="Up", host_id=host_id, host_name=host_name or HOSTS[host_id].name, created="2026-09-16T00:00:00Z",
     )
 
 
@@ -922,3 +923,109 @@ class TestShellWebSocketVisibility:
                 pass
         assert exc.value.code == 4404
         assert manager._shell_sockets == {}
+
+
+# ---------------------------------------------------------------------------
+# Issue #214 end to end: two OIDC-style tenants and an admin on one install
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def two_tenants(db_session, client, monkeypatch):
+    """5 hosts tagged dev, 5 tagged test1; user A -> dev group, user B -> test1 group, admin unscoped.
+    Sessions are cookie-based (OIDC users have no API key)."""
+    hosts = {}
+    for tag_name, prefix in (("dev", "dev"), ("test1", "t1")):
+        for i in range(5):
+            host_id = f"{prefix}-{i}"
+            hosts[host_id] = DockerHost(id=host_id, name=f"{tag_name} host {i}", url=f"tcp://{host_id}:2376", status="online")
+    monkeypatch.setattr(main_module.monitor, "hosts", hosts)
+    for host_id, host in hosts.items():
+        db_session.add(DockerHostDB(id=host_id, name=host.name, url=host.url))
+    dev, test1 = _tag(db_session, "dev"), _tag(db_session, "test1")
+    for host_id in hosts:
+        tag = dev if host_id.startswith("dev") else test1
+        db_session.add(TagAssignment(tag_id=tag.id, subject_type="host", subject_id=host_id))
+    db_session.flush()
+    containers = [_container(f"{'a' if h.startswith('dev') else 'b'}{i:011d}", h, host_name=hosts[h].name)
+                  for i, h in enumerate(hosts)]
+
+    async def get_containers(host_id=None):
+        return [c for c in containers if host_id is None or c.host_id == host_id]
+
+    monkeypatch.setattr(main_module.monitor, "get_containers", get_containers)
+    monkeypatch.setattr(main_module.monitor, "get_last_containers", lambda: list(containers))
+
+    user_a = _session_user(db_session, "alice", _group_with_all_caps(db_session, "Dev Team", dev))
+    user_b = _session_user(db_session, "bob", _group_with_all_caps(db_session, "Test1 Team", test1))
+    admin = _session_user(db_session, "root", _group_with_all_caps(db_session, "Admins"))
+    sessions = {
+        "a": {"user_id": user_a.id, "username": "alice"},
+        "b": {"user_id": user_b.id, "username": "bob"},
+        "admin": {"user_id": admin.id, "username": "root"},
+    }
+    monkeypatch.setattr("auth.cookie_sessions.cookie_session_manager.validate_session",
+                        lambda session_id, client_ip: sessions.get(session_id))
+    monkeypatch.setattr(deployment_routes, "_docker_monitor", main_module.monitor)
+    monkeypatch.setattr(deployment_routes, "_database_manager", main_module.monitor.db)
+    monkeypatch.setattr(stack_storage, "stack_exists", AsyncMock(return_value=True))
+    monkeypatch.setattr(stack_storage, "read_stack", AsyncMock(return_value=("services:\n  web:\n    image: nginx\n", {})))
+    import alerts.api as alerts_api
+    monkeypatch.setattr(alerts_api, "get_stats_client", lambda: SimpleNamespace(get_host_stats=AsyncMock(return_value={})))
+
+    class Cookie:
+        def __init__(self, name):
+            self.cookies = {"session_id": name}
+
+        def get(self, url, **kw):
+            return client.get(url, cookies=self.cookies, **kw)
+
+        def post(self, url, **kw):
+            return client.post(url, cookies=self.cookies, **kw)
+
+    return SimpleNamespace(a=Cookie("a"), b=Cookie("b"), admin=Cookie("admin"), dev=dev, test1=test1,
+                           session=db_session, user_a=user_a)
+
+
+@pytest.mark.integration
+class TestOIDCUserScopeFlow:
+    DEV = {f"dev-{i}" for i in range(5)}
+    TEST1 = {f"t1-{i}" for i in range(5)}
+
+    def _hosts(self, caller):
+        response = caller.get("/api/hosts")
+        assert response.status_code == 200, response.text
+        return {h["id"] for h in response.json()}
+
+    def test_each_tenant_sees_only_its_hosts_and_admin_sees_all(self, two_tenants):
+        assert self._hosts(two_tenants.a) == self.DEV
+        assert self._hosts(two_tenants.b) == self.TEST1
+        assert self._hosts(two_tenants.admin) == self.DEV | self.TEST1
+        assert {c["host_id"] for c in two_tenants.a.get("/api/containers").json()} == self.DEV
+        assert {h["id"] for h in two_tenants.a.get("/api/dashboard/hosts").json()["groups"]["All Hosts"]} == self.DEV
+
+    def test_cross_tenant_reads_and_actions_are_404(self, two_tenants):
+        assert two_tenants.a.get("/api/hosts/t1-0/metrics").status_code == 404
+        assert two_tenants.a.get("/api/hosts/dev-0/metrics").status_code != 404
+        assert two_tenants.b.post("/api/hosts/dev-0/containers/a00000000000/restart").status_code == 404
+        assert two_tenants.a.post("/api/deployments/deploy",
+                                  json={"stack_name": "web", "host_id": "t1-2", "action": "up"}).json() == {"detail": "Not found"}
+
+    def test_alert_metric_capabilities_lists_only_own_hosts(self, two_tenants):
+        caps = two_tenants.a.get("/api/alerts/metrics/capabilities").json()["hosts"]
+        assert {h["host_id"] for h in caps} == self.DEV
+        assert {h["host_id"] for h in two_tenants.admin.get("/api/alerts/metrics/capabilities").json()["hosts"]} == self.DEV | self.TEST1
+
+    def test_untagging_every_dev_host_leaves_alice_seeing_nothing_not_everything(self, two_tenants):
+        """The scope tag must survive tag cleanup: a cascade would silently make the group unrestricted."""
+        s = two_tenants.session
+        s.query(TagAssignment).filter_by(tag_id=two_tenants.dev.id).delete()
+        two_tenants.dev.last_used_at = datetime.now(timezone.utc) - timedelta(days=90)
+        s.commit()
+
+        stand_in = SimpleNamespace(get_session=lambda: nullcontext(s))
+        assert DatabaseManager.cleanup_unused_tags(stand_in, days_unused=1) == 0
+        assert s.query(Tag).filter_by(id=two_tenants.dev.id).count() == 1
+
+        assert self._hosts(two_tenants.a) == set()
+        assert two_tenants.a.get("/api/containers").json() == []
+        assert self._hosts(two_tenants.b) == self.TEST1

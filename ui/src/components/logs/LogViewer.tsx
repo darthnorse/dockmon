@@ -302,6 +302,8 @@ export function LogViewer({
       setLogs([])
       void fetchLogs()
     }
+    // fetchLogs is rebuilt every render; containersChanged is the real trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [containersChanged, containers.length])
 
   // Auto-refresh polling - only when autoRefresh is enabled

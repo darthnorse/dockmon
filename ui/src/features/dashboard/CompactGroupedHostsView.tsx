@@ -43,7 +43,7 @@ interface HostGroup {
 
 export function CompactGroupedHostsView({ hosts, onHostClick }: CompactGroupedHostsViewProps) {
   const { data: prefs, isLoading } = useUserPreferences()
-  const updatePreferences = useUpdatePreferences()
+  const { mutate: savePreferences } = useUpdatePreferences()
 
   const baseGroups = useMemo<HostGroup[]>(() => {
     const groupMap = new Map<string, CompactHost[]>()
@@ -107,11 +107,11 @@ export function CompactGroupedHostsView({ hosts, onHostClick }: CompactGroupedHo
         newCollapsedGroups.add(tag)
       }
 
-      updatePreferences.mutate({
+      savePreferences({
         collapsed_groups: Array.from(newCollapsedGroups),
       })
     },
-    [collapsedGroups, updatePreferences.mutate]
+    [collapsedGroups, savePreferences]
   )
 
   const sensors = useDndSensors()
@@ -128,7 +128,7 @@ export function CompactGroupedHostsView({ hosts, onHostClick }: CompactGroupedHo
           const newGroups = arrayMove(groups, oldIndex, newIndex)
           const newOrder = newGroups.map((g) => g.tag)
 
-          updatePreferences.mutate({
+          savePreferences({
             dashboard: {
               ...prefs?.dashboard,
               tagGroupOrder: newOrder,
@@ -137,7 +137,7 @@ export function CompactGroupedHostsView({ hosts, onHostClick }: CompactGroupedHo
         }
       }
     },
-    [groups, updatePreferences, prefs?.dashboard]
+    [groups, savePreferences, prefs?.dashboard]
   )
 
   if (isLoading) {
@@ -298,7 +298,7 @@ interface SortableHostListProps {
 
 function SortableHostList({ group, onHostClick }: SortableHostListProps) {
   const { data: prefs } = useUserPreferences()
-  const updatePreferences = useUpdatePreferences()
+  const { mutate: savePreferences } = useUpdatePreferences()
   const hasLoadedPrefs = useRef(false)
   const [isDragging, setIsDragging] = useState(false)
   const frozenHostsRef = useRef<CompactHost[]>([])
@@ -365,7 +365,7 @@ function SortableHostList({ group, onHostClick }: SortableHostListProps) {
 
           if (hasLoadedPrefs.current) {
             const currentGroupLayouts = prefs?.dashboard?.groupLayouts || {}
-            updatePreferences.mutate({
+            savePreferences({
               dashboard: {
                 ...prefs?.dashboard,
                 groupLayouts: {
@@ -378,7 +378,7 @@ function SortableHostList({ group, onHostClick }: SortableHostListProps) {
         }
       }
     },
-    [updatePreferences.mutate, orderKey, prefs?.dashboard]
+    [savePreferences, orderKey, prefs?.dashboard]
   )
 
   return (

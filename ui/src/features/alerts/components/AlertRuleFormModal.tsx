@@ -4,7 +4,7 @@
  * Form for creating and editing alert rules
  */
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { X, Search, Check, Bell, BellRing, Send, MessageSquare, MessageCircle, Hash, Smartphone, Mail, Globe, Users, AlertTriangle } from 'lucide-react'
 import { RemoveScroll } from 'react-remove-scroll'
@@ -244,7 +244,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
 
   const hosts: Host[] = hostsData || []
   const containers: Container[] = containersData || []
-  const configuredChannels = channelsData?.channels || []
+  const configuredChannels = useMemo(() => channelsData?.channels ?? [], [channelsData])
 
   // Parse existing selectors
   const parseSelector = (json: string | null | undefined) => {
@@ -466,8 +466,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  // Clean up non-existent channel IDs when editing a rule (#166)
-  // This handles orphaned references from channels deleted before the backend fix
+  // Drop channel ids orphaned by channels deleted before the backend cascaded them
   useEffect(() => {
     if (isEditing && configuredChannels.length > 0 && formData.notify_channels.length > 0) {
       const validChannelIds = new Set(configuredChannels.map(c => c.id))
@@ -476,7 +475,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         setFormData(prev => ({ ...prev, notify_channels: cleanedChannels }))
       }
     }
-  }, [isEditing, configuredChannels]) // Only run when channels load, not on every formData change
+  }, [isEditing, configuredChannels, formData.notify_channels])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()

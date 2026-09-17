@@ -356,7 +356,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
   const { hasCapability } = useAuth()
   const canOperate = hasCapability('containers.operate')
   const { data: preferences } = useUserPreferences()
-  const updatePreferences = useUpdatePreferences()
+  const { mutate: savePreferences } = useUpdatePreferences()
   const [sorting, setSorting] = useState<SortingState>(preferences?.container_table_sort || [])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   const [globalFilter, setGlobalFilter] = useState('')
@@ -426,11 +426,11 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
 
     // Debounce to avoid too many updates
     const timer = setTimeout(() => {
-      updatePreferences.mutate({ container_table_sort: sorting })
+      savePreferences({ container_table_sort: sorting })
     }, 500)
 
     return () => clearTimeout(timer)
-  }, [sorting])
+  }, [sorting, preferences?.container_table_sort, savePreferences])
 
   // Initialize column visibility from preferences when loaded
   useEffect(() => {
@@ -449,11 +449,11 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
 
     // Debounce to avoid too many updates
     const timer = setTimeout(() => {
-      updatePreferences.mutate({ container_table_column_visibility: columnVisibility })
+      savePreferences({ container_table_column_visibility: columnVisibility })
     }, 500)
 
     return () => clearTimeout(timer)
-  }, [columnVisibility])
+  }, [columnVisibility, preferences?.container_table_column_visibility, savePreferences])
 
   // Initialize column order from preferences when loaded
   useEffect(() => {
@@ -477,11 +477,11 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
 
     // Debounce to avoid too many updates
     const timer = setTimeout(() => {
-      updatePreferences.mutate({ container_table_column_order: orderWithoutSelect })
+      savePreferences({ container_table_column_order: orderWithoutSelect })
     }, 500)
 
     return () => clearTimeout(timer)
-  }, [columnOrder])
+  }, [columnOrder, preferences?.container_table_column_order, savePreferences])
 
   // Fetch all alert counts in one batched request
   const { data: alertCounts } = useAlertCounts('container')
@@ -855,7 +855,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
 
       return true
     })
-  }, [data, filters, updatesSummary, allAutoUpdateConfigs, allHealthCheckConfigs])
+  }, [data, filters, propHostId, updatesSummary, allAutoUpdateConfigs, allHealthCheckConfigs])
 
   // Single source for both the columns memo and the global filter.
   const customColumnIds = useMemo<string[]>(

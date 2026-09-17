@@ -34,20 +34,28 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
   const [autoRestart, setAutoRestart] = useState(false)
   const [desiredState, setDesiredState] = useState<'should_run' | 'on_demand' | 'unspecified'>('unspecified')
 
-  const cpuData = useMemo(() => sparklines?.cpu || [], [sparklines?.cpu?.length, sparklines?.cpu?.join(',')])
-  const memData = useMemo(() => sparklines?.mem || [], [sparklines?.mem?.length, sparklines?.mem?.join(',')])
-  const netData = useMemo(() => sparklines?.net || [], [sparklines?.net?.length, sparklines?.net?.join(',')])
+  // Every stats tick rebuilds all sparkline arrays, so key on content to keep chart data identity stable
+  const cpuKey = sparklines?.cpu.join(',')
+  const memKey = sparklines?.mem.join(',')
+  const netKey = sparklines?.net.join(',')
+  /* eslint-disable react-hooks/exhaustive-deps */
+  const cpuData = useMemo(() => sparklines?.cpu ?? [], [cpuKey])
+  const memData = useMemo(() => sparklines?.mem ?? [], [memKey])
+  const netData = useMemo(() => sparklines?.net ?? [], [netKey])
+  /* eslint-enable react-hooks/exhaustive-deps */
 
+  const hasContainer = container !== null
+  const containerAutoRestart = container?.auto_restart
+  const containerDesiredState = container?.desired_state
   useEffect(() => {
-    if (container) {
-      setAutoRestart(container.auto_restart ?? false)
+    if (hasContainer) {
+      setAutoRestart(containerAutoRestart ?? false)
 
       const validStates: Array<'should_run' | 'on_demand' | 'unspecified'> = ['should_run', 'on_demand', 'unspecified']
-      const containerState = container.desired_state
-      const newState = containerState && validStates.includes(containerState) ? containerState : 'unspecified'
+      const newState = containerDesiredState && validStates.includes(containerDesiredState) ? containerDesiredState : 'unspecified'
       setDesiredState(newState)
     }
-  }, [containerId, container?.auto_restart, container?.desired_state])
+  }, [containerId, hasContainer, containerAutoRestart, containerDesiredState])
 
   useEffect(() => {
     if (!container?.created) return

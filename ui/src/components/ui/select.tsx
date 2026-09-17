@@ -101,7 +101,7 @@ export function SelectContent({ children }: SelectContentProps) {
 
 function SelectPortalContent({ children }: { children: React.ReactNode }) {
   const context = React.useContext(SelectContext)
-  if (!context) return null
+  if (!context) throw new Error('SelectPortalContent must be used within Select')
 
   const menuRef = React.useRef<HTMLDivElement>(null)
   const [position, setPosition] = React.useState({ top: 0, left: 0, width: 0 })

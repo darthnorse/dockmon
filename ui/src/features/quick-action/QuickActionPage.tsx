@@ -12,7 +12,7 @@
  * 5. Shows success/failure result
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { Container, ArrowRight, CheckCircle2, XCircle, Loader2, Clock, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -61,6 +61,21 @@ interface ConsumeResponse {
 
 type PageState = 'loading' | 'invalid' | 'ready' | 'executing' | 'success' | 'error'
 
+function getErrorMessage(reason?: string): string {
+  switch (reason) {
+    case 'expired':
+      return 'This link has expired'
+    case 'already_used':
+      return 'This link has already been used'
+    case 'revoked':
+      return 'This link has been revoked'
+    case 'not_found':
+      return 'Invalid or unknown link'
+    default:
+      return 'Invalid link'
+  }
+}
+
 export function QuickActionPage() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
@@ -71,7 +86,11 @@ export function QuickActionPage() {
   const [executeResult, setExecuteResult] = useState<ExecuteResult | null>(null)
   const [errorMessage, setErrorMessage] = useState<string>('')
 
-  // Validate token on mount
+  const redirectToLogin = useCallback(() => {
+    const returnUrl = encodeURIComponent(window.location.pathname + window.location.search)
+    navigate(`/login?redirect=${returnUrl}`)
+  }, [navigate])
+
   useEffect(() => {
     if (!token) {
       setState('invalid')
@@ -79,37 +98,32 @@ export function QuickActionPage() {
       return
     }
 
-    void validateToken()
-  }, [token])
+    const validateToken = async () => {
+      try {
+        const data = await apiClient.get<TokenInfo>(
+          `/v2/action-tokens/${encodeURIComponent(token)}/info`
+        )
 
-  const redirectToLogin = () => {
-    const returnUrl = encodeURIComponent(window.location.pathname + window.location.search)
-    navigate(`/login?redirect=${returnUrl}`)
-  }
+        setTokenInfo(data)
 
-  const validateToken = async () => {
-    try {
-      const data = await apiClient.get<TokenInfo>(
-        `/v2/action-tokens/${encodeURIComponent(token!)}/info`
-      )
-
-      setTokenInfo(data)
-
-      if (data.valid) {
-        setState('ready')
-      } else {
+        if (data.valid) {
+          setState('ready')
+        } else {
+          setState('invalid')
+          setErrorMessage(getErrorMessage(data.reason))
+        }
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 401) {
+          redirectToLogin()
+          return
+        }
         setState('invalid')
-        setErrorMessage(getErrorMessage(data.reason))
+        setErrorMessage('Failed to validate token')
       }
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        redirectToLogin()
-        return
-      }
-      setState('invalid')
-      setErrorMessage('Failed to validate token')
     }
-  }
+
+    void validateToken()
+  }, [token, redirectToLogin])
 
   const executeAction = async () => {
     if (!token || !tokenInfo?.action_params) return
@@ -165,21 +179,6 @@ export function QuickActionPage() {
       }
       setState('error')
       setErrorMessage('Failed to execute action')
-    }
-  }
-
-  const getErrorMessage = (reason?: string): string => {
-    switch (reason) {
-      case 'expired':
-        return 'This link has expired'
-      case 'already_used':
-        return 'This link has already been used'
-      case 'revoked':
-        return 'This link has been revoked'
-      case 'not_found':
-        return 'Invalid or unknown link'
-      default:
-        return 'Invalid link'
     }
   }
 

@@ -183,10 +183,7 @@ interface CompactGroupSectionProps {
   isCollapsed: boolean
   onToggle: () => void
   onHostClick: ((hostId: string) => void) | undefined
-  dragHandleProps?: {
-    attributes: any
-    listeners: any
-  }
+  dragHandleProps?: Pick<ReturnType<typeof useSortable>, 'attributes' | 'listeners'>
 }
 
 function CompactGroupSection({
@@ -373,7 +370,7 @@ function SortableHostList({ group, onHostClick }: SortableHostListProps) {
                 ...prefs?.dashboard,
                 groupLayouts: {
                   ...currentGroupLayouts,
-                  [orderKey]: newOrder as any,
+                  [orderKey]: newOrder,
                 },
               }
             })

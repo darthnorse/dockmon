@@ -21,11 +21,11 @@ export interface HostCardLayout {
   y: number
   w: number
   h: number
-  minW?: number
-  maxW?: number
-  minH?: number
-  maxH?: number
-  static?: boolean
+  minW?: number | undefined
+  maxW?: number | undefined
+  minH?: number | undefined
+  maxH?: number | undefined
+  static?: boolean | undefined
 }
 
 // Re-export TimeFormat for consumers who import from this module
@@ -56,18 +56,20 @@ export interface UserPreferences {
   // Dashboard preferences (host container sorts are string-based sort keys)
   hostContainerSorts?: Record<string, string>
 
-  // Dashboard settings (nested under dashboard object)
-  dashboard?: {
-    showKpiBar?: boolean
-    showStatsWidgets?: boolean
-    showContainerStats?: boolean
-    optimizedLoading?: boolean
-    compactHostOrder?: string[]
-    hostCardLayout?: HostCardLayout[]
-    hostCardLayoutStandard?: HostCardLayout[]
-    tagGroupOrder?: string[]
-    groupLayouts?: Record<string, HostCardLayout[]>
-  }
+  dashboard?: DashboardPreferences
+}
+
+export interface DashboardPreferences {
+  showKpiBar?: boolean
+  showStatsWidgets?: boolean
+  showContainerStats?: boolean
+  optimizedLoading?: boolean
+  compactHostOrder?: string[]
+  hostCardLayout?: HostCardLayout[]
+  hostCardLayoutStandard?: HostCardLayout[]
+  tagGroupOrder?: string[]
+  // groupLayout_<tag>_<mode> keys hold per-breakpoint grid layouts; compactGroupHostOrder_<tag> keys hold host id order
+  groupLayouts?: Record<string, Record<string, HostCardLayout[]> | string[]>
 }
 
 // Re-export for convenience

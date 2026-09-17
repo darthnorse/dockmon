@@ -44,7 +44,7 @@ export function RecentEventsWidget() {
         </CardHeader>
         <CardContent>
           <div className="animate-pulse space-y-2">
-            {[...Array(3)].map((_, i) => (
+            {Array.from({ length: 3 }, (_, i) => (
               <div key={i} className="h-12 rounded bg-muted" />
             ))}
           </div>

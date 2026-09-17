@@ -66,8 +66,8 @@ export interface AuditLogEntry {
   id: number
   user_id: number | null
   username: string
-  action: AuditAction | string  // Allow string for forward compatibility
-  entity_type: AuditEntityType | string  // Allow string for forward compatibility
+  action: AuditAction | (string & {})
+  entity_type: AuditEntityType | (string & {})
   entity_id: string | null
   entity_name: string | null
   host_id: string | null

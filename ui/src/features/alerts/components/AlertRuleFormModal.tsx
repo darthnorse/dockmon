@@ -714,8 +714,6 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       if (scopeText) {
         parts.push(`Scope: ${scopeText}`)
       }
-    } else {
-      parts.push(`Scope: ${formData.scope}`)
     }
 
     // Severity

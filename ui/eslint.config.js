@@ -41,6 +41,8 @@ export default tseslint.config(
       // React rules
       ...react.configs.recommended.rules,
       ...react.configs['jsx-runtime'].rules,
+      // TypeScript already checks props; the rule also misreads Th/TdHTMLAttributes generics
+      'react/prop-types': 'off',
 
       // React Hooks rules
       ...reactHooks.configs.recommended.rules,

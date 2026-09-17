@@ -1125,7 +1125,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
           return (
             <button
               className="text-sm text-left hover:text-primary transition-colors cursor-pointer"
-              onClick={(e) => { e.stopPropagation(); host_id && setHostModalHostId(host_id) }}
+              onClick={(e) => { e.stopPropagation(); if (host_id) setHostModalHostId(host_id) }}
             >
               {host_name || 'localhost'}
             </button>

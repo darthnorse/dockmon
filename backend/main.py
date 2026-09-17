@@ -77,7 +77,7 @@ from models.request_models import (
 from audit.audit_logger import AuditAction, AuditEntityType, log_audit, log_container_action, log_host_change, log_settings_change, get_client_info
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, get_capabilities_for_user, Capabilities, get_visible_host_ids_for_auth, get_visible_host_ids_for_user, filter_visible_hosts, require_host_access, require_source_host_access, check_host_access, check_composite_keys_visible, check_host_ids_visible
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, get_capabilities_for_user, Capabilities, get_visible_host_ids_for_auth, get_visible_host_ids_for_user, filter_visible_hosts, visible_host_models, host_is_visible, require_host_access, require_source_host_access, check_host_access, check_composite_keys_visible, check_host_ids_visible
 from auth.utils import get_auditable_user_info
 from websocket.connection import ConnectionManager, DateTimeEncoder
 from websocket.rate_limiter import ws_rate_limiter
@@ -88,7 +88,7 @@ from utils.keys import make_composite_key
 from utils.encryption import encrypt_password, decrypt_password
 from utils.async_docker import async_docker_call, async_client_ping, async_client_version, async_containers_list
 from utils.base_path import get_base_path
-from utils.response_filtering import filter_container_env, filter_container_inspect_env, filter_ws_container_message, filter_ws_host_visibility, event_is_visible, selector_host_ids
+from utils.response_filtering import filter_container_env, filter_container_inspect_env, filter_ws_container_message, event_is_visible, selector_host_ids
 from utils.host_ips import deserialize_host_ips
 from utils.client_ip import get_client_ip_ws
 from utils.networks import BUILTIN_NETWORKS, format_network, create_network_local
@@ -633,7 +633,7 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
     - agent: {id, version, capabilities, status, connected, last_seen_at, registered_at}
     """
     visible = get_visible_host_ids_for_auth(current_user)
-    hosts = filter_visible_hosts(list(monitor.hosts.values()), visible, lambda h: h.id)
+    hosts = visible_host_models(monitor.hosts.values(), visible)
 
     # Enrich hosts with agent information
     with monitor.db.get_session() as db:
@@ -820,7 +820,7 @@ async def test_host_connection(config: DockerHostConfig, current_user: dict = De
             visible = get_visible_host_ids_for_auth(current_user)
             with monitor.db.get_session() as db_session:
                 existing_host = db_session.query(DockerHostDB).filter(DockerHostDB.url == config.url).first()
-                if existing_host and (visible is None or existing_host.id in visible):
+                if existing_host and host_is_visible(existing_host.id, visible):
                     logger.info(f"Found existing host for URL {config.url}, using stored certificates")
                     if config.tls_ca is None and existing_host.tls_ca:
                         config.tls_ca = existing_host.tls_ca
@@ -918,6 +918,12 @@ async def test_host_connection(config: DockerHostConfig, current_user: dict = De
 @app.put("/api/hosts/{host_id}", tags=["hosts"], dependencies=[Depends(require_capability("hosts.manage")), Depends(require_host_access)])
 async def update_host(host_id: str, config: DockerHostConfig, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
     """Update an existing Docker host"""
+    # A scoped caller must not re-point a visible host at a daemon it cannot see:
+    # the host keeps its tags, so its visibility would follow the new URL
+    if get_visible_host_ids_for_auth(current_user) is not None:
+        existing = monitor.hosts.get(host_id)
+        if existing is not None and config.url != existing.url:
+            raise HTTPException(status_code=404, detail="Not found")
     host = await asyncio.to_thread(monitor.update_host, host_id, config)
     _safe_audit(current_user, log_host_change, AuditAction.UPDATE, host_id, config.name, request)
     return host
@@ -1964,8 +1970,10 @@ async def get_containers(host_id: Optional[str] = None, current_user: dict = Dep
 
     Note: Environment variables are filtered for users without containers.view_env capability (v2.3.0+).
     """
-    containers = await monitor.get_containers(host_id)
-    containers = filter_visible_hosts(containers, get_visible_host_ids_for_auth(current_user), lambda c: c.host_id)
+    visible = get_visible_host_ids_for_auth(current_user)
+    if host_id and not host_is_visible(host_id, visible):
+        return []  # do not run discovery on a host the caller cannot see
+    containers = filter_visible_hosts(await monitor.get_containers(host_id), visible)
 
     # Filter env vars for users without containers.view_env capability
     can_view_env = check_auth_capability(current_user, Capabilities.CONTAINERS_VIEW_ENV)
@@ -2800,7 +2808,7 @@ async def get_all_auto_update_configs(current_user: dict = Depends(get_current_u
     """
 
     with monitor.db.get_session() as session:
-        configs = filter_visible_hosts(session.query(ContainerUpdate).all(), get_visible_host_ids_for_auth(current_user), lambda r: r.host_id)
+        configs = filter_visible_hosts(session.query(ContainerUpdate).all(), get_visible_host_ids_for_auth(current_user))
 
         return {
             record.container_id: {
@@ -2834,7 +2842,7 @@ async def get_all_deployment_metadata(current_user: dict = Depends(get_current_u
     """
 
     with monitor.db.get_session() as session:
-        metadata_records = filter_visible_hosts(session.query(DeploymentMetadata).all(), get_visible_host_ids_for_auth(current_user), lambda r: r.host_id)
+        metadata_records = filter_visible_hosts(session.query(DeploymentMetadata).all(), get_visible_host_ids_for_auth(current_user))
 
         return {
             record.container_id: {
@@ -2868,7 +2876,7 @@ async def get_all_health_check_configs(current_user: dict = Depends(get_current_
     """
 
     with monitor.db.get_session() as session:
-        configs = filter_visible_hosts(session.query(ContainerHttpHealthCheck).all(), get_visible_host_ids_for_auth(current_user), lambda r: r.host_id)
+        configs = filter_visible_hosts(session.query(ContainerHttpHealthCheck).all(), get_visible_host_ids_for_auth(current_user))
 
         return {
             record.container_id: {
@@ -5290,7 +5298,7 @@ async def get_dashboard_hosts(
     """
     try:
         visible = get_visible_host_ids_for_auth(current_user)
-        hosts_list = filter_visible_hosts(list(monitor.hosts.values()), visible, lambda h: h.id)
+        hosts_list = visible_host_models(monitor.hosts.values(), visible)
 
         # Filter by status if specified
         if status:
@@ -5480,14 +5488,14 @@ async def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
 
         # Hosts summary
         # NOTE: monitor.hosts is Dict[str, DockerHost] where DockerHost is a Pydantic model
-        hosts = filter_visible_hosts(list(monitor.hosts.values()), visible, lambda h: h.id)
+        hosts = visible_host_models(monitor.hosts.values(), visible)
         total_hosts = len(hosts)
         online_hosts = sum(1 for host in hosts if host.status == 'online')
         offline_hosts = total_hosts - online_hosts
 
         # Containers summary
         # NOTE: get_last_containers() returns cached list from last monitor cycle (max 2s old)
-        all_containers = filter_visible_hosts(monitor.get_last_containers(), visible, lambda c: c.host_id)
+        all_containers = filter_visible_hosts(monitor.get_last_containers(), visible)
         state_counts = {}
         for container in all_containers:
             # Container is a Container model, not a dict
@@ -5973,7 +5981,7 @@ async def list_agents(
 
         visible = get_visible_host_ids_for_auth(current_user)
         with monitor.db.get_session() as db:
-            agents = filter_visible_hosts(db.query(Agent).join(DockerHostDB).all(), visible, lambda a: a.host_id)
+            agents = filter_visible_hosts(db.query(Agent).join(DockerHostDB).all(), visible)
 
             agents_data = []
             for agent in agents:
@@ -6140,12 +6148,16 @@ async def _validate_ws_user(db_manager, websocket: WebSocket, user_id: int, labe
     return True
 
 
-def _find_container_host(containers, container_id: str, host_id: Optional[str] = None) -> Optional[str]:
+def _find_container_host(containers, container_id: str, host_id: Optional[str] = None,
+                         visible: Optional[set] = None) -> Optional[str]:
     """Host of a container by short id; None if unknown. With host_id the pair must
-    match exactly (equal short ids can exist on cloned hosts)."""
-    for c in containers:
-        if c.short_id == container_id and (host_id is None or c.host_id == host_id):
-            return c.host_id
+    match exactly (equal short ids can exist on cloned hosts); otherwise the first
+    candidate the caller can see wins, so a hidden clone cannot shadow a visible one."""
+    candidates = [c.host_id for c in containers
+                  if c.short_id == container_id and (host_id is None or c.host_id == host_id)]
+    for candidate in candidates:
+        if host_is_visible(candidate, visible):
+            return candidate
     return None
 
 
@@ -6191,9 +6203,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         visible_hosts = get_visible_host_ids_for_user(user_id)
         await monitor.manager.connect(websocket, user_id=user_id, capabilities=user_caps, visible_host_ids=visible_hosts)
         if monitor.manager.visibility_generation != generation:
-            # A scope/membership refresh ran while we resolved: re-resolve so it is not lost
-            visible_hosts = get_visible_host_ids_for_user(user_id)
-            await monitor.manager.set_visible_hosts(websocket, visible_hosts)
+            # A revoke landed during accept(), before this socket was registered: re-run
+            # every connect-time check so the stale user/caps/scope are not kept
+            if not await _validate_ws_user(monitor.db, websocket, user_id):
+                return
+            await monitor.manager.refresh_capabilities_for_user(user_id)
+            await monitor.manager.refresh_visible_hosts_for_user(user_id)
         await monitor.realtime.subscribe_to_events(websocket)
 
         # Event-driven stats control: Start stats streams when first viewer connects
@@ -6249,12 +6264,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         is_blackout, window_name = monitor.notification_service.blackout_manager.is_in_blackout_window()
 
         visible_hosts = monitor.manager.get_visible_hosts(websocket)
-        containers_data = filter_visible_hosts(await monitor.get_containers(), visible_hosts, lambda c: c.host_id)
-        visible_host_models = filter_visible_hosts(list(monitor.hosts.values()), visible_hosts, lambda h: h.id)
+        containers_data = filter_visible_hosts(await monitor.get_containers(), visible_hosts)
+        scoped_hosts = visible_host_models(monitor.hosts.values(), visible_hosts)
         initial_state = {
             "type": "initial_state",
             "data": {
-                "hosts": [h.dict() for h in visible_host_models] if "hosts.view" in user_caps else [],
+                "hosts": [h.dict() for h in scoped_hosts] if "hosts.view" in user_caps else [],
                 "containers": filter_container_env(containers_data, can_view_env) if "containers.view" in user_caps else [],
                 "settings": settings_dict,
                 "blackout": {
@@ -6311,12 +6326,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
                 requested_host = message.get("host_id")
                 if isinstance(container_id, str) and container_id and "containers.view" in user_caps:
                     container_id = normalize_container_id(container_id)
-                    host_id = _find_container_host(
-                        await monitor.get_containers(), container_id,
-                        requested_host if isinstance(requested_host, str) else None,
-                    )
                     visible_hosts = monitor.manager.get_visible_hosts(websocket)
-                    if host_id is None or (visible_hosts is not None and host_id not in visible_hosts):
+                    # The cached list is at most one poll old; a full discovery per message is not
+                    host_id = _find_container_host(
+                        monitor.get_last_containers(), container_id,
+                        requested_host if isinstance(requested_host, str) else None, visible_hosts,
+                    )
+                    if host_id is None:
                         logger.info(f"subscribe_stats refused for {container_id[:12]}: container not visible to user {user_id}")
                         continue
                     await monitor.realtime.subscribe_to_stats(websocket, container_id, host_id)
@@ -6350,7 +6366,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
                         containers = await monitor.get_containers()  # Must await async function
                         visible_hosts = monitor.manager.get_visible_hosts(websocket)
                         # Match by short_id (12 chars) or full id (64 chars) - agent containers use both
-                        container_exists = (visible_hosts is None or host_id in visible_hosts) and any(
+                        container_exists = host_is_visible(host_id, visible_hosts) and any(
                             (c.short_id == container_id or c.id == container_id) and c.host_id == host_id
                             for c in containers
                         )
@@ -6413,8 +6429,7 @@ async def _shell_still_authorized(websocket: WebSocket, user_id: int, host_id: s
     if not has_capability_for_user(user_id, Capabilities.CONTAINERS_SHELL):
         await websocket.close(code=4403, reason="Shell access revoked")
         return False
-    visible_hosts = get_visible_host_ids_for_user(user_id)
-    if visible_hosts is not None and host_id not in visible_hosts:
+    if not host_is_visible(host_id, get_visible_host_ids_for_user(user_id)):
         await websocket.close(code=4404, reason="Not found")
         return False
     return True
@@ -6488,8 +6503,7 @@ async def websocket_shell_endpoint(
     # Snapshot the auth generation before validating: a revoke that lands between these
     # checks and register_shell() would otherwise miss this socket
     auth_generation = monitor.manager.visibility_generation
-    visible_hosts = get_visible_host_ids_for_user(user_id)
-    if visible_hosts is not None and host_id not in visible_hosts:
+    if not host_is_visible(host_id, get_visible_host_ids_for_user(user_id)):
         logger.info(f"Shell WebSocket refused for user {username}: host {host_id!r} not visible")
         await websocket.close(code=4404, reason="Not found")
         return

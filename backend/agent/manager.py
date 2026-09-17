@@ -573,11 +573,18 @@ class AgentManager:
         tag-scoped visibility, so a migrated host must not drop out of its groups).
         Returns the number of rows moved."""
         moved = 0
+        already_on_new_containers = {
+            (row.tag_id, row.subject_id) for row in session.query(TagAssignment.tag_id, TagAssignment.subject_id)
+            .filter(TagAssignment.subject_type == 'container', TagAssignment.subject_id.like(f"{new_host_id}:%"))
+        }
         for tag_assignment in session.query(TagAssignment).filter(
             TagAssignment.subject_type == 'container',
             TagAssignment.subject_id.like(f"{old_host_id}:%")
         ).all():
             short_container_id = tag_assignment.subject_id[len(old_host_id) + 1:]
+            if (tag_assignment.tag_id, f"{new_host_id}:{short_container_id}") in already_on_new_containers:
+                session.delete(tag_assignment)
+                continue
             session.add(TagAssignment(
                 tag_id=tag_assignment.tag_id,
                 subject_type='container',

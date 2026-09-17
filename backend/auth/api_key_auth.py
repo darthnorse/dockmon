@@ -28,6 +28,7 @@ from sqlalchemy.orm import joinedload
 from auth.cookie_sessions import cookie_session_manager
 from auth.shared import db
 from utils.client_ip import get_client_ip
+from utils.keys import host_of_composite_key
 from security.audit import security_audit
 
 logger = logging.getLogger(__name__)
@@ -535,10 +536,8 @@ def check_host_ids_visible(host_ids, current_user: dict) -> None:
     """404 when any of the host ids a request names (body, record, selector) is one
     the caller cannot see. None entries never match."""
     visible = get_visible_host_ids_for_auth(current_user)
-    if visible is None:
-        return
     for host_id in host_ids:
-        if host_id not in visible:
+        if not host_is_visible(host_id, visible):
             # repr: the id is caller-controlled and percent-decoded, so a raw newline would forge a log line
             logger.info(f"{_get_auth_identifier(current_user, include_group=True)} denied host scope on {host_id!r}")
             raise HTTPException(status_code=404, detail="Not found")
@@ -548,7 +547,7 @@ def check_composite_keys_visible(keys, current_user: dict) -> None:
     """404 when any host_id:... composite key names a hidden host; a key with no
     host prefix never matches."""
     check_host_ids_visible(
-        [key.split(":", 1)[0] if isinstance(key, str) and ":" in key else None for key in keys],
+        [host_of_composite_key(key) if isinstance(key, str) and ":" in key else None for key in keys],
         current_user,
     )
 
@@ -740,11 +739,22 @@ def get_visible_host_ids_for_auth(current_user: dict) -> Optional[set[str]]:
     return get_visible_host_ids_for_user(current_user.get("user_id"))
 
 
-def filter_visible_hosts(items, visible: Optional[set[str]], key):
-    """Keep items whose key(item) host id is visible. None = pass through unchanged."""
+def host_is_visible(host_id: Optional[str], visible: Optional[set[str]]) -> bool:
+    """None = unrestricted; a None host id never matches a restricted set."""
+    return visible is None or host_id in visible
+
+
+def filter_visible_hosts(items, visible: Optional[set[str]], key=lambda item: item.host_id):
+    """Keep items whose key(item) host id is visible. None = pass through unchanged.
+    The default key is the composite-key convention every container/record model follows."""
     if visible is None:
         return items
     return [item for item in items if key(item) in visible]
+
+
+def visible_host_models(hosts, visible: Optional[set[str]]):
+    """filter_visible_hosts for host models, which carry their id as `id`."""
+    return filter_visible_hosts(list(hosts), visible, lambda h: h.id)
 
 
 def has_capability_for_group(group_id: int, capability: str) -> bool:

@@ -1473,10 +1473,13 @@ def event_visibility_predicate(visible_host_ids: set):
     is host-less bookkeeping in a global category (a host-less rule_triggered is the
     system alert firing: admin-only). Every other null-host row is hidden."""
     composite_host = func.substr(EventLog.container_id, 1, func.instr(EventLog.container_id, ':') - 1)
+    # '' counts as absent, as the Python twin's truthiness tests do
+    no_host = or_(EventLog.host_id.is_(None), EventLog.host_id == '')
+    no_container = or_(EventLog.container_id.is_(None), EventLog.container_id == '')
     return or_(
         EventLog.host_id.in_(visible_host_ids),
-        and_(EventLog.host_id.is_(None), EventLog.container_id.isnot(None), composite_host.in_(visible_host_ids)),
-        and_(EventLog.host_id.is_(None), EventLog.container_id.is_(None),
+        and_(no_host, EventLog.container_id.isnot(None), composite_host.in_(visible_host_ids)),
+        and_(no_host, no_container,
              EventLog.category.in_(GLOBAL_EVENT_CATEGORIES),
              EventLog.event_type.notin_(ADMIN_ONLY_EVENT_TYPES)),
     )

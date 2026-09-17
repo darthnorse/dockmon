@@ -9,6 +9,8 @@ import copy
 import json
 from typing import Any, Callable, Dict, List, Optional, Set, Union
 
+from utils.keys import host_of_composite_key
+
 
 def filter_container_env(
     containers: List[Any],
@@ -155,15 +157,10 @@ def _global(message: Dict) -> Set[str]:
     return set()
 
 
-def _host_of_composite_key(key: str) -> str:
-    return key.split(":", 1)[0]
-
-
-def _data(*keys: str) -> HostRule:
+def _data(key: str) -> HostRule:
     def rule(message: Dict):
-        data = message.get("data") or {}
-        values = [data.get(key) for key in keys]
-        return DROP if any(v is None for v in values) else set(values)
+        host_id = (message.get("data") or {}).get(key)
+        return DROP if host_id is None else {host_id}
     return rule
 
 
@@ -195,7 +192,7 @@ def event_scope(host_id: Optional[str], container_id: Optional[str], category: O
         return {host_id}
     # Container alert events are logged with host_id=None and a host_id:short_id container_id
     if container_id and ":" in container_id:
-        return {_host_of_composite_key(container_id)}
+        return {host_of_composite_key(container_id)}
     if not container_id and category in GLOBAL_EVENT_CATEGORIES and event_type not in ADMIN_ONLY_EVENT_TYPES:
         return set()
     return None
@@ -223,7 +220,7 @@ def alert_is_visible(scope_type: Optional[str], scope_id: Optional[str], host_id
     if scope_type == "host" and scope_id:
         candidates.add(scope_id)
     if scope_type == "container" and scope_id and ":" in scope_id:
-        candidates.add(_host_of_composite_key(scope_id))
+        candidates.add(host_of_composite_key(scope_id))
     return bool(candidates & visible)
 
 
@@ -295,7 +292,7 @@ def filter_ws_host_visibility(message: Dict, visible: Optional[Set[str]]) -> Dic
             pruned[key] = {hid: v for hid, v in data[key].items() if hid in visible}
     if "container_sparklines" in data:
         pruned["container_sparklines"] = {
-            k: v for k, v in data["container_sparklines"].items() if _host_of_composite_key(k) in visible
+            k: v for k, v in data["container_sparklines"].items() if host_of_composite_key(k) in visible
         }
     return {**message, "data": pruned}
 
@@ -311,7 +308,7 @@ def selector_host_ids(host_selector_json: Optional[str], container_selector_json
     if isinstance(host_selector.get("host_id"), str):
         ids.add(host_selector["host_id"])
     container_selector = _load_selector(container_selector_json)
-    ids.update(_host_of_composite_key(x) for x in _include_entries(container_selector) if ":" in x)
+    ids.update(host_of_composite_key(x) for x in _include_entries(container_selector) if ":" in x)
     return ids
 
 

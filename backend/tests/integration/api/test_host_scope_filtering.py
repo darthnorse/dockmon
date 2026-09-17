@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
@@ -165,6 +166,34 @@ class TestHostsEndpoint:
 
 
 @pytest.mark.integration
+class TestHostUrlRebinding:
+    """A host keeps its tags when edited, so its URL must not be re-pointed at a daemon the
+    caller cannot see, and no host may take another host's URL."""
+
+    def test_scoped_caller_cannot_change_a_visible_hosts_url(self, dev_scoped_client, monkeypatch):
+        calls = []
+        monkeypatch.setattr(main_module.monitor, "update_host", lambda host_id, config: calls.append(config.url) or HOSTS["h1"])
+        body = {"name": "Dev Host", "url": "unix:///var/run/docker.sock"}
+        assert dev_scoped_client.put("/api/hosts/h1", json=body).status_code == 404
+        assert calls == []
+        assert dev_scoped_client.put("/api/hosts/h1", json={"name": "Renamed", "url": HOSTS["h1"].url}).status_code == 200
+        assert calls == [HOSTS["h1"].url]
+
+    def test_update_refuses_another_hosts_url(self, unrestricted_client, monkeypatch):
+        from models.docker_models import DockerHostConfig
+        from docker_monitor.monitor import DockerMonitor
+        with pytest.raises(HTTPException) as exc:
+            DockerMonitor.update_host(main_module.monitor, "h1", DockerHostConfig(name="Dev Host", url=HOSTS["h2"].url))
+        assert exc.value.status_code == 400
+        assert "Test Host" not in exc.value.detail
+
+    def test_add_host_duplicate_error_does_not_name_the_existing_host(self, unrestricted_client):
+        response = unrestricted_client.post("/api/hosts", json={"name": "probe", "url": HOSTS["h2"].url})
+        assert response.status_code == 400
+        assert "Test Host" not in response.text
+
+
+@pytest.mark.integration
 class TestContainersEndpoint:
     def test_unrestricted_sees_all_containers(self, unrestricted_client):
         response = unrestricted_client.get("/api/containers")
@@ -177,10 +206,19 @@ class TestContainersEndpoint:
         assert {c["host_id"] for c in response.json()} == {"h1"}
         assert len(response.json()) == 2
 
-    def test_dev_scoped_query_for_hidden_host_is_empty(self, dev_scoped_client):
+    def test_dev_scoped_query_for_hidden_host_is_empty_without_touching_it(self, dev_scoped_client, monkeypatch):
+        touched = []
+        original = main_module.monitor.get_containers
+
+        async def spy(host_id=None):
+            touched.append(host_id)
+            return await original(host_id)
+
+        monkeypatch.setattr(main_module.monitor, "get_containers", spy)
         response = dev_scoped_client.get("/api/containers?host_id=h2")
         assert response.status_code == 200
         assert response.json() == []
+        assert touched == []
 
     def test_orphan_sees_no_containers(self, orphan_client):
         response = orphan_client.get("/api/containers")
@@ -304,6 +342,10 @@ def seeded_events(db_session, seeded_hosts):
                                        title="Alert triggered: evaluation failed. Affected: Test Host"),
         "channel_created": EventLog(category="notification", event_type="channel_created", title="Channel created"),
         "user_login": EventLog(category="user", event_type="login", title="admin logged in"),
+        "empty_host_composite": EventLog(category="container", event_type="alert", host_id="",
+                                         container_id="h1:bbb222222222", title="empty-host dev alert"),
+        "empty_both_global": EventLog(category="notification", event_type="sent", host_id="", container_id="",
+                                      title="notification sent"),
     }
     for row in rows.values():
         db_session.add(row)
@@ -327,22 +369,24 @@ class TestEventsScoped:
         assert titles == {
             "h1 up", "dev container alert", "DockMon started",
             "Alert rule 'High CPU' created", "Channel created", "admin logged in",
+            "empty-host dev alert", "notification sent",
         }
-        assert total == 6
+        assert total == 8
 
     def test_total_count_is_computed_over_the_scoped_set(self, dev_scoped_client, seeded_events):
         response = dev_scoped_client.get("/api/events", params={"limit": 2, "offset": 0})
-        assert response.json()["total_count"] == 6
+        assert response.json()["total_count"] == 8
         assert response.json()["has_more"] is True
 
     def test_orphan_sees_only_global_admin_events(self, orphan_client, seeded_events):
         titles, total = self._titles(orphan_client)
-        assert titles == {"DockMon started", "Alert rule 'High CPU' created", "Channel created", "admin logged in"}
+        assert titles == {"DockMon started", "Alert rule 'High CPU' created", "Channel created", "admin logged in",
+                          "notification sent"}
 
     def test_statistics_count_the_scoped_set(self, dev_scoped_client, unrestricted_client, orphan_client, seeded_events):
         assert unrestricted_client.get("/api/events/statistics").json()["total_events"] == len(seeded_events)
-        assert dev_scoped_client.get("/api/events/statistics").json()["total_events"] == 6
-        assert orphan_client.get("/api/events/statistics").json()["total_events"] == 4
+        assert dev_scoped_client.get("/api/events/statistics").json()["total_events"] == 8
+        assert orphan_client.get("/api/events/statistics").json()["total_events"] == 5
 
     def test_single_event_on_hidden_host_is_404(self, dev_scoped_client, unrestricted_client, seeded_events):
         assert dev_scoped_client.get(f"/api/events/{seeded_events['test_host']}").status_code == 404
@@ -740,7 +784,9 @@ def ws_sessions(db_session, seeded_hosts, monkeypatch):
         "auth.cookie_sessions.cookie_session_manager.validate_session",
         lambda session_id, client_ip: sessions.get(session_id),
     )
-    monkeypatch.setattr(main_module.monitor, "get_last_containers", lambda: [])
+    # The first viewer would start stats streams against the stats service; stub that, not the list
+    monkeypatch.setattr(main_module.monitor.stats_manager, "sync_container_streams", AsyncMock())
+    monkeypatch.setattr(main_module.monitor.stats_manager, "stop_all_streams", AsyncMock())
     return {"admin": admin, "dev": dev}
 
 
@@ -806,6 +852,37 @@ class TestWebSocketVisibility:
             ws.send_json({"type": "ping"})
             assert ws.receive_json() == {"type": "pong"}
             assert set(realtime.stats_subscribers) == {"h2:ccc333333333"}
+
+    def test_user_deleted_during_accept_is_closed(self, client, ws_sessions, db_session, monkeypatch):
+        """connect() awaits accept() before the socket is registered; a delete in that window
+        bumps the generation, and the endpoint must re-run its connect-time checks."""
+        from starlette.websockets import WebSocketDisconnect
+        manager = main_module.monitor.manager
+        original_connect = manager.connect
+
+        async def connect_after_delete(websocket, **kwargs):
+            db_session.query(UserGroupMembership).filter_by(user_id=ws_sessions["dev"].id).delete()
+            db_session.query(User).filter_by(id=ws_sessions["dev"].id).delete()
+            db_session.commit()
+            await manager.disconnect_user(ws_sessions["dev"].id)
+            await original_connect(websocket, **kwargs)
+
+        monkeypatch.setattr(manager, "connect", connect_after_delete)
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with _connect(client, "dev-cookie") as ws:
+                ws.receive_json()
+        assert exc.value.code == 1008
+
+    def test_subscribe_prefers_a_visible_clone_over_a_hidden_one(self, client, ws_sessions, monkeypatch):
+        realtime = main_module.monitor.realtime
+        clones = [_container("eee555555555", "h2"), _container("eee555555555", "h1")]
+        monkeypatch.setattr(main_module.monitor, "get_last_containers", lambda: clones)
+        with _connect(client, "dev-cookie") as ws:
+            _drain_until(ws, "containers_update")
+            ws.send_json({"type": "subscribe_stats", "container_id": "eee555555555"})
+            ws.send_json({"type": "ping"})
+            assert ws.receive_json() == {"type": "pong"}
+            assert set(realtime.stats_subscribers) == {"h1:eee555555555"}
 
     def test_non_string_container_id_does_not_close_the_socket(self, client, ws_sessions):
         with _connect(client, "dev-cookie") as ws:

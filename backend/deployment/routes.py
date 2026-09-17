@@ -723,7 +723,7 @@ async def get_known_stacks(
 
     monitor = get_docker_monitor()
     all_containers = filter_visible_hosts(
-        monitor.get_last_containers(), get_visible_host_ids_for_auth(current_user), lambda c: c.host_id
+        monitor.get_last_containers(), get_visible_host_ids_for_auth(current_user)
     )
     deployed_stacks = scan_deployed_stacks(all_containers)
 
@@ -762,7 +762,7 @@ async def list_running_projects(
     # Group containers by (project_name, host_id)
     projects: Dict[tuple, dict] = {}
     all_containers = filter_visible_hosts(
-        monitor.get_last_containers(), get_visible_host_ids_for_auth(current_user), lambda c: c.host_id
+        monitor.get_last_containers(), get_visible_host_ids_for_auth(current_user)
     )
     for container in all_containers:
         labels = getattr(container, 'labels', {}) or {}
@@ -1093,7 +1093,7 @@ async def import_deployment(
         check_host_access(request.host_id, current_user)
     monitor = get_docker_monitor()
     all_containers = filter_visible_hosts(
-        monitor.get_last_containers(), get_visible_host_ids_for_auth(current_user), lambda c: c.host_id
+        monitor.get_last_containers(), get_visible_host_ids_for_auth(current_user)
     )
 
     # Extract container_name values from compose for fallback matching

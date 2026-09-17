@@ -27,7 +27,7 @@ from auth.api_key_auth import (  # v2 hybrid auth (cookies + API keys)
     get_current_user_or_api_key as get_current_user,
     require_capability,
     get_visible_host_ids_for_auth,
-    filter_visible_hosts,
+    visible_host_models,
 )
 from utils.response_filtering import alert_is_visible
 from auth.utils import get_auditable_user_info
@@ -170,7 +170,7 @@ async def get_metric_capabilities(current_user: dict = Depends(get_current_user)
         logger.warning(f"Could not read host stats for metric capabilities: {e}")
         host_stats = {}
 
-    hosts = filter_visible_hosts(list(monitor.hosts.values()), get_visible_host_ids_for_auth(current_user), lambda h: h.id)
+    hosts = visible_host_models(monitor.hosts.values(), get_visible_host_ids_for_auth(current_user))
     capabilities = host_metric_capabilities(host_stats, [h.id for h in hosts])
 
     return MetricCapabilitiesResponse(

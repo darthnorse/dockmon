@@ -14,6 +14,8 @@ import docker
 from docker.models.containers import Container as DockerContainer
 
 from utils.async_docker import async_docker_call
+from utils.keys import host_of_composite_key
+from auth.api_key_auth import host_is_visible
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +55,6 @@ class RealtimeMonitor:
     def _key(host_id: str, container_id: str) -> str:
         return f"{host_id}:{container_id}"
 
-    @staticmethod
-    def _host_of(key: str) -> str:
-        return key.split(":", 1)[0]
-
     async def subscribe_to_stats(self, websocket: Any, container_id: str, host_id: str):
         """Subscribe a websocket to container stats"""
         key = self._key(host_id, container_id)
@@ -68,7 +66,7 @@ class RealtimeMonitor:
         if visible is None:
             return
         for key in list(self.stats_subscribers):
-            if self._host_of(key) not in visible:
+            if host_of_composite_key(key) not in visible:
                 await self._drop_subscriber(websocket, key)
 
     async def unsubscribe_from_stats(self, websocket: Any, container_id: str, host_id: Optional[str] = None):
@@ -145,8 +143,7 @@ class RealtimeMonitor:
                             if "containers.view" not in caps:
                                 dead_sockets.append(websocket)
                                 continue
-                            visible = self.connection_manager.get_visible_hosts(websocket)
-                            if visible is not None and host_id not in visible:
+                            if not host_is_visible(host_id, self.connection_manager.get_visible_hosts(websocket)):
                                 dead_sockets.append(websocket)
                                 continue
                         await websocket.send_text(json.dumps({

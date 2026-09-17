@@ -157,18 +157,16 @@ class ValidatePortsResponse(BaseModel):
     conflicts: List[PortConflictItem]
 
 
-def _deployed_to(user, name: Optional[str] = None):
-    """Hosts running each stack, limited to the caller's visible hosts. With a name,
-    the list for that stack; otherwise a dict of every stack's list."""
+def _deployed_to(user) -> Dict[str, List[DeployedHost]]:
+    """Hosts running each stack, limited to the caller's visible hosts."""
     monitor = get_docker_monitor()
     deployed_stacks = scan_deployed_stacks(monitor.get_last_containers())
     visible = get_visible_host_ids_for_auth(user)
-    by_name = {
+    return {
         stack: [DeployedHost(host_id=h.host_id, host_name=h.host_name)
-                for h in filter_visible_hosts(info.hosts, visible, lambda h: h.host_id)]
+                for h in filter_visible_hosts(info.hosts, visible)]
         for stack, info in deployed_stacks.items()
     }
-    return by_name if name is None else by_name.get(name, [])
 
 
 # ==================== Endpoints ====================
@@ -206,7 +204,7 @@ async def get_stack(name: str, user=Depends(get_current_user)):
     # Read stack content
     compose_yaml, env_files = await stack_storage.read_stack(name)
 
-    deployed_to = _deployed_to(user, name)
+    deployed_to = _deployed_to(user).get(name, [])
 
     # Filter env_files for users without stacks.view_env capability
     can_view_env = check_auth_capability(user, Capabilities.STACKS_VIEW_ENV)
@@ -359,7 +357,7 @@ async def update_stack(name: str, request: StackUpdate, http_request: Request, u
         log_stack_change(session, user_id, display_name, AuditAction.UPDATE, name, http_request)
         session.commit()
 
-    deployed_to = _deployed_to(user, name)
+    deployed_to = _deployed_to(user).get(name, [])
 
     logger.info(f"User {display_name} updated stack '{name}'")
 

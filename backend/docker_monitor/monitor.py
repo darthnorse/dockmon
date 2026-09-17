@@ -358,12 +358,9 @@ class DockerMonitor:
         try:
             # Check if host URL already exists (prevent duplicates)
             if not skip_db_save:  # Only check for new hosts, not when loading from DB
-                for existing_host in self.hosts.values():
-                    if existing_host.url == config.url:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Host with URL '{config.url}' already exists as '{existing_host.name}'"
-                        )
+                # Generic message: naming the other host would reveal one the caller may not see
+                if self._url_in_use(config.url):
+                    raise HTTPException(status_code=400, detail="A host with this URL already exists")
 
             # Validate certificates if provided (before trying to use them)
             if config.tls_cert or config.tls_key or config.tls_ca:
@@ -985,8 +982,15 @@ class DockerMonitor:
             else:
                 raise ValueError(f"Host {host_id} not found")
 
+    def _url_in_use(self, url: str, exclude_host_id: Optional[str] = None) -> bool:
+        return any(h.url == url and hid != exclude_host_id for hid, h in self.hosts.items())
+
     def update_host(self, host_id: str, config: DockerHostConfig):
         """Update an existing Docker host"""
+        # Rebinding a host record onto another host's daemon would let its tags
+        # (and every scoped user's visibility) carry over to that daemon
+        if self._url_in_use(config.url, exclude_host_id=host_id):
+            raise HTTPException(status_code=400, detail="A host with this URL already exists")
         # Validate host_id to prevent path traversal
         try:
             host_id = sanitize_host_id(host_id)

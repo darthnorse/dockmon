@@ -16,6 +16,7 @@ from auth.api_key_auth import (
     get_capabilities_for_user,
     get_visible_host_ids_for_user,
     has_capability_for_user,
+    host_is_visible,
 )
 from utils.response_filtering import DROP, PRUNE, WS_HOST_VISIBILITY, filter_ws_container_message, filter_ws_host_visibility
 
@@ -319,7 +320,6 @@ class ConnectionManager:
                 await self.realtime.revoke_hidden_subscriptions(ws, visible)
 
         for ws, uid, host_id in shells:
-            visible = per_user[uid]
-            if visible is not None and host_id not in visible:
+            if not host_is_visible(host_id, per_user[uid]):
                 await self._close(ws, 4404, "Not found")
                 await self.unregister_shell(ws)

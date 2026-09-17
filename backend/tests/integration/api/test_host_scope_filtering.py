@@ -11,6 +11,7 @@ import secrets
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,7 +24,7 @@ from auth.api_key_auth import (
 )
 from auth.capabilities import ALL_CAPABILITIES
 from database import (
-    Agent, AlertRuleV2, ApiKey, ContainerHttpHealthCheck, ContainerUpdate, CustomGroup, DeploymentMetadata,
+    Agent, AlertRuleV2, AlertV2, ApiKey, ContainerHttpHealthCheck, ContainerUpdate, CustomGroup, DeploymentMetadata,
     DockerHostDB, EventLog, GroupPermission, GroupTagScope, Tag, TagAssignment, User, UserGroupMembership,
 )
 from main import app
@@ -501,6 +502,64 @@ class TestAlertRuleSelectorsScoped:
         assert dev_scoped_client.patch("/api/alerts/rules/rule-visible/toggle").status_code == 200
         assert unrestricted_client.patch("/api/alerts/rules/rule-hidden/toggle").status_code == 200
         assert db_session.query(AlertRuleV2).filter_by(id="rule-hidden").count() == 1
+
+
+def _alert(alert_id, scope_type, scope_id, host_id=None, state="open"):
+    now = datetime.now(timezone.utc)
+    return AlertV2(id=alert_id, dedup_key=f"k|{scope_type}:{scope_id}|{alert_id}", scope_type=scope_type,
+                   scope_id=scope_id, host_id=host_id, kind="cpu_high", severity="warning", state=state,
+                   title=alert_id, message="m", first_seen=now, last_seen=now)
+
+
+@pytest.fixture
+def seeded_alerts(db_session, seeded_hosts):
+    for alert in (
+        _alert("a-host-h1", "host", "h1", host_id="h1"),
+        _alert("a-host-h2", "host", "h2", host_id="h2"),
+        _alert("a-cont-h1", "container", "h1:aaa111111111"),
+        _alert("a-cont-h2", "container", "h2:ccc333333333", state="resolved"),
+        _alert("a-system", "system", "alert_service"),
+        _alert("a-orphan", "container", "aaa111111111"),
+    ):
+        db_session.add(alert)
+    db_session.commit()
+
+
+@pytest.mark.integration
+class TestAlertsScoped:
+    def test_list_and_total_are_scoped(self, dev_scoped_client, unrestricted_client, seeded_alerts):
+        assert unrestricted_client.get("/api/alerts/").json()["total"] == 6
+        scoped = dev_scoped_client.get("/api/alerts/").json()
+        assert {a["id"] for a in scoped["alerts"]} == {"a-host-h1", "a-cont-h1", "a-system"}
+        assert scoped["total"] == 3
+
+    def test_stats_are_scoped(self, dev_scoped_client, unrestricted_client, seeded_alerts):
+        assert unrestricted_client.get("/api/alerts/stats/").json()["total"] == 6
+        scoped = dev_scoped_client.get("/api/alerts/stats/").json()
+        assert scoped["total"] == 3
+        assert scoped["by_state"]["open"] == 3
+        assert scoped["by_severity"]["warning"] == 3
+
+    @pytest.mark.parametrize("path,method", [
+        ("/api/alerts/{id}", "get"), ("/api/alerts/{id}/annotations", "get"),
+        ("/api/alerts/{id}/resolve", "post"), ("/api/alerts/{id}/snooze", "post"),
+        ("/api/alerts/{id}/unsnooze", "post"), ("/api/alerts/{id}/annotations", "post"),
+    ])
+    def test_alert_routes_404_on_hidden_and_underivable_hosts(self, path, method, dev_scoped_client, seeded_alerts):
+        bodies = {"resolve": {"reason": "x"}, "snooze": {"duration_minutes": 5}, "annotations": {"text": "note"}}
+        kwargs = {"json": bodies.get(path.rsplit("/", 1)[-1], {})} if method == "post" else {}
+        for hidden in ("a-host-h2", "a-cont-h2", "a-orphan"):
+            response = getattr(dev_scoped_client, method)(path.format(id=hidden), **kwargs)
+            assert response.status_code == 404, (path, hidden, response.text)
+        visible = getattr(dev_scoped_client, method)(path.format(id="a-host-h1"), **kwargs)
+        assert visible.status_code != 404, (path, visible.text)
+
+    def test_metric_capabilities_lists_only_visible_hosts(self, dev_scoped_client, unrestricted_client, monkeypatch):
+        import alerts.api as alerts_api
+        monkeypatch.setattr(alerts_api, "get_stats_client",
+                            lambda: SimpleNamespace(get_host_stats=AsyncMock(return_value={})))
+        assert {h["host_id"] for h in unrestricted_client.get("/api/alerts/metrics/capabilities").json()["hosts"]} == {"h1", "h2", "h3"}
+        assert [h["host_id"] for h in dev_scoped_client.get("/api/alerts/metrics/capabilities").json()["hosts"]] == ["h1"]
 
 
 @pytest.mark.integration

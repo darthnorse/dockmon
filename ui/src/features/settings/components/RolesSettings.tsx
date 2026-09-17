@@ -24,7 +24,7 @@ import {
   useUpdatePermissions,
   useResetPermissions,
 } from '@/hooks/useRoles'
-import { VALID_ROLES, ROLE_LABELS, type RoleType, type PermissionUpdate } from '@/types/roles'
+import { VALID_ROLES, ROLE_LABELS, type RoleType, type PermissionUpdate, type CapabilityInfo } from '@/types/roles'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -84,9 +84,9 @@ export function RolesSettings() {
 
   // Group capabilities by category
   const categorizedCapabilities = useMemo(() => {
-    if (!capabilitiesData?.capabilities) return new Map()
+    const map = new Map<string, CapabilityInfo[]>()
+    if (!capabilitiesData?.capabilities) return map
 
-    const map = new Map<string, typeof capabilitiesData.capabilities>()
     for (const cap of capabilitiesData.capabilities) {
       const existing = map.get(cap.category) || []
       existing.push(cap)

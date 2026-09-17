@@ -314,7 +314,7 @@ export function LogViewer({
 
     // Start polling if conditions are met
     if (autoRefresh && containers.length > 0) {
-      intervalRef.current = setInterval(fetchLogs, 2000) // Poll every 2 seconds
+      intervalRef.current = setInterval(() => void fetchLogs(), 2000)
     }
 
     // Cleanup on unmount or when dependencies change

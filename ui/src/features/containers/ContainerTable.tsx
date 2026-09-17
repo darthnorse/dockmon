@@ -1626,7 +1626,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
     return (
       <div className="space-y-4">
         <div className="animate-pulse space-y-2">
-          {[...Array(5)].map((_, i) => (
+          {Array.from({ length: 5 }, (_, i) => (
             <div key={i} className="h-14 rounded-lg bg-surface-1" />
           ))}
         </div>

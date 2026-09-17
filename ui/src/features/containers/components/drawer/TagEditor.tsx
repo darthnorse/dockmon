@@ -84,7 +84,7 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
       }
     }
 
-    const debounce = setTimeout(fetchSuggestions, 200)
+    const debounce = setTimeout(() => void fetchSuggestions(), 200)
     return () => {
       cancelled = true
       clearTimeout(debounce)

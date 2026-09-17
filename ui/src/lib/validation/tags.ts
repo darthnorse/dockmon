@@ -78,7 +78,7 @@ export function validateTagSuggestionsResponse(data: unknown): string[] {
   }
 
   // Handle both strings and objects like {id, name, color, kind}
-  return response.tags
+  return (response.tags as unknown[])
     .map((tag) => {
       if (typeof tag === 'string') {
         return tag.trim()

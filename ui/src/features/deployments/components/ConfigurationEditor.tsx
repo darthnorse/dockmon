@@ -283,7 +283,7 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
         }
       } else {
         // Parse and format JSON
-        const parsed = JSON.parse(value)
+        const parsed: unknown = JSON.parse(value)
         const formatted = JSON.stringify(parsed, null, 2)
         return formatted
       }

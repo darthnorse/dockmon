@@ -14,6 +14,7 @@ import { HostConnectionSection } from './HostConnectionSection'
 import { HostPerformanceSection } from './HostPerformanceSection'
 import { HostContainersSection } from './HostContainersSection'
 import { HostEventsSection } from './HostEventsSection'
+import type { Host } from '@/types/api'
 
 export interface HostDrawerProps {
   /**
@@ -24,7 +25,7 @@ export interface HostDrawerProps {
   /**
    * Host data (from useHosts query)
    */
-  host: any
+  host: Host | undefined
 
   /**
    * Whether drawer is open

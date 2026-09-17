@@ -79,7 +79,7 @@ export function HostAgentTab({ hostId }: HostAgentTabProps) {
     },
     onSuccess: () => {
       setUpdateTriggered(true)
-      queryClient.invalidateQueries({ queryKey: ['host-agent', hostId] })
+      void queryClient.invalidateQueries({ queryKey: ['host-agent', hostId] })
     },
   })
 

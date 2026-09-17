@@ -78,7 +78,7 @@ export function EventsSettings() {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !isUpdating) {
       e.preventDefault()
-      handleAddPattern()
+      void handleAddPattern()
     }
   }
 

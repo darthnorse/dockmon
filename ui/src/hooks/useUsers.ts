@@ -62,7 +62,7 @@ export function useCreateUser() {
       return response
     },
     onSuccess: (user) => {
-      queryClient.invalidateQueries({ queryKey: USERS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: USERS_QUERY_KEY })
       toast.success(`User "${user.username}" created successfully`)
     },
     onError: (error: Error) => {
@@ -84,7 +84,7 @@ export function useUpdateUser() {
       return response
     },
     onSuccess: (user) => {
-      queryClient.invalidateQueries({ queryKey: USERS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: USERS_QUERY_KEY })
       toast.success(`User "${user.username}" updated successfully`)
     },
     onError: (error: Error) => {
@@ -106,8 +106,8 @@ export function useDeleteUser() {
       return response
     },
     onSuccess: (response) => {
-      queryClient.invalidateQueries({ queryKey: USERS_QUERY_KEY })
-      queryClient.invalidateQueries({ queryKey: ['groups'] })
+      void queryClient.invalidateQueries({ queryKey: USERS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: ['groups'] })
       toast.success(response.message || 'User deleted successfully')
     },
     onError: (error: Error) => {
@@ -138,7 +138,7 @@ export function useResetUserPassword() {
       return response
     },
     onSuccess: (response) => {
-      queryClient.invalidateQueries({ queryKey: USERS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: USERS_QUERY_KEY })
       if (response.temporary_password) {
         toast.info('Temporary password generated - copy it now')
       } else {
@@ -181,8 +181,8 @@ export function useApproveUser() {
       return response
     },
     onSuccess: (response) => {
-      queryClient.invalidateQueries({ queryKey: USERS_QUERY_KEY })
-      queryClient.invalidateQueries({ queryKey: PENDING_COUNT_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: USERS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: PENDING_COUNT_QUERY_KEY })
       toast.success(response.message)
     },
     onError: () => {
@@ -203,8 +203,8 @@ export function useApproveAllUsers() {
       return response
     },
     onSuccess: (response) => {
-      queryClient.invalidateQueries({ queryKey: USERS_QUERY_KEY })
-      queryClient.invalidateQueries({ queryKey: PENDING_COUNT_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: USERS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: PENDING_COUNT_QUERY_KEY })
       toast.success(response.message)
     },
     onError: () => {

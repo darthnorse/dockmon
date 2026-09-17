@@ -63,11 +63,11 @@ export function useCheckContainerUpdate() {
     },
     onSuccess: (_data, variables) => {
       // Invalidate the update status query to refetch
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: ['container-update-status', variables.hostId, variables.containerId],
       })
       // Invalidate updates summary so filters update immediately
-      queryClient.invalidateQueries({ queryKey: ['updates-summary'] })
+      void queryClient.invalidateQueries({ queryKey: ['updates-summary'] })
     },
   })
 }
@@ -89,11 +89,11 @@ export function useCheckAllUpdates() {
     },
     onSuccess: () => {
       // Invalidate all update status queries
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: ['container-update-status'],
       })
       // Invalidate updates summary so filters update immediately
-      queryClient.invalidateQueries({ queryKey: ['updates-summary'] })
+      void queryClient.invalidateQueries({ queryKey: ['updates-summary'] })
     },
   })
 }
@@ -132,7 +132,7 @@ export function useUpdateAutoUpdateConfig() {
     },
     onSuccess: (_data, variables) => {
       // Invalidate the update status query to refetch
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: ['container-update-status', variables.hostId, variables.containerId],
       })
     },
@@ -169,7 +169,7 @@ export function useExecuteUpdate() {
     },
     onSuccess: (_data, variables) => {
       // Invalidate update status query to refetch new status
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: ['container-update-status', variables.hostId, variables.containerId],
       })
       // Don't invalidate containers list - it will update automatically via WebSocket events

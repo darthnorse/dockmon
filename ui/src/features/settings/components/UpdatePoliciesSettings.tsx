@@ -317,7 +317,7 @@ export function UpdatePoliciesSettings() {
               onChange={(e) => setCustomPatternInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
-                  handleAddCustomPattern()
+                  void handleAddCustomPattern()
                 }
               }}
               disabled={createPattern.isPending}

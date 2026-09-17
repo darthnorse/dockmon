@@ -1125,7 +1125,7 @@ export function StackEditor({
             <AlertDialogAction
               onClick={() => {
                 setActiveDialog(null)
-                executeDeployment(selectedStackName, 'down', true)
+                void executeDeployment(selectedStackName, 'down', true)
               }}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >

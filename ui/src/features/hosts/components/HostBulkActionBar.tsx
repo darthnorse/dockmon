@@ -60,7 +60,7 @@ export function HostBulkActionBar({
         console.error('Failed to fetch tag suggestions:', error)
       }
     }
-    fetchSuggestions()
+    void fetchSuggestions()
   }, [])
 
   const handleAddTags = () => {

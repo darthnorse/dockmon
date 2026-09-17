@@ -61,7 +61,7 @@ export function useUpdateOIDCConfig() {
     },
     onSuccess: (data) => {
       queryClient.setQueryData(QUERY_KEYS.config, data)
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.status })
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.status })
       toast.success('Configuration saved', {
         description: 'OIDC settings have been updated.',
       })
@@ -85,7 +85,7 @@ export function useSetLocalLogin() {
       )
     },
     onSuccess: (_data, disabled) => {
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.status })
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.status })
       toast.success(disabled ? 'Local login disabled' : 'Local login enabled', {
         description: disabled
           ? 'Only SSO can be used to sign in. Existing sessions remain active.'
@@ -130,7 +130,7 @@ export function useCreateOIDCGroupMapping() {
       return apiClient.post<OIDCGroupMapping>('/v2/oidc/group-mappings', data)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.groupMappings })
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.groupMappings })
       toast.success('Mapping created', {
         description: 'OIDC group mapping has been created.',
       })
@@ -151,7 +151,7 @@ export function useUpdateOIDCGroupMapping() {
       return apiClient.put<OIDCGroupMapping>(`/v2/oidc/group-mappings/${id}`, data)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.groupMappings })
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.groupMappings })
       toast.success('Mapping updated', {
         description: 'OIDC group mapping has been updated.',
       })
@@ -172,7 +172,7 @@ export function useDeleteOIDCGroupMapping() {
       return apiClient.delete(`/v2/oidc/group-mappings/${id}`)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.groupMappings })
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.groupMappings })
       toast.success('Mapping deleted', {
         description: 'OIDC group mapping has been deleted.',
       })

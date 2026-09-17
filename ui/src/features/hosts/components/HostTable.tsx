@@ -769,7 +769,7 @@ export function HostTable({ onEditHost, searchQuery = '' }: HostTableProps = {})
           selectedHostIds={selectedHostIds}
           onClearSelection={clearSelection}
           onTagsUpdated={() => {
-            queryClient.invalidateQueries({ queryKey: ['hosts'] })
+            void queryClient.invalidateQueries({ queryKey: ['hosts'] })
           }}
         />
       )}

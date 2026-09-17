@@ -126,7 +126,7 @@ export function useUpdatePreferences() {
 
     onSuccess: () => {
       // Invalidate to ensure we have the latest from server
-      queryClient.invalidateQueries({ queryKey: PREFERENCES_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: PREFERENCES_QUERY_KEY })
       debug.log('useUpdatePreferences', 'Preferences updated successfully')
     },
   })
@@ -142,7 +142,7 @@ export function useResetPreferences() {
     mutationFn: () => apiClient.delete('/v2/user/preferences'),
 
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: PREFERENCES_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: PREFERENCES_QUERY_KEY })
       debug.log('useResetPreferences', 'Preferences reset to defaults')
     },
 

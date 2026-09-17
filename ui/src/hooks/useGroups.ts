@@ -77,7 +77,7 @@ export function useCreateGroup() {
   return useMutation({
     mutationFn: (request: CreateGroupRequest) => apiClient.post<Group>('/v2/groups', request),
     onSuccess: (group) => {
-      queryClient.invalidateQueries({ queryKey: GROUPS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: GROUPS_QUERY_KEY })
       toast.success(`Group "${group.name}" created successfully`)
     },
     onError: (error: Error) => {
@@ -97,7 +97,7 @@ export function useUpdateGroup() {
     mutationFn: ({ groupId, request }: { groupId: number; request: UpdateGroupRequest }) =>
       apiClient.put<Group>(`/v2/groups/${groupId}`, request),
     onSuccess: (group) => {
-      queryClient.invalidateQueries({ queryKey: GROUPS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: GROUPS_QUERY_KEY })
       toast.success(`Group "${group.name}" updated successfully`)
     },
     onError: (error: Error) => {
@@ -116,7 +116,7 @@ export function useDeleteGroup() {
   return useMutation({
     mutationFn: (groupId: number) => apiClient.delete<DeleteGroupResponse>(`/v2/groups/${groupId}`),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: GROUPS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: GROUPS_QUERY_KEY })
       toast.success(data.message || 'Group deleted successfully')
     },
     onError: (error: Error) => {
@@ -136,7 +136,7 @@ export function useAddGroupMember() {
     mutationFn: ({ groupId, request }: { groupId: number; request: AddMemberRequest }) =>
       apiClient.post<AddMemberResponse>(`/v2/groups/${groupId}/members`, request),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: GROUPS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: GROUPS_QUERY_KEY })
       toast.success(data.message || 'Member added successfully')
     },
     onError: (error: Error) => {
@@ -156,7 +156,7 @@ export function useRemoveGroupMember() {
     mutationFn: ({ groupId, userId }: { groupId: number; userId: number }) =>
       apiClient.delete<RemoveMemberResponse>(`/v2/groups/${groupId}/members/${userId}`),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: GROUPS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: GROUPS_QUERY_KEY })
       toast.success(data.message || 'Member removed successfully')
     },
     onError: (error: Error) => {
@@ -213,7 +213,7 @@ export function useUpdateGroupPermissions() {
     mutationFn: ({ groupId, request }: { groupId: number; request: UpdateGroupPermissionsRequest }) =>
       apiClient.put<UpdatePermissionsResponse>(`/v2/groups/${groupId}/permissions`, request),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: PERMISSIONS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: PERMISSIONS_QUERY_KEY })
       toast.success(data.message || 'Permissions updated successfully')
     },
     onError: (error: Error) => {
@@ -233,7 +233,7 @@ export function useCopyGroupPermissions() {
     mutationFn: ({ targetGroupId, sourceGroupId }: { targetGroupId: number; sourceGroupId: number }) =>
       apiClient.post<CopyPermissionsResponse>(`/v2/groups/${targetGroupId}/permissions/copy-from/${sourceGroupId}`, {}),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: PERMISSIONS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: PERMISSIONS_QUERY_KEY })
       // Show warning if present (e.g., copying from empty source group)
       if (data.warning) {
         toast.warning(data.warning)
@@ -271,9 +271,9 @@ export function useUpdateGroupTagScopes() {
     mutationFn: ({ groupId, request }: { groupId: number; request: UpdateGroupTagScopesRequest }) =>
       apiClient.put<GroupTagScopesResponse>(`/v2/groups/${groupId}/tag-scopes`, request),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: TAG_SCOPES_QUERY_KEY })
-      queryClient.invalidateQueries({ queryKey: ['hosts'] })
-      queryClient.invalidateQueries({ queryKey: ['containers'] })
+      void queryClient.invalidateQueries({ queryKey: TAG_SCOPES_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: ['hosts'] })
+      void queryClient.invalidateQueries({ queryKey: ['containers'] })
       toast.success('Host visibility updated')
     },
     onError: (error: Error) => {

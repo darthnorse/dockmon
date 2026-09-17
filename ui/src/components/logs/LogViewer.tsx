@@ -300,7 +300,7 @@ export function LogViewer({
   useEffect(() => {
     if (containersChanged && containers.length > 0) {
       setLogs([])
-      fetchLogs()
+      void fetchLogs()
     }
   }, [containersChanged, containers.length])
 

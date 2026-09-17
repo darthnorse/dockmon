@@ -79,7 +79,7 @@ export function QuickActionPage() {
       return
     }
 
-    validateToken()
+    void validateToken()
   }, [token])
 
   const redirectToLogin = () => {

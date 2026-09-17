@@ -78,7 +78,7 @@ export function HostOverviewTab({ hostId, host }: HostOverviewTabProps) {
     },
     onSuccess: () => {
       setUpdateTriggered(true)
-      queryClient.invalidateQueries({ queryKey: ['host-agent', hostId] })
+      void queryClient.invalidateQueries({ queryKey: ['host-agent', hostId] })
     },
   })
 

@@ -81,7 +81,7 @@ export function useUpdatePermissions() {
       return response
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ROLES_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: ROLES_QUERY_KEY })
       toast.success(data.message || 'Permissions updated successfully')
     },
     onError: (error: Error) => {
@@ -103,7 +103,7 @@ export function useResetPermissions() {
       return response
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ROLES_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: ROLES_QUERY_KEY })
       toast.success(data.message || 'Permissions reset to defaults')
     },
     onError: (error: Error) => {

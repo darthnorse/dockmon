@@ -50,7 +50,7 @@ export function useCreateChannel() {
       return apiClient.post<NotificationChannel>(API_BASE, channel)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['notification-channels'] })
+      void queryClient.invalidateQueries({ queryKey: ['notification-channels'] })
     },
   })
 }
@@ -63,7 +63,7 @@ export function useUpdateChannel() {
       return apiClient.put<NotificationChannel>(`${API_BASE}/${channelId}`, updates)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['notification-channels'] })
+      void queryClient.invalidateQueries({ queryKey: ['notification-channels'] })
     },
   })
 }
@@ -76,7 +76,7 @@ export function useDeleteChannel() {
       return apiClient.delete(`${API_BASE}/${channelId}`)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['notification-channels'] })
+      void queryClient.invalidateQueries({ queryKey: ['notification-channels'] })
     },
   })
 }

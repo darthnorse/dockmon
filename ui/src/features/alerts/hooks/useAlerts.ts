@@ -140,9 +140,9 @@ export function useResolveAlert() {
       return await apiClient.post(`/alerts/${alertId}/resolve`, { reason: reason || 'Manually resolved' })
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['alerts'] })
-      queryClient.invalidateQueries({ queryKey: ['alert-stats'] })
-      queryClient.invalidateQueries({ queryKey: ['alert-counts'] })
+      void queryClient.invalidateQueries({ queryKey: ['alerts'] })
+      void queryClient.invalidateQueries({ queryKey: ['alert-stats'] })
+      void queryClient.invalidateQueries({ queryKey: ['alert-counts'] })
     },
   })
 }
@@ -156,9 +156,9 @@ export function useSnoozeAlert() {
       return await apiClient.post(`/alerts/${alertId}/snooze`, { duration_minutes: durationMinutes })
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['alerts'] })
-      queryClient.invalidateQueries({ queryKey: ['alert-stats'] })
-      queryClient.invalidateQueries({ queryKey: ['alert-counts'] })
+      void queryClient.invalidateQueries({ queryKey: ['alerts'] })
+      void queryClient.invalidateQueries({ queryKey: ['alert-stats'] })
+      void queryClient.invalidateQueries({ queryKey: ['alert-counts'] })
     },
   })
 }
@@ -172,9 +172,9 @@ export function useUnsnoozeAlert() {
       return await apiClient.post(`/alerts/${alertId}/unsnooze`)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['alerts'] })
-      queryClient.invalidateQueries({ queryKey: ['alert-stats'] })
-      queryClient.invalidateQueries({ queryKey: ['alert-counts'] })
+      void queryClient.invalidateQueries({ queryKey: ['alerts'] })
+      void queryClient.invalidateQueries({ queryKey: ['alert-stats'] })
+      void queryClient.invalidateQueries({ queryKey: ['alert-counts'] })
     },
   })
 }
@@ -188,7 +188,7 @@ export function useAddAnnotation() {
       return await apiClient.post(`/alerts/${alertId}/annotations`, { text })
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['alert-annotations', variables.alertId] })
+      void queryClient.invalidateQueries({ queryKey: ['alert-annotations', variables.alertId] })
     },
   })
 }

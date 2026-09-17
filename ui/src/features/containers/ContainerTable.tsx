@@ -770,7 +770,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
       // Open batch job progress panel
       setBatchJobId(jobId)
       setShowJobPanel(true)
-      queryClient.invalidateQueries({ queryKey: ['containers'] })
+      void queryClient.invalidateQueries({ queryKey: ['containers'] })
     },
     onError: (error) => {
       debug.error('ContainerTable', 'Batch action failed:', error)

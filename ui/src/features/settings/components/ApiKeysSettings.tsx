@@ -40,7 +40,7 @@ export function ApiKeysSettings() {
 
   const handleCopyKeyToClipboard = () => {
     if (newKey?.key) {
-      navigator.clipboard.writeText(newKey.key)
+      void navigator.clipboard.writeText(newKey.key)
       toast.success('API key copied to clipboard!')
     }
   }

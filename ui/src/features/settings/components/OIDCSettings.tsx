@@ -360,7 +360,7 @@ export function OIDCSettings() {
                 size="icon"
                 className="shrink-0"
                 onClick={() => {
-                  navigator.clipboard.writeText(callbackUrl)
+                  void navigator.clipboard.writeText(callbackUrl)
                   setCallbackCopied(true)
                   if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
                   copyTimerRef.current = setTimeout(() => setCallbackCopied(false), 2000)

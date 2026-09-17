@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from 'vitest'
 
-import { findIndentationTab } from './ConfigurationEditor'
+import { findIndentationTab } from '../utils'
 
 describe('findIndentationTab', () => {
   it('returns null for space-indented YAML', () => {

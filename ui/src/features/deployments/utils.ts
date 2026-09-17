@@ -3,6 +3,7 @@
  */
 
 import { toast } from 'sonner'
+import { ApiError } from '@/lib/api/client'
 
 /**
  * Extract error message from unknown error and show toast notification.
@@ -61,6 +62,45 @@ export function validateEnvFileName(name: string): string | null {
   }
   if (candidate.includes('/') || candidate.includes('\\') || candidate.includes(' ')) {
     return 'Filename cannot contain spaces or path separators'
+  }
+  return null
+}
+
+/**
+ * First line whose indentation uses a tab (1-based), or null. Block-scalar
+ * (| / >) content is skipped — a tab there is literal, valid YAML.
+ */
+export function findIndentationTab(value: string): number | null {
+  const lines = value.split('\n')
+  let blockParentIndent: number | null = null
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? ''
+    if (blockParentIndent !== null) {
+      if (line.trim() === '') continue
+      const spaces = /^ */.exec(line)?.[0].length ?? 0
+      if (spaces > blockParentIndent) continue
+      blockParentIndent = null
+    }
+    const leading = /^[ \t]*/.exec(line)?.[0] ?? ''
+    if (leading.includes('\t')) return i + 1
+    if (/(?::|^\s*-)\s+[|>][+\-0-9]*\s*(#.*)?$/.test(line)) {
+      blockParentIndent = leading.length
+    }
+  }
+  return null
+}
+
+/**
+ * Message to surface for a malformed-compose (400) port-check failure, or null.
+ * With unsaved edits, returns null so the save-first flow re-validates instead
+ * of blocking a user who just fixed a bad saved stack in the editor.
+ */
+export function blockingComposeErrorMessage(
+  err: unknown,
+  hasUnsavedChanges: boolean,
+): string | null {
+  if (err instanceof ApiError && err.status === 400 && !hasUnsavedChanges) {
+    return err.message
   }
   return null
 }

@@ -52,7 +52,6 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { cn } from '@/lib/utils'
-import { ApiError } from '@/lib/api/client'
 import { toast } from 'sonner'
 import {
   useStack,
@@ -71,7 +70,7 @@ import { DeploymentProgress } from './DeploymentProgress'
 import { PortConflictBanner } from './PortConflictBanner'
 import { validateStackName, MAX_STACK_NAME_LENGTH } from '../types'
 import type { DeployedHost, PortConflict } from '../types'
-import { handleApiError, getErrorMessage, envFilesEqual, validateEnvFileName, normalizeEnvFileName } from '../utils'
+import { handleApiError, getErrorMessage, envFilesEqual, validateEnvFileName, normalizeEnvFileName, blockingComposeErrorMessage } from '../utils'
 import { useAuth } from '@/features/auth/AuthContext'
 
 // Base path for stack storage (matches backend STACKS_DIR)
@@ -82,21 +81,6 @@ function dropEnvFile(map: Record<string, string>, key: string): Record<string, s
   const next = { ...map }
   delete next[key]
   return next
-}
-
-/**
- * Message to surface for a malformed-compose (400) port-check failure, or null.
- * With unsaved edits, returns null so the save-first flow re-validates instead
- * of blocking a user who just fixed a bad saved stack in the editor.
- */
-export function blockingComposeErrorMessage(
-  err: unknown,
-  hasUnsavedChanges: boolean,
-): string | null {
-  if (err instanceof ApiError && err.status === 400 && !hasUnsavedChanges) {
-    return err.message
-  }
-  return null
 }
 
 type DialogType = 'delete' | 'copy' | 'save-changes' | 'remove-confirm' | 'add-env-file' | 'remove-env-file' | null

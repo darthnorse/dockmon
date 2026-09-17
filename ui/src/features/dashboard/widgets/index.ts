@@ -19,9 +19,3 @@ export const widgetComponents: Record<WidgetType, React.ComponentType> = {
   'alert-summary': AlertSummaryWidget,
   'updates': UpdatesWidget,
 }
-
-export * from './ContainerStatsWidget'
-export * from './HostStatsWidget'
-export * from './RecentEventsWidget'
-export * from './AlertSummaryWidget'
-export * from './UpdatesWidget'

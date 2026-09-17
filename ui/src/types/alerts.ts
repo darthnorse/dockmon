@@ -75,6 +75,14 @@ export interface AlertStats {
 /**
  * Alert Rule
  */
+// Parsed form of host_selector_json / container_selector_json
+export interface SelectorJson {
+  include_all?: boolean
+  include?: string[]
+  tags?: string[]
+  should_run?: boolean | null
+}
+
 export interface AlertRule {
   id: string
   name: string

@@ -19,7 +19,7 @@ import {
   agentMountRemedy,
 } from '../hooks/useMetricCapabilities'
 import { maxThresholdFor } from '../utils/metricBounds'
-import type { AlertRule, AlertSeverity, AlertScope, AlertRuleRequest } from '@/types/alerts'
+import type { AlertRule, AlertSeverity, AlertScope, AlertRuleRequest, SelectorJson } from '@/types/alerts'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import type { Host } from '@/types/api'
 import type { Container } from '@/features/containers/types'
@@ -250,7 +250,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
   const parseSelector = (json: string | null | undefined) => {
     if (!json) return { all: true, selected: [] }
     try {
-      const parsed = JSON.parse(json)
+      const parsed = JSON.parse(json) as SelectorJson
       if (parsed.include_all) return { all: true, selected: [] }
       if (parsed.include) return { all: false, selected: parsed.include }
       return { all: true, selected: [] }
@@ -269,7 +269,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
     const parseContainerSelector = (json: string | null | undefined) => {
       if (!json) return { all: true, included: [], should_run: null }
       try {
-        const parsed = JSON.parse(json)
+        const parsed = JSON.parse(json) as SelectorJson
         if (parsed.include_all) {
           return {
             all: true,
@@ -366,12 +366,12 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       try {
         // Check host_selector for tags
         if (rule.host_selector_json) {
-          const parsed = JSON.parse(rule.host_selector_json)
+          const parsed = JSON.parse(rule.host_selector_json) as SelectorJson
           if (parsed.tags && Array.isArray(parsed.tags)) return parsed.tags
         }
         // Check container_selector for tags
         if (rule.container_selector_json) {
-          const parsed = JSON.parse(rule.container_selector_json)
+          const parsed = JSON.parse(rule.container_selector_json) as SelectorJson
           if (parsed.tags && Array.isArray(parsed.tags)) return parsed.tags
         }
       } catch {
@@ -402,7 +402,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       }
     }
 
-    const timer = setTimeout(fetchTags, 300)
+    const timer = setTimeout(() => void fetchTags(), 300)
     return () => clearTimeout(timer)
   }, [tagSearchInput, formData.scope])
 

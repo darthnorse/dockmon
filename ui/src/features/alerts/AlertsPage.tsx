@@ -62,7 +62,7 @@ export function AlertsPage() {
   const currentPage = alertsData?.page ?? 1
   const totalPages = Math.ceil(totalCount / (filters.page_size ?? 20))
 
-  const handleFilterChange = (key: keyof AlertFilters, value: any) => {
+  const handleFilterChange = <K extends keyof AlertFilters>(key: K, value: AlertFilters[K]) => {
     setFilters((prev) => ({
       ...prev,
       [key]: value === prev[key] ? undefined : value, // Toggle off if same

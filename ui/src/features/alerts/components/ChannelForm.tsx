@@ -5,7 +5,7 @@
  */
 
 import { useState } from 'react'
-import { NotificationChannel, ChannelCreateRequest } from '../hooks/useNotificationChannels'
+import { NotificationChannel, ChannelCreateRequest, ChannelConfig, ChannelType } from '../hooks/useNotificationChannels'
 import { Smartphone, Send, MessageSquare, MessageCircle, Hash, Bell, BellRing, Mail, Webhook, Users } from 'lucide-react'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
@@ -44,7 +44,7 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
 
   const [errors, setErrors] = useState<Record<string, string>>({})
 
-  const handleChange = (field: string, value: any) => {
+  const handleChange = <K extends keyof ChannelCreateRequest>(field: K, value: ChannelCreateRequest[K]) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
     // Clear error when user types
     if (errors[field]) {
@@ -56,7 +56,7 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
     }
   }
 
-  const handleConfigChange = (field: string, value: any) => {
+  const handleConfigChange = <K extends keyof ChannelConfig>(field: K, value: ChannelConfig[K]) => {
     setFormData((prev) => ({
       ...prev,
       config: { ...prev.config, [field]: value },
@@ -205,8 +205,8 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
           <Select
             value={formData.type}
             onValueChange={(value) => {
-              handleChange('type', value)
-              handleChange('config', {}) // Reset config when type changes
+              handleChange('type', value as ChannelType)
+              handleChange('config', {})
             }}
             disabled={isEditing}
           >
@@ -570,7 +570,7 @@ export function ChannelForm({ channel, onSubmit, onCancel, onTest, isSubmitting,
                 value={typeof formData.config.headers === 'string' ? formData.config.headers : JSON.stringify(formData.config.headers || {}, null, 2)}
                 onChange={(e) => {
                   try {
-                    const parsed = JSON.parse(e.target.value)
+                    const parsed = JSON.parse(e.target.value) as Record<string, string>
                     handleConfigChange('headers', parsed)
                   } catch {
                     // Allow invalid JSON while typing

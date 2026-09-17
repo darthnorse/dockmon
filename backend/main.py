@@ -921,8 +921,8 @@ async def update_host(host_id: str, config: DockerHostConfig, request: Request, 
     # A scoped caller must not re-point a visible host at a daemon it cannot see:
     # the host keeps its tags, so its visibility would follow the new URL
     if get_visible_host_ids_for_auth(current_user) is not None:
-        existing = monitor.hosts.get(host_id)
-        if existing is not None and config.url != existing.url:
+        existing = monitor.db.get_host(host_id)  # persisted record, not the mutable in-memory map
+        if existing is None or config.url != existing.url:
             raise HTTPException(status_code=404, detail="Not found")
     host = await asyncio.to_thread(monitor.update_host, host_id, config)
     _safe_audit(current_user, log_host_change, AuditAction.UPDATE, host_id, config.name, request)
@@ -6209,6 +6209,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
                 return
             await monitor.manager.refresh_capabilities_for_user(user_id)
             await monitor.manager.refresh_visible_hosts_for_user(user_id)
+            # The direct sends and inbound handlers below read these locals
+            user_caps = monitor.manager.get_capabilities(websocket)
+            can_view_env = Capabilities.CONTAINERS_VIEW_ENV in user_caps
         await monitor.realtime.subscribe_to_events(websocket)
 
         # Event-driven stats control: Start stats streams when first viewer connects
@@ -6327,11 +6330,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
                 if isinstance(container_id, str) and container_id and "containers.view" in user_caps:
                     container_id = normalize_container_id(container_id)
                     visible_hosts = monitor.manager.get_visible_hosts(websocket)
-                    # The cached list is at most one poll old; a full discovery per message is not
-                    host_id = _find_container_host(
-                        monitor.get_last_containers(), container_id,
-                        requested_host if isinstance(requested_host, str) else None, visible_hosts,
-                    )
+                    # The cached list is at most one poll old; only a miss pays for live discovery
+                    wanted_host = requested_host if isinstance(requested_host, str) else None
+                    host_id = _find_container_host(monitor.get_last_containers(), container_id, wanted_host, visible_hosts)
+                    if host_id is None:
+                        host_id = _find_container_host(await monitor.get_containers(), container_id, wanted_host, visible_hosts)
                     if host_id is None:
                         logger.info(f"subscribe_stats refused for {container_id[:12]}: container not visible to user {user_id}")
                         continue

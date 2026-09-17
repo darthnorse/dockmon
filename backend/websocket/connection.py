@@ -132,6 +132,10 @@ class ConnectionManager:
         """Get user_id for a connection."""
         return self._connection_user_ids.get(websocket)
 
+    def get_capabilities(self, websocket: WebSocket) -> set:
+        """Current capability set of a connection; unknown sockets have none."""
+        return self._connection_capabilities.get(websocket, set())
+
     def get_visible_hosts(self, websocket: WebSocket) -> Optional[set]:
         """Current host scope of a connection; None = unrestricted. A socket this
         manager does not know (already evicted) sees nothing, never everything."""

@@ -983,6 +983,9 @@ class DockerMonitor:
                 raise ValueError(f"Host {host_id} not found")
 
     def _url_in_use(self, url: str, exclude_host_id: Optional[str] = None) -> bool:
+        # Every agent host shares the agent:// placeholder; only real daemon URLs are unique
+        if url.startswith("agent://"):
+            return False
         return any(h.url == url and hid != exclude_host_id for hid, h in self.hosts.items())
 
     def update_host(self, host_id: str, config: DockerHostConfig):

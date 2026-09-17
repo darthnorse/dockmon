@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 import main as main_module
+from auth.api_key_auth import invalidate_group_permissions_cache
 from auth.capabilities import ALL_CAPABILITIES
 from database import (
     Agent, AlertRuleV2, AlertV2, ApiKey, ContainerHttpHealthCheck, ContainerUpdate, CustomGroup, DatabaseManager,
@@ -170,14 +171,26 @@ class TestHostUrlRebinding:
     """A host keeps its tags when edited, so its URL must not be re-pointed at a daemon the
     caller cannot see, and no host may take another host's URL."""
 
-    def test_scoped_caller_cannot_change_a_visible_hosts_url(self, dev_scoped_client, monkeypatch):
+    def test_scoped_caller_cannot_change_a_visible_hosts_url(self, dev_scoped_client, db_session, monkeypatch):
         calls = []
         monkeypatch.setattr(main_module.monitor, "update_host", lambda host_id, config: calls.append(config.url) or HOSTS["h1"])
         body = {"name": "Dev Host", "url": "unix:///var/run/docker.sock"}
+        # No persisted record yet: fail closed rather than trusting the in-memory map
+        assert dev_scoped_client.put("/api/hosts/h1", json={"name": "Dev Host", "url": HOSTS["h1"].url}).status_code == 404
+        db_session.add(DockerHostDB(id="h1", name="Dev Host", url=HOSTS["h1"].url))
+        db_session.commit()
         assert dev_scoped_client.put("/api/hosts/h1", json=body).status_code == 404
         assert calls == []
         assert dev_scoped_client.put("/api/hosts/h1", json={"name": "Renamed", "url": HOSTS["h1"].url}).status_code == 200
         assert calls == [HOSTS["h1"].url]
+
+    def test_agent_placeholder_url_is_not_a_duplicate(self, unrestricted_client, monkeypatch):
+        from models.docker_models import DockerHostConfig
+        from docker_monitor.monitor import DockerMonitor
+        agents = {"a1": DockerHost(id="a1", name="agent 1", url="agent://", status="online"),
+                  "a2": DockerHost(id="a2", name="agent 2", url="agent://", status="online")}
+        monkeypatch.setattr(main_module.monitor, "hosts", agents)
+        assert DockerMonitor._url_in_use(main_module.monitor, "agent://", exclude_host_id="a1") is False
 
     def test_update_refuses_another_hosts_url(self, unrestricted_client, monkeypatch):
         from models.docker_models import DockerHostConfig
@@ -872,6 +885,36 @@ class TestWebSocketVisibility:
             with _connect(client, "dev-cookie") as ws:
                 ws.receive_json()
         assert exc.value.code == 1008
+
+    def test_capability_revoked_during_accept_is_not_used_for_initial_state(self, client, ws_sessions, db_session, monkeypatch):
+        """user_caps is computed before connect(); after a refresh the endpoint must use the
+        socket's current capabilities for the direct sends."""
+        manager = main_module.monitor.manager
+        original_connect = manager.connect
+        dev_group_id = db_session.query(UserGroupMembership).filter_by(user_id=ws_sessions["dev"].id).one().group_id
+
+        async def connect_after_revoke(websocket, **kwargs):
+            db_session.query(GroupPermission).filter_by(group_id=dev_group_id, capability="hosts.view").delete()
+            db_session.commit()
+            invalidate_group_permissions_cache()
+            await manager.refresh_capabilities_for_user(ws_sessions["dev"].id)
+            await original_connect(websocket, **kwargs)
+
+        monkeypatch.setattr(manager, "connect", connect_after_revoke)
+        with _connect(client, "dev-cookie") as ws:
+            initial = _drain_until(ws, "initial_state")
+            assert initial["data"]["hosts"] == []
+            assert {c["host_id"] for c in initial["data"]["containers"]} == {"h1"}
+
+    def test_subscribe_falls_back_to_live_discovery_on_a_cache_miss(self, client, ws_sessions, monkeypatch):
+        realtime = main_module.monitor.realtime
+        monkeypatch.setattr(main_module.monitor, "get_last_containers", lambda: [])
+        with _connect(client, "dev-cookie") as ws:
+            _drain_until(ws, "containers_update")
+            ws.send_json({"type": "subscribe_stats", "container_id": "aaa111111111"})
+            ws.send_json({"type": "ping"})
+            assert ws.receive_json() == {"type": "pong"}
+            assert set(realtime.stats_subscribers) == {"h1:aaa111111111"}
 
     def test_subscribe_prefers_a_visible_clone_over_a_hidden_one(self, client, ws_sessions, monkeypatch):
         realtime = main_module.monitor.realtime

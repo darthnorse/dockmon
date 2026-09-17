@@ -295,6 +295,12 @@ def validate_selector_field(field_name: str, raw: Optional[str]) -> None:
     if not isinstance(selector, dict):
         raise ValueError(f"{field_name} must be a JSON object")
 
+    # The engine tests membership with `in`; on a string that is a substring match,
+    # so a bare-string include would silently widen to every id containing it
+    include = selector.get("include")
+    if include is not None and (not isinstance(include, list) or not all(isinstance(x, str) for x in include)):
+        raise ValueError(f"{field_name}.include must be a list of strings")
+
     # Only the keys the engine actually executes: rejecting a `regex:` string in
     # a key compared with == would refuse a write runtime never evaluates.
     for key in REGEX_SELECTOR_KEYS:

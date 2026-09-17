@@ -23,11 +23,15 @@ import type {
   UpdatePermissionsResponse,
   AllGroupPermissionsResponse,
   CopyPermissionsResponse,
+  GroupTagScopesResponse,
+  UpdateGroupTagScopesRequest,
+  HostTagWithMeta,
 } from '@/types/groups'
 import { toast } from 'sonner'
 
 const GROUPS_QUERY_KEY = ['groups']
 const PERMISSIONS_QUERY_KEY = ['group-permissions']
+const TAG_SCOPES_QUERY_KEY = ['group-tag-scopes']
 
 /**
  * Fetch all groups (admin only)
@@ -241,5 +245,53 @@ export function useCopyGroupPermissions() {
       console.error('Failed to copy permissions:', error)
       toast.error('Failed to copy permissions. Please try again.')
     },
+  })
+}
+
+/**
+ * Fetch the tags that scope a group's host visibility (empty = unrestricted)
+ */
+export function useGroupTagScopes(groupId: number | null) {
+  return useQuery({
+    queryKey: [...TAG_SCOPES_QUERY_KEY, groupId],
+    queryFn: () => apiClient.get<GroupTagScopesResponse>(`/v2/groups/${groupId}/tag-scopes`),
+    enabled: groupId !== null,
+    staleTime: 30 * 1000,
+  })
+}
+
+/**
+ * Replace a group's tag scopes. Hosts and containers are re-fetched because the
+ * caller's own visibility may have changed.
+ */
+export function useUpdateGroupTagScopes() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: ({ groupId, request }: { groupId: number; request: UpdateGroupTagScopesRequest }) =>
+      apiClient.put<GroupTagScopesResponse>(`/v2/groups/${groupId}/tag-scopes`, request),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: TAG_SCOPES_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: ['hosts'] })
+      queryClient.invalidateQueries({ queryKey: ['containers'] })
+      toast.success('Host visibility updated')
+    },
+    onError: (error: Error) => {
+      console.error('Failed to update tag scopes:', error)
+      toast.error('Failed to update host visibility. Please try again.')
+    },
+  })
+}
+
+/**
+ * Tags a group can be scoped by: every tag on a host, plus tags that already scope
+ * a group (kept even when no host carries them right now)
+ */
+export function useHostTagsWithMeta(enabled = true) {
+  return useQuery({
+    queryKey: ['group-host-tags'],
+    queryFn: () => apiClient.get<HostTagWithMeta[]>('/v2/groups/host-tags'),
+    enabled,
+    staleTime: 30 * 1000,
   })
 }

@@ -357,3 +357,24 @@ async def test_pruning_disabled_skips_cleanup(jobs_manager, mock_settings):
     assert removed_count == 0
     img1.remove.assert_not_called()
     img2.remove.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_host_ids_limits_cleanup_to_those_hosts(jobs_manager, mock_settings):
+    """A scoped caller's manual prune must never touch hosts outside their scope."""
+    visible_dangling = create_mock_image('aaa111', [], created_hours_ago=100)
+    hidden_dangling = create_mock_image('bbb222', [], created_hours_ago=100)
+    clients = {}
+    for host_id, image in (('h1', visible_dangling), ('h2', hidden_dangling)):
+        client = Mock()
+        client.containers.list = Mock(return_value=[])
+        client.images.list = Mock(return_value=[image])
+        clients[host_id] = client
+    jobs_manager.monitor.clients = clients
+
+    removed_count = await jobs_manager.cleanup_old_images(host_ids={'h1'})
+
+    assert removed_count == 1
+    visible_dangling.remove.assert_called_once()
+    hidden_dangling.remove.assert_not_called()
+    clients['h2'].images.list.assert_not_called()

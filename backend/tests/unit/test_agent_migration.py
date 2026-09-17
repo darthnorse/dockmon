@@ -579,3 +579,104 @@ def test_agent_migration_preserves_deployments(agent_manager, registration_token
         # Old metadata should be gone
         old_metadata = session.query(DeploymentMetadata).filter_by(container_id="existing-host-id:abc123456789").first()
         assert old_metadata is None
+
+
+def _tag_host(db_manager, host_id: str, tag_name: str) -> str:
+    from database import Tag, TagAssignment
+    import uuid
+    with db_manager.get_session() as session:
+        tag = Tag(id=str(uuid.uuid4()), name=tag_name, kind="user")
+        session.add(tag)
+        session.flush()
+        session.add(TagAssignment(tag_id=tag.id, subject_type="host", subject_id=host_id))
+        session.commit()
+        return tag.id
+
+
+def _host_tag_subjects(db_manager, tag_id: str) -> set:
+    from database import TagAssignment
+    with db_manager.get_session() as session:
+        rows = session.query(TagAssignment.subject_id).filter_by(tag_id=tag_id, subject_type="host").all()
+        return {r[0] for r in rows}
+
+
+def test_agent_migration_carries_host_tags(agent_manager, registration_token, existing_mtls_host, db_manager):
+    """Host tags drive tag-scoped visibility: a migrated host must keep them or it
+    silently drops out of every scoped group."""
+    tag_id = _tag_host(db_manager, "existing-host-id", "dev")
+
+    result = agent_manager.register_agent({
+        "token": registration_token, "engine_id": "engine-12345", "hostname": "remote-agent",
+        "version": "1.0.0", "proto_version": "1.0", "capabilities": {}, "os_type": "linux",
+    })
+    assert result["success"] is True
+
+    assert _host_tag_subjects(db_manager, tag_id) == {result["host_id"]}
+
+
+def test_migration_keeps_container_tag_order(agent_manager, registration_token, existing_mtls_host, db_manager):
+    from database import Tag, TagAssignment
+    import uuid
+    with db_manager.get_session() as session:
+        tag = Tag(id=str(uuid.uuid4()), name="secondary", kind="user")
+        session.add(tag)
+        session.flush()
+        session.add(TagAssignment(tag_id=tag.id, subject_type="container", subject_id="existing-host-id:abc123456789",
+                                  order_index=2))
+        session.commit()
+        tag_id = tag.id
+
+    result = agent_manager.register_agent({
+        "token": registration_token, "engine_id": "engine-12345", "hostname": "remote-agent",
+        "version": "1.0.0", "proto_version": "1.0", "capabilities": {}, "os_type": "linux",
+    })
+    assert result["success"] is True
+
+    with db_manager.get_session() as session:
+        moved = session.query(TagAssignment).filter_by(tag_id=tag_id, subject_type="container").one()
+        assert moved.subject_id == f"{result['host_id']}:abc123456789"
+        assert moved.order_index == 2
+
+
+def test_delayed_migration_tolerates_container_tag_already_on_agent_host(agent_manager, db_manager, existing_mtls_host):
+    """The agent host has been live before the source is chosen, so the same container may
+    already carry the same tag under the new host id; that must not abort the migration."""
+    from database import Agent, DockerHostDB, Tag, TagAssignment
+    import uuid
+    with db_manager.get_session() as session:
+        tag = Tag(id=str(uuid.uuid4()), name="shared", kind="user")
+        session.add(tag)
+        session.flush()
+        session.add(DockerHostDB(id="agent-host-id", name="agent-host", url="agent://", connection_type="agent",
+                                 engine_id="engine-12345", is_active=True))
+        session.add(Agent(id="agent-1", host_id="agent-host-id", engine_id="engine-12345", version="1.0.0",
+                          proto_version="1.0", capabilities={}, status="online"))
+        session.add(TagAssignment(tag_id=tag.id, subject_type="container", subject_id="existing-host-id:abc123456789"))
+        session.add(TagAssignment(tag_id=tag.id, subject_type="container", subject_id="agent-host-id:abc123456789"))
+        session.commit()
+        tag_id = tag.id
+
+    result = agent_manager.migrate_from_host("agent-1", "existing-host-id")
+    assert result["success"] is True, result
+
+    with db_manager.get_session() as session:
+        rows = session.query(TagAssignment).filter_by(tag_id=tag_id, subject_type="container").all()
+        assert [r.subject_id for r in rows] == ["agent-host-id:abc123456789"]
+
+
+def test_delayed_migration_carries_host_tags(agent_manager, db_manager, existing_mtls_host):
+    """The migrate-from-host path (user picks the source among cloned VMs) transfers
+    host tags the same way."""
+    from database import Agent, DockerHostDB
+    tag_id = _tag_host(db_manager, "existing-host-id", "dev")
+    with db_manager.get_session() as session:
+        session.add(DockerHostDB(id="agent-host-id", name="agent-host", url="agent://", connection_type="agent",
+                                 engine_id="engine-12345", is_active=True))
+        session.add(Agent(id="agent-1", host_id="agent-host-id", engine_id="engine-12345", version="1.0.0",
+                          proto_version="1.0", capabilities={}, status="online"))
+        session.commit()
+
+    result = agent_manager.migrate_from_host("agent-1", "existing-host-id")
+    assert result["success"] is True, result
+
+    assert _host_tag_subjects(db_manager, tag_id) == {"agent-host-id"}

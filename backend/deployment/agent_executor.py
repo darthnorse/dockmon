@@ -870,9 +870,13 @@ class AgentDeploymentExecutor:
             deployment_id: Deployment composite ID
             services: List of service status dicts with name, status, image, message
         """
+        # Imported deployments have bare UUID ids, so the host must come from the record
+        with self.db.get_session() as session:
+            host_id = session.query(Deployment.host_id).filter_by(id=deployment_id).scalar()
         payload = {
             "type": "deployment_service_progress",
             "deployment_id": deployment_id,
+            "host_id": host_id,
             "services": services,
         }
 

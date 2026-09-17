@@ -41,6 +41,7 @@ from sqlalchemy.exc import IntegrityError
 from auth.shared import db, safe_audit_log
 from auth.cookie_sessions import cookie_session_manager, get_session_cookie_max_age, should_set_secure_cookie
 from auth.api_key_auth import invalidate_user_groups_cache
+from auth.custom_groups_routes import _refresh_ws_auth_state
 from auth.utils import count_other_admins
 from utils.base_path import get_base_path
 from utils.oidc import build_callback_url, build_discovery_url, normalize_provider_url
@@ -52,6 +53,15 @@ from utils.client_ip import get_client_ip
 from utils.encryption import decrypt_password
 
 logger = logging.getLogger(__name__)
+
+
+async def _refresh_user_auth_state(user_id: int) -> None:
+    """OIDC login replaces the user's memberships: drop the cached groups and refresh
+    any WebSocket the user already has open so its capabilities and visible hosts follow."""
+    invalidate_user_groups_cache(user_id)
+    await _refresh_ws_auth_state(user_id)
+
+
 router = APIRouter(prefix="/api/v2/auth/oidc", tags=["oidc-auth"])
 
 # Pending auth request expiry time
@@ -861,7 +871,7 @@ async def oidc_callback(
                 session.refresh(user)
 
                 # Invalidate user's group cache after sync
-                invalidate_user_groups_cache(user.id)
+                await _refresh_user_auth_state(user.id)
 
                 # Check if user is still pending approval
                 if not user.approved:
@@ -981,7 +991,7 @@ async def oidc_callback(
                     else:
                         logger.debug(f"No OIDC group claims for '{user.username}', preserving existing groups (race path)")
                     session.commit()
-                    invalidate_user_groups_cache(user.id)
+                    await _refresh_user_auth_state(user.id)
 
                     # Block unapproved users (race loser must respect pending approval)
                     if not user.approved:
@@ -1023,7 +1033,7 @@ async def oidc_callback(
 
                 logger.info(f"OIDC user '{username}' auto-provisioned with groups {group_ids}")
 
-                invalidate_user_groups_cache(user.id)
+                await _refresh_user_auth_state(user.id)
 
                 if not user.approved:
                     logger.info(f"OIDC user '{user.username}' created but pending approval")

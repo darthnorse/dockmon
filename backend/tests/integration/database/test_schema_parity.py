@@ -209,21 +209,6 @@ class TestStatsHistoryTablesOnFreshInstall:
             fresh_db, "container_stats_history"
         )
 
-    def test_stats_tables_fully_identical_between_paths(self, fresh_db, upgraded_db):
-        """The general parity tests compare names only (legacy drift makes a
-        full-schema deep diff infeasible), but the Go-owned stats tables have
-        no legacy baggage and the Go reader/writer depends on their types,
-        NOT NULL flags, unique constraints, and CASCADE foreign keys - so for
-        these two tables the Core Table definitions and migration 037/044 must
-        agree on every detail, not just column names."""
-        for table in ("container_stats_history", "host_stats_history"):
-            fresh = _table_detail(fresh_db, table)
-            upgraded = _table_detail(upgraded_db, table)
-            assert fresh == upgraded, (
-                f"{table} differs between fresh install and upgrade:\n"
-                f"  fresh:    {fresh}\n  upgraded: {upgraded}"
-            )
-
     def test_stats_tables_constraints(self, fresh_db):
         """Lock the constraint shape the Go stats-service relies on."""
         cs = _table_detail(fresh_db, "container_stats_history")
@@ -264,3 +249,36 @@ class TestRepairMigration044:
         assert "idx_container_stats_host" in _index_names(
             db_path, "container_stats_history"
         )
+
+
+# Tables with no legacy baggage whose definitions must agree on every detail
+# (types, NOT NULL, uniques, foreign keys incl. ON DELETE) between the fresh
+# install (model create_all) and the migration chain. The general parity tests
+# compare names only because legacy drift makes a full deep diff infeasible.
+FULLY_IDENTICAL_TABLES = (
+    "container_stats_history",  # Go stats-service reader/writer depends on the exact shape
+    "host_stats_history",
+    "group_tag_scopes",  # RESTRICT on tag_id is a security property, not a detail
+)
+
+
+class TestFullyIdenticalTables:
+    def test_tables_fully_identical_between_paths(self, fresh_db, upgraded_db):
+        for table in FULLY_IDENTICAL_TABLES:
+            fresh = _table_detail(fresh_db, table)
+            upgraded = _table_detail(upgraded_db, table)
+            assert fresh == upgraded, (
+                f"{table} differs between fresh install and upgrade:\n"
+                f"  fresh:    {fresh}\n  upgraded: {upgraded}"
+            )
+
+    def test_group_tag_scopes_constraints(self, fresh_db, upgraded_db):
+        for db_path in (fresh_db, upgraded_db):
+            detail = _table_detail(db_path, "group_tag_scopes")
+            assert ("group_id", "tag_id") in detail["uniques"]
+            assert ("group_id", "custom_groups", "id", "CASCADE") in detail["fks"]
+            assert ("tag_id", "tags", "id", "RESTRICT") in detail["fks"]
+            for col in ("group_id", "tag_id", "created_at"):
+                assert detail["cols"][col]["notnull"] == 1, f"{col} must be NOT NULL"
+            indexes = _index_names(db_path, "group_tag_scopes")
+            assert {"idx_group_tag_scopes_group", "idx_group_tag_scopes_tag"} <= indexes

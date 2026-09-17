@@ -33,6 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html
 from fastapi.responses import FileResponse, JSONResponse
 from database import (
+    scoped_alert_query,
     DatabaseManager,
     GlobalSettings as GlobalSettingsDB,
     ContainerUpdate,
@@ -76,7 +77,7 @@ from models.request_models import (
 from audit.audit_logger import AuditAction, AuditEntityType, log_audit, log_container_action, log_host_change, log_settings_change, get_client_info
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, get_capabilities_for_user, Capabilities
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, get_capabilities_for_user, Capabilities, get_visible_host_ids_for_auth, get_visible_host_ids_for_user, filter_visible_hosts, visible_host_models, host_is_visible, require_host_access, require_source_host_access, check_host_access, check_composite_keys_visible, check_host_ids_visible
 from auth.utils import get_auditable_user_info
 from websocket.connection import ConnectionManager, DateTimeEncoder
 from websocket.rate_limiter import ws_rate_limiter
@@ -87,7 +88,7 @@ from utils.keys import make_composite_key
 from utils.encryption import encrypt_password, decrypt_password
 from utils.async_docker import async_docker_call, async_client_ping, async_client_version, async_containers_list
 from utils.base_path import get_base_path
-from utils.response_filtering import filter_container_env, filter_container_inspect_env, filter_ws_container_message
+from utils.response_filtering import filter_container_env, filter_container_inspect_env, filter_ws_container_message, event_is_visible, selector_host_ids
 from utils.host_ips import deserialize_host_ips
 from utils.client_ip import get_client_ip_ws
 from utils.networks import BUILTIN_NETWORKS, format_network, create_network_local
@@ -631,7 +632,8 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
     - connection_type: "agent" or "remote"
     - agent: {id, version, capabilities, status, connected, last_seen_at, registered_at}
     """
-    hosts = list(monitor.hosts.values())
+    visible = get_visible_host_ids_for_auth(current_user)
+    hosts = visible_host_models(monitor.hosts.values(), visible)
 
     # Enrich hosts with agent information
     with monitor.db.get_session() as db:
@@ -705,7 +707,7 @@ async def get_hosts(current_user: dict = Depends(get_current_user)):
             enriched_hosts.append(host_dict)
 
         # Add agent-only hosts that aren't in monitor.hosts
-        for agent_host in agent_hosts_db:
+        for agent_host in filter_visible_hosts(agent_hosts_db, visible, lambda h: h.id):
             if agent_host.id not in seen_host_ids:
                 agent = agent_by_host.get(agent_host.id)
 
@@ -813,11 +815,12 @@ async def test_host_connection(config: DockerHostConfig, current_user: dict = De
         # Check if this is an existing host (by matching URL)
         # If certs are null, try to load from database
         if (config.tls_ca is None or config.tls_cert is None or config.tls_key is None):
-            # Try to find existing host by URL to get certificates
-            db_session = monitor.db.get_session()
-            try:
+            # Try to find existing host by URL to get certificates; a host the caller
+            # cannot see behaves as if no host matched, so its stored TLS material stays private
+            visible = get_visible_host_ids_for_auth(current_user)
+            with monitor.db.get_session() as db_session:
                 existing_host = db_session.query(DockerHostDB).filter(DockerHostDB.url == config.url).first()
-                if existing_host:
+                if existing_host and host_is_visible(existing_host.id, visible):
                     logger.info(f"Found existing host for URL {config.url}, using stored certificates")
                     if config.tls_ca is None and existing_host.tls_ca:
                         config.tls_ca = existing_host.tls_ca
@@ -825,8 +828,6 @@ async def test_host_connection(config: DockerHostConfig, current_user: dict = De
                         config.tls_cert = existing_host.tls_cert
                     if config.tls_key is None and existing_host.tls_key:
                         config.tls_key = existing_host.tls_key
-            finally:
-                db_session.close()
 
         # Build Docker client kwargs
         kwargs = {}
@@ -914,14 +915,20 @@ async def test_host_connection(config: DockerHostConfig, current_user: dict = De
         logger.error(f"Connection test failed for {config.url}: {str(e)}")
         raise HTTPException(status_code=400, detail="Connection failed. Check the host URL and credentials.")
 
-@app.put("/api/hosts/{host_id}", tags=["hosts"], dependencies=[Depends(require_capability("hosts.manage"))])
+@app.put("/api/hosts/{host_id}", tags=["hosts"], dependencies=[Depends(require_capability("hosts.manage")), Depends(require_host_access)])
 async def update_host(host_id: str, config: DockerHostConfig, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
     """Update an existing Docker host"""
+    # A scoped caller must not re-point a visible host at a daemon it cannot see:
+    # the host keeps its tags, so its visibility would follow the new URL
+    if get_visible_host_ids_for_auth(current_user) is not None:
+        existing = monitor.db.get_host(host_id)  # persisted record, not the mutable in-memory map
+        if existing is None or config.url != existing.url:
+            raise HTTPException(status_code=404, detail="Not found")
     host = await asyncio.to_thread(monitor.update_host, host_id, config)
     _safe_audit(current_user, log_host_change, AuditAction.UPDATE, host_id, config.name, request)
     return host
 
-@app.delete("/api/hosts/{host_id}", tags=["hosts"], dependencies=[Depends(require_capability("hosts.manage"))])
+@app.delete("/api/hosts/{host_id}", tags=["hosts"], dependencies=[Depends(require_capability("hosts.manage")), Depends(require_host_access)])
 async def remove_host(host_id: str, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_hosts):
     """Remove a Docker host"""
     try:
@@ -949,7 +956,7 @@ async def remove_host(host_id: str, request: Request, current_user: dict = Depen
         logger.error(f"Error removing host {host_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to remove host")
 
-@app.patch("/api/hosts/{host_id}/tags", tags=["tags"], dependencies=[Depends(require_capability("tags.manage"))])
+@app.patch("/api/hosts/{host_id}/tags", tags=["tags"], dependencies=[Depends(require_capability("tags.manage")), Depends(require_host_access)])
 async def update_host_tags(
     host_id: str,
     request: HostTagUpdate,
@@ -986,9 +993,12 @@ async def update_host_tags(
 
     _safe_audit(current_user, log_host_change, AuditAction.UPDATE, host_id, host.name, http_request, details={'tags_to_add': request.tags_to_add, 'tags_to_remove': request.tags_to_remove})
 
+    # Host tags drive tag-scoped visibility; open sockets re-resolve their host sets
+    await monitor.manager.refresh_all_visible_hosts()
+
     return {"tags": updated_tags}
 
-@app.get("/api/hosts/{host_id}/metrics", tags=["hosts"], dependencies=[Depends(require_capability("hosts.view"))])
+@app.get("/api/hosts/{host_id}/metrics", tags=["hosts"], dependencies=[Depends(require_capability("hosts.view")), Depends(require_host_access)])
 async def get_host_metrics(host_id: str, current_user: dict = Depends(get_current_user)):
     """Get aggregated metrics for a Docker host (CPU, RAM, Network)"""
     try:
@@ -1100,7 +1110,7 @@ def _map_history_upstream_error(exc: Exception) -> HTTPException:
 @app.get(
     "/api/hosts/{host_id}/stats/history",
     tags=["hosts"],
-    dependencies=[Depends(require_capability("hosts.view"))],
+    dependencies=[Depends(require_capability("hosts.view")), Depends(require_host_access)],
 )
 async def get_host_stats_history(
     host_id: str,
@@ -1127,7 +1137,7 @@ async def get_host_stats_history(
 @app.get(
     "/api/hosts/{host_id}/containers/{container_id}/stats/history",
     tags=["containers"],
-    dependencies=[Depends(require_capability("containers.view"))],
+    dependencies=[Depends(require_capability("containers.view")), Depends(require_host_access)],
 )
 async def get_container_stats_history(
     host_id: str,
@@ -1171,7 +1181,7 @@ def _live_window_num_points() -> int:
 @app.get(
     "/api/hosts/{host_id}/stats/live",
     tags=["hosts"],
-    dependencies=[Depends(require_capability("hosts.view"))],
+    dependencies=[Depends(require_capability("hosts.view")), Depends(require_host_access)],
 )
 async def get_host_stats_live(host_id: str):
     """Extended live sparklines for ONE host, read from the in-memory buffer.
@@ -1191,7 +1201,7 @@ async def get_host_stats_live(host_id: str):
 @app.get(
     "/api/hosts/{host_id}/containers/{container_id}/stats/live",
     tags=["containers"],
-    dependencies=[Depends(require_capability("containers.view"))],
+    dependencies=[Depends(require_capability("containers.view")), Depends(require_host_access)],
 )
 async def get_container_stats_live(host_id: str, container_id: str):
     """Extended live sparklines for ONE container, from the in-memory buffer."""
@@ -1205,7 +1215,7 @@ async def get_container_stats_live(host_id: str, container_id: str):
     )
 
 
-@app.get("/api/hosts/{host_id}/agent", tags=["hosts"], dependencies=[Depends(require_capability("agents.view"))])
+@app.get("/api/hosts/{host_id}/agent", tags=["hosts"], dependencies=[Depends(require_capability("agents.view")), Depends(require_host_access)])
 async def get_host_agent_info(host_id: str, current_user: dict = Depends(get_current_user)):
     """
     Get agent info for a host including update availability.
@@ -1264,7 +1274,7 @@ async def get_host_agent_info(host_id: str, current_user: dict = Depends(get_cur
         }
 
 
-@app.post("/api/hosts/{host_id}/agent/update", tags=["hosts"], dependencies=[Depends(require_capability("agents.manage"))])
+@app.post("/api/hosts/{host_id}/agent/update", tags=["hosts"], dependencies=[Depends(require_capability("agents.manage")), Depends(require_host_access)])
 async def trigger_agent_update(host_id: str, request: Request, current_user: dict = Depends(get_current_user)):
     """
     Trigger agent self-update.
@@ -1380,7 +1390,7 @@ async def trigger_agent_update(host_id: str, request: Request, current_user: dic
         raise HTTPException(status_code=500, detail="Failed to trigger agent update")
 
 
-@app.get("/api/hosts/{host_id}/images", tags=["hosts"], dependencies=[Depends(require_capability("containers.view"))])
+@app.get("/api/hosts/{host_id}/images", tags=["hosts"], dependencies=[Depends(require_capability("containers.view")), Depends(require_host_access)])
 async def list_host_images(host_id: str, current_user: dict = Depends(get_current_user)):
     """
     List all Docker images on a host with usage information.
@@ -1456,7 +1466,7 @@ async def list_host_images(host_id: str, current_user: dict = Depends(get_curren
         raise HTTPException(status_code=500, detail="Failed to list images")
 
 
-@app.post("/api/hosts/{host_id}/images/prune", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
+@app.post("/api/hosts/{host_id}/images/prune", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate")), Depends(require_host_access)])
 async def prune_host_images(host_id: str, request: Request, current_user: dict = Depends(get_current_user)):
     """
     Prune all unused images on a specific host.
@@ -1505,7 +1515,7 @@ async def prune_host_images(host_id: str, request: Request, current_user: dict =
         raise HTTPException(status_code=500, detail="Failed to prune images")
 
 
-@app.get("/api/hosts/{host_id}/networks", tags=["hosts"], dependencies=[Depends(require_capability("containers.view"))])
+@app.get("/api/hosts/{host_id}/networks", tags=["hosts"], dependencies=[Depends(require_capability("containers.view")), Depends(require_host_access)])
 async def list_host_networks(host_id: str, current_user: dict = Depends(get_current_user)):
     """
     List all Docker networks on a host with connected container info.
@@ -1552,7 +1562,7 @@ async def list_host_networks(host_id: str, current_user: dict = Depends(get_curr
         raise HTTPException(status_code=500, detail="Failed to list networks")
 
 
-@app.post("/api/hosts/{host_id}/networks", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
+@app.post("/api/hosts/{host_id}/networks", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate")), Depends(require_host_access)])
 async def create_host_network(
     host_id: str,
     body: CreateNetworkRequest,
@@ -1612,7 +1622,7 @@ async def create_host_network(
     return result
 
 
-@app.delete("/api/hosts/{host_id}/networks/{network_id}", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
+@app.delete("/api/hosts/{host_id}/networks/{network_id}", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate")), Depends(require_host_access)])
 async def delete_host_network(
     host_id: str,
     network_id: str,
@@ -1705,7 +1715,7 @@ async def delete_host_network(
         raise HTTPException(status_code=500, detail="Failed to delete network")
 
 
-@app.post("/api/hosts/{host_id}/networks/prune", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
+@app.post("/api/hosts/{host_id}/networks/prune", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate")), Depends(require_host_access)])
 async def prune_host_networks(host_id: str, request: Request, current_user: dict = Depends(get_current_user)):
     """
     Prune all unused networks on a specific host.
@@ -1751,7 +1761,7 @@ async def prune_host_networks(host_id: str, request: Request, current_user: dict
         raise HTTPException(status_code=500, detail="Failed to prune networks")
 
 
-@app.get("/api/hosts/{host_id}/volumes", tags=["hosts"], dependencies=[Depends(require_capability("containers.view"))])
+@app.get("/api/hosts/{host_id}/volumes", tags=["hosts"], dependencies=[Depends(require_capability("containers.view")), Depends(require_host_access)])
 async def list_host_volumes(host_id: str, current_user: dict = Depends(get_current_user)):
     """
     List all Docker volumes on a host with usage information.
@@ -1828,7 +1838,7 @@ async def list_host_volumes(host_id: str, current_user: dict = Depends(get_curre
         raise HTTPException(status_code=500, detail="Failed to list volumes")
 
 
-@app.delete("/api/hosts/{host_id}/volumes/{volume_name:path}", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
+@app.delete("/api/hosts/{host_id}/volumes/{volume_name:path}", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate")), Depends(require_host_access)])
 async def delete_host_volume(
     host_id: str,
     volume_name: str,
@@ -1906,7 +1916,7 @@ async def delete_host_volume(
         raise HTTPException(status_code=500, detail="Failed to delete volume")
 
 
-@app.post("/api/hosts/{host_id}/volumes/prune", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate"))])
+@app.post("/api/hosts/{host_id}/volumes/prune", tags=["hosts"], dependencies=[Depends(require_capability("containers.operate")), Depends(require_host_access)])
 async def prune_host_volumes(host_id: str, request: Request, current_user: dict = Depends(get_current_user)):
     """
     Prune all unused volumes on a specific host.
@@ -1960,13 +1970,16 @@ async def get_containers(host_id: Optional[str] = None, current_user: dict = Dep
 
     Note: Environment variables are filtered for users without containers.view_env capability (v2.3.0+).
     """
-    containers = await monitor.get_containers(host_id)
+    visible = get_visible_host_ids_for_auth(current_user)
+    if host_id and not host_is_visible(host_id, visible):
+        return []  # do not run discovery on a host the caller cannot see
+    containers = filter_visible_hosts(await monitor.get_containers(host_id), visible)
 
     # Filter env vars for users without containers.view_env capability
     can_view_env = check_auth_capability(current_user, Capabilities.CONTAINERS_VIEW_ENV)
     return filter_container_env(containers, can_view_env)
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/restart", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
+@app.post("/api/hosts/{host_id}/containers/{container_id}/restart", tags=["containers"], dependencies=[Depends(require_capability("containers.operate")), Depends(require_host_access)])
 async def restart_container(host_id: str, container_id: str, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Restart a container"""
     container_id = normalize_container_id(container_id)
@@ -1975,7 +1988,7 @@ async def restart_container(host_id: str, container_id: str, request: Request, c
         _safe_audit(current_user, log_container_action, AuditAction.RESTART, host_id, container_id, _get_container_name(host_id, container_id), request)
     return {"status": "success" if success else "failed"}
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/stop", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
+@app.post("/api/hosts/{host_id}/containers/{container_id}/stop", tags=["containers"], dependencies=[Depends(require_capability("containers.operate")), Depends(require_host_access)])
 async def stop_container(host_id: str, container_id: str, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Stop a container"""
     container_id = normalize_container_id(container_id)
@@ -1984,7 +1997,7 @@ async def stop_container(host_id: str, container_id: str, request: Request, curr
         _safe_audit(current_user, log_container_action, AuditAction.STOP, host_id, container_id, _get_container_name(host_id, container_id), request)
     return {"status": "success" if success else "failed"}
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/start", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
+@app.post("/api/hosts/{host_id}/containers/{container_id}/start", tags=["containers"], dependencies=[Depends(require_capability("containers.operate")), Depends(require_host_access)])
 async def start_container(host_id: str, container_id: str, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Start a container"""
     container_id = normalize_container_id(container_id)
@@ -1993,7 +2006,7 @@ async def start_container(host_id: str, container_id: str, request: Request, cur
         _safe_audit(current_user, log_container_action, AuditAction.START, host_id, container_id, _get_container_name(host_id, container_id), request)
     return {"status": "success" if success else "failed"}
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/kill", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
+@app.post("/api/hosts/{host_id}/containers/{container_id}/kill", tags=["containers"], dependencies=[Depends(require_capability("containers.operate")), Depends(require_host_access)])
 async def kill_container(host_id: str, container_id: str, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Kill a container (SIGKILL) - for unresponsive containers that won't stop gracefully"""
     container_id = normalize_container_id(container_id)
@@ -2002,7 +2015,7 @@ async def kill_container(host_id: str, container_id: str, request: Request, curr
         _safe_audit(current_user, log_container_action, AuditAction.KILL, host_id, container_id, _get_container_name(host_id, container_id), request)
     return {"status": "success" if success else "failed"}
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/rename", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
+@app.post("/api/hosts/{host_id}/containers/{container_id}/rename", tags=["containers"], dependencies=[Depends(require_capability("containers.operate")), Depends(require_host_access)])
 async def rename_container(host_id: str, container_id: str, body: RenameContainerRequest, request: Request, current_user: dict = Depends(get_current_user), rate_limit_check: bool = rate_limit_containers):
     """Rename a container"""
     container_id = normalize_container_id(container_id)
@@ -2011,7 +2024,7 @@ async def rename_container(host_id: str, container_id: str, body: RenameContaine
         _safe_audit(current_user, log_container_action, AuditAction.RENAME, host_id, container_id, _get_container_name(host_id, container_id), request, details={'new_name': body.name})
     return {"status": "success" if success else "failed"}
 
-@app.delete("/api/hosts/{host_id}/containers/{container_id}", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
+@app.delete("/api/hosts/{host_id}/containers/{container_id}", tags=["containers"], dependencies=[Depends(require_capability("containers.operate")), Depends(require_host_access)])
 async def delete_container(
     host_id: str,
     container_id: str,
@@ -2052,7 +2065,7 @@ async def delete_container(
 
     return result
 
-@app.get("/api/hosts/{host_id}/containers/{container_id}/logs", tags=["containers"], dependencies=[Depends(require_capability("containers.logs"))])
+@app.get("/api/hosts/{host_id}/containers/{container_id}/logs", tags=["containers"], dependencies=[Depends(require_capability("containers.logs")), Depends(require_host_access)])
 async def get_container_logs(
     host_id: str,
     container_id: str,
@@ -2075,7 +2088,7 @@ async def get_container_logs(
     # Delegate to operations (handles agent routing)
     return await monitor.operations.get_container_logs(host_id, container_id, tail, since)
 
-@app.get("/api/hosts/{host_id}/containers/{container_id}/inspect", tags=["containers"], dependencies=[Depends(require_capability("containers.view"))])
+@app.get("/api/hosts/{host_id}/containers/{container_id}/inspect", tags=["containers"], dependencies=[Depends(require_capability("containers.view")), Depends(require_host_access)])
 async def inspect_container(
     host_id: str,
     container_id: str,
@@ -2112,7 +2125,7 @@ async def inspect_container(
 # This is more reliable for remote Docker hosts
 
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/auto-restart", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
+@app.post("/api/hosts/{host_id}/containers/{container_id}/auto-restart", tags=["containers"], dependencies=[Depends(require_capability("containers.operate")), Depends(require_host_access)])
 async def toggle_auto_restart(host_id: str, container_id: str, request: AutoRestartRequest, http_request: Request, current_user: dict = Depends(get_current_user)):
     """Toggle auto-restart for a container"""
     # Normalize to short ID (12 chars) for consistency with monitor's internal tracking
@@ -2121,7 +2134,7 @@ async def toggle_auto_restart(host_id: str, container_id: str, request: AutoRest
     _safe_audit(current_user, log_container_action, AuditAction.TOGGLE, host_id, short_id, request.container_name, http_request, details={'auto_restart': request.enabled})
     return {"host_id": host_id, "container_id": container_id, "auto_restart": request.enabled}
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/desired-state", tags=["containers"], dependencies=[Depends(require_capability("containers.operate"))])
+@app.post("/api/hosts/{host_id}/containers/{container_id}/desired-state", tags=["containers"], dependencies=[Depends(require_capability("containers.operate")), Depends(require_host_access)])
 async def set_desired_state(host_id: str, container_id: str, request: DesiredStateRequest, http_request: Request, current_user: dict = Depends(get_current_user)):
     """Set desired state for a container"""
     # Normalize to short ID (12 chars) for consistency
@@ -2130,7 +2143,7 @@ async def set_desired_state(host_id: str, container_id: str, request: DesiredSta
     _safe_audit(current_user, log_container_action, AuditAction.UPDATE, host_id, short_id, request.container_name, http_request, details={'desired_state': request.desired_state})
     return {"host_id": host_id, "container_id": container_id, "desired_state": request.desired_state, "web_ui_url": request.web_ui_url}
 
-@app.patch("/api/hosts/{host_id}/containers/{container_id}/tags", tags=["tags"], dependencies=[Depends(require_capability("tags.manage"))])
+@app.patch("/api/hosts/{host_id}/containers/{container_id}/tags", tags=["tags"], dependencies=[Depends(require_capability("tags.manage")), Depends(require_host_access)])
 async def update_container_tags(
     host_id: str,
     container_id: str,
@@ -2173,7 +2186,7 @@ async def update_container_tags(
 
 # ==================== Container Updates ====================
 
-@app.get("/api/hosts/{host_id}/containers/{container_id}/update-status", tags=["container-updates"], dependencies=[Depends(require_capability("containers.view"))])
+@app.get("/api/hosts/{host_id}/containers/{container_id}/update-status", tags=["container-updates"], dependencies=[Depends(require_capability("containers.view")), Depends(require_host_access)])
 async def get_container_update_status(
     host_id: str,
     container_id: str,
@@ -2359,7 +2372,7 @@ async def delete_image_cache_entry(cache_key: str, current_user: dict = Depends(
         return {"message": f"Deleted cache entry: {cache_key}"}
 
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/check-update", tags=["container-updates"], dependencies=[Depends(require_capability("containers.update"))])
+@app.post("/api/hosts/{host_id}/containers/{container_id}/check-update", tags=["container-updates"], dependencies=[Depends(require_capability("containers.update")), Depends(require_host_access)])
 async def check_container_update(
     host_id: str,
     container_id: str,
@@ -2415,7 +2428,7 @@ async def check_container_update(
     }
 
 
-@app.post("/api/hosts/{host_id}/containers/{container_id}/execute-update", tags=["container-updates"], dependencies=[Depends(require_capability("containers.update"))])
+@app.post("/api/hosts/{host_id}/containers/{container_id}/execute-update", tags=["container-updates"], dependencies=[Depends(require_capability("containers.update")), Depends(require_host_access)])
 async def execute_container_update(
     host_id: str,
     container_id: str,
@@ -2546,7 +2559,7 @@ async def execute_container_update(
         }
 
 
-@app.put("/api/hosts/{host_id}/containers/{container_id}/auto-update-config", tags=["container-updates"], dependencies=[Depends(require_capability("containers.update"))])
+@app.put("/api/hosts/{host_id}/containers/{container_id}/auto-update-config", tags=["container-updates"], dependencies=[Depends(require_capability("containers.update")), Depends(require_host_access)])
 async def update_auto_update_config(
     host_id: str,
     container_id: str,
@@ -2693,7 +2706,7 @@ async def check_all_updates(current_user: dict = Depends(get_current_user)):
     _, display_name = get_auditable_user_info(current_user)
     logger.info(f"User {display_name} triggered global update check")
 
-    stats = await monitor.periodic_jobs.check_updates_now()
+    stats = await monitor.periodic_jobs.check_updates_now(host_ids=get_visible_host_ids_for_auth(current_user))
     return stats
 
 
@@ -2711,10 +2724,12 @@ async def prune_images(request: Request, current_user: dict = Depends(get_curren
     _, display_name = get_auditable_user_info(current_user)
     logger.info(f"User {display_name} triggered manual image prune")
 
-    removed_count = await monitor.periodic_jobs.cleanup_old_images()
+    visible = get_visible_host_ids_for_auth(current_user)
+    removed_count = await monitor.periodic_jobs.cleanup_old_images(host_ids=visible)
 
     _safe_audit(current_user, log_audit, AuditAction.PRUNE, AuditEntityType.CONTAINER,
-                details={'resource': 'images', 'scope': 'global', 'removed_count': removed_count},
+                details={'resource': 'images', 'scope': 'global' if visible is None else 'visible',
+                         'removed_count': removed_count},
                 **get_client_info(request))
 
     return {"removed": removed_count}
@@ -2745,8 +2760,11 @@ async def get_updates_summary(current_user: dict = Depends(get_current_user)):
             ContainerUpdate.update_available == True
         ).all()
 
-        # Filter to only include containers that still exist
-        valid_updates = [u for u in updates if u.container_id in current_container_keys]
+        # Filter to only include containers that still exist (stale cleanup below stays fleet-wide)
+        valid_updates = filter_visible_hosts(
+            [u for u in updates if u.container_id in current_container_keys],
+            get_visible_host_ids_for_auth(current_user), lambda u: u.host_id,
+        )
 
         # Clean up stale entries - but ONLY for hosts that are online (Issue #116)
         # If a host is offline/disconnected, we can't confirm the container is gone
@@ -2790,7 +2808,7 @@ async def get_all_auto_update_configs(current_user: dict = Depends(get_current_u
     """
 
     with monitor.db.get_session() as session:
-        configs = session.query(ContainerUpdate).all()
+        configs = filter_visible_hosts(session.query(ContainerUpdate).all(), get_visible_host_ids_for_auth(current_user))
 
         return {
             record.container_id: {
@@ -2824,7 +2842,7 @@ async def get_all_deployment_metadata(current_user: dict = Depends(get_current_u
     """
 
     with monitor.db.get_session() as session:
-        metadata_records = session.query(DeploymentMetadata).all()
+        metadata_records = filter_visible_hosts(session.query(DeploymentMetadata).all(), get_visible_host_ids_for_auth(current_user))
 
         return {
             record.container_id: {
@@ -2858,7 +2876,7 @@ async def get_all_health_check_configs(current_user: dict = Depends(get_current_
     """
 
     with monitor.db.get_session() as session:
-        configs = session.query(ContainerHttpHealthCheck).all()
+        configs = filter_visible_hosts(session.query(ContainerHttpHealthCheck).all(), get_visible_host_ids_for_auth(current_user))
 
         return {
             record.container_id: {
@@ -3090,7 +3108,7 @@ async def delete_custom_update_policy(
     }
 
 
-@app.put("/api/hosts/{host_id}/containers/{container_id}/update-policy", tags=["container-updates"], dependencies=[Depends(require_capability("policies.manage"))])
+@app.put("/api/hosts/{host_id}/containers/{container_id}/update-policy", tags=["container-updates"], dependencies=[Depends(require_capability("policies.manage")), Depends(require_host_access)])
 async def set_container_update_policy(
     host_id: str,
     container_id: str,
@@ -3262,6 +3280,7 @@ async def create_batch_job(request: BatchJobCreate, http_request: Request, curre
     Currently supports: start, stop, restart, add-tags, remove-tags,
     set-auto-restart, set-auto-update, set-desired-state, check-updates
     """
+    check_composite_keys_visible(request.ids, current_user)
     if not batch_manager:
         raise HTTPException(status_code=500, detail="Batch manager not initialized")
 
@@ -3316,6 +3335,7 @@ async def validate_batch_update(request: dict, current_user: dict = Depends(get_
     container_ids = request.get("container_ids", [])
     if not container_ids:
         raise HTTPException(status_code=400, detail="No container IDs provided")
+    check_composite_keys_visible(container_ids, current_user)
 
     allowed = []
     warned = []
@@ -3399,6 +3419,18 @@ async def get_batch_job(job_id: str, current_user: dict = Depends(get_current_us
 
     if not job_status:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    visible = get_visible_host_ids_for_auth(current_user)
+    if visible is not None:
+        items = filter_visible_hosts(job_status.get("items", []), visible, lambda i: i.get("host_id"))
+        if job_status.get("items") and not items:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        job_status["items"] = items
+        # Counters must not reveal how much work ran on hidden hosts
+        job_status["total_items"] = len(items)
+        for key, status in (("success_items", "success"), ("error_items", "error"), ("skipped_items", "skipped")):
+            job_status[key] = sum(1 for i in items if i.get("status") == status)
+        job_status["completed_items"] = sum(1 for i in items if i.get("status") in ("success", "error", "skipped"))
 
     return job_status
 
@@ -3728,7 +3760,7 @@ async def dismiss_upgrade_notice(current_user: dict = Depends(get_current_user),
 
 # ==================== HTTP Health Checks ====================
 
-@app.get("/api/containers/{host_id}/{container_id}/http-health-check", tags=["container-health"], dependencies=[Depends(require_capability("healthchecks.view"))])
+@app.get("/api/containers/{host_id}/{container_id}/http-health-check", tags=["container-health"], dependencies=[Depends(require_capability("healthchecks.view")), Depends(require_host_access)])
 async def get_http_health_check(
     host_id: str,
     container_id: str,
@@ -3804,7 +3836,7 @@ async def get_http_health_check(
         }
 
 
-@app.put("/api/containers/{host_id}/{container_id}/http-health-check", tags=["container-health"], dependencies=[Depends(require_capability("healthchecks.manage"))])
+@app.put("/api/containers/{host_id}/{container_id}/http-health-check", tags=["container-health"], dependencies=[Depends(require_capability("healthchecks.manage")), Depends(require_host_access)])
 async def update_http_health_check(
     host_id: str,
     container_id: str,
@@ -3901,7 +3933,7 @@ async def update_http_health_check(
     return {"success": True}
 
 
-@app.delete("/api/containers/{host_id}/{container_id}/http-health-check", tags=["container-health"], dependencies=[Depends(require_capability("healthchecks.manage"))])
+@app.delete("/api/containers/{host_id}/{container_id}/http-health-check", tags=["container-health"], dependencies=[Depends(require_capability("healthchecks.manage")), Depends(require_host_access)])
 async def delete_http_health_check(
     host_id: str,
     container_id: str,
@@ -3943,7 +3975,7 @@ async def delete_http_health_check(
     return {"success": True}
 
 
-@app.post("/api/containers/{host_id}/{container_id}/http-health-check/test", tags=["container-health"], dependencies=[Depends(require_capability("healthchecks.test"))])
+@app.post("/api/containers/{host_id}/{container_id}/http-health-check/test", tags=["container-health"], dependencies=[Depends(require_capability("healthchecks.test")), Depends(require_host_access)])
 async def test_http_health_check(
     host_id: str,
     container_id: str,
@@ -4130,6 +4162,15 @@ async def get_alert_rules_v2(current_user: dict = Depends(get_current_user)):
     }
 
 
+def _require_alert_rule_hosts_visible(rule_id: str, current_user: dict):
+    """Stored rule whose explicit selector hosts are all visible to the caller; None if
+    the rule does not exist. 404 when it names a hidden host."""
+    rule = monitor.db.get_alert_rule_v2(rule_id)
+    if rule is not None:
+        check_host_ids_visible(selector_host_ids(rule.host_selector_json, rule.container_selector_json), current_user)
+    return rule
+
+
 @app.post("/api/alerts/rules", tags=["alerts"], dependencies=[Depends(require_capability("alerts.manage"))])
 async def create_alert_rule_v2(
     rule: AlertRuleV2Create,
@@ -4154,6 +4195,7 @@ async def create_alert_rule_v2(
             validate_selector_field("container_selector_json", rule.container_selector_json)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        check_host_ids_visible(selector_host_ids(rule.host_selector_json, rule.container_selector_json), current_user)
 
         # Default suppress_during_updates to True for container-scoped rules if not explicitly set
         suppress_during_updates = rule.suppress_during_updates
@@ -4245,14 +4287,18 @@ async def update_alert_rule_v2(
         # We don't filter out None/0/False because those are valid values (e.g., cooldown_seconds=0)
         update_data = updates.dict(exclude_unset=True)
 
+        existing = _require_alert_rule_hosts_visible(rule_id, current_user)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Alert rule not found")
+        check_host_ids_visible(
+            selector_host_ids(update_data.get("host_selector_json"), update_data.get("container_selector_json")),
+            current_user,
+        )
+
         # Validate the merged record, reusing the create-time validator. The PUT
         # model omits scope and metric on a partial edit, so this can't run as a
         # model validator and must be done here.
         if METRIC_RULE_FIELDS & update_data.keys():
-            existing = monitor.db.get_alert_rule_v2(rule_id)
-            if not existing:
-                raise HTTPException(status_code=404, detail="Alert rule not found")
-
             merged = {
                 field: update_data.get(field, getattr(existing, field))
                 for field in METRIC_RULE_FIELDS
@@ -4310,7 +4356,7 @@ async def delete_alert_rule_v2(
         _, display_name = get_auditable_user_info(current_user)
 
         # Get rule info before deleting for event logging
-        rule = monitor.db.get_alert_rule_v2(rule_id)
+        rule = _require_alert_rule_hosts_visible(rule_id, current_user)
 
         success = monitor.db.delete_alert_rule_v2(rule_id)
 
@@ -4345,7 +4391,7 @@ async def toggle_alert_rule_v2(
 ):
     """Toggle an alert rule enabled/disabled state (v2)"""
     try:
-        rule = monitor.db.get_alert_rule_v2(rule_id)
+        rule = _require_alert_rule_hosts_visible(rule_id, current_user)
 
         if not rule:
             raise HTTPException(status_code=404, detail="Alert rule not found")
@@ -4784,7 +4830,8 @@ async def get_events(
             search=search,
             limit=limit,
             offset=offset,
-            sort_order=sort_order
+            sort_order=sort_order,
+            visible_host_ids=get_visible_host_ids_for_auth(current_user),
         )
 
         # Convert to JSON-serializable format
@@ -4823,6 +4870,40 @@ async def get_events(
         logger.error(f"Failed to get events: {e}")
         raise HTTPException(status_code=500, detail="Failed to get events")
 
+@app.get("/api/events/statistics", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
+async def get_event_statistics(start_date: Optional[str] = None,
+                             end_date: Optional[str] = None,
+                             current_user: dict = Depends(get_current_user)):
+    """Get event statistics for dashboard"""
+    try:
+        parsed_start_date = None
+        parsed_end_date = None
+
+        if start_date:
+            try:
+                parsed_start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid start_date format")
+
+        if end_date:
+            try:
+                parsed_end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid end_date format")
+
+        stats = monitor.db.get_event_statistics(
+            start_date=parsed_start_date,
+            end_date=parsed_end_date,
+            visible_host_ids=get_visible_host_ids_for_auth(current_user),
+        )
+
+        return stats
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get event statistics: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get event statistics")
+
 @app.get("/api/events/{event_id}", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
 async def get_event_by_id(
     event_id: int,
@@ -4832,7 +4913,8 @@ async def get_event_by_id(
     """Get a specific event by ID"""
     try:
         event = monitor.db.get_event_by_id(event_id)
-        if not event:
+        if not event or not event_is_visible(event.host_id, event.container_id, event.category,
+                                             get_visible_host_ids_for_auth(current_user), event.event_type):
             raise HTTPException(status_code=404, detail="Event not found")
 
         return {
@@ -4868,7 +4950,9 @@ async def get_events_by_correlation(
 ):
     """Get all events with the same correlation ID (related events)"""
     try:
-        events = monitor.db.get_events_by_correlation(correlation_id)
+        visible = get_visible_host_ids_for_auth(current_user)
+        events = [e for e in monitor.db.get_events_by_correlation(correlation_id)
+                  if event_is_visible(e.host_id, e.container_id, e.category, visible, e.event_type)]
 
         events_json = []
         for event in events:
@@ -5213,8 +5297,8 @@ async def get_dashboard_hosts(
     - Container count, alerts, updates
     """
     try:
-        # Get all hosts
-        hosts_list = list(monitor.hosts.values())
+        visible = get_visible_host_ids_for_auth(current_user)
+        hosts_list = visible_host_models(monitor.hosts.values(), visible)
 
         # Filter by status if specified
         if status:
@@ -5389,9 +5473,10 @@ async def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
         - timestamp: ISO 8601 timestamp with 'Z' suffix (UTC)
     """
     try:
-        # Check cache (30-second TTL)
+        # The cache holds the fleet-wide answer; scoped callers always compute their own
+        visible = get_visible_host_ids_for_auth(current_user)
         now = datetime.now(timezone.utc)
-        if _dashboard_summary_cache["data"] is not None and _dashboard_summary_cache["timestamp"] is not None:
+        if visible is None and _dashboard_summary_cache["data"] is not None and _dashboard_summary_cache["timestamp"] is not None:
             cache_age = (now - _dashboard_summary_cache["timestamp"]).total_seconds()
             if cache_age < 30:
                 # Return cached response
@@ -5403,13 +5488,14 @@ async def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
 
         # Hosts summary
         # NOTE: monitor.hosts is Dict[str, DockerHost] where DockerHost is a Pydantic model
-        total_hosts = len(monitor.hosts)
-        online_hosts = sum(1 for host in monitor.hosts.values() if host.status == 'online')
+        hosts = visible_host_models(monitor.hosts.values(), visible)
+        total_hosts = len(hosts)
+        online_hosts = sum(1 for host in hosts if host.status == 'online')
         offline_hosts = total_hosts - online_hosts
 
         # Containers summary
         # NOTE: get_last_containers() returns cached list from last monitor cycle (max 2s old)
-        all_containers = monitor.get_last_containers()
+        all_containers = filter_visible_hosts(monitor.get_last_containers(), visible)
         state_counts = {}
         for container in all_containers:
             # Container is a Container model, not a dict
@@ -5418,12 +5504,13 @@ async def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
 
         # Updates and alerts summary
         with monitor.db.get_session() as session:
-            updates_available = session.query(ContainerUpdate).filter(
-                ContainerUpdate.update_available == True
-            ).count()
+            updates_query = session.query(ContainerUpdate).filter(ContainerUpdate.update_available == True)
+            if visible is not None:
+                updates_query = updates_query.filter(ContainerUpdate.host_id.in_(visible))
+            updates_available = updates_query.count()
 
             # Count active alerts (state='open', not snoozed, not resolved)
-            active_alerts = session.query(AlertV2).filter(
+            active_alerts = scoped_alert_query(session, visible).filter(
                 AlertV2.state == 'open',
                 AlertV2.resolved_at == None
             ).count()
@@ -5459,9 +5546,9 @@ async def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
             "timestamp": now.isoformat() + 'Z'
         }
 
-        # Update cache
-        _dashboard_summary_cache["data"] = response
-        _dashboard_summary_cache["timestamp"] = now
+        if visible is None:
+            _dashboard_summary_cache["data"] = response
+            _dashboard_summary_cache["timestamp"] = now
 
         return response
 
@@ -5473,41 +5560,7 @@ async def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
 # Note: Main /api/events endpoints are defined earlier (lines 1185-1367) with full feature set
 # including rate limiting. Additional event endpoints below:
 
-@app.get("/api/events/statistics", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
-async def get_event_statistics(start_date: Optional[str] = None,
-                             end_date: Optional[str] = None,
-                             current_user: dict = Depends(get_current_user)):
-    """Get event statistics for dashboard"""
-    try:
-        # Parse dates
-        parsed_start_date = None
-        parsed_end_date = None
-
-        if start_date:
-            try:
-                parsed_start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid start_date format")
-
-        if end_date:
-            try:
-                parsed_end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid end_date format")
-
-        stats = monitor.db.get_event_statistics(
-            start_date=parsed_start_date,
-            end_date=parsed_end_date
-        )
-
-        return stats
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get event statistics: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get event statistics")
-
-@app.get("/api/hosts/{host_id}/events/container/{container_id}", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
+@app.get("/api/hosts/{host_id}/events/container/{container_id}", tags=["events"], dependencies=[Depends(require_capability("events.view")), Depends(require_host_access)])
 async def get_container_events(host_id: str, container_id: str, limit: int = 50, current_user: dict = Depends(get_current_user)):
     """Get events for a specific container"""
     try:
@@ -5549,7 +5602,7 @@ async def get_container_events(host_id: str, container_id: str, limit: int = 50,
         logger.error(f"Failed to get events for container {container_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to get container events")
 
-@app.get("/api/events/host/{host_id}", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
+@app.get("/api/events/host/{host_id}", tags=["events"], dependencies=[Depends(require_capability("events.view")), Depends(require_host_access)])
 async def get_host_events(host_id: str, limit: int = 50, current_user: dict = Depends(get_current_user)):
     """Get events for a specific host"""
     try:
@@ -5926,8 +5979,9 @@ async def list_agents(
     try:
         from agent.connection_manager import agent_connection_manager
 
+        visible = get_visible_host_ids_for_auth(current_user)
         with monitor.db.get_session() as db:
-            agents = db.query(Agent).join(DockerHostDB).all()
+            agents = filter_visible_hosts(db.query(Agent).join(DockerHostDB).all(), visible)
 
             agents_data = []
             for agent in agents:
@@ -5945,11 +5999,16 @@ async def list_agents(
                     "registered_at": agent.registered_at.isoformat() + 'Z' if agent.registered_at else None
                 })
 
+            if visible is None:
+                connected_count = agent_connection_manager.get_connection_count()
+            else:
+                connected_count = sum(1 for a in agents_data if a["connected"])
+
             return {
                 "success": True,
                 "agents": agents_data,
                 "total": len(agents_data),
-                "connected_count": agent_connection_manager.get_connection_count()
+                "connected_count": connected_count
             }
 
     except Exception as e:
@@ -5974,6 +6033,7 @@ async def get_agent_status(
 
             if not agent:
                 raise HTTPException(status_code=404, detail="Agent not found")
+            check_host_access(agent.host_id, current_user)
 
             return {
                 "success": True,
@@ -5999,7 +6059,7 @@ async def get_agent_status(
         raise HTTPException(status_code=500, detail="Failed to get agent status")
 
 
-@app.post("/api/agent/{agent_id}/migrate-from/{source_host_id}", dependencies=[Depends(require_capability("agents.manage"))])
+@app.post("/api/agent/{agent_id}/migrate-from/{source_host_id}", dependencies=[Depends(require_capability("agents.manage")), Depends(require_source_host_access)])
 async def migrate_agent_from_host(
     agent_id: str,
     source_host_id: str,
@@ -6014,6 +6074,11 @@ async def migrate_agent_from_host(
 
     Requires admin scope as it modifies host state.
     """
+    # The target host is not in the path, so the route dependency cannot cover it
+    with monitor.db.get_session() as db:
+        target_host_id = db.query(Agent.host_id).filter(Agent.id == agent_id).scalar()
+    check_host_access(target_host_id, current_user)
+
     try:
         agent_manager = AgentManager(monitor=monitor)
         result = agent_manager.migrate_from_host(agent_id, source_host_id)
@@ -6027,6 +6092,8 @@ async def migrate_agent_from_host(
 
         # Broadcast migration notification to frontend
         try:
+            # Tags moved to the new host id; refresh scoped sockets before broadcasting host_migrated
+            await monitor.manager.refresh_all_visible_hosts()
             await monitor.manager.broadcast({
                 "type": "host_migrated",
                 "data": {
@@ -6081,6 +6148,19 @@ async def _validate_ws_user(db_manager, websocket: WebSocket, user_id: int, labe
     return True
 
 
+def _find_container_host(containers, container_id: str, host_id: Optional[str] = None,
+                         visible: Optional[set] = None) -> Optional[str]:
+    """Host of a container by short id; None if unknown. With host_id the pair must
+    match exactly (equal short ids can exist on cloned hosts); otherwise the first
+    candidate the caller can see wins, so a hidden clone cannot shadow a visible one."""
+    candidates = [c.host_id for c in containers
+                  if c.short_id == container_id and (host_id is None or c.host_id == host_id)]
+    for candidate in candidates:
+        if host_is_visible(candidate, visible):
+            return candidate
+    return None
+
+
 @app.websocket("/ws")
 @app.websocket("/ws/")
 async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = Cookie(None)):
@@ -6119,7 +6199,19 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
     try:
         # Accept connection and subscribe to events
         # Pass user_id for per-connection capability filtering
-        await monitor.manager.connect(websocket, user_id=user_id, capabilities=user_caps)
+        generation = monitor.manager.visibility_generation
+        visible_hosts = get_visible_host_ids_for_user(user_id)
+        await monitor.manager.connect(websocket, user_id=user_id, capabilities=user_caps, visible_host_ids=visible_hosts)
+        if monitor.manager.visibility_generation != generation:
+            # A revoke landed during accept(), before this socket was registered: re-run
+            # every connect-time check so the stale user/caps/scope are not kept
+            if not await _validate_ws_user(monitor.db, websocket, user_id):
+                return
+            await monitor.manager.refresh_capabilities_for_user(user_id)
+            await monitor.manager.refresh_visible_hosts_for_user(user_id)
+            # The direct sends and inbound handlers below read these locals
+            user_caps = monitor.manager.get_capabilities(websocket)
+            can_view_env = Capabilities.CONTAINERS_VIEW_ENV in user_caps
         await monitor.realtime.subscribe_to_events(websocket)
 
         # Event-driven stats control: Start stats streams when first viewer connects
@@ -6174,11 +6266,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         # Get current blackout window status
         is_blackout, window_name = monitor.notification_service.blackout_manager.is_in_blackout_window()
 
-        containers_data = await monitor.get_containers()
+        visible_hosts = monitor.manager.get_visible_hosts(websocket)
+        containers_data = filter_visible_hosts(await monitor.get_containers(), visible_hosts)
+        scoped_hosts = visible_host_models(monitor.hosts.values(), visible_hosts)
         initial_state = {
             "type": "initial_state",
             "data": {
-                "hosts": [h.dict() for h in monitor.hosts.values()] if "hosts.view" in user_caps else [],
+                "hosts": [h.dict() for h in scoped_hosts] if "hosts.view" in user_caps else [],
                 "containers": filter_container_env(containers_data, can_view_env) if "containers.view" in user_caps else [],
                 "settings": settings_dict,
                 "blackout": {
@@ -6232,25 +6326,38 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
             # Handle different message types
             if message.get("type") == "subscribe_stats":
                 container_id = message.get("container_id")
-                if container_id and "containers.view" in user_caps:
-                    await monitor.realtime.subscribe_to_stats(websocket, container_id)
-                    # Find the host and start monitoring
-                    # CRITICAL: Use async wrapper to prevent blocking event loop
-                    for host_id, client in monitor.clients.items():
+                requested_host = message.get("host_id")
+                if isinstance(container_id, str) and container_id and "containers.view" in user_caps:
+                    container_id = normalize_container_id(container_id)
+                    visible_hosts = monitor.manager.get_visible_hosts(websocket)
+                    # The cached list is at most one poll old; only a miss pays for live discovery
+                    wanted_host = requested_host if isinstance(requested_host, str) else None
+                    host_id = _find_container_host(monitor.get_last_containers(), container_id, wanted_host, visible_hosts)
+                    if host_id is None:
+                        host_id = _find_container_host(await monitor.get_containers(), container_id, wanted_host, visible_hosts)
+                    if host_id is None:
+                        logger.info(f"subscribe_stats refused for {container_id[:12]}: container not visible to user {user_id}")
+                        continue
+                    await monitor.realtime.subscribe_to_stats(websocket, container_id, host_id)
+                    client = monitor.clients.get(host_id)
+                    if client is not None:
                         try:
+                            # CRITICAL: Use async wrapper to prevent blocking event loop
                             await async_docker_call(client.containers.get, container_id)
                             await monitor.realtime.start_container_stats_stream(
-                                client, container_id, interval=2
+                                client, container_id, host_id, interval=2
                             )
-                            break
                         except Exception as e:
                             logger.debug(f"Container {container_id} not found on host {host_id[:8]}: {e}")
-                            continue
 
             elif message.get("type") == "unsubscribe_stats":
                 container_id = message.get("container_id")
-                if container_id:
-                    await monitor.realtime.unsubscribe_from_stats(websocket, container_id)
+                requested_host = message.get("host_id")
+                if isinstance(container_id, str) and container_id:
+                    await monitor.realtime.unsubscribe_from_stats(
+                        websocket, normalize_container_id(container_id),
+                        requested_host if isinstance(requested_host, str) else None,
+                    )
 
             elif message.get("type") == "modal_opened":
                 # Track that a container modal is open - keep stats running for this container
@@ -6260,8 +6367,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
                     # Verify container exists and user has access to it
                     try:
                         containers = await monitor.get_containers()  # Must await async function
+                        visible_hosts = monitor.manager.get_visible_hosts(websocket)
                         # Match by short_id (12 chars) or full id (64 chars) - agent containers use both
-                        container_exists = any(
+                        container_exists = host_is_visible(host_id, visible_hosts) and any(
                             (c.short_id == container_id or c.id == container_id) and c.host_id == host_id
                             for c in containers
                         )
@@ -6290,9 +6398,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         # Always cleanup, regardless of how we exited
         await monitor.manager.disconnect(websocket)
         await monitor.realtime.unsubscribe_from_events(websocket)
-        # Unsubscribe from all stats
-        for container_id in list(monitor.realtime.stats_subscribers):
-            await monitor.realtime.unsubscribe_from_stats(websocket, container_id)
+        await monitor.realtime.unsubscribe_all_stats(websocket)
         # Clear modal containers for this connection only (not all users)
         monitor.stats_manager.clear_modal_containers_for_connection(connection_id)
 
@@ -6317,6 +6423,19 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = C
         # Clean up rate limiter tracking
         ws_rate_limiter.cleanup_connection(connection_id)
         logger.debug(f"WebSocket cleanup completed for {connection_id}")
+
+
+async def _shell_still_authorized(websocket: WebSocket, user_id: int, host_id: str) -> bool:
+    """Re-run the connect-time checks after an auth refresh raced the shell's registration."""
+    if not await _validate_ws_user(monitor.db, websocket, user_id, "Shell WebSocket"):
+        return False
+    if not has_capability_for_user(user_id, Capabilities.CONTAINERS_SHELL):
+        await websocket.close(code=4403, reason="Shell access revoked")
+        return False
+    if not host_is_visible(host_id, get_visible_host_ids_for_user(user_id)):
+        await websocket.close(code=4404, reason="Not found")
+        return False
+    return True
 
 
 @app.websocket("/ws/shell/{host_id}/{container_id}")
@@ -6384,6 +6503,14 @@ async def websocket_shell_endpoint(
         await websocket.close(code=4003, reason="Shell access denied - requires containers.shell capability")
         return
 
+    # Snapshot the auth generation before validating: a revoke that lands between these
+    # checks and register_shell() would otherwise miss this socket
+    auth_generation = monitor.manager.visibility_generation
+    if not host_is_visible(host_id, get_visible_host_ids_for_user(user_id)):
+        logger.info(f"Shell WebSocket refused for user {username}: host {host_id!r} not visible")
+        await websocket.close(code=4404, reason="Not found")
+        return
+
     # Validate host exists
     host = monitor.hosts.get(host_id)
     if not host:
@@ -6409,6 +6536,13 @@ async def websocket_shell_endpoint(
     except Exception:
         logger.error("Shell audit logging failed", exc_info=True)
 
+    await monitor.manager.register_shell(websocket, user_id, host_id)
+    if monitor.manager.visibility_generation != auth_generation and not await _shell_still_authorized(
+        websocket, user_id, host_id
+    ):
+        await monitor.manager.unregister_shell(websocket)
+        return
+
     # Route based on connection type
     try:
         if host.connection_type == 'agent':
@@ -6418,6 +6552,7 @@ async def websocket_shell_endpoint(
             # Local/Remote host: direct Docker connection
             await _handle_direct_shell_session(websocket, host_id, container_id, session_data)
     finally:
+        await monitor.manager.unregister_shell(websocket)
         # Audit log - shell session ended
         try:
             with monitor.db.get_session() as session:

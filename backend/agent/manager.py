@@ -16,7 +16,7 @@ from typing import Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
-from database import RegistrationToken, Agent, DockerHostDB, DatabaseManager
+from database import RegistrationToken, Agent, DockerHostDB, DatabaseManager, TagAssignment
 from utils.host_ips import serialize_registration_host_ip
 
 logger = logging.getLogger(__name__)
@@ -566,6 +566,55 @@ class AgentManager:
             agent = session.query(Agent).filter_by(host_id=host_id).first()
             return agent.id if agent else None
 
+    @staticmethod
+    def _transfer_tag_assignments(session, old_host_id: str, new_host_id: str) -> int:
+        """Move every tag assignment of the old host to the new host id: container
+        composite keys are re-prefixed and the host's own tags follow it (they drive
+        tag-scoped visibility, so a migrated host must not drop out of its groups).
+        Returns the number of rows moved."""
+        moved = 0
+        already_on_new_containers = {
+            (row.tag_id, row.subject_id) for row in session.query(TagAssignment.tag_id, TagAssignment.subject_id)
+            .filter(TagAssignment.subject_type == 'container', TagAssignment.subject_id.like(f"{new_host_id}:%"))
+        }
+        for tag_assignment in session.query(TagAssignment).filter(
+            TagAssignment.subject_type == 'container',
+            TagAssignment.subject_id.like(f"{old_host_id}:%")
+        ).all():
+            short_container_id = tag_assignment.subject_id[len(old_host_id) + 1:]
+            if (tag_assignment.tag_id, f"{new_host_id}:{short_container_id}") in already_on_new_containers:
+                session.delete(tag_assignment)
+                continue
+            session.add(TagAssignment(
+                tag_id=tag_assignment.tag_id,
+                subject_type='container',
+                subject_id=f"{new_host_id}:{short_container_id}",
+                compose_project=tag_assignment.compose_project,
+                compose_service=tag_assignment.compose_service,
+                host_id_at_attach=new_host_id,
+                container_name_at_attach=tag_assignment.container_name_at_attach,
+                order_index=tag_assignment.order_index,
+                last_seen_at=tag_assignment.last_seen_at
+            ))
+            session.delete(tag_assignment)
+            moved += 1
+
+        already_on_new = {
+            row[0] for row in session.query(TagAssignment.tag_id).filter_by(subject_type='host', subject_id=new_host_id)
+        }
+        for tag_assignment in session.query(TagAssignment).filter_by(subject_type='host', subject_id=old_host_id).all():
+            if tag_assignment.tag_id not in already_on_new:
+                session.add(TagAssignment(
+                    tag_id=tag_assignment.tag_id,
+                    subject_type='host',
+                    subject_id=new_host_id,
+                    order_index=tag_assignment.order_index,
+                    last_seen_at=tag_assignment.last_seen_at
+                ))
+                moved += 1
+            session.delete(tag_assignment)
+        return moved
+
     def _migrate_host_to_agent(
         self,
         existing_host: DockerHostDB,
@@ -599,7 +648,7 @@ class AgentManager:
         Returns:
             Dict with success, agent_id, host_id, migration_detected, migrated_from
         """
-        from database import AutoRestartConfig, TagAssignment, ContainerDesiredState
+        from database import AutoRestartConfig, ContainerDesiredState
 
         old_host_id = existing_host.id
         old_host_name = existing_host.name
@@ -695,34 +744,7 @@ class AgentManager:
                         # Delete old record
                         session.delete(ar)
 
-                # Transfer container tags
-                tag_assignments = session.query(TagAssignment).filter(
-                    TagAssignment.subject_type == 'container',
-                    TagAssignment.subject_id.like(f"{old_host_id}:%")
-                ).all()
-                for tag_assignment in tag_assignments:
-                    # Extract short container ID from composite key
-                    old_composite = tag_assignment.subject_id
-                    if ':' in old_composite:
-                        _, short_container_id = old_composite.split(':', 1)
-                        new_composite = f"{new_host_id}:{short_container_id}"
-
-                        # Create new assignment with updated composite key (copy ALL fields)
-                        new_assignment = TagAssignment(
-                            tag_id=tag_assignment.tag_id,
-                            subject_type='container',
-                            subject_id=new_composite,
-                            compose_project=tag_assignment.compose_project,
-                            compose_service=tag_assignment.compose_service,
-                            host_id_at_attach=new_host_id,
-                            container_name_at_attach=tag_assignment.container_name_at_attach,
-                            last_seen_at=tag_assignment.last_seen_at
-                        )
-                        session.add(new_assignment)
-                        transferred_count += 1
-
-                        # Delete old assignment
-                        session.delete(tag_assignment)
+                transferred_count += self._transfer_tag_assignments(session, old_host_id, new_host_id)
 
                 # Transfer desired states
                 desired_states = session.query(ContainerDesiredState).filter_by(host_id=old_host_id).all()
@@ -999,7 +1021,7 @@ class AgentManager:
             Dict with success status and migration details
         """
         from database import (
-            AutoRestartConfig, TagAssignment, ContainerDesiredState,
+            AutoRestartConfig, ContainerDesiredState,
             ContainerUpdate, ContainerHttpHealthCheck, AlertV2,
             Deployment, DeploymentContainer, DeploymentMetadata
         )
@@ -1056,29 +1078,7 @@ class AgentManager:
                         session.delete(ar)
                         transferred_count += 1
 
-                # Transfer container tags
-                tag_assignments = session.query(TagAssignment).filter(
-                    TagAssignment.subject_type == 'container',
-                    TagAssignment.subject_id.like(f"{old_host_id}:%")
-                ).all()
-                for tag_assignment in tag_assignments:
-                    old_composite = tag_assignment.subject_id
-                    if ':' in old_composite:
-                        _, short_container_id = old_composite.split(':', 1)
-                        new_composite = f"{new_host_id}:{short_container_id}"
-                        new_assignment = TagAssignment(
-                            tag_id=tag_assignment.tag_id,
-                            subject_type='container',
-                            subject_id=new_composite,
-                            compose_project=tag_assignment.compose_project,
-                            compose_service=tag_assignment.compose_service,
-                            host_id_at_attach=new_host_id,
-                            container_name_at_attach=tag_assignment.container_name_at_attach,
-                            last_seen_at=tag_assignment.last_seen_at
-                        )
-                        session.add(new_assignment)
-                        session.delete(tag_assignment)
-                        transferred_count += 1
+                transferred_count += self._transfer_tag_assignments(session, old_host_id, new_host_id)
 
                 # Transfer desired states
                 desired_states = session.query(ContainerDesiredState).filter_by(host_id=old_host_id).all()

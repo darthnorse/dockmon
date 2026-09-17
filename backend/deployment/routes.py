@@ -23,7 +23,14 @@ from database import Deployment, DatabaseManager, DeploymentMetadata, DockerHost
 from deployment import DeploymentExecutor
 from deployment import stack_storage
 from deployment.compose_generator import generate_compose_from_deployment, generate_compose_from_containers
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability
+from auth.api_key_auth import (
+    get_current_user_or_api_key as get_current_user,
+    require_capability,
+    require_host_access,
+    check_host_access,
+    get_visible_host_ids_for_auth,
+    filter_visible_hosts,
+)
 from audit.audit_logger import AuditAction, log_stack_change
 from auth.utils import get_auditable_user_info
 from utils.keys import parse_composite_key
@@ -323,6 +330,7 @@ async def deploy_stack(
     in the stacks list is derived from running container labels, not from
     deployment records.
     """
+    check_host_access(request.host_id, current_user)
     # Validate stack exists
     if not await stack_storage.stack_exists(request.stack_name):
         raise HTTPException(status_code=404, detail=f"Stack '{request.stack_name}' not found")
@@ -529,6 +537,7 @@ async def create_deployment(
 
     The stack must exist before creating a deployment.
     """
+    check_host_access(request.host_id, current_user)
     try:
         user_id, display_name = get_auditable_user_info(current_user)
         deployment_id = await executor.create_deployment(
@@ -590,6 +599,7 @@ async def execute_deployment(
             ).with_for_update().first()
             if not deployment:
                 raise HTTPException(status_code=404, detail="Deployment not found")
+            check_host_access(deployment.host_id, current_user)
 
             # Determine valid statuses based on operation type
             # For redeploy: also allow 'running' status (force recreate running containers)
@@ -676,6 +686,10 @@ async def list_deployments(
             # CRITICAL: Filter by user_id to prevent users from seeing other users' deployments
             query = query.filter_by(user_id=user_id)
 
+            visible = get_visible_host_ids_for_auth(current_user)
+            if visible is not None:
+                query = query.filter(Deployment.host_id.in_(visible))
+
             if host_id:
                 query = query.filter_by(host_id=host_id)
 
@@ -708,7 +722,9 @@ async def get_known_stacks(
     from deployment.container_utils import scan_deployed_stacks
 
     monitor = get_docker_monitor()
-    all_containers = monitor.get_last_containers()
+    all_containers = filter_visible_hosts(
+        monitor.get_last_containers(), get_visible_host_ids_for_auth(current_user)
+    )
     deployed_stacks = scan_deployed_stacks(all_containers)
 
     # Convert to KnownStack format
@@ -745,7 +761,9 @@ async def list_running_projects(
 
     # Group containers by (project_name, host_id)
     projects: Dict[tuple, dict] = {}
-    all_containers = monitor.get_last_containers()
+    all_containers = filter_visible_hosts(
+        monitor.get_last_containers(), get_visible_host_ids_for_auth(current_user)
+    )
     for container in all_containers:
         labels = getattr(container, 'labels', {}) or {}
         project_name = _get_container_project(container)
@@ -797,6 +815,7 @@ async def generate_compose_from_running_containers(
     monitor = get_docker_monitor()
 
     # Find all containers on this host with matching project name
+    check_host_access(request.host_id, current_user)
     matching_containers = [
         c for c in monitor.get_last_containers()
         if getattr(c, 'host_id', None) == request.host_id
@@ -851,6 +870,7 @@ async def get_deployment(
 
             if not deployment:
                 raise HTTPException(status_code=404, detail="Deployment not found")
+            check_host_access(deployment.host_id, current_user)
 
             return _deployment_to_response(deployment)
 
@@ -887,6 +907,7 @@ async def update_deployment(
             ).first()
             if not deployment:
                 raise HTTPException(status_code=404, detail="Deployment not found")
+            check_host_access(deployment.host_id, current_user)
 
             # Allow editing in 'planning', 'failed', 'rolled_back', 'partial', or 'running' states
             editable_statuses = ['planning', 'failed', 'rolled_back', 'partial', 'running']
@@ -914,6 +935,7 @@ async def update_deployment(
                 deployment.stack_name = request.stack_name
 
             if request.host_id is not None:
+                check_host_access(request.host_id, current_user)
                 deployment.host_id = request.host_id
 
             deployment.updated_at = datetime.now(timezone.utc)
@@ -957,6 +979,7 @@ async def delete_deployment(
 
             if not deployment:
                 raise HTTPException(status_code=404, detail="Deployment not found")
+            check_host_access(deployment.host_id, current_user)
 
             # Prevent deletion of deployments that are actively executing
             # These states indicate the deployment is in progress: validating, pulling_image, creating, starting
@@ -1003,6 +1026,7 @@ async def preview_compose_from_containers(
 
         if not deployment:
             raise HTTPException(status_code=404, detail="Deployment not found")
+        check_host_access(deployment.host_id, current_user)
 
         compose_yaml, warnings = await generate_compose_from_deployment(
             deployment_id=deployment_id,
@@ -1063,9 +1087,14 @@ async def import_deployment(
             known_stacks=known_stacks
         )
 
-    # 4. Find all hosts that have this stack running
+    # 4. Find all hosts that have this stack running. request.host_id is only consulted
+    # when discovery finds nothing, so the scan itself must be limited to visible hosts
+    if request.host_id:
+        check_host_access(request.host_id, current_user)
     monitor = get_docker_monitor()
-    all_containers = monitor.get_last_containers()
+    all_containers = filter_visible_hosts(
+        monitor.get_last_containers(), get_visible_host_ids_for_auth(current_user)
+    )
 
     # Extract container_name values from compose for fallback matching
     container_names_in_compose = set()
@@ -1218,7 +1247,7 @@ async def import_deployment(
 
 # ==================== Scan Compose Dirs Endpoint ====================
 
-@router.post("/scan-compose-dirs/{host_id}", response_model=ScanComposeDirsResponse, dependencies=[Depends(require_capability("stacks.view"))])
+@router.post("/scan-compose-dirs/{host_id}", response_model=ScanComposeDirsResponse, dependencies=[Depends(require_capability("stacks.view")), Depends(require_host_access)])
 async def scan_compose_dirs(
     host_id: str,
     request: Optional[ScanComposeDirsRequest] = None,
@@ -1434,7 +1463,7 @@ async def _scan_agent_dirs(host_id: str, request: Optional[ScanComposeDirsReques
 
 # ==================== Read Compose File Endpoint ====================
 
-@router.post("/read-compose-file/{host_id}", response_model=ReadComposeFileResponse, dependencies=[Depends(require_capability("stacks.view_env"))])
+@router.post("/read-compose-file/{host_id}", response_model=ReadComposeFileResponse, dependencies=[Depends(require_capability("stacks.view_env")), Depends(require_host_access)])
 async def read_compose_file(
     host_id: str,
     request: ReadComposeFileRequest,

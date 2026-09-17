@@ -9,14 +9,15 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
-from sqlalchemy import func
+from pydantic import BaseModel, Field
+from sqlalchemy import func, or_
 from sqlalchemy.orm import aliased
 
 from auth.api_key_auth import (
     require_capability,
     get_current_user_or_api_key,
     invalidate_group_permissions_cache,
+    invalidate_group_tag_scopes_cache,
     invalidate_user_groups_cache,
     get_effective_capabilities,
 )
@@ -25,7 +26,7 @@ from auth.utils import (
     format_timestamp, get_auditable_user_info, ensure_not_last_admin, get_user_or_404,
     CRITICAL_CAPABILITIES, verify_critical_capabilities,
 )
-from database import CustomGroup, UserGroupMembership, User, ApiKey, GroupPermission
+from database import CustomGroup, UserGroupMembership, User, ApiKey, GroupPermission, GroupTagScope, Tag, TagAssignment
 from audit.audit_logger import log_audit
 from auth.capabilities import ALL_CAPABILITIES, CAPABILITY_INFO
 
@@ -58,15 +59,24 @@ def _any_group_has_capability_with_members(session, capability: str, exclude_gro
 router = APIRouter(prefix="/api/v2/groups", tags=["groups"])
 
 
-async def _refresh_ws_capabilities(user_id: int | None = None):
-    """Refresh cached WS capabilities. If user_id given, refresh only that user."""
+def ws_manager():
+    """The live ConnectionManager, or None before startup."""
     # Local import to avoid circular dependency (main imports this module)
     from main import monitor
-    if monitor and monitor.manager:
+    return monitor.manager if monitor else None
+
+
+async def _refresh_ws_auth_state(user_id: int | None = None):
+    """Refresh what open WebSocket connections are allowed to receive: capabilities
+    and the visible-host set. With user_id, only that user's connections."""
+    manager = ws_manager()
+    if manager:
         if user_id is not None:
-            await monitor.manager.refresh_capabilities_for_user(user_id)
+            await manager.refresh_capabilities_for_user(user_id)
+            await manager.refresh_visible_hosts_for_user(user_id)
         else:
-            await monitor.manager.refresh_all_capabilities()
+            await manager.refresh_all_capabilities()
+            await manager.refresh_all_visible_hosts()
 
 
 # =============================================================================
@@ -396,6 +406,27 @@ async def create_group(
         )
 
 
+class HostTagResponse(BaseModel):
+    """A tag usable as a host-visibility scope, addressed by id (names can collide)."""
+    id: str
+    name: str
+    color: Optional[str] = None
+
+
+@router.get("/host-tags", response_model=list[HostTagResponse], dependencies=[Depends(require_capability("groups.manage"))])
+async def list_host_tags(current_user: dict = Depends(get_current_user_or_api_key)):
+    """Tags the group editor can scope by: every tag on a host, plus any tag that
+    already scopes a group even if no host carries it right now (RESTRICT keeps it).
+    Registered before /{group_id} so the literal path is not swallowed by it."""
+    with db.get_session() as session:
+        host_tag_ids = session.query(TagAssignment.tag_id).filter(TagAssignment.subject_type == 'host')
+        scoped_tag_ids = session.query(GroupTagScope.tag_id)
+        tags = (session.query(Tag)
+                .filter(or_(Tag.id.in_(host_tag_ids), Tag.id.in_(scoped_tag_ids)))
+                .order_by(func.lower(Tag.name)).all())
+        return [HostTagResponse(id=t.id, name=t.name, color=t.color) for t in tags]
+
+
 @router.get("/{group_id}", response_model=GroupDetailResponse, dependencies=[Depends(require_capability("groups.manage"))])
 async def get_group(
     group_id: int,
@@ -629,7 +660,8 @@ async def delete_group(
         # Phase 4: Invalidate caches
         invalidate_group_permissions_cache()
         invalidate_user_groups_cache()  # All users, since we don't know who was affected
-        await _refresh_ws_capabilities()
+        invalidate_group_tag_scopes_cache()
+        await _refresh_ws_auth_state()
 
         return DeleteGroupResponse(
             success=True,
@@ -695,7 +727,7 @@ async def add_member(
 
         # Phase 4: Invalidate user's group cache
         invalidate_user_groups_cache(request.user_id)
-        await _refresh_ws_capabilities(request.user_id)
+        await _refresh_ws_auth_state(request.user_id)
 
         return AddMemberResponse(
             success=True,
@@ -772,7 +804,7 @@ async def remove_member(
 
         # Invalidate removed member's group cache
         invalidate_user_groups_cache(member_user_id)
-        await _refresh_ws_capabilities(member_user_id)
+        await _refresh_ws_auth_state(member_user_id)
 
         return RemoveMemberResponse(
             success=True,
@@ -1022,12 +1054,79 @@ async def update_group_permissions(
 
         # Invalidate cache after permission changes
         invalidate_group_permissions_cache()
-        await _refresh_ws_capabilities()
+        await _refresh_ws_auth_state()
 
         return UpdatePermissionsResponse(
             updated=updated_count,
             message=f"Updated {updated_count} permission(s) for group '{group.name}'"
         )
+
+
+class GroupTagScopesResponse(BaseModel):
+    """Tags that scope a group's host visibility; empty = the group sees every host."""
+    group_id: int
+    tag_ids: list[str]
+
+
+class UpdateGroupTagScopesRequest(BaseModel):
+    tag_ids: list[str] = Field(default_factory=list, max_length=500)
+
+
+@router.get("/{group_id}/tag-scopes", response_model=GroupTagScopesResponse, dependencies=[Depends(require_capability("groups.manage"))])
+async def get_group_tag_scopes(
+    group_id: int,
+    current_user: dict = Depends(get_current_user_or_api_key)
+):
+    with db.get_session() as session:
+        group = session.query(CustomGroup).filter(CustomGroup.id == group_id).first()
+        if not group:
+            raise HTTPException(status_code=404, detail=f"Group with ID {group_id} not found")
+        tag_ids = [row.tag_id for row in session.query(GroupTagScope).filter_by(group_id=group_id).order_by(GroupTagScope.id)]
+        return GroupTagScopesResponse(group_id=group_id, tag_ids=tag_ids)
+
+
+@router.put("/{group_id}/tag-scopes", response_model=GroupTagScopesResponse, dependencies=[Depends(require_capability("groups.manage"))])
+async def update_group_tag_scopes(
+    group_id: int,
+    request: UpdateGroupTagScopesRequest,
+    current_user: dict = Depends(get_current_user_or_api_key)
+):
+    """Replace the group's tag scopes. An empty list makes the group unrestricted."""
+    requested = list(dict.fromkeys(request.tag_ids))
+    with db.get_session() as session:
+        group = session.query(CustomGroup).filter(CustomGroup.id == group_id).first()
+        if not group:
+            raise HTTPException(status_code=404, detail=f"Group with ID {group_id} not found")
+
+        known = {t.id for t in session.query(Tag.id).filter(Tag.id.in_(requested))} if requested else set()
+        unknown = [tag_id for tag_id in requested if tag_id not in known]
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"Unknown tag id(s): {', '.join(unknown)}")
+
+        existing = {row.tag_id: row for row in session.query(GroupTagScope).filter_by(group_id=group_id)}
+        for tag_id, row in existing.items():
+            if tag_id not in known:
+                session.delete(row)
+        for tag_id in requested:
+            if tag_id not in existing:
+                session.add(GroupTagScope(group_id=group_id, tag_id=tag_id))
+
+        user_id, display_name = get_auditable_user_info(current_user)
+        log_audit(
+            session,
+            user_id=user_id,
+            username=display_name,
+            action='update_tag_scopes',
+            entity_type='custom_group',
+            entity_id=str(group_id),
+            entity_name=group.name,
+            details={'before': sorted(existing), 'after': requested},
+        )
+        session.commit()
+
+    invalidate_group_tag_scopes_cache()
+    await _refresh_ws_auth_state()
+    return GroupTagScopesResponse(group_id=group_id, tag_ids=requested)
 
 
 class CopyPermissionsResponse(BaseModel):
@@ -1154,7 +1253,7 @@ async def copy_group_permissions(
 
         # Invalidate cache after permission changes
         invalidate_group_permissions_cache()
-        await _refresh_ws_capabilities()
+        await _refresh_ws_auth_state()
 
         return CopyPermissionsResponse(
             copied=copied_count,

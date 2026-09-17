@@ -87,3 +87,31 @@ def test_group(db_session: Session):
     db_session.refresh(group)
 
     return group
+
+
+@pytest.fixture
+def patch_db_session(db_session: Session):
+    """Route auth.api_key_auth's db.get_session() to the test session and reset every
+    auth cache on both sides, so cached state never leaks between tests."""
+    from contextlib import contextmanager
+    from unittest.mock import patch
+
+    from auth.api_key_auth import (
+        invalidate_group_permissions_cache,
+        invalidate_group_tag_scopes_cache,
+        invalidate_user_groups_cache,
+    )
+
+    def reset_caches():
+        invalidate_group_permissions_cache()
+        invalidate_user_groups_cache()
+        invalidate_group_tag_scopes_cache()
+
+    @contextmanager
+    def get_session():
+        yield db_session
+
+    reset_caches()
+    with patch('auth.api_key_auth.db.get_session', get_session):
+        yield db_session
+    reset_caches()

@@ -33,6 +33,12 @@ def make_composite_key(host_id: str, container_id: str) -> str:
     return f"{host_id}:{container_id}"
 
 
+def host_of_composite_key(key: str) -> str:
+    """Host prefix of a host_id:... key; the whole string when there is no ':'.
+    No validation, unlike parse_composite_key: used on broadcast and predicate paths."""
+    return key.split(":", 1)[0]
+
+
 def parse_composite_key(composite_key: str) -> tuple[str, str]:
     """
     Parse composite key into (host_id, container_id) tuple.

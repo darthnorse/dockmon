@@ -298,6 +298,7 @@ class DockerMonitor:
         self.manager = ConnectionManager()
         self.realtime = RealtimeMonitor()  # Real-time monitoring
         self.realtime.connection_manager = self.manager
+        self.manager.realtime = self.realtime
         self.event_logger = EventLogger(self.db, self.manager)  # Event logging service with WebSocket support
         self.notification_service = NotificationService(self.db, self.event_logger)  # Notification service (v1 - for channels only)
         self._container_states: Dict[str, str] = {}  # Track container states for change detection
@@ -357,12 +358,9 @@ class DockerMonitor:
         try:
             # Check if host URL already exists (prevent duplicates)
             if not skip_db_save:  # Only check for new hosts, not when loading from DB
-                for existing_host in self.hosts.values():
-                    if existing_host.url == config.url:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Host with URL '{config.url}' already exists as '{existing_host.name}'"
-                        )
+                # Generic message: naming the other host would reveal one the caller may not see
+                if self._url_in_use(config.url):
+                    raise HTTPException(status_code=400, detail="A host with this URL already exists")
 
             # Validate certificates if provided (before trying to use them)
             if config.tls_cert or config.tls_key or config.tls_ca:
@@ -984,8 +982,18 @@ class DockerMonitor:
             else:
                 raise ValueError(f"Host {host_id} not found")
 
+    def _url_in_use(self, url: str, exclude_host_id: Optional[str] = None) -> bool:
+        # Every agent host shares the agent:// placeholder; only real daemon URLs are unique
+        if url.startswith("agent://"):
+            return False
+        return any(h.url == url and hid != exclude_host_id for hid, h in self.hosts.items())
+
     def update_host(self, host_id: str, config: DockerHostConfig):
         """Update an existing Docker host"""
+        # Rebinding a host record onto another host's daemon would let its tags
+        # (and every scoped user's visibility) carry over to that daemon
+        if self._url_in_use(config.url, exclude_host_id=host_id):
+            raise HTTPException(status_code=400, detail="A host with this URL already exists")
         # Validate host_id to prevent path traversal
         try:
             host_id = sanitize_host_id(host_id)
@@ -2115,6 +2123,7 @@ class DockerMonitor:
                 await self.manager.broadcast({
                     "type": "auto_restart_success",
                     "data": {
+                        "host_id": container.host_id,
                         "container_id": container_id,
                         "container_name": container.name,
                         "host": container.host_name
@@ -2141,6 +2150,7 @@ class DockerMonitor:
                 await self.manager.broadcast({
                     "type": "auto_restart_failed",
                     "data": {
+                        "host_id": container.host_id,
                         "container_id": container_id,
                         "container_name": container.name,
                         "attempts": attempt,

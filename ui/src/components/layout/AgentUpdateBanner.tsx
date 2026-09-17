@@ -119,7 +119,7 @@ export function AgentUpdateBanner({ isCollapsed }: AgentUpdateBannerProps) {
               onClick={handleSeeWhatsNew}
             >
               <ExternalLink className="h-3 w-3 mr-1.5" />
-              See what's new
+              See what&apos;s new
             </Button>
             <Button
               variant="ghost"

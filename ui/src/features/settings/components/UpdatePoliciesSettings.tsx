@@ -407,7 +407,7 @@ export function UpdatePoliciesSettings() {
           <strong>Warn:</strong> Matched containers will require user confirmation before auto-updating.
           <br />
           <strong>Ignore:</strong> Matched containers are excluded from automatic update checks entirely.
-          You can still manually check for updates via the container's Updates tab.
+          You can still manually check for updates via the container&apos;s Updates tab.
         </p>
       </div>
     </fieldset>

@@ -101,9 +101,9 @@ export function EventsSettings() {
               Use glob patterns with wildcards:
             </p>
             <ul className="text-xs text-gray-400 space-y-1 ml-4 list-disc">
-              <li><code className="text-blue-400">runner-*</code> - matches containers starting with "runner-"</li>
-              <li><code className="text-blue-400">*-tmp</code> - matches containers ending with "-tmp"</li>
-              <li><code className="text-blue-400">*cronjob*</code> - matches containers containing "cronjob"</li>
+              <li><code className="text-blue-400">runner-*</code> - matches containers starting with &quot;runner-&quot;</li>
+              <li><code className="text-blue-400">*-tmp</code> - matches containers ending with &quot;-tmp&quot;</li>
+              <li><code className="text-blue-400">*cronjob*</code> - matches containers containing &quot;cronjob&quot;</li>
             </ul>
           </div>
 

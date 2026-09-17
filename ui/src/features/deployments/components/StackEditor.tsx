@@ -946,7 +946,7 @@ export function StackEditor({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Stack</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete stack "<strong>{selectedStackName}</strong>"?
+              Are you sure you want to delete stack &quot;<strong>{selectedStackName}</strong>&quot;?
               This will remove the compose.yaml and .env files from the filesystem,
               along with any deployment records. Running containers will not be affected.
               This action cannot be undone.
@@ -1011,7 +1011,7 @@ export function StackEditor({
           <DialogHeader>
             <DialogTitle>Clone Stack</DialogTitle>
             <DialogDescription>
-              Create a copy of "<strong>{selectedStackName}</strong>" with a new name.
+              Create a copy of &quot;<strong>{selectedStackName}</strong>&quot; with a new name.
             </DialogDescription>
           </DialogHeader>
 
@@ -1114,7 +1114,7 @@ export function StackEditor({
           <AlertDialogHeader>
             <AlertDialogTitle>Remove Stack</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to remove stack "<strong>{selectedStackName}</strong>"
+              Are you sure you want to remove stack &quot;<strong>{selectedStackName}</strong>&quot;
               from <strong>{sortedHosts.find((h) => h.id === hostId)?.name || hostId}</strong>?
               This will stop and remove all containers, networks, <strong>and volumes</strong>.
               Data stored in volumes will be permanently lost. This action cannot be undone.

@@ -81,7 +81,7 @@ export function StackListPanel({
 
         {filteredStacks.length === 0 && stacks && stacks.length > 0 && (
           <p className="text-sm text-muted-foreground p-2">
-            No stacks match "{searchQuery}"
+            No stacks match &quot;{searchQuery}&quot;
           </p>
         )}
 

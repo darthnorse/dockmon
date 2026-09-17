@@ -427,7 +427,7 @@ export function SystemSettings() {
               className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             <p className="mt-1 text-xs text-gray-400">
-              Automatically delete tags that haven't been assigned to anything for this many days. Set to 0 to keep unused tags forever. (0-365 days)
+              Automatically delete tags that haven&apos;t been assigned to anything for this many days. Set to 0 to keep unused tags forever. (0-365 days)
             </p>
           </div>
 

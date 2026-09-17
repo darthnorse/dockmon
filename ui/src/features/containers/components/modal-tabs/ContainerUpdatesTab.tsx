@@ -382,7 +382,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
               <div>
                 <h3 className="text-lg font-semibold">Built Locally</h3>
                 <p className="text-sm text-muted-foreground">
-                  This image isn't tracked in a registry, so there are no updates to check
+                  This image isn&apos;t tracked in a registry, so there are no updates to check
                 </p>
               </div>
             </>
@@ -463,17 +463,17 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
             <AlertCircle className="h-5 w-5 text-yellow-400 flex-shrink-0 mt-0.5" />
             <div className="flex-1">
               <h4 className="text-sm font-semibold text-yellow-200 mb-2">
-                Auto-Update Won't Run Automatically
+                Auto-Update Won&apos;t Run Automatically
               </h4>
               <p className="text-sm text-yellow-200/90 mb-3">
-                Despite enabling auto-updates, this container won't update automatically because:
+                Despite enabling auto-updates, this container won&apos;t update automatically because:
               </p>
               <ul className="text-sm text-yellow-200/90 space-y-1.5">
                 {isComposeBlocked && (
                   <li className="flex flex-col gap-1">
                     <span>• This container uses Docker Compose which is blocked by system settings</span>
                     <span className="text-xs text-yellow-200/70 ml-4">
-                      Change in Settings → Container Updates → "Skip Docker Compose containers"
+                      Change in Settings → Container Updates → &quot;Skip Docker Compose containers&quot;
                     </span>
                   </li>
                 )}
@@ -501,7 +501,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
                 )}
               </ul>
               <p className="text-xs text-yellow-200/70 mt-3">
-                Manual updates are still available using the "Update Now" button above.
+                Manual updates are still available using the &quot;Update Now&quot; button above.
               </p>
             </div>
           </div>
@@ -790,7 +790,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
                   <div className="font-medium text-sm">Respect Tag</div>
                   <p className="text-xs text-muted-foreground mt-1">
                     Use the image tag defined in your container or Compose configuration. If the tag is fixed (e.g., nginx:1.25.3),
-                    the container will stay on that version. If it's a floating tag (e.g., :latest), DockMon will pull the newest
+                    the container will stay on that version. If it&apos;s a floating tag (e.g., :latest), DockMon will pull the newest
                     image for that tag.
                   </p>
                 </div>
@@ -927,7 +927,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
         <p className="font-medium">About Container Updates</p>
         <ul className="list-disc list-inside space-y-1 text-xs">
           <li>DockMon checks for updates daily at the configured time</li>
-          <li>Click "Check Now" to manually check for updates immediately</li>
+          <li>Click &quot;Check Now&quot; to manually check for updates immediately</li>
           <li>Auto-update will automatically pull and recreate containers when updates are available</li>
           <li>Container health is verified after updates to ensure successful deployment</li>
           <li>Updates are detected by comparing image digests, not just tags</li>

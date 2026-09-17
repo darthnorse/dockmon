@@ -216,7 +216,7 @@ export function ContainerOverviewTab({ containerId, actionButtons }: ContainerOv
         <div className="space-y-2">
           <label className="text-sm font-medium">Desired State</label>
           <p className="text-xs text-muted-foreground">
-            Controls how DockMon treats a stopped container. "On-Demand" containers won't trigger warnings when stopped.
+            Controls how DockMon treats a stopped container. &quot;On-Demand&quot; containers won&apos;t trigger warnings when stopped.
           </p>
           <div className="flex gap-2">
             <button

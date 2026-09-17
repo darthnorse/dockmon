@@ -130,7 +130,7 @@ print(response.json())`
                 <div className="p-3 rounded bg-gray-800/50 border border-gray-700">
                   <p className="text-gray-300 mb-2">Store the API key in an environment variable:</p>
                   <code className="text-green-400 text-xs">
-                    export DOCKMON_API_KEY="{keyData.key}"
+                    export DOCKMON_API_KEY=&quot;{keyData.key}&quot;
                   </code>
                 </div>
                 <p className="text-gray-400">Use it in your scripts and automation tools.</p>
@@ -143,7 +143,7 @@ print(response.json())`
                   {curlExample}
                 </div>
                 <p className="text-xs text-gray-400">
-                  Copy the API key to the Authorization header with "Bearer " prefix.
+                  Copy the API key to the Authorization header with &quot;Bearer &quot; prefix.
                 </p>
               </div>
             )}
@@ -168,7 +168,7 @@ print(response.json())`
           {/* Action */}
           <div className="pt-4">
             <Button onClick={onClose} className="w-full">
-              Got it - I've saved the key
+              Got it - I&apos;ve saved the key
             </Button>
           </div>
         </div>

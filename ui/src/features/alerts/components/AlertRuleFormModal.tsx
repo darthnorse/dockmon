@@ -1368,7 +1368,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                 </div>
                 <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-3">
                   <p className="text-xs text-blue-300">
-                    All containers with run mode "{formData.container_run_mode === 'should_run' ? 'Should Run' : 'On-Demand'}" will be monitored automatically.
+                    All containers with run mode &quot;{formData.container_run_mode === 'should_run' ? 'Should Run' : 'On-Demand'}&quot; will be monitored automatically.
                     To exclude specific containers from this rule, change their run mode in the container settings.
                   </p>
                 </div>
@@ -1551,7 +1551,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                   Resolve immediately after notification
                 </label>
                 <p className="mt-1 text-xs text-gray-400">
-                  Alert will be auto-resolved immediately after sending notification. Use this for notification-only mode if you don't want alerts to accumulate in the DockMon alert list.
+                  Alert will be auto-resolved immediately after sending notification. Use this for notification-only mode if you don&apos;t want alerts to accumulate in the DockMon alert list.
                 </p>
               </div>
             </div>
@@ -1598,7 +1598,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                   Suppress alert during container updates
                 </label>
                 <p className="mt-1 text-xs text-gray-400">
-                  Don't trigger this alert while a container is being updated. The alert will be re-evaluated after the update completes - only firing if the issue persists (e.g., container still stopped after update).
+                  Don&apos;t trigger this alert while a container is being updated. The alert will be re-evaluated after the update completes - only firing if the issue persists (e.g., container still stopped after update).
                 </p>
               </div>
             </div>

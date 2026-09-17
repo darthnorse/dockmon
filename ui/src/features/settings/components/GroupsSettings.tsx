@@ -27,7 +27,11 @@ import {
   useDeleteGroup,
   useAddGroupMember,
   useRemoveGroupMember,
+  useGroupTagScopes,
+  useUpdateGroupTagScopes,
+  useHostTagsWithMeta,
 } from '@/hooks/useGroups'
+import { GroupTagScopesField } from './GroupTagScopesField'
 import { useUsers } from '@/hooks/useUsers'
 import type { Group, GroupMember, CreateGroupRequest, UpdateGroupRequest } from '@/types/groups'
 import type { User } from '@/types/users'
@@ -58,6 +62,7 @@ export function GroupsSettings() {
 
   const createGroup = useCreateGroup()
   const updateGroup = useUpdateGroup()
+  const updateTagScopes = useUpdateGroupTagScopes()
   const deleteGroup = useDeleteGroup()
   const addMember = useAddGroupMember()
   const removeMember = useRemoveGroupMember()
@@ -90,10 +95,13 @@ export function GroupsSettings() {
     setShowCreateModal(false)
   }
 
-  // Handle update group
-  const handleUpdate = async (request: UpdateGroupRequest) => {
+  // Handle update group; tagIds is null when the host-visibility selection was not touched
+  const handleUpdate = async (request: UpdateGroupRequest, tagIds: string[] | null) => {
     if (!editingGroup) return
     await updateGroup.mutateAsync({ groupId: editingGroup.id, request })
+    if (tagIds !== null) {
+      await updateTagScopes.mutateAsync({ groupId: editingGroup.id, request: { tag_ids: tagIds } })
+    }
     setEditingGroup(null)
   }
 
@@ -207,7 +215,7 @@ export function GroupsSettings() {
         isOpen={editingGroup !== null}
         onClose={() => setEditingGroup(null)}
         onSubmit={handleUpdate}
-        isSubmitting={updateGroup.isPending}
+        isSubmitting={updateGroup.isPending || updateTagScopes.isPending}
       />
 
       {/* Delete confirmation dialog */}
@@ -482,30 +490,43 @@ interface EditGroupModalProps {
   group: Group | null
   isOpen: boolean
   onClose: () => void
-  onSubmit: (request: UpdateGroupRequest) => void
+  onSubmit: (request: UpdateGroupRequest, tagIds: string[] | null) => void
   isSubmitting: boolean
 }
 
 function EditGroupModal({ group, isOpen, onClose, onSubmit, isSubmitting }: EditGroupModalProps) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
+  const [tagIds, setTagIds] = useState<string[]>([])
+  const [tagIdsTouched, setTagIdsTouched] = useState(false)
+  const { data: tagScopes } = useGroupTagScopes(group?.id ?? null)
+  const { data: hostTags, isLoading: hostTagsLoading } = useHostTagsWithMeta(isOpen)
 
   // Initialize form when group changes (proper useEffect pattern)
   useEffect(() => {
     if (group) {
       setName(group.name)
       setDescription(group.description || '')
+      setTagIdsTouched(false)
     }
   }, [group])
 
+  useEffect(() => {
+    if (tagScopes && !tagIdsTouched) {
+      setTagIds(tagScopes.tag_ids)
+    }
+  }, [tagScopes, tagIdsTouched])
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    onSubmit({ name, description: description || undefined })
+    onSubmit({ name, description: description || undefined }, tagIdsTouched ? tagIds : null)
   }
 
   const handleClose = () => {
     setName('')
     setDescription('')
+    setTagIds([])
+    setTagIdsTouched(false)
     onClose()
   }
 
@@ -538,6 +559,15 @@ function EditGroupModal({ group, isOpen, onClose, onSubmit, isSubmitting }: Edit
                 rows={2}
               />
             </div>
+            <GroupTagScopesField
+              tags={hostTags ?? []}
+              selectedIds={tagIds}
+              isLoading={hostTagsLoading}
+              onChange={(ids) => {
+                setTagIds(ids)
+                setTagIdsTouched(true)
+              }}
+            />
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={handleClose}>

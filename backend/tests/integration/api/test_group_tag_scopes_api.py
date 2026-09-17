@@ -187,3 +187,24 @@ class TestRefreshWiring:
         source = inspect.getsource(oidc_auth_routes)
         assert "invalidate_user_groups_cache(user.id)" not in source
         assert source.count("_refresh_user_auth_state(user.id)") >= 3
+
+
+@pytest.mark.integration
+class TestHostTagsForEditor:
+    def test_lists_host_tags_and_scope_only_tags_with_ids(self, world, ws_spy):
+        orphan_scope_tag = _tag(world.session, "legacy")
+        _tag(world.session, "container-only")
+        world.session.add(TagAssignment(tag_id=world.session.query(Tag).filter_by(name="container-only").one().id,
+                                        subject_type="container", subject_id="h1:aaa111111111"))
+        world.session.add(GroupTagScope(group_id=world.scoped.id, tag_id=orphan_scope_tag.id))
+        world.session.commit()
+
+        response = world.admin.get("/api/v2/groups/host-tags")
+        assert response.status_code == 200, response.text
+        tags = {t["name"]: t for t in response.json()}
+        assert set(tags) == {"dev", "legacy"}
+        assert tags["dev"]["id"] == world.dev.id
+        assert set(tags["dev"]) >= {"id", "name", "color"}
+
+    def test_requires_groups_manage(self, world):
+        assert world.viewer.get("/api/v2/groups/host-tags").status_code == 403

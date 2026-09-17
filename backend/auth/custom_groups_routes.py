@@ -400,6 +400,26 @@ async def create_group(
         )
 
 
+class HostTagResponse(BaseModel):
+    """A tag usable as a host-visibility scope, addressed by id (names can collide)."""
+    id: str
+    name: str
+    color: Optional[str] = None
+
+
+@router.get("/host-tags", response_model=list[HostTagResponse], dependencies=[Depends(require_capability("groups.manage"))])
+async def list_host_tags(current_user: dict = Depends(get_current_user_or_api_key)):
+    """Tags the group editor can scope by: every tag on a host, plus any tag that
+    already scopes a group even if no host carries it right now (RESTRICT keeps it).
+    Registered before /{group_id} so the literal path is not swallowed by it."""
+    tags = {t['id']: t for t in db.get_all_tags_v2(subject_type='host', limit=1000)}
+    with db.get_session() as session:
+        for tag in session.query(Tag).join(GroupTagScope).distinct():
+            tags.setdefault(tag.id, {'id': tag.id, 'name': tag.name, 'color': tag.color})
+    return sorted((HostTagResponse(id=t['id'], name=t['name'], color=t.get('color')) for t in tags.values()),
+                  key=lambda t: t.name.lower())
+
+
 @router.get("/{group_id}", response_model=GroupDetailResponse, dependencies=[Depends(require_capability("groups.manage"))])
 async def get_group(
     group_id: int,

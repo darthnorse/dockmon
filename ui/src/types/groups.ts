@@ -134,3 +134,9 @@ export interface GroupTagScopesResponse {
 export interface UpdateGroupTagScopesRequest {
   tag_ids: string[]
 }
+
+export interface HostTagWithMeta {
+  id: string
+  name: string
+  color: string | null
+}

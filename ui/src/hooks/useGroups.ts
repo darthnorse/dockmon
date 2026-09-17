@@ -25,6 +25,7 @@ import type {
   CopyPermissionsResponse,
   GroupTagScopesResponse,
   UpdateGroupTagScopesRequest,
+  HostTagWithMeta,
 } from '@/types/groups'
 import { toast } from 'sonner'
 
@@ -279,5 +280,18 @@ export function useUpdateGroupTagScopes() {
       console.error('Failed to update tag scopes:', error)
       toast.error('Failed to update host visibility. Please try again.')
     },
+  })
+}
+
+/**
+ * Tags a group can be scoped by: every tag on a host, plus tags that already scope
+ * a group (kept even when no host carries them right now)
+ */
+export function useHostTagsWithMeta(enabled = true) {
+  return useQuery({
+    queryKey: ['group-host-tags'],
+    queryFn: () => apiClient.get<HostTagWithMeta[]>('/v2/groups/host-tags'),
+    enabled,
+    staleTime: 30 * 1000,
   })
 }

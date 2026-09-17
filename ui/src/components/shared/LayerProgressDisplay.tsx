@@ -16,6 +16,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { cn } from '@/lib/utils'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
+import type { WebSocketMessage } from '@/lib/websocket/useWebSocket'
 
 interface LayerProgress {
   id: string
@@ -31,7 +32,7 @@ interface LayerProgressData {
   total_layers: number
   remaining_layers: number
   summary: string
-  speed_mbps?: number
+  speed_mbps?: number | undefined
 }
 
 interface SimpleProgress {
@@ -90,65 +91,62 @@ export function LayerProgressDisplay({
   const completionTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const collapseTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
-  // Listen for WebSocket progress messages
+  const clearProgressAfterDelay = useCallback(() => {
+    if (completionTimeoutRef.current) {
+      clearTimeout(completionTimeoutRef.current)
+    }
+    completionTimeoutRef.current = setTimeout(() => {
+      setUpdateProgress(null)
+      setLayerProgress(null)
+      completionTimeoutRef.current = null
+    }, 3000)
+  }, [])
+
   const handleProgressMessage = useCallback(
-    (message: any) => {
-      // Support both message structures:
-      // 1. Container updates: message.data.host_id, message.data.entity_id
-      // 2. Deployments: message.host_id, message.deployment_id
-      const msgHostId = message.data?.host_id || message.host_id
-      const msgEntityId = message.data?.entity_id || message.deployment_id
-
-      if (msgHostId === hostId && msgEntityId === entityId) {
-        // Handle simple progress (container updates use message.data, deployments use message.progress)
-        if (simpleProgressEventType && message.type === simpleProgressEventType) {
-          // Deployment progress structure
-          const progress = message.progress || message.data
+    (message: WebSocketMessage) => {
+      if (simpleProgressEventType && message.type === simpleProgressEventType) {
+        if (message.type === 'deployment_progress') {
+          if (message.host_id !== hostId || message.deployment_id !== entityId) return
           setUpdateProgress({
-            stage: progress?.stage || message.data?.stage,
-            progress: progress?.overall_percent ?? message.data?.progress,
-            message: progress?.stage || message.data?.message || 'Processing...',
+            stage: message.progress.stage,
+            progress: message.progress.overall_percent,
+            message: message.progress.stage || 'Processing...',
           })
-
-          // Clear progress when update completes
-          const stage = progress?.stage || message.data?.stage
-          if (stage === 'completed' || message.status === 'running') {
-            // Clear any existing timeout first
-            if (completionTimeoutRef.current) {
-              clearTimeout(completionTimeoutRef.current)
-            }
-
-            // Set new timeout and store ID for cleanup
-            completionTimeoutRef.current = setTimeout(() => {
-              setUpdateProgress(null)
-              setLayerProgress(null)
-              completionTimeoutRef.current = null
-            }, 3000)
+          if (message.progress.stage === 'completed' || message.status === 'running') {
+            clearProgressAfterDelay()
           }
-        }
-
-        // Handle NEW layer progress (enhanced view)
-        if (message.type === eventType) {
-          // Build summary with speed appended if not already included
-          // Docker SDK includes speed in summary, agent sends it separately
-          let summary = message.data.summary || ''
-          const speedMbps = message.data.speed_mbps
-          if (speedMbps && speedMbps > 0 && !summary.includes('MB/s')) {
-            summary = `${summary} @ ${speedMbps.toFixed(1)} MB/s`
-          }
-
-          setLayerProgress({
-            overall_progress: message.data.overall_progress,
-            layers: message.data.layers,
-            total_layers: message.data.total_layers,
-            remaining_layers: message.data.remaining_layers,
-            summary: summary,
-            speed_mbps: message.data.speed_mbps,
+        } else if (message.type === 'container_update_progress') {
+          if (message.data.host_id !== hostId || message.data.entity_id !== entityId) return
+          setUpdateProgress({
+            stage: message.data.stage,
+            progress: message.data.progress,
+            message: message.data.stage || message.data.message || 'Processing...',
           })
+          if (message.data.stage === 'completed') {
+            clearProgressAfterDelay()
+          }
         }
       }
+
+      if (message.type === eventType) {
+        if (message.data.host_id !== hostId || message.data.entity_id !== entityId) return
+        // Docker SDK includes speed in summary, agent sends it separately
+        let summary = message.data.summary || ''
+        const speedMbps = message.data.speed_mbps
+        if (speedMbps && speedMbps > 0 && !summary.includes('MB/s')) {
+          summary = `${summary} @ ${speedMbps.toFixed(1)} MB/s`
+        }
+        setLayerProgress({
+          overall_progress: message.data.overall_progress,
+          layers: message.data.layers,
+          total_layers: message.data.total_layers,
+          remaining_layers: message.data.remaining_layers,
+          summary,
+          speed_mbps: message.data.speed_mbps,
+        })
+      }
     },
-    [hostId, entityId, eventType, simpleProgressEventType]
+    [hostId, entityId, eventType, simpleProgressEventType, clearProgressAfterDelay]
   )
 
   useEffect(() => {

@@ -367,11 +367,13 @@ def build_endpoint_matrix(host_id: str, container_id: str) -> list[Endpoint]:
 # Test runner
 # ---------------------------------------------------------------------------
 class CapabilityTester:
-    def __init__(self, base_url: str, admin_user: str, admin_pass: str,
-                 verify_ssl: bool = True, filter_capability: str | None = None):
+    def __init__(self, base_url: str, admin_user: str, admin_pass: str | None,
+                 verify_ssl: bool = True, filter_capability: str | None = None,
+                 api_key: str | None = None):
         self.base_url = base_url.rstrip("/")
         self.admin_user = admin_user
         self.admin_pass = admin_pass
+        self.api_key = api_key
         self.verify_ssl = verify_ssl
         self.filter_capability = filter_capability
 
@@ -463,10 +465,15 @@ class CapabilityTester:
         print(f"\n{BOLD}=== DockMon Capability Matrix Test ==={RESET}")
         print(f"Target: {self.base_url}\n")
 
-        # 1. Admin login
-        print("[SETUP] Admin login...", end=" ", flush=True)
+        # 1. Admin auth (API key or session login)
+        print("[SETUP] Admin auth...", end=" ", flush=True)
         self.admin_client = self._make_client()
-        if not self._login(self.admin_client, self.admin_user, self.admin_pass):
+        if self.api_key:
+            self.admin_client.headers["Authorization"] = f"Bearer {self.api_key}"
+            if self.admin_client.get("/api/v2/groups").status_code != 200:
+                print(fail("- API key rejected or lacks groups.manage"))
+                return False
+        elif not self._login(self.admin_client, self.admin_user, self.admin_pass):
             print(fail("- Could not login as admin"))
             return False
         print(ok())
@@ -782,7 +789,9 @@ class CapabilityTester:
                 pass
 
         self.admin_client = self._make_client()
-        if not self._login(self.admin_client, self.admin_user, self.admin_pass):
+        if self.api_key:
+            self.admin_client.headers["Authorization"] = f"Bearer {self.api_key}"
+        elif not self._login(self.admin_client, self.admin_user, self.admin_pass):
             print(f"[CLEANUP] {RED}Could not re-login as admin, skipping API cleanup{RESET}")
             return
 
@@ -875,7 +884,8 @@ class CapabilityTester:
     def _cleanup_by_prefix(self, list_endpoint: str, list_key: str,
                            name_field: str, prefix: str,
                            delete_base: str | None = None):
-        """Generic cleanup: list resources, delete those matching a name prefix."""
+        """Generic cleanup: list resources, delete those whose name carries the test marker
+        (the stack import prepends "stack-", so this is a contains check, not a prefix check)."""
         try:
             resp = self._admin_request("GET", list_endpoint)
             items = self._extract_list(resp, list_key)
@@ -884,7 +894,7 @@ class CapabilityTester:
             return
         delete_path = delete_base or list_endpoint
         for item in items:
-            if not item.get(name_field, "").startswith(prefix):
+            if prefix not in item.get(name_field, ""):
                 continue
             try:
                 if list_endpoint == "/api/stacks":
@@ -911,10 +921,13 @@ Examples:
     )
     parser.add_argument("--url", "-U", required=True, help="DockMon base URL")
     parser.add_argument("--username", "-u", default="admin", help="Admin username (default: admin)")
-    parser.add_argument("--password", "-p", required=True, help="Admin password")
+    parser.add_argument("--password", "-p", help="Admin password")
+    parser.add_argument("--api-key", help="Administrators API key instead of a password login")
     parser.add_argument("--insecure", "-k", action="store_true", help="Disable SSL verification")
     parser.add_argument("--capability", "-c", help="Test only this capability (e.g. 'hosts.view')")
     args = parser.parse_args()
+    if not args.api_key and not args.password:
+        parser.error("give --api-key or --password")
 
     tester = CapabilityTester(
         base_url=args.url,
@@ -922,6 +935,7 @@ Examples:
         admin_pass=args.password,
         verify_ssl=not args.insecure,
         filter_capability=args.capability,
+        api_key=args.api_key,
     )
 
     # Signal handlers for cleanup on interrupt

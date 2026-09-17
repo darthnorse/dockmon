@@ -101,7 +101,9 @@ RUN pip install --no-cache-dir supervisor==4.3.0
 COPY backend/requirements.txt /app/backend/
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt \
     # Remove build dependencies to keep image small
-    && apk del .build-deps
+    && apk del .build-deps \
+    # Nothing installs at runtime; pip's vendored copies of msgpack/setuptools carry advisories
+    && pip uninstall -y pip setuptools 2>/dev/null || true
 
 # Copy backend code
 COPY backend/ /app/backend/

@@ -60,6 +60,8 @@ async def _refresh_user_auth_state(user_id: int) -> None:
     any WebSocket the user already has open so its capabilities and visible hosts follow."""
     invalidate_user_groups_cache(user_id)
     await _refresh_ws_auth_state(user_id)
+
+
 router = APIRouter(prefix="/api/v2/auth/oidc", tags=["oidc-auth"])
 
 # Pending auth request expiry time

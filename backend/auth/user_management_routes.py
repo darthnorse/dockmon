@@ -585,9 +585,10 @@ async def delete_user(
         logger.info(f"User '{username}' deleted by {display_name}")
 
     # Session eviction only stops new requests; open WebSockets keep streaming until closed
-    from main import monitor
-    if monitor and monitor.manager:
-        await monitor.manager.disconnect_user(target_user_id)
+    from auth.custom_groups_routes import ws_manager
+    manager = ws_manager()
+    if manager:
+        await manager.disconnect_user(target_user_id)
 
     return {"message": f"User '{username}' has been deleted"}
 

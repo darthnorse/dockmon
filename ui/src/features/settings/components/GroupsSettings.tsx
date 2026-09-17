@@ -494,39 +494,35 @@ interface EditGroupModalProps {
   isSubmitting: boolean
 }
 
-function EditGroupModal({ group, isOpen, onClose, onSubmit, isSubmitting }: EditGroupModalProps) {
+export function EditGroupModal({ group, isOpen, onClose, onSubmit, isSubmitting }: EditGroupModalProps) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const [tagIds, setTagIds] = useState<string[]>([])
-  const [tagIdsTouched, setTagIdsTouched] = useState(false)
+  // null = untouched: the picker shows the group's stored scopes and Save leaves them alone
+  const [tagIds, setTagIds] = useState<string[] | null>(null)
   const { data: tagScopes } = useGroupTagScopes(group?.id ?? null)
   const { data: hostTags, isLoading: hostTagsLoading } = useHostTagsWithMeta(isOpen)
+  // The picker must not be editable until THIS group's scopes are known, or a click
+  // during the fetch would replace them with a selection built from the wrong baseline
+  const scopesReady = tagScopes?.group_id === group?.id
 
   // Initialize form when group changes (proper useEffect pattern)
   useEffect(() => {
     if (group) {
       setName(group.name)
       setDescription(group.description || '')
-      setTagIdsTouched(false)
+      setTagIds(null)
     }
   }, [group])
 
-  useEffect(() => {
-    if (tagScopes && !tagIdsTouched) {
-      setTagIds(tagScopes.tag_ids)
-    }
-  }, [tagScopes, tagIdsTouched])
-
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    onSubmit({ name, description: description || undefined }, tagIdsTouched ? tagIds : null)
+    onSubmit({ name, description: description || undefined }, scopesReady ? tagIds : null)
   }
 
   const handleClose = () => {
     setName('')
     setDescription('')
-    setTagIds([])
-    setTagIdsTouched(false)
+    setTagIds(null)
     onClose()
   }
 
@@ -561,12 +557,9 @@ function EditGroupModal({ group, isOpen, onClose, onSubmit, isSubmitting }: Edit
             </div>
             <GroupTagScopesField
               tags={hostTags ?? []}
-              selectedIds={tagIds}
-              isLoading={hostTagsLoading}
-              onChange={(ids) => {
-                setTagIds(ids)
-                setTagIdsTouched(true)
-              }}
+              selectedIds={tagIds ?? tagScopes?.tag_ids ?? []}
+              isLoading={hostTagsLoading || !scopesReady}
+              onChange={setTagIds}
             />
           </div>
           <DialogFooter>

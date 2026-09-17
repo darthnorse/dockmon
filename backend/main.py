@@ -984,10 +984,11 @@ async def update_host_tags(
 
     # Update in-memory host object so changes are immediately visible
     host.tags = updated_tags
-    # Host tags drive tag-scoped visibility; open sockets re-resolve their host sets
-    await monitor.manager.refresh_all_visible_hosts()
 
     _safe_audit(current_user, log_host_change, AuditAction.UPDATE, host_id, host.name, http_request, details={'tags_to_add': request.tags_to_add, 'tags_to_remove': request.tags_to_remove})
+
+    # Host tags drive tag-scoped visibility; open sockets re-resolve their host sets
+    await monitor.manager.refresh_all_visible_hosts()
 
     return {"tags": updated_tags}
 
@@ -6502,6 +6503,7 @@ async def websocket_shell_endpoint(
         logger.error("Shell audit logging failed", exc_info=True)
 
     # Route based on connection type
+    await monitor.manager.register_shell(websocket, user_id, host_id)
     try:
         if host.connection_type == 'agent':
             # Agent-based host: route through agent WebSocket
@@ -6510,6 +6512,7 @@ async def websocket_shell_endpoint(
             # Local/Remote host: direct Docker connection
             await _handle_direct_shell_session(websocket, host_id, container_id, session_data)
     finally:
+        await monitor.manager.unregister_shell(websocket)
         # Audit log - shell session ended
         try:
             with monitor.db.get_session() as session:

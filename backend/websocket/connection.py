@@ -84,6 +84,9 @@ class ConnectionManager:
         self._connection_capabilities: dict[WebSocket, set] = {}
         # None = unrestricted; a set = only these host ids (fail-closed per message type)
         self._connection_visible_hosts: dict[WebSocket, Optional[set]] = {}
+        # Interactive shells are not broadcast targets, but a user delete or a scope
+        # change must still be able to close them: (user_id, host_id) per socket
+        self._shell_sockets: dict[WebSocket, tuple[int, str]] = {}
         # Bumped on every refresh so a connection resolving its visible set
         # concurrently with a scope change can detect the lost update.
         self._visibility_generation = 0
@@ -246,16 +249,31 @@ class ConnectionManager:
                 if ws in self._connection_capabilities:
                     self._connection_capabilities[ws] = caps
 
+    async def register_shell(self, websocket: WebSocket, user_id: int, host_id: str):
+        async with self._lock:
+            self._shell_sockets[websocket] = (user_id, host_id)
+
+    async def unregister_shell(self, websocket: WebSocket):
+        async with self._lock:
+            self._shell_sockets.pop(websocket, None)
+
+    async def _close(self, websocket: WebSocket, code: int, reason: str):
+        try:
+            await websocket.close(code=code, reason=reason)
+        except Exception as e:
+            logger.debug(f"Closing socket ({reason}): {e}")
+
     async def disconnect_user(self, user_id: int):
-        """Close every connection belonging to a user (account deleted)."""
+        """Close every connection belonging to a user (account deleted), shells included."""
         async with self._lock:
             sockets = [ws for ws, uid in self._connection_user_ids.items() if uid == user_id]
+            shells = [ws for ws, (uid, _) in self._shell_sockets.items() if uid == user_id]
         for ws in sockets:
-            try:
-                await ws.close(code=4401, reason="User account deleted")
-            except Exception as e:
-                logger.debug(f"Closing socket of deleted user {user_id}: {e}")
+            await self._close(ws, 4401, "User account deleted")
             await self.disconnect(ws)
+        for ws in shells:
+            await self._close(ws, 4401, "User account deleted")
+            await self.unregister_shell(ws)
 
     async def refresh_visible_hosts_for_user(self, user_id: int):
         """Recompute the host scope of every connection belonging to a user and
@@ -270,11 +288,11 @@ class ConnectionManager:
         async with self._lock:
             self._visibility_generation += 1
             ws_user_ids = [(ws, uid) for ws, uid in self._connection_user_ids.items() if applies_to(uid)]
+            shells = [(ws, uid, host_id) for ws, (uid, host_id) in self._shell_sockets.items() if applies_to(uid)]
 
         per_user: dict[int, Optional[set]] = {}
-        for _, uid in ws_user_ids:
-            if uid not in per_user:
-                per_user[uid] = get_visible_host_ids_for_user(uid)
+        for uid in {uid for _, uid in ws_user_ids} | {uid for _, uid, _ in shells}:
+            per_user[uid] = get_visible_host_ids_for_user(uid)
 
         async with self._lock:
             refreshed = [(ws, per_user[uid]) for ws, uid in ws_user_ids if ws in self._connection_capabilities]
@@ -284,3 +302,9 @@ class ConnectionManager:
         if self.realtime is not None:
             for ws, visible in refreshed:
                 await self.realtime.revoke_hidden_subscriptions(ws, visible)
+
+        for ws, uid, host_id in shells:
+            visible = per_user[uid]
+            if visible is not None and host_id not in visible:
+                await self._close(ws, 4404, "Not found")
+                await self.unregister_shell(ws)

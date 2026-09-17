@@ -192,12 +192,16 @@ class TestPerTypeRules:
 class FakeWebSocket:
     def __init__(self):
         self.sent = []
+        self.closed = None
 
     async def accept(self):
         pass
 
     async def send_text(self, text):
         self.sent.append(json.loads(text))
+
+    async def close(self, code=1000, reason=""):
+        self.closed = (code, reason)
 
 
 ALL_CAPS = {"containers.view", "hosts.view", "events.view", "batch.view", "stacks.view", "containers.view_env"}
@@ -383,3 +387,38 @@ class TestLegacyStatsStream:
         assert first["type"] == "container_stats"
         assert first["host_id"] == "h1"
         assert first["data"]["container_id"] == "aaa111111111"
+
+
+class TestShellSockets:
+    """Interactive shells never receive broadcasts, but a user delete or a scope
+    change must be able to close them like any other socket of that user."""
+
+    async def test_user_delete_closes_ws_and_shell_sockets(self):
+        ws, shell, other = FakeWebSocket(), FakeWebSocket(), FakeWebSocket()
+        manager = await _manager_with((ws, 1, ALL_CAPS, None))
+        await manager.register_shell(shell, 1, "h1")
+        await manager.register_shell(other, 2, "h1")
+        await manager.disconnect_user(1)
+        assert ws.closed[0] == 4401 and shell.closed[0] == 4401
+        assert other.closed is None
+        assert ws not in manager.active_connections
+        assert shell not in manager._shell_sockets and other in manager._shell_sockets
+
+    async def test_scope_narrowing_closes_shells_on_hidden_hosts_only(self):
+        visible_shell, hidden_shell = FakeWebSocket(), FakeWebSocket()
+        manager = ConnectionManager()
+        await manager.register_shell(visible_shell, 1, "h1")
+        await manager.register_shell(hidden_shell, 1, "h2")
+        with patch.object(connection_module, "get_visible_host_ids_for_user", return_value={"h1"}):
+            await manager.refresh_visible_hosts_for_user(1)
+        assert hidden_shell.closed == (4404, "Not found")
+        assert visible_shell.closed is None
+        assert hidden_shell not in manager._shell_sockets
+
+    async def test_unrestricted_refresh_leaves_shells_open(self):
+        shell = FakeWebSocket()
+        manager = ConnectionManager()
+        await manager.register_shell(shell, 1, "h2")
+        with patch.object(connection_module, "get_visible_host_ids_for_user", return_value=None):
+            await manager.refresh_all_visible_hosts()
+        assert shell.closed is None

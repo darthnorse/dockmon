@@ -881,3 +881,24 @@ class TestShellWebSocketVisibility:
             with client.websocket_connect("/ws/shell/h2/ccc333333333", cookies={"session_id": "dev-cookie"}):
                 pass
         assert exc.value.code == 4404
+
+    def test_open_shell_is_registered_and_closed_when_its_host_becomes_hidden(self, client, ws_sessions, db_session, monkeypatch):
+        """A shell the manager cannot see would survive a scope change; it must be tracked."""
+        from starlette.websockets import WebSocketDisconnect
+        manager = main_module.monitor.manager
+
+        async def fake_session(websocket, host_id, container_id, session_data):
+            await websocket.accept()
+            while (await websocket.receive())["type"] != "websocket.disconnect":
+                pass
+
+        monkeypatch.setattr(main_module, "_handle_direct_shell_session", fake_session)
+        with client.websocket_connect("/ws/shell/h1/aaa111111111", cookies={"session_id": "dev-cookie"}) as ws:
+            assert [(uid, host) for (uid, host) in manager._shell_sockets.values()] == [(ws_sessions["dev"].id, "h1")]
+            db_session.query(TagAssignment).filter_by(subject_id="h1").delete()
+            db_session.commit()
+            ws.portal.call(manager.refresh_visible_hosts_for_user, ws_sessions["dev"].id)
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_text()
+            assert exc.value.code == 4404
+        assert manager._shell_sockets == {}

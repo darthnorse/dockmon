@@ -10,7 +10,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import aliased
 
 from auth.api_key_auth import (
@@ -26,7 +26,7 @@ from auth.utils import (
     format_timestamp, get_auditable_user_info, ensure_not_last_admin, get_user_or_404,
     CRITICAL_CAPABILITIES, verify_critical_capabilities,
 )
-from database import CustomGroup, UserGroupMembership, User, ApiKey, GroupPermission, GroupTagScope, Tag
+from database import CustomGroup, UserGroupMembership, User, ApiKey, GroupPermission, GroupTagScope, Tag, TagAssignment
 from audit.audit_logger import log_audit
 from auth.capabilities import ALL_CAPABILITIES, CAPABILITY_INFO
 
@@ -59,18 +59,24 @@ def _any_group_has_capability_with_members(session, capability: str, exclude_gro
 router = APIRouter(prefix="/api/v2/groups", tags=["groups"])
 
 
+def ws_manager():
+    """The live ConnectionManager, or None before startup."""
+    # Local import to avoid circular dependency (main imports this module)
+    from main import monitor
+    return monitor.manager if monitor else None
+
+
 async def _refresh_ws_auth_state(user_id: int | None = None):
     """Refresh what open WebSocket connections are allowed to receive: capabilities
     and the visible-host set. With user_id, only that user's connections."""
-    # Local import to avoid circular dependency (main imports this module)
-    from main import monitor
-    if monitor and monitor.manager:
+    manager = ws_manager()
+    if manager:
         if user_id is not None:
-            await monitor.manager.refresh_capabilities_for_user(user_id)
-            await monitor.manager.refresh_visible_hosts_for_user(user_id)
+            await manager.refresh_capabilities_for_user(user_id)
+            await manager.refresh_visible_hosts_for_user(user_id)
         else:
-            await monitor.manager.refresh_all_capabilities()
-            await monitor.manager.refresh_all_visible_hosts()
+            await manager.refresh_all_capabilities()
+            await manager.refresh_all_visible_hosts()
 
 
 # =============================================================================
@@ -412,12 +418,13 @@ async def list_host_tags(current_user: dict = Depends(get_current_user_or_api_ke
     """Tags the group editor can scope by: every tag on a host, plus any tag that
     already scopes a group even if no host carries it right now (RESTRICT keeps it).
     Registered before /{group_id} so the literal path is not swallowed by it."""
-    tags = {t['id']: t for t in db.get_all_tags_v2(subject_type='host', limit=1000)}
     with db.get_session() as session:
-        for tag in session.query(Tag).join(GroupTagScope).distinct():
-            tags.setdefault(tag.id, {'id': tag.id, 'name': tag.name, 'color': tag.color})
-    return sorted((HostTagResponse(id=t['id'], name=t['name'], color=t.get('color')) for t in tags.values()),
-                  key=lambda t: t.name.lower())
+        host_tag_ids = session.query(TagAssignment.tag_id).filter(TagAssignment.subject_type == 'host')
+        scoped_tag_ids = session.query(GroupTagScope.tag_id)
+        tags = (session.query(Tag)
+                .filter(or_(Tag.id.in_(host_tag_ids), Tag.id.in_(scoped_tag_ids)))
+                .order_by(func.lower(Tag.name)).all())
+        return [HostTagResponse(id=t.id, name=t.name, color=t.color) for t in tags]
 
 
 @router.get("/{group_id}", response_model=GroupDetailResponse, dependencies=[Depends(require_capability("groups.manage"))])

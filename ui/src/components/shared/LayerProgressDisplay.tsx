@@ -59,6 +59,8 @@ export function LayerProgressDisplay({
 
   // Layer-by-layer progress state (detailed view)
   const [layerProgress, setLayerProgress] = useState<LayerProgressData | null>(null)
+  // The pull's layer view and the stage messages arrive on different events; the latest one owns the header
+  const [headerSource, setHeaderSource] = useState<'stage' | 'layers'>('stage')
   const [layerDetailsExpanded, setLayerDetailsExpanded] = useState(true)  // Default expanded
 
   // Store timeout IDs in refs (not state) so they are NOT effect deps — using
@@ -86,6 +88,7 @@ export function LayerProgressDisplay({
           progress: message.data.progress,
           message: message.data.message || message.data.stage || 'Processing...',
         })
+        setHeaderSource('stage')
         if (message.data.stage === 'completed') {
           clearProgressAfterDelay()
         }
@@ -107,6 +110,7 @@ export function LayerProgressDisplay({
           summary,
           speed_mbps: message.data.speed_mbps,
         })
+        setHeaderSource('layers')
       }
     },
     [hostId, containerId, clearProgressAfterDelay]
@@ -152,8 +156,7 @@ export function LayerProgressDisplay({
     return null
   }
 
-  // Docker SDK updates have layerProgress, agent updates don't
-  const hasDetailedProgress = layerProgress !== null
+  const hasDetailedProgress = layerProgress !== null && headerSource === 'layers'
 
   return (
     <div className="space-y-3 rounded-lg border border-blue-500/50 bg-blue-500/10 p-4" data-testid="layer-progress-display">

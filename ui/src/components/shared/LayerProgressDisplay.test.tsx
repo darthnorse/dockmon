@@ -44,6 +44,29 @@ describe('LayerProgressDisplay', () => {
     expect(screen.queryByText('40%')).not.toBeInTheDocument()
   })
 
+  it('hands the header back to the stage message once the pull is done', () => {
+    const send = renderWithSocket({ hostId: 'h1', containerId: 'aaa111111111' })
+
+    send({
+      type: 'container_update_layer_progress',
+      data: {
+        host_id: 'h1', entity_id: 'aaa111111111', overall_progress: 100, total_layers: 1, remaining_layers: 0,
+        summary: '1/1 layers complete', layers: [{ id: 'abc', status: 'Pull complete', current: 10, total: 10, percent: 100 }],
+      },
+    })
+    expect(screen.getByText('1/1 layers complete')).toBeInTheDocument()
+
+    send({
+      type: 'container_update_progress',
+      data: { host_id: 'h1', container_id: 'aaa111111111', stage: 'backup', progress: 60, message: 'Creating backup' },
+    })
+
+    expect(screen.getByText('Creating backup')).toBeInTheDocument()
+    expect(screen.queryByText('1/1 layers complete')).not.toBeInTheDocument()
+    expect(screen.getByText('60%')).toBeInTheDocument()
+    expect(screen.getByText('Pull complete')).toBeInTheDocument()
+  })
+
   it('renders an agent stage that carries no percentage', () => {
     const send = renderWithSocket({ hostId: 'h1', containerId: 'aaa111111111' })
 

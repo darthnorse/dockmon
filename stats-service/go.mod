@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/darthnorse/dockmon-shared v0.0.0
 	github.com/docker/docker v28.5.2+incompatible
-	github.com/gorilla/websocket v1.5.3
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	modernc.org/sqlite v1.48.1
 )
 
@@ -40,6 +40,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.7.1 // indirect
+	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/tools v0.48.0 // indirect
 	gotest.tools/v3 v3.5.2 // indirect

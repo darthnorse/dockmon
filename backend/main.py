@@ -4865,7 +4865,6 @@ async def get_event_statistics(start_date: Optional[str] = None,
                              current_user: dict = Depends(get_current_user)):
     """Get event statistics for dashboard"""
     try:
-        # Parse dates
         parsed_start_date = None
         parsed_end_date = None
 

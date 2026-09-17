@@ -737,7 +737,6 @@ class AgentManager:
                         # Delete old record
                         session.delete(ar)
 
-                # Transfer container and host tags
                 transferred_count += self._transfer_tag_assignments(session, old_host_id, new_host_id)
 
                 # Transfer desired states
@@ -1072,7 +1071,6 @@ class AgentManager:
                         session.delete(ar)
                         transferred_count += 1
 
-                # Transfer container and host tags
                 transferred_count += self._transfer_tag_assignments(session, old_host_id, new_host_id)
 
                 # Transfer desired states

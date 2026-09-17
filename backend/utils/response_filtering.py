@@ -310,8 +310,8 @@ def selector_host_ids(host_selector_json: Optional[str], container_selector_json
 
 
 def _include_entries(selector: Dict) -> List[str]:
-    """`include` as the engine will read it: a list of strings, or a bare string
-    (which `x in "..."` turns into a substring match, so it must count as naming itself)."""
+    """`include` entries; validate_selector_field guarantees a list of strings at the
+    door, a bare string still counts as naming itself in case a stored rule predates it."""
     include = selector.get("include")
     if isinstance(include, str):
         return [include]

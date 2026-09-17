@@ -4859,6 +4859,41 @@ async def get_events(
         logger.error(f"Failed to get events: {e}")
         raise HTTPException(status_code=500, detail="Failed to get events")
 
+@app.get("/api/events/statistics", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
+async def get_event_statistics(start_date: Optional[str] = None,
+                             end_date: Optional[str] = None,
+                             current_user: dict = Depends(get_current_user)):
+    """Get event statistics for dashboard"""
+    try:
+        # Parse dates
+        parsed_start_date = None
+        parsed_end_date = None
+
+        if start_date:
+            try:
+                parsed_start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid start_date format")
+
+        if end_date:
+            try:
+                parsed_end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid end_date format")
+
+        stats = monitor.db.get_event_statistics(
+            start_date=parsed_start_date,
+            end_date=parsed_end_date,
+            visible_host_ids=get_visible_host_ids_for_auth(current_user),
+        )
+
+        return stats
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get event statistics: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get event statistics")
+
 @app.get("/api/events/{event_id}", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
 async def get_event_by_id(
     event_id: int,
@@ -5514,41 +5549,6 @@ async def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
 # ==================== Event Log Routes ====================
 # Note: Main /api/events endpoints are defined earlier (lines 1185-1367) with full feature set
 # including rate limiting. Additional event endpoints below:
-
-@app.get("/api/events/statistics", tags=["events"], dependencies=[Depends(require_capability("events.view"))])
-async def get_event_statistics(start_date: Optional[str] = None,
-                             end_date: Optional[str] = None,
-                             current_user: dict = Depends(get_current_user)):
-    """Get event statistics for dashboard"""
-    try:
-        # Parse dates
-        parsed_start_date = None
-        parsed_end_date = None
-
-        if start_date:
-            try:
-                parsed_start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid start_date format")
-
-        if end_date:
-            try:
-                parsed_end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid end_date format")
-
-        stats = monitor.db.get_event_statistics(
-            start_date=parsed_start_date,
-            end_date=parsed_end_date,
-            visible_host_ids=get_visible_host_ids_for_auth(current_user),
-        )
-
-        return stats
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get event statistics: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get event statistics")
 
 @app.get("/api/hosts/{host_id}/events/container/{container_id}", tags=["events"], dependencies=[Depends(require_capability("events.view")), Depends(require_host_access)])
 async def get_container_events(host_id: str, container_id: str, limit: int = 50, current_user: dict = Depends(get_current_user)):

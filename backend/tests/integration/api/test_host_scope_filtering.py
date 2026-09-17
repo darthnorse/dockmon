@@ -336,13 +336,10 @@ class TestEventsScoped:
         titles, total = self._titles(orphan_client)
         assert titles == {"DockMon started", "Alert rule 'High CPU' created", "Channel created", "admin logged in"}
 
-    def test_statistics_count_the_scoped_set(self, seeded_events):
-        # The /api/events/statistics route is shadowed by /api/events/{event_id} (pre-existing),
-        # so the scoping is asserted on the query it delegates to
-        db = main_module.monitor.db
-        assert db.get_event_statistics()["total_events"] == len(seeded_events)
-        assert db.get_event_statistics(visible_host_ids={"h1"})["total_events"] == 6
-        assert db.get_event_statistics(visible_host_ids=set())["total_events"] == 4
+    def test_statistics_count_the_scoped_set(self, dev_scoped_client, unrestricted_client, orphan_client, seeded_events):
+        assert unrestricted_client.get("/api/events/statistics").json()["total_events"] == len(seeded_events)
+        assert dev_scoped_client.get("/api/events/statistics").json()["total_events"] == 6
+        assert orphan_client.get("/api/events/statistics").json()["total_events"] == 4
 
     def test_single_event_on_hidden_host_is_404(self, dev_scoped_client, seeded_events):
         assert dev_scoped_client.get(f"/api/events/{seeded_events['test_host']}").status_code == 404
@@ -475,9 +472,9 @@ class TestAlertRuleSelectorsScoped:
             host_selector_json=json.dumps({"include": ["h1", "h2"]}))).status_code == 404
         assert dev_scoped_client.post("/api/alerts/rules", json=_rule_body(
             host_selector_json=json.dumps({"host_id": "h2"}))).status_code == 404
-        # A bare string include is a substring match in the engine, so it names that host
+        # A bare string include would be a substring match in the engine: rejected at the door
         assert dev_scoped_client.post("/api/alerts/rules", json=_rule_body(
-            host_selector_json=json.dumps({"include": "h2"}))).status_code == 404
+            host_selector_json=json.dumps({"include": "h1"}))).status_code == 400
         assert dev_scoped_client.post("/api/alerts/rules", json=_rule_body(
             scope="container", kind="container_stopped",
             container_selector_json=json.dumps({"include": ["h2:web"]}))).status_code == 404

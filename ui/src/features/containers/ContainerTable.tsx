@@ -20,6 +20,7 @@ import {
 
 // Extend TanStack Table's ColumnMeta to include our custom align property
 declare module '@tanstack/react-table' {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- declaration merging requires the upstream parameter names
   interface ColumnMeta<TData, TValue> {
     align?: 'left' | 'center' | 'right'
   }

@@ -84,7 +84,7 @@ export function EventsPage() {
         if (data.sort_order) {
           setSortOrder(data.sort_order)
         }
-      } catch (err) {
+      } catch {
         // Silently fail - will use default sort order
       }
     }

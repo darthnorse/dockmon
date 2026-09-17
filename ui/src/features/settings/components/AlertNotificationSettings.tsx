@@ -46,7 +46,7 @@ export function AlertNotificationSettings() {
       await updateSettings.mutateAsync({ alert_template: template })
       setHasChanges(false)
       toast.success('Alert template saved successfully')
-    } catch (error) {
+    } catch {
       toast.error('Failed to save alert template')
     }
   }

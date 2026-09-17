@@ -220,7 +220,7 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
 
       toast.success(`Removed tag "${tagToRemove}"`)
       queryClient.invalidateQueries({ queryKey: ['containers'] })
-    } catch (err) {
+    } catch {
       queryClient.invalidateQueries({ queryKey: ['containers'] })
       toast.error('Failed to remove tag')
     }

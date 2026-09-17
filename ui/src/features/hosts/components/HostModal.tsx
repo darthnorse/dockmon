@@ -341,7 +341,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
       await deleteMutation.mutateAsync(host.id)
       setShowDeleteConfirm(false)
       onClose()
-    } catch (error) {
+    } catch {
       setShowDeleteConfirm(false)
     }
   }

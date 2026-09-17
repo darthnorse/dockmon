@@ -54,7 +54,7 @@ export function EventsSettings() {
       setPatterns(updatedPatterns)
       setNewPattern('')
       toast.success(`Pattern "${trimmedPattern}" added`)
-    } catch (error) {
+    } catch {
       toast.error('Failed to add pattern')
     } finally {
       setIsUpdating(false)
@@ -68,7 +68,7 @@ export function EventsSettings() {
       await updateSettings.mutateAsync({ event_suppression_patterns: updatedPatterns })
       setPatterns(updatedPatterns)
       toast.success(`Pattern "${patternToRemove}" removed`)
-    } catch (error) {
+    } catch {
       toast.error('Failed to remove pattern')
     } finally {
       setIsUpdating(false)

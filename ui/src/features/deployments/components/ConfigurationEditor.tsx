@@ -112,7 +112,6 @@ interface ConfigurationEditorProps {
   type: 'container' | 'stack' | 'env'
   value: string
   onChange: (value: string) => void
-  mode?: 'json'  // Future: add 'form' mode for structured editing
   error?: string | undefined
   className?: string
   rows?: number
@@ -135,8 +134,6 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
   type,
   value,
   onChange,
-  // @ts-expect-error - mode reserved for future 'form' editing mode
-  mode = 'json',
   error,
   className = '',
   rows = 12,

@@ -72,7 +72,7 @@ export function SystemSettings() {
       try {
         await updateSettings.mutateAsync({ polling_interval: pollingInterval })
         toast.success('Polling interval updated')
-      } catch (error) {
+      } catch {
         toast.error('Failed to update polling interval')
       }
     }
@@ -83,7 +83,7 @@ export function SystemSettings() {
       try {
         await updateSettings.mutateAsync({ connection_timeout: connectionTimeout })
         toast.success('Connection timeout updated')
-      } catch (error) {
+      } catch {
         toast.error('Failed to update connection timeout')
       }
     }
@@ -94,7 +94,7 @@ export function SystemSettings() {
       try {
         await updateSettings.mutateAsync({ max_retries: maxRetries })
         toast.success('Max retries updated')
-      } catch (error) {
+      } catch {
         toast.error('Failed to update max retries')
       }
     }
@@ -105,7 +105,7 @@ export function SystemSettings() {
       try {
         await updateSettings.mutateAsync({ retry_delay: retryDelay })
         toast.success('Retry delay updated')
-      } catch (error) {
+      } catch {
         toast.error('Failed to update retry delay')
       }
     }
@@ -116,7 +116,7 @@ export function SystemSettings() {
       try {
         await updateSettings.mutateAsync({ unused_tag_retention_days: unusedTagRetentionDays })
         toast.success('Tag retention updated')
-      } catch (error) {
+      } catch {
         toast.error('Failed to update tag retention')
       }
     }
@@ -127,7 +127,7 @@ export function SystemSettings() {
       try {
         await updateSettings.mutateAsync({ event_retention_days: eventRetentionDays })
         toast.success('Event retention updated')
-      } catch (error) {
+      } catch {
         toast.error('Failed to update event retention')
       }
     }
@@ -138,7 +138,7 @@ export function SystemSettings() {
       try {
         await updateSettings.mutateAsync({ alert_retention_days: alertRetentionDays })
         toast.success('Alert retention updated')
-      } catch (error) {
+      } catch {
         toast.error('Failed to update alert retention')
       }
     }
@@ -150,7 +150,7 @@ export function SystemSettings() {
     try {
       await updateSettings.mutateAsync({ default_auto_restart: checked })
       toast.success(checked ? 'Auto-restart enabled by default' : 'Auto-restart disabled by default')
-    } catch (error) {
+    } catch {
       toast.error('Failed to update auto-restart setting')
       setDefaultAutoRestart(!checked) // Revert on error
     }
@@ -161,7 +161,7 @@ export function SystemSettings() {
     try {
       await updateSettings.mutateAsync({ stats_persistence_enabled: checked })
       toast.success(checked ? 'Stats persistence enabled' : 'Stats persistence disabled')
-    } catch (error) {
+    } catch {
       toast.error('Failed to update stats persistence')
       setStatsPersistenceEnabled(!checked)
     }
@@ -172,7 +172,7 @@ export function SystemSettings() {
       try {
         await updateSettings.mutateAsync({ stats_retention_days: statsRetentionDays })
         toast.success('Stats retention updated')
-      } catch (error) {
+      } catch {
         toast.error('Failed to update stats retention')
       }
     }
@@ -183,7 +183,7 @@ export function SystemSettings() {
       try {
         await updateSettings.mutateAsync({ stats_points_per_view: statsPointsPerView })
         toast.success('Chart resolution updated — restart to apply')
-      } catch (error) {
+      } catch {
         toast.error('Failed to update chart resolution')
       }
     }
@@ -198,7 +198,7 @@ export function SystemSettings() {
         await updateSettings.mutateAsync({ external_url: normalizedUrl || null })
         setExternalUrl(normalizedUrl)
         toast.success('External URL updated')
-      } catch (error) {
+      } catch {
         toast.error('Failed to update external URL')
       }
     }
@@ -259,7 +259,7 @@ export function SystemSettings() {
                 try {
                   await updateSettings.mutateAsync({ session_timeout_hours: value })
                   toast.success('Session timeout updated')
-                } catch (error) {
+                } catch {
                   toast.error('Failed to update session timeout')
                 }
               }}
@@ -472,7 +472,7 @@ export function SystemSettings() {
                 try {
                   await updateSettings.mutateAsync({ live_chart_window_seconds: value })
                   toast.success('Live chart window updated')
-                } catch (error) {
+                } catch {
                   toast.error('Failed to update live chart window')
                 }
               }}

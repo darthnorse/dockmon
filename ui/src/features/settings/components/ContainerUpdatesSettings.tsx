@@ -102,7 +102,7 @@ export function ContainerUpdatesSettings() {
       try {
         await updateSettings.mutateAsync({ update_check_time: trimmed })
         toast.success('Update schedule updated')
-      } catch (error) {
+      } catch {
         toast.error('Failed to update schedule')
       }
     }
@@ -113,7 +113,7 @@ export function ContainerUpdatesSettings() {
     try {
       await updateSettings.mutateAsync({ skip_compose_containers: checked })
       toast.success(checked ? 'Compose containers will be skipped' : 'Compose containers will be included')
-    } catch (error) {
+    } catch {
       toast.error('Failed to update setting')
       setSkipComposeContainers(!checked) // Revert on error
     }
@@ -130,7 +130,7 @@ export function ContainerUpdatesSettings() {
       try {
         await updateSettings.mutateAsync({ health_check_timeout_seconds: healthCheckTimeout })
         toast.success('Health check timeout updated')
-      } catch (error) {
+      } catch {
         toast.error('Failed to update timeout')
       }
     }
@@ -165,7 +165,7 @@ export function ContainerUpdatesSettings() {
     try {
       await updateSettings.mutateAsync({ prune_images_enabled: checked })
       toast.success(checked ? 'Image pruning enabled' : 'Image pruning disabled')
-    } catch (error) {
+    } catch {
       toast.error('Failed to update image pruning setting')
       setPruneImagesEnabled(!checked) // Revert on error
     }
@@ -182,7 +182,7 @@ export function ContainerUpdatesSettings() {
       try {
         await updateSettings.mutateAsync({ image_retention_count: imageRetentionCount })
         toast.success('Image retention count updated')
-      } catch (error) {
+      } catch {
         toast.error('Failed to update retention count')
         setImageRetentionCount(settings?.image_retention_count ?? 2) // Rollback on error
       }
@@ -200,7 +200,7 @@ export function ContainerUpdatesSettings() {
       try {
         await updateSettings.mutateAsync({ image_prune_grace_hours: imagePruneGraceHours })
         toast.success('Grace period updated')
-      } catch (error) {
+      } catch {
         toast.error('Failed to update grace period')
         setImagePruneGraceHours(settings?.image_prune_grace_hours ?? 48) // Rollback on error
       }

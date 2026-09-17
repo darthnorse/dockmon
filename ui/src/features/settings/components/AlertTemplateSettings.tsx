@@ -58,7 +58,7 @@ export function AlertTemplateSettings() {
       })
       setHasChanges(false)
       toast.success('Alert templates saved successfully')
-    } catch (error) {
+    } catch {
       toast.error('Failed to save alert templates')
     }
   }

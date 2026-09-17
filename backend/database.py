@@ -1480,6 +1480,19 @@ def event_visibility_predicate(visible_host_ids: set):
     )
 
 
+def alert_visibility_predicate(visible_host_ids: set):
+    """SQL twin of utils.response_filtering.alert_is_visible. Splits the container
+    scope_id on ':' rather than assuming a 36-char host UUID: sanitize_host_id admits
+    any [A-Za-z0-9-]+ id."""
+    composite_host = func.substr(AlertV2.scope_id, 1, func.instr(AlertV2.scope_id, ':') - 1)
+    return or_(
+        AlertV2.scope_type == 'system',
+        AlertV2.host_id.in_(visible_host_ids),
+        and_(AlertV2.scope_type == 'host', AlertV2.scope_id.in_(visible_host_ids)),
+        and_(AlertV2.scope_type == 'container', composite_host.in_(visible_host_ids)),
+    )
+
+
 class DatabaseManager:
     """
     Database management and operations (Singleton)

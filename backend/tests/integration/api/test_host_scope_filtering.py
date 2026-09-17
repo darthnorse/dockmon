@@ -6,9 +6,11 @@ Principals: unrestricted (group without scope rows), dev-scoped (group scoped to
 """
 
 import hashlib
+import json
 import secrets
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,8 +23,8 @@ from auth.api_key_auth import (
 )
 from auth.capabilities import ALL_CAPABILITIES
 from database import (
-    Agent, ApiKey, ContainerHttpHealthCheck, ContainerUpdate, CustomGroup, DeploymentMetadata, DockerHostDB,
-    EventLog, GroupPermission, GroupTagScope, Tag, TagAssignment, User, UserGroupMembership,
+    Agent, AlertRuleV2, ApiKey, ContainerHttpHealthCheck, ContainerUpdate, CustomGroup, DeploymentMetadata,
+    DockerHostDB, EventLog, GroupPermission, GroupTagScope, Tag, TagAssignment, User, UserGroupMembership,
 )
 from main import app
 from models.docker_models import Container, DockerHost
@@ -92,6 +94,15 @@ class ScopedClient:
 
     def post(self, url: str, **kwargs):
         return self._client.post(url, headers=self._headers, **kwargs)
+
+    def put(self, url: str, **kwargs):
+        return self._client.put(url, headers=self._headers, **kwargs)
+
+    def patch(self, url: str, **kwargs):
+        return self._client.patch(url, headers=self._headers, **kwargs)
+
+    def delete(self, url: str, **kwargs):
+        return self._client.delete(url, headers=self._headers, **kwargs)
 
 
 @pytest.fixture(autouse=True)
@@ -377,6 +388,157 @@ class TestCompositeKeyDictsScoped:
         scoped = dev_scoped_client.get("/api/updates/summary").json()
         assert scoped["total_updates"] == 1
         assert scoped["containers_with_updates"] == ["h1:aaa111111111"]
+
+
+@pytest.mark.integration
+class TestBatchScoped:
+    def test_create_with_hidden_host_key_is_404(self, dev_scoped_client):
+        body = {"scope": "container", "action": "restart", "ids": ["h1:aaa111111111", "h2:ccc333333333"]}
+        assert dev_scoped_client.post("/api/batch", json=body).status_code == 404
+        body["ids"] = ["h1:aaa111111111"]
+        assert dev_scoped_client.post("/api/batch", json=body).status_code != 404
+
+    def test_validate_update_with_hidden_host_key_is_404(self, dev_scoped_client):
+        assert dev_scoped_client.post("/api/batch/validate-update", json={"container_ids": ["h2:ccc333333333"]}).status_code == 404
+        assert dev_scoped_client.post("/api/batch/validate-update", json={"container_ids": ["h1:aaa111111111"]}).status_code != 404
+
+    def test_job_items_pruned_to_visible_hosts(self, dev_scoped_client, unrestricted_client, orphan_client, monkeypatch):
+        job = {"job_id": "j1", "status": "completed", "total_items": 2, "items": [
+            {"id": 1, "container_id": "aaa111111111", "host_id": "h1", "status": "success"},
+            {"id": 2, "container_id": "ccc333333333", "host_id": "h2", "status": "success"},
+        ]}
+        monkeypatch.setattr(main_module, "batch_manager", SimpleNamespace(get_job_status=lambda job_id: dict(job, items=[dict(i) for i in job["items"]])))
+        assert [i["host_id"] for i in unrestricted_client.get("/api/batch/j1").json()["items"]] == ["h1", "h2"]
+        assert [i["host_id"] for i in dev_scoped_client.get("/api/batch/j1").json()["items"]] == ["h1"]
+        assert orphan_client.get("/api/batch/j1").status_code == 404
+
+
+@pytest.mark.integration
+class TestDashboardSummaryScoped:
+    def test_counts_over_visible_hosts_and_cache_bypassed(self, dev_scoped_client, unrestricted_client, seeded_container_configs):
+        admin = unrestricted_client.get("/api/dashboard/summary").json()
+        assert admin["hosts"]["total"] == 3
+        assert admin["containers"]["total"] == 4
+        assert admin["updates"]["available"] == 3
+
+        scoped = dev_scoped_client.get("/api/dashboard/summary").json()
+        assert scoped["hosts"] == {"online": 1, "total": 1, "offline": 0}
+        assert scoped["containers"]["total"] == 2
+        assert scoped["containers"]["running"] == 1
+        assert scoped["updates"]["available"] == 1
+        assert scoped["hosts_summary"] == "1/1"
+
+        assert unrestricted_client.get("/api/dashboard/summary").json()["hosts"]["total"] == 3
+
+    def test_orphan_sees_zero_everything(self, orphan_client, seeded_container_configs):
+        scoped = orphan_client.get("/api/dashboard/summary").json()
+        assert scoped["hosts"]["total"] == 0
+        assert scoped["containers"]["total"] == 0
+        assert scoped["updates"]["available"] == 0
+
+
+@pytest.mark.integration
+class TestGlobalOpsScoped:
+    """Fleet-wide operations run over the caller's visible hosts only."""
+
+    def test_prune_and_check_all_receive_the_visible_set(self, dev_scoped_client, unrestricted_client, monkeypatch):
+        calls = []
+
+        async def cleanup_old_images(host_ids=None):
+            calls.append(("prune", host_ids))
+            return 0
+
+        async def check_updates_now(host_ids=None):
+            calls.append(("check", host_ids))
+            return {"total": 0, "checked": 0, "updates_found": 0, "errors": 0}
+
+        monkeypatch.setattr(main_module.monitor, "periodic_jobs",
+                            SimpleNamespace(cleanup_old_images=cleanup_old_images, check_updates_now=check_updates_now))
+        assert dev_scoped_client.post("/api/images/prune").status_code == 200
+        assert dev_scoped_client.post("/api/updates/check-all").status_code == 200
+        assert unrestricted_client.post("/api/images/prune").status_code == 200
+        assert calls == [("prune", {"h1"}), ("check", {"h1"}), ("prune", None)]
+
+
+def _rule_body(**overrides):
+    body = {"name": "r", "scope": "host", "kind": "host_down", "severity": "warning"}
+    body.update(overrides)
+    return body
+
+
+@pytest.mark.integration
+class TestAlertRuleSelectorsScoped:
+    """Explicit host ids in a rule's selectors must be visible; tag/all selectors stay global."""
+
+    def test_create_with_hidden_host_in_selector_is_404(self, dev_scoped_client):
+        assert dev_scoped_client.post("/api/alerts/rules", json=_rule_body(
+            host_selector_json=json.dumps({"include": ["h1", "h2"]}))).status_code == 404
+        assert dev_scoped_client.post("/api/alerts/rules", json=_rule_body(
+            host_selector_json=json.dumps({"host_id": "h2"}))).status_code == 404
+        assert dev_scoped_client.post("/api/alerts/rules", json=_rule_body(
+            scope="container", kind="container_stopped",
+            container_selector_json=json.dumps({"include": ["h2:web"]}))).status_code == 404
+
+    def test_create_with_visible_or_global_selectors_passes(self, dev_scoped_client):
+        assert dev_scoped_client.post("/api/alerts/rules", json=_rule_body(
+            host_selector_json=json.dumps({"include": ["h1"]}))).status_code == 200
+        assert dev_scoped_client.post("/api/alerts/rules", json=_rule_body(
+            host_selector_json=json.dumps({"include_all": True}))).status_code == 200
+        assert dev_scoped_client.post("/api/alerts/rules", json=_rule_body(
+            host_selector_json=json.dumps({"tags": ["prod"]}))).status_code == 200
+
+    def test_update_delete_toggle_on_rule_naming_hidden_host(self, dev_scoped_client, unrestricted_client, db_session):
+        db_session.add(AlertRuleV2(id="rule-hidden", name="hidden", scope="host", kind="host_down", severity="warning",
+                                   host_selector_json=json.dumps({"include": ["h2"]})))
+        db_session.add(AlertRuleV2(id="rule-visible", name="visible", scope="host", kind="host_down", severity="warning",
+                                   host_selector_json=json.dumps({"include": ["h1"]})))
+        db_session.commit()
+        assert dev_scoped_client.patch("/api/alerts/rules/rule-hidden/toggle").status_code == 404
+        assert dev_scoped_client.delete("/api/alerts/rules/rule-hidden").status_code == 404
+        assert dev_scoped_client.put("/api/alerts/rules/rule-hidden", json={"name": "x"}).status_code == 404
+        assert dev_scoped_client.put("/api/alerts/rules/rule-visible",
+                                     json={"host_selector_json": json.dumps({"include": ["h2"]})}).status_code == 404
+        assert dev_scoped_client.patch("/api/alerts/rules/rule-visible/toggle").status_code == 200
+        assert unrestricted_client.patch("/api/alerts/rules/rule-hidden/toggle").status_code == 200
+        assert db_session.query(AlertRuleV2).filter_by(id="rule-hidden").count() == 1
+
+
+@pytest.mark.integration
+class TestAgentStatusScoped:
+    def test_hidden_agent_host_is_404(self, dev_scoped_client, unrestricted_client, seeded_agents):
+        assert dev_scoped_client.get("/api/agent/agent-h2/status").status_code == 404
+        assert dev_scoped_client.get("/api/agent/agent-h1/status").status_code == 200
+        assert unrestricted_client.get("/api/agent/agent-h2/status").status_code == 200
+
+
+@pytest.mark.integration
+class TestTestConnectionScoped:
+    """The stored-cert fallback may only reuse certificates of a host the caller can see."""
+
+    def _stub_client(self, monkeypatch, seen):
+        class FakeClient:
+            def __init__(self, **kwargs):
+                seen.append(kwargs)
+            def ping(self):
+                return True
+            def version(self):
+                return {"Version": "1"}
+            def close(self):
+                pass
+        monkeypatch.setattr(main_module.docker, "DockerClient", FakeClient)
+
+    def test_hidden_host_certs_are_not_loaded(self, dev_scoped_client, unrestricted_client, db_session, seeded_hosts, monkeypatch):
+        db_session.add(DockerHostDB(id="h2", name="Test Host", url="tcp://h2:2376",
+                                    tls_ca="CA", tls_cert="CERT", tls_key="KEY"))
+        db_session.commit()
+        seen = []
+        self._stub_client(monkeypatch, seen)
+
+        dev_scoped_client.post("/api/hosts/test-connection", json={"name": "probe", "url": "tcp://h2:2376"})
+        assert seen and "tls" not in seen[-1]
+
+        unrestricted_client.post("/api/hosts/test-connection", json={"name": "probe", "url": "tcp://h2:2376"})
+        assert "tls" in seen[-1]
 
 
 # ---------------------------------------------------------------------------

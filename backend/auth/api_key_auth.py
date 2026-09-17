@@ -535,6 +535,27 @@ def check_host_access(host_id: Optional[str], current_user: dict) -> None:
         raise HTTPException(status_code=404, detail="Not found")
 
 
+def check_host_ids_visible(host_ids, current_user: dict) -> None:
+    """404 when any of the host ids a request names (body, record, selector) is one
+    the caller cannot see. None entries never match."""
+    visible = get_visible_host_ids_for_auth(current_user)
+    if visible is None:
+        return
+    for host_id in host_ids:
+        if host_id not in visible:
+            logger.info(f"{_get_auth_identifier(current_user, include_group=True)} denied host scope on {host_id!r}")
+            raise HTTPException(status_code=404, detail="Not found")
+
+
+def check_composite_keys_visible(keys, current_user: dict) -> None:
+    """404 when any host_id:... composite key names a hidden host; a key with no
+    host prefix never matches."""
+    check_host_ids_visible(
+        [key.split(":", 1)[0] if isinstance(key, str) and ":" in key else None for key in keys],
+        current_user,
+    )
+
+
 async def require_host_access(
     host_id: str = Path(),
     current_user: dict = Depends(get_current_user_or_api_key),

@@ -33,6 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html
 from fastapi.responses import FileResponse, JSONResponse
 from database import (
+    alert_visibility_predicate,
     DatabaseManager,
     GlobalSettings as GlobalSettingsDB,
     ContainerUpdate,
@@ -76,7 +77,7 @@ from models.request_models import (
 from audit.audit_logger import AuditAction, AuditEntityType, log_audit, log_container_action, log_host_change, log_settings_change, get_client_info
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, get_capabilities_for_user, Capabilities, get_visible_host_ids_for_auth, get_visible_host_ids_for_user, filter_visible_hosts, require_host_access, require_source_host_access, check_host_access
+from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, get_capabilities_for_user, Capabilities, get_visible_host_ids_for_auth, get_visible_host_ids_for_user, filter_visible_hosts, require_host_access, require_source_host_access, check_host_access, check_composite_keys_visible, check_host_ids_visible
 from auth.utils import get_auditable_user_info
 from websocket.connection import ConnectionManager, DateTimeEncoder
 from websocket.rate_limiter import ws_rate_limiter
@@ -87,7 +88,7 @@ from utils.keys import make_composite_key
 from utils.encryption import encrypt_password, decrypt_password
 from utils.async_docker import async_docker_call, async_client_ping, async_client_version, async_containers_list
 from utils.base_path import get_base_path
-from utils.response_filtering import filter_container_env, filter_container_inspect_env, filter_ws_container_message, filter_ws_host_visibility, event_is_visible
+from utils.response_filtering import filter_container_env, filter_container_inspect_env, filter_ws_container_message, filter_ws_host_visibility, event_is_visible, selector_host_ids
 from utils.host_ips import deserialize_host_ips
 from utils.client_ip import get_client_ip_ws
 from utils.networks import BUILTIN_NETWORKS, format_network, create_network_local
@@ -814,11 +815,12 @@ async def test_host_connection(config: DockerHostConfig, current_user: dict = De
         # Check if this is an existing host (by matching URL)
         # If certs are null, try to load from database
         if (config.tls_ca is None or config.tls_cert is None or config.tls_key is None):
-            # Try to find existing host by URL to get certificates
-            db_session = monitor.db.get_session()
-            try:
+            # Try to find existing host by URL to get certificates; a host the caller
+            # cannot see behaves as if no host matched, so its stored TLS material stays private
+            visible = get_visible_host_ids_for_auth(current_user)
+            with monitor.db.get_session() as db_session:
                 existing_host = db_session.query(DockerHostDB).filter(DockerHostDB.url == config.url).first()
-                if existing_host:
+                if existing_host and (visible is None or existing_host.id in visible):
                     logger.info(f"Found existing host for URL {config.url}, using stored certificates")
                     if config.tls_ca is None and existing_host.tls_ca:
                         config.tls_ca = existing_host.tls_ca
@@ -826,8 +828,6 @@ async def test_host_connection(config: DockerHostConfig, current_user: dict = De
                         config.tls_cert = existing_host.tls_cert
                     if config.tls_key is None and existing_host.tls_key:
                         config.tls_key = existing_host.tls_key
-            finally:
-                db_session.close()
 
         # Build Docker client kwargs
         kwargs = {}
@@ -2695,7 +2695,7 @@ async def check_all_updates(current_user: dict = Depends(get_current_user)):
     _, display_name = get_auditable_user_info(current_user)
     logger.info(f"User {display_name} triggered global update check")
 
-    stats = await monitor.periodic_jobs.check_updates_now()
+    stats = await monitor.periodic_jobs.check_updates_now(host_ids=get_visible_host_ids_for_auth(current_user))
     return stats
 
 
@@ -2713,10 +2713,12 @@ async def prune_images(request: Request, current_user: dict = Depends(get_curren
     _, display_name = get_auditable_user_info(current_user)
     logger.info(f"User {display_name} triggered manual image prune")
 
-    removed_count = await monitor.periodic_jobs.cleanup_old_images()
+    visible = get_visible_host_ids_for_auth(current_user)
+    removed_count = await monitor.periodic_jobs.cleanup_old_images(host_ids=visible)
 
     _safe_audit(current_user, log_audit, AuditAction.PRUNE, AuditEntityType.CONTAINER,
-                details={'resource': 'images', 'scope': 'global', 'removed_count': removed_count},
+                details={'resource': 'images', 'scope': 'global' if visible is None else 'visible',
+                         'removed_count': removed_count},
                 **get_client_info(request))
 
     return {"removed": removed_count}
@@ -3267,6 +3269,7 @@ async def create_batch_job(request: BatchJobCreate, http_request: Request, curre
     Currently supports: start, stop, restart, add-tags, remove-tags,
     set-auto-restart, set-auto-update, set-desired-state, check-updates
     """
+    check_composite_keys_visible(request.ids, current_user)
     if not batch_manager:
         raise HTTPException(status_code=500, detail="Batch manager not initialized")
 
@@ -3321,6 +3324,7 @@ async def validate_batch_update(request: dict, current_user: dict = Depends(get_
     container_ids = request.get("container_ids", [])
     if not container_ids:
         raise HTTPException(status_code=400, detail="No container IDs provided")
+    check_composite_keys_visible(container_ids, current_user)
 
     allowed = []
     warned = []
@@ -3404,6 +3408,13 @@ async def get_batch_job(job_id: str, current_user: dict = Depends(get_current_us
 
     if not job_status:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    visible = get_visible_host_ids_for_auth(current_user)
+    if visible is not None:
+        items = filter_visible_hosts(job_status.get("items", []), visible, lambda i: i.get("host_id"))
+        if job_status.get("items") and not items:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        job_status["items"] = items
 
     return job_status
 
@@ -4135,6 +4146,15 @@ async def get_alert_rules_v2(current_user: dict = Depends(get_current_user)):
     }
 
 
+def _require_alert_rule_hosts_visible(rule_id: str, current_user: dict):
+    """Stored rule whose explicit selector hosts are all visible to the caller; None if
+    the rule does not exist. 404 when it names a hidden host."""
+    rule = monitor.db.get_alert_rule_v2(rule_id)
+    if rule is not None:
+        check_host_ids_visible(selector_host_ids(rule.host_selector_json, rule.container_selector_json), current_user)
+    return rule
+
+
 @app.post("/api/alerts/rules", tags=["alerts"], dependencies=[Depends(require_capability("alerts.manage"))])
 async def create_alert_rule_v2(
     rule: AlertRuleV2Create,
@@ -4159,6 +4179,7 @@ async def create_alert_rule_v2(
             validate_selector_field("container_selector_json", rule.container_selector_json)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        check_host_ids_visible(selector_host_ids(rule.host_selector_json, rule.container_selector_json), current_user)
 
         # Default suppress_during_updates to True for container-scoped rules if not explicitly set
         suppress_during_updates = rule.suppress_during_updates
@@ -4250,6 +4271,12 @@ async def update_alert_rule_v2(
         # We don't filter out None/0/False because those are valid values (e.g., cooldown_seconds=0)
         update_data = updates.dict(exclude_unset=True)
 
+        _require_alert_rule_hosts_visible(rule_id, current_user)
+        check_host_ids_visible(
+            selector_host_ids(update_data.get("host_selector_json"), update_data.get("container_selector_json")),
+            current_user,
+        )
+
         # Validate the merged record, reusing the create-time validator. The PUT
         # model omits scope and metric on a partial edit, so this can't run as a
         # model validator and must be done here.
@@ -4315,7 +4342,7 @@ async def delete_alert_rule_v2(
         _, display_name = get_auditable_user_info(current_user)
 
         # Get rule info before deleting for event logging
-        rule = monitor.db.get_alert_rule_v2(rule_id)
+        rule = _require_alert_rule_hosts_visible(rule_id, current_user)
 
         success = monitor.db.delete_alert_rule_v2(rule_id)
 
@@ -4350,7 +4377,7 @@ async def toggle_alert_rule_v2(
 ):
     """Toggle an alert rule enabled/disabled state (v2)"""
     try:
-        rule = monitor.db.get_alert_rule_v2(rule_id)
+        rule = _require_alert_rule_hosts_visible(rule_id, current_user)
 
         if not rule:
             raise HTTPException(status_code=404, detail="Alert rule not found")
@@ -5398,9 +5425,10 @@ async def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
         - timestamp: ISO 8601 timestamp with 'Z' suffix (UTC)
     """
     try:
-        # Check cache (30-second TTL)
+        # The cache holds the fleet-wide answer; scoped callers always compute their own
+        visible = get_visible_host_ids_for_auth(current_user)
         now = datetime.now(timezone.utc)
-        if _dashboard_summary_cache["data"] is not None and _dashboard_summary_cache["timestamp"] is not None:
+        if visible is None and _dashboard_summary_cache["data"] is not None and _dashboard_summary_cache["timestamp"] is not None:
             cache_age = (now - _dashboard_summary_cache["timestamp"]).total_seconds()
             if cache_age < 30:
                 # Return cached response
@@ -5412,13 +5440,14 @@ async def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
 
         # Hosts summary
         # NOTE: monitor.hosts is Dict[str, DockerHost] where DockerHost is a Pydantic model
-        total_hosts = len(monitor.hosts)
-        online_hosts = sum(1 for host in monitor.hosts.values() if host.status == 'online')
+        hosts = filter_visible_hosts(list(monitor.hosts.values()), visible, lambda h: h.id)
+        total_hosts = len(hosts)
+        online_hosts = sum(1 for host in hosts if host.status == 'online')
         offline_hosts = total_hosts - online_hosts
 
         # Containers summary
         # NOTE: get_last_containers() returns cached list from last monitor cycle (max 2s old)
-        all_containers = monitor.get_last_containers()
+        all_containers = filter_visible_hosts(monitor.get_last_containers(), visible, lambda c: c.host_id)
         state_counts = {}
         for container in all_containers:
             # Container is a Container model, not a dict
@@ -5427,15 +5456,19 @@ async def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
 
         # Updates and alerts summary
         with monitor.db.get_session() as session:
-            updates_available = session.query(ContainerUpdate).filter(
-                ContainerUpdate.update_available == True
-            ).count()
+            updates_query = session.query(ContainerUpdate).filter(ContainerUpdate.update_available == True)
+            if visible is not None:
+                updates_query = updates_query.filter(ContainerUpdate.host_id.in_(visible))
+            updates_available = updates_query.count()
 
             # Count active alerts (state='open', not snoozed, not resolved)
-            active_alerts = session.query(AlertV2).filter(
+            alerts_query = session.query(AlertV2).filter(
                 AlertV2.state == 'open',
                 AlertV2.resolved_at == None
-            ).count()
+            )
+            if visible is not None:
+                alerts_query = alerts_query.filter(alert_visibility_predicate(visible))
+            active_alerts = alerts_query.count()
 
         # Build response (with both detailed and flattened formats for dashboard compatibility)
         running_containers = state_counts.get('running', 0)
@@ -5468,9 +5501,9 @@ async def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
             "timestamp": now.isoformat() + 'Z'
         }
 
-        # Update cache
-        _dashboard_summary_cache["data"] = response
-        _dashboard_summary_cache["timestamp"] = now
+        if visible is None:
+            _dashboard_summary_cache["data"] = response
+            _dashboard_summary_cache["timestamp"] = now
 
         return response
 
@@ -5989,6 +6022,7 @@ async def get_agent_status(
 
             if not agent:
                 raise HTTPException(status_code=404, detail="Agent not found")
+            check_host_access(agent.host_id, current_user)
 
             return {
                 "success": True,

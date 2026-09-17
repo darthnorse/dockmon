@@ -6,6 +6,7 @@ consistent behavior across API endpoints and WebSocket broadcasts.
 """
 
 import copy
+import json
 from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 
@@ -203,6 +204,23 @@ def event_is_visible(host_id: Optional[str], container_id: Optional[str], catego
     return hosts is not None and hosts <= visible
 
 
+def alert_is_visible(scope_type: Optional[str], scope_id: Optional[str], host_id: Optional[str],
+                     visible: Optional[Set[str]]) -> bool:
+    """Python twin of database.alert_visibility_predicate; keep the two in step.
+    System-scope alerts are global; a host is derived from host_id, a host scope_id or
+    the host_id:short_id prefix of a container scope_id. No derivable host = hidden."""
+    if visible is None or scope_type == "system":
+        return True
+    candidates = set()
+    if host_id:
+        candidates.add(host_id)
+    if scope_type == "host" and scope_id:
+        candidates.add(scope_id)
+    if scope_type == "container" and scope_id and ":" in scope_id:
+        candidates.add(_host_of_composite_key(scope_id))
+    return bool(candidates & visible)
+
+
 def _event(message: Dict):
     event = message.get("event") or {}
     hosts = event_scope(event.get("host_id"), event.get("container_id"), event.get("category"))
@@ -273,3 +291,32 @@ def filter_ws_host_visibility(message: Dict, visible: Optional[Set[str]]) -> Dic
             k: v for k, v in data["container_sparklines"].items() if _host_of_composite_key(k) in visible
         }
     return {**message, "data": pruned}
+
+
+def selector_host_ids(host_selector_json: Optional[str], container_selector_json: Optional[str]) -> Set[str]:
+    """Explicit host ids an alert rule's selectors name: host_selector include/host_id
+    and the host prefix of host_id:container_name entries in container_selector
+    include (the shapes alerts/engine.py evaluates). Tag/name/include_all selectors
+    name no host. Unparseable JSON names nothing; the selector validator rejects it."""
+    ids: Set[str] = set()
+    host_selector = _load_selector(host_selector_json)
+    include = host_selector.get("include")
+    if isinstance(include, list):
+        ids.update(x for x in include if isinstance(x, str))
+    if isinstance(host_selector.get("host_id"), str):
+        ids.add(host_selector["host_id"])
+    container_selector = _load_selector(container_selector_json)
+    include = container_selector.get("include")
+    if isinstance(include, list):
+        ids.update(_host_of_composite_key(x) for x in include if isinstance(x, str) and ":" in x)
+    return ids
+
+
+def _load_selector(selector_json: Optional[str]) -> Dict:
+    if not selector_json:
+        return {}
+    try:
+        loaded = json.loads(selector_json)
+    except (TypeError, ValueError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}

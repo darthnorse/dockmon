@@ -4,7 +4,9 @@ import type { SelectorJson } from '@/types/alerts'
 export function parseSelectorJson(json: string | null | undefined): SelectorJson {
   if (!json) return {}
   try {
-    return JSON.parse(json) as SelectorJson
+    const parsed: unknown = JSON.parse(json)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {}
+    return parsed as SelectorJson
   } catch {
     return {}
   }

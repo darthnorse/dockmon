@@ -142,7 +142,7 @@ export function LayerProgressDisplay({
     }
   }, [])
 
-  // Auto-collapse layer details 2 seconds after reaching 100% (unless disabled).
+  // Auto-collapse layer details 2 seconds after reaching 100%.
   // Schedule only when no timer is already pending so the effect can't re-arm itself.
   useEffect(() => {
     if (

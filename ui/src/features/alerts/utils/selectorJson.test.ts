@@ -11,4 +11,10 @@ describe('parseSelectorJson', () => {
     expect(parseSelectorJson('')).toEqual({})
     expect(parseSelectorJson('{not json')).toEqual({})
   })
+
+  it('reads valid JSON that is not an object as an empty selector', () => {
+    expect(parseSelectorJson('null')).toEqual({})
+    expect(parseSelectorJson('["h1"]')).toEqual({})
+    expect(parseSelectorJson('"include_all"')).toEqual({})
+  })
 })

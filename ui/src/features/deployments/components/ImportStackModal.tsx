@@ -392,15 +392,13 @@ export function ImportStackModal({
 
     setIsBatchImporting(false)
 
+    if (errors.length > 0) {
+      setError(errors.join('; '))
+    }
     if (allDeployments.length > 0) {
       setCreatedDeployments(allDeployments)
-      if (errors.length > 0) {
-        setError(`Imported ${allDeployments.length} stack(s). Errors: ${errors.join('; ')}`)
-      }
       setStep('success')
       onSuccess?.(allDeployments)
-    } else if (errors.length > 0) {
-      setError(errors.join('; '))
     }
   }
 
@@ -1147,6 +1145,12 @@ export function ImportStackModal({
                 </li>
               ))}
             </ul>
+
+            {error && (
+              <Alert variant="destructive">
+                <AlertDescription>Not imported: {error}</AlertDescription>
+              </Alert>
+            )}
 
             <DialogFooter>
               <Button onClick={handleClose}>Done</Button>

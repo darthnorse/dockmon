@@ -361,8 +361,9 @@ describe('ImportStackModal', () => {
       })
 
       await waitFor(() => {
-        expect(screen.getByText(/successfully imported/i)).toBeInTheDocument()
+        expect(screen.getByText(/successfully imported 2 stack/i)).toBeInTheDocument()
       })
+      expect(screen.getByText(/File not found/)).toBeInTheDocument()
     })
 
     it('should disable buttons during batch import', async () => {

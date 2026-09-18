@@ -1015,8 +1015,8 @@ class AlertEngine:
                             ).first()
 
                             if existing:
-                                self._resolve_alert(existing, "Clear condition met (immediate)")
-                                alerts_changed.append(existing)
+                                # The refreshed copy survives this session's commit; `existing` would not
+                                alerts_changed.append(self._resolve_alert(existing, "Clear condition met (immediate)"))
 
                             # Reset state
                             state["breach_started_at"] = None
@@ -1039,8 +1039,7 @@ class AlertEngine:
                                 ).first()
 
                                 if existing:
-                                    self._resolve_alert(existing, "Clear condition met")
-                                    alerts_changed.append(existing)
+                                    alerts_changed.append(self._resolve_alert(existing, "Clear condition met"))
 
                                 # Reset state
                                 state["breach_started_at"] = None

@@ -984,6 +984,10 @@ class AlertEngine:
                     cooldown = rule.notification_cooldown_seconds or 300
                     if not is_new and self._check_cooldown(alert, cooldown):
                         logger.debug(f"Alert {alert.id} in cooldown, skipping")
+                    elif not is_new and not breached:
+                        # The window still counts earlier breaches, so the alert stays open,
+                        # but a sample under the threshold must not page again with stale text
+                        logger.debug(f"Alert {alert.id} still firing on window, sample not breaching; not re-notifying")
                     else:
                         # Update alert
                         if not is_new:

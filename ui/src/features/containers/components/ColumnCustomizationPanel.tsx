@@ -121,6 +121,7 @@ const COLUMN_LABELS: Record<string, string> = {
   created: 'Uptime',
   cpu: 'CPU %',
   memory: 'RAM',
+  network: 'Network',
   actions: 'Actions',
 }
 

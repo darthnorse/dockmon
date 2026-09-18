@@ -969,7 +969,11 @@ class AlertEngine:
                 # Record evaluation for debugging
                 self._record_evaluation(rule.id, context.scope_id, metric_value, breached, now)
 
-                if should_fire:
+                if should_fire and not breached:
+                    # The window still counts earlier breaches, so the alert keeps whatever state it has;
+                    # a sample under the threshold must not create, reopen, update or page with its value
+                    logger.debug(f"Rule {rule.id} fires on window for {context.scope_id} but sample is under threshold")
+                elif should_fire:
                     # Track breach start
                     if state["breach_started_at"] is None:
                         state["breach_started_at"] = now.isoformat()
@@ -984,10 +988,6 @@ class AlertEngine:
                     cooldown = rule.notification_cooldown_seconds or 300
                     if not is_new and self._check_cooldown(alert, cooldown):
                         logger.debug(f"Alert {alert.id} in cooldown, skipping")
-                    elif not is_new and not breached:
-                        # The window still counts earlier breaches, so the alert stays open,
-                        # but a sample under the threshold must not page again with stale text
-                        logger.debug(f"Alert {alert.id} still firing on window, sample not breaching; not re-notifying")
                     else:
                         # Update alert
                         if not is_new:
@@ -1011,20 +1011,9 @@ class AlertEngine:
 
                         # Handle immediate clearing (alert_clear_delay_seconds = 0)
                         if clear_delay == 0:
-                            # Clear immediately without waiting
-                            dedup_key = self._make_dedup_key(rule.id, rule.kind, context.scope_type, context.scope_id)
-                            existing = session.query(AlertV2).filter(
-                                AlertV2.dedup_key == dedup_key,
-                                AlertV2.state == "open"
-                            ).first()
-
-                            if existing:
-                                # The refreshed copy survives this session's commit; `existing` would not
-                                alerts_changed.append(self._resolve_alert(existing, "Clear condition met (immediate)"))
-
-                            # Reset state
-                            state["breach_started_at"] = None
-                            state["clear_started_at"] = None
+                            resolved = self._clear_open_metric_alert(session, rule, context, state, "Clear condition met (immediate)")
+                            if resolved:
+                                alerts_changed.append(resolved)
                         else:
                             # Track clear start for sustained clearing
                             if state["clear_started_at"] is None:
@@ -1035,19 +1024,9 @@ class AlertEngine:
                             time_clearing = (now - clear_start).total_seconds()
 
                             if time_clearing >= clear_delay:
-                                # Clear the alert
-                                dedup_key = self._make_dedup_key(rule.id, rule.kind, context.scope_type, context.scope_id)
-                                existing = session.query(AlertV2).filter(
-                                    AlertV2.dedup_key == dedup_key,
-                                    AlertV2.state == "open"
-                                ).first()
-
-                                if existing:
-                                    alerts_changed.append(self._resolve_alert(existing, "Clear condition met"))
-
-                                # Reset state
-                                state["breach_started_at"] = None
-                                state["clear_started_at"] = None
+                                resolved = self._clear_open_metric_alert(session, rule, context, state, "Clear condition met")
+                                if resolved:
+                                    alerts_changed.append(resolved)
                     else:
                         # Still breaching clear threshold, reset
                         state["clear_started_at"] = None
@@ -1058,6 +1037,22 @@ class AlertEngine:
                 session.commit()
 
         return alerts_changed
+
+    def _clear_open_metric_alert(self, session, rule: AlertRuleV2, context: EvaluationContext,
+                                 state: Dict[str, Any], reason: str) -> Optional[AlertV2]:
+        """Resolve the open alert for this rule/scope, if any, and reset the breach/clear timers.
+
+        Returns the refreshed copy from _resolve_alert: the instance loaded here belongs to
+        the caller's session, which commits (and so expires it) before the alert is read again.
+        """
+        dedup_key = self._make_dedup_key(rule.id, rule.kind, context.scope_type, context.scope_id)
+        existing = session.query(AlertV2).filter(
+            AlertV2.dedup_key == dedup_key,
+            AlertV2.state == "open"
+        ).first()
+        state["breach_started_at"] = None
+        state["clear_started_at"] = None
+        return self._resolve_alert(existing, reason) if existing else None
 
     def _check_breach(self, value: float, threshold: float, operator: str) -> bool:
         """Check if value breaches threshold"""

@@ -41,6 +41,8 @@ import {
   Package,
   ExternalLink,
   Activity,
+  ArrowDown,
+  ArrowUp,
   Filter,
   X,
   ChevronDown,
@@ -1313,9 +1315,20 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
             : `Received ${formatBytes(rx)} / Sent ${formatBytes(tx)} since start`
 
           return (
-            <span className="text-sm text-muted-foreground" title={lifetime} data-testid="network-io">
-              {formatNetworkRate(rate)}
-            </span>
+            <div
+              className="flex flex-col gap-0.5 text-xs text-muted-foreground leading-tight"
+              title={lifetime}
+              data-testid="network-io"
+            >
+              <span className="flex items-center gap-1">
+                <ArrowDown className="h-3 w-3 text-info shrink-0" />
+                {formatNetworkRate(container.net_rx_bytes_per_sec)}
+              </span>
+              <span className="flex items-center gap-1">
+                <ArrowUp className="h-3 w-3 text-warning shrink-0" />
+                {formatNetworkRate(container.net_tx_bytes_per_sec)}
+              </span>
+            </div>
           )
         },
         enableSorting: true,

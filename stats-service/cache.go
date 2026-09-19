@@ -10,19 +10,21 @@ import (
 
 // ContainerStats holds real-time stats for a single container
 type ContainerStats struct {
-	ContainerID    string    `json:"container_id"`
-	ContainerName  string    `json:"container_name"`
-	HostID         string    `json:"host_id"`
-	CPUPercent     float64   `json:"cpu_percent"`
-	MemoryUsage    uint64    `json:"memory_usage"`
-	MemoryLimit    uint64    `json:"memory_limit"`
-	MemoryPercent  float64   `json:"memory_percent"`
-	NetworkRx      uint64    `json:"network_rx"`
-	NetworkTx      uint64    `json:"network_tx"`
-	NetBytesPerSec float64   `json:"net_bytes_per_sec"` // Calculated network rate
-	DiskRead       uint64    `json:"disk_read"`
-	DiskWrite      uint64    `json:"disk_write"`
-	LastUpdate     time.Time `json:"last_update"`
+	ContainerID      string    `json:"container_id"`
+	ContainerName    string    `json:"container_name"`
+	HostID           string    `json:"host_id"`
+	CPUPercent       float64   `json:"cpu_percent"`
+	MemoryUsage      uint64    `json:"memory_usage"`
+	MemoryLimit      uint64    `json:"memory_limit"`
+	MemoryPercent    float64   `json:"memory_percent"`
+	NetworkRx        uint64    `json:"network_rx"`
+	NetworkTx        uint64    `json:"network_tx"`
+	NetBytesPerSec   float64   `json:"net_bytes_per_sec"` // Calculated network rate
+	NetRxBytesPerSec float64   `json:"net_rx_bytes_per_sec"`
+	NetTxBytesPerSec float64   `json:"net_tx_bytes_per_sec"`
+	DiskRead         uint64    `json:"disk_read"`
+	DiskWrite        uint64    `json:"disk_write"`
+	LastUpdate       time.Time `json:"last_update"`
 }
 
 // HostStats holds aggregated stats for a host
@@ -44,7 +46,9 @@ type HostStats struct {
 
 // networkBaseline tracks previous network values for rate calculation
 type networkBaseline struct {
-	totalBytes uint64    // rx + tx total
+	totalBytes uint64 // rx + tx total
+	rxBytes    uint64
+	txBytes    uint64
 	timestamp  time.Time // when this measurement was taken
 }
 
@@ -149,7 +153,7 @@ func (c *StatsCache) UpdateContainerStats(stats *ContainerStats) {
 		if deltaTime > 0 {
 			if deltaBytes < 0 {
 				// Counter reset detected (container restart)
-				stats.NetBytesPerSec = 0
+				stats.NetBytesPerSec, stats.NetRxBytesPerSec, stats.NetTxBytesPerSec = 0, 0, 0
 			} else {
 				// Normal case: calculate rate
 				rate := float64(deltaBytes) / deltaTime
@@ -158,32 +162,47 @@ func (c *StatsCache) UpdateContainerStats(stats *ContainerStats) {
 				maxRate := float64(10 * 1024 * 1024 * 1024) // 10 GB/s
 				if rate > maxRate {
 					// Outlier detected, drop it
-					stats.NetBytesPerSec = 0
+					stats.NetBytesPerSec, stats.NetRxBytesPerSec, stats.NetTxBytesPerSec = 0, 0, 0
 				} else {
 					stats.NetBytesPerSec = rate
+					// Per-direction counters share the total's reset/outlier decision
+					stats.NetRxBytesPerSec = counterRate(stats.NetworkRx, baseline.rxBytes, deltaTime)
+					stats.NetTxBytesPerSec = counterRate(stats.NetworkTx, baseline.txBytes, deltaTime)
 				}
 			}
 		} else {
 			// No time elapsed, keep previous rate if available
 			if prevStats, ok := c.containerStats[compositeKey]; ok {
 				stats.NetBytesPerSec = prevStats.NetBytesPerSec
+				stats.NetRxBytesPerSec = prevStats.NetRxBytesPerSec
+				stats.NetTxBytesPerSec = prevStats.NetTxBytesPerSec
 			} else {
-				stats.NetBytesPerSec = 0
+				stats.NetBytesPerSec, stats.NetRxBytesPerSec, stats.NetTxBytesPerSec = 0, 0, 0
 			}
 		}
 	} else {
 		// First measurement - no rate yet
-		stats.NetBytesPerSec = 0
+		stats.NetBytesPerSec, stats.NetRxBytesPerSec, stats.NetTxBytesPerSec = 0, 0, 0
 	}
 
 	// Update baseline for next calculation
 	c.lastNetStats[compositeKey] = &networkBaseline{
 		totalBytes: currentTotal,
+		rxBytes:    stats.NetworkRx,
+		txBytes:    stats.NetworkTx,
 		timestamp:  now,
 	}
 
 	// Store updated stats
 	c.containerStats[compositeKey] = stats
+}
+
+// counterRate is the per-second growth of one cumulative counter, 0 if it went backwards.
+func counterRate(current, previous uint64, deltaTime float64) float64 {
+	if current < previous {
+		return 0
+	}
+	return float64(current-previous) / deltaTime
 }
 
 // GetContainerStats retrieves stats for a specific container

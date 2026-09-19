@@ -706,22 +706,28 @@ class AgentWebSocketHandler:
             current_time = time.time()
             net_rx = stats.get("network_rx", 0)
             net_tx = stats.get("network_tx", 0)
-            net_total = net_rx + net_tx if isinstance(net_rx, (int, float)) and isinstance(net_tx, (int, float)) else 0
+            if not (isinstance(net_rx, (int, float)) and isinstance(net_tx, (int, float))):
+                net_rx = net_tx = 0
+            net_total = net_rx + net_tx
 
             # Calculate rate if we have previous reading
-            net_bytes_per_sec = 0
+            net_bytes_per_sec = net_rx_bytes_per_sec = net_tx_bytes_per_sec = 0
             if container_key in self.prev_network_stats:
                 prev = self.prev_network_stats[container_key]
                 time_delta = current_time - prev['timestamp']
                 if time_delta > 0:
                     bytes_delta = net_total - prev['total']
-                    # Prevent negative values (can happen if container restarted)
+                    # A counter that went backwards means a restart: every rate reads 0 this sample
                     if bytes_delta > 0:
                         net_bytes_per_sec = bytes_delta / time_delta
+                        net_rx_bytes_per_sec = max(net_rx - prev['rx'], 0) / time_delta
+                        net_tx_bytes_per_sec = max(net_tx - prev['tx'], 0) / time_delta
 
             # Update previous reading for next calculation
             self.prev_network_stats[container_key] = {
                 'total': net_total,
+                'rx': net_rx,
+                'tx': net_tx,
                 'timestamp': current_time
             }
 
@@ -744,7 +750,12 @@ class AgentWebSocketHandler:
             # Cache latest full stats for REST API endpoints (not just sparkline data)
             # This allows populate_container_stats() to access memory_usage, memory_limit, etc.
             # Add the calculated net_bytes_per_sec to the stats
-            stats_with_rate = {**stats, 'net_bytes_per_sec': net_bytes_per_sec}
+            stats_with_rate = {
+                **stats,
+                'net_bytes_per_sec': net_bytes_per_sec,
+                'net_rx_bytes_per_sec': net_rx_bytes_per_sec,
+                'net_tx_bytes_per_sec': net_tx_bytes_per_sec,
+            }
             if hasattr(self.monitor, 'agent_container_stats_cache'):
                 self.monitor.agent_container_stats_cache[container_key] = stats_with_rate
             else:

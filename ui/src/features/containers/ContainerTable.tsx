@@ -41,8 +41,6 @@ import {
   Package,
   ExternalLink,
   Activity,
-  ArrowDown,
-  ArrowUp,
   Filter,
   X,
   ChevronDown,
@@ -78,7 +76,7 @@ import { useContainerHealthCheck } from './hooks/useContainerHealthCheck'
 import { isCustomColumnId, extractColumnValue, buildCustomColumnDef } from './utils/customColumns'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
 import { sanitizeHref } from '@/lib/utils/urlSanitize'
-import { formatBytes } from '@/lib/utils/formatting'
+import { formatBytes, formatNetworkRate } from '@/lib/utils/formatting'
 import { useContainerModal } from '@/providers'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import { HostDetailsModal } from '@/features/hosts/components/HostDetailsModal'
@@ -1284,7 +1282,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
         },
         enableSorting: true,
       },
-      // 9b. NETWORK (received / sent since the container started)
+      // 9b. NETWORK (current throughput; lifetime received/sent in the tooltip)
       {
         id: 'network',
         header: ({ column }) => {
@@ -1302,32 +1300,22 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
         },
         // -1 sinks rows the cell renders as a dash below a running container with zero traffic
         accessorFn: (row) =>
-          row.state !== 'running' || (row.network_rx == null && row.network_tx == null)
-            ? -1
-            : (row.network_rx ?? 0) + (row.network_tx ?? 0),
+          row.state !== 'running' || row.net_bytes_per_sec == null ? -1 : row.net_bytes_per_sec,
         cell: ({ row }) => {
           const container = row.original
-          const { network_rx: rx, network_tx: tx } = container
+          const { net_bytes_per_sec: rate, network_rx: rx, network_tx: tx } = container
 
-          if (container.state !== 'running' || (rx == null && tx == null)) {
+          if (container.state !== 'running' || rate == null) {
             return <span className="text-sm text-muted-foreground">-</span>
           }
 
+          const lifetime = rx == null && tx == null ? undefined
+            : `Received ${formatBytes(rx)} / Sent ${formatBytes(tx)} since start`
+
           return (
-            <div
-              className="flex flex-col gap-0.5 text-xs text-muted-foreground leading-tight"
-              title={`Received ${formatBytes(rx)} / Sent ${formatBytes(tx)}`}
-              data-testid="network-io"
-            >
-              <span className="flex items-center gap-1">
-                <ArrowDown className="h-3 w-3 text-info shrink-0" />
-                {formatBytes(rx)}
-              </span>
-              <span className="flex items-center gap-1">
-                <ArrowUp className="h-3 w-3 text-warning shrink-0" />
-                {formatBytes(tx)}
-              </span>
-            </div>
+            <span className="text-sm text-muted-foreground" title={lifetime} data-testid="network-io">
+              {formatNetworkRate(rate)}
+            </span>
           )
         },
         enableSorting: true,

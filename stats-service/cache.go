@@ -1,7 +1,6 @@
 package main
 
 import (
-	"math"
 	"sync"
 	"time"
 
@@ -131,78 +130,38 @@ func (c *StatsCache) UpdateContainerStats(stats *ContainerStats) {
 	// Use composite key to support containers with duplicate IDs on different hosts
 	compositeKey := stats.HostID + ":" + stats.ContainerID
 
-	// Calculate network rate (bytes per second)
-	currentTotal := stats.NetworkRx + stats.NetworkTx
-
+	// Calculate network rates (bytes per second) from the cumulative counters
 	if baseline, exists := c.lastNetStats[compositeKey]; exists {
-		// Calculate delta
-		// Calculate delta using unsigned arithmetic to avoid int64 overflow
-		var deltaBytes int64
-		if currentTotal >= baseline.totalBytes {
-			diff := currentTotal - baseline.totalBytes
-			if diff > uint64(math.MaxInt64) {
-				diff = uint64(math.MaxInt64)
-			}
-			deltaBytes = int64(diff) // #nosec G115
-		} else {
-			// Counter reset (container restart) - negative delta
-			deltaBytes = -1
-		}
 		deltaTime := now.Sub(baseline.timestamp).Seconds()
-
-		if deltaTime > 0 {
-			if deltaBytes < 0 {
-				// Counter reset detected (container restart)
-				stats.NetBytesPerSec, stats.NetRxBytesPerSec, stats.NetTxBytesPerSec = 0, 0, 0
-			} else {
-				// Normal case: calculate rate
-				rate := float64(deltaBytes) / deltaTime
-
-				// Sanity check: Cap at 10 Gbps per container (reasonable max)
-				maxRate := float64(10 * 1024 * 1024 * 1024) // 10 GB/s
-				if rate > maxRate {
-					// Outlier detected, drop it
-					stats.NetBytesPerSec, stats.NetRxBytesPerSec, stats.NetTxBytesPerSec = 0, 0, 0
-				} else {
-					stats.NetBytesPerSec = rate
-					// Per-direction counters share the total's reset/outlier decision
-					stats.NetRxBytesPerSec = counterRate(stats.NetworkRx, baseline.rxBytes, deltaTime)
-					stats.NetTxBytesPerSec = counterRate(stats.NetworkTx, baseline.txBytes, deltaTime)
-				}
-			}
-		} else {
-			// No time elapsed, keep previous rate if available
+		switch {
+		case deltaTime <= 0:
+			// No time elapsed, keep previous rates if available
 			if prevStats, ok := c.containerStats[compositeKey]; ok {
 				stats.NetBytesPerSec = prevStats.NetBytesPerSec
 				stats.NetRxBytesPerSec = prevStats.NetRxBytesPerSec
 				stats.NetTxBytesPerSec = prevStats.NetTxBytesPerSec
-			} else {
-				stats.NetBytesPerSec, stats.NetRxBytesPerSec, stats.NetTxBytesPerSec = 0, 0, 0
+			}
+		case stats.NetworkRx < baseline.rxBytes || stats.NetworkTx < baseline.txBytes:
+			// A counter went backwards (container restart): rates stay 0 for this sample
+		default:
+			rx := float64(stats.NetworkRx-baseline.rxBytes) / deltaTime
+			tx := float64(stats.NetworkTx-baseline.txBytes) / deltaTime
+			// Sanity check: cap at 10 GB/s per container; an outlier drops all three rates
+			if rx+tx <= float64(10*1024*1024*1024) {
+				stats.NetRxBytesPerSec, stats.NetTxBytesPerSec, stats.NetBytesPerSec = rx, tx, rx+tx
 			}
 		}
-	} else {
-		// First measurement - no rate yet
-		stats.NetBytesPerSec, stats.NetRxBytesPerSec, stats.NetTxBytesPerSec = 0, 0, 0
 	}
 
 	// Update baseline for next calculation
 	c.lastNetStats[compositeKey] = &networkBaseline{
-		totalBytes: currentTotal,
-		rxBytes:    stats.NetworkRx,
-		txBytes:    stats.NetworkTx,
-		timestamp:  now,
+		rxBytes:   stats.NetworkRx,
+		txBytes:   stats.NetworkTx,
+		timestamp: now,
 	}
 
 	// Store updated stats
 	c.containerStats[compositeKey] = stats
-}
-
-// counterRate is the per-second growth of one cumulative counter, 0 if it went backwards.
-func counterRate(current, previous uint64, deltaTime float64) float64 {
-	if current < previous {
-		return 0
-	}
-	return float64(current-previous) / deltaTime
 }
 
 // GetContainerStats retrieves stats for a specific container

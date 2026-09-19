@@ -1,6 +1,7 @@
 """Agent container stats: the handler derives per-direction network rates from the
 cumulative counters, alongside the combined rate the sparklines already use."""
 
+import math
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -47,3 +48,31 @@ async def test_counter_reset_zeroes_every_rate():
 
     cached = handler.monitor.agent_container_stats_cache[key]
     assert (cached["net_bytes_per_sec"], cached["net_rx_bytes_per_sec"], cached["net_tx_bytes_per_sec"]) == (0, 0, 0)
+
+
+async def test_one_direction_reset_zeroes_every_rate():
+    handler = _handler()
+    key = f"{handler.host_id}:aaa111111111"
+    await handler._handle_container_stats({"container_id": "aaa111111111", "network_rx": 100, "network_tx": 100})
+    handler.prev_network_stats[key]["timestamp"] = time.time() - 1.0
+
+    await handler._handle_container_stats({"container_id": "aaa111111111", "network_rx": 50, "network_tx": 300})
+
+    cached = handler.monitor.agent_container_stats_cache[key]
+    assert (cached["net_bytes_per_sec"], cached["net_rx_bytes_per_sec"], cached["net_tx_bytes_per_sec"]) == (0, 0, 0)
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("nan"), -5, 10**400, True, "12"])
+async def test_unusable_counters_yield_finite_zero_rates(bad):
+    handler = _handler()
+    key = f"{handler.host_id}:aaa111111111"
+    await handler._handle_container_stats({"container_id": "aaa111111111", "network_rx": 1, "network_tx": 1})
+    handler.prev_network_stats[key]["timestamp"] = time.time() - 1.0
+
+    await handler._handle_container_stats({"container_id": "aaa111111111", "network_rx": bad, "network_tx": 1})
+
+    cached = handler.monitor.agent_container_stats_cache[key]
+    rates = (cached["net_bytes_per_sec"], cached["net_rx_bytes_per_sec"], cached["net_tx_bytes_per_sec"])
+    assert rates == (0, 0, 0)
+    assert all(math.isfinite(r) for r in rates)
+    assert cached["network_rx"] == 0 and cached["network_tx"] == 0

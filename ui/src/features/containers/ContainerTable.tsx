@@ -1305,7 +1305,10 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
           row.state !== 'running' || row.net_bytes_per_sec == null ? -1 : row.net_bytes_per_sec,
         cell: ({ row }) => {
           const container = row.original
-          const { net_bytes_per_sec: rate, network_rx: rx, network_tx: tx } = container
+          const {
+            net_bytes_per_sec: rate, net_rx_bytes_per_sec: rxRate, net_tx_bytes_per_sec: txRate,
+            network_rx: rx, network_tx: tx,
+          } = container
 
           if (container.state !== 'running' || rate == null) {
             return <span className="text-sm text-muted-foreground">-</span>
@@ -1322,11 +1325,11 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
             >
               <span className="flex items-center gap-1">
                 <ArrowDown className="h-3 w-3 text-info shrink-0" />
-                {formatNetworkRate(container.net_rx_bytes_per_sec)}
+                {formatNetworkRate(rxRate)}
               </span>
               <span className="flex items-center gap-1">
                 <ArrowUp className="h-3 w-3 text-warning shrink-0" />
-                {formatNetworkRate(container.net_tx_bytes_per_sec)}
+                {formatNetworkRate(txRate)}
               </span>
             </div>
           )

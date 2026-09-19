@@ -17,6 +17,7 @@ Message Types:
 import asyncio
 import json
 import logging
+import math
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -39,6 +40,17 @@ from event_logger import EventCategory, EventType as LogEventType, EventSeverity
 from utils.keys import make_composite_key
 
 logger = logging.getLogger(__name__)
+
+
+def _byte_counter(value) -> Optional[int]:
+    """A cumulative byte counter as a non-negative int, or None if the value cannot be one."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if value < 0 or value >= 2**64:
+        return None
+    return int(value)
 
 
 class AgentWebSocketHandler:
@@ -702,34 +714,26 @@ class AgentWebSocketHandler:
             # Create composite key for stats storage (validates 12-char format)
             container_key = make_composite_key(self.host_id, container_id)
 
-            # Calculate network rate (bytes/sec) by comparing with previous reading
+            # Network rates (bytes/sec) from the cumulative counters; an unusable counter pair
+            # (non-numeric, negative, non-finite, beyond uint64) reads as 0 so nothing non-finite
+            # can reach the JSON responses
             current_time = time.time()
-            net_rx = stats.get("network_rx", 0)
-            net_tx = stats.get("network_tx", 0)
-            if not (isinstance(net_rx, (int, float)) and isinstance(net_tx, (int, float))):
+            net_rx = _byte_counter(stats.get("network_rx", 0))
+            net_tx = _byte_counter(stats.get("network_tx", 0))
+            if net_rx is None or net_tx is None:
                 net_rx = net_tx = 0
-            net_total = net_rx + net_tx
 
-            # Calculate rate if we have previous reading
             net_bytes_per_sec = net_rx_bytes_per_sec = net_tx_bytes_per_sec = 0
-            if container_key in self.prev_network_stats:
-                prev = self.prev_network_stats[container_key]
+            prev = self.prev_network_stats.get(container_key)
+            if prev:
                 time_delta = current_time - prev['timestamp']
-                if time_delta > 0:
-                    bytes_delta = net_total - prev['total']
-                    # A counter that went backwards means a restart: every rate reads 0 this sample
-                    if bytes_delta > 0:
-                        net_bytes_per_sec = bytes_delta / time_delta
-                        net_rx_bytes_per_sec = max(net_rx - prev['rx'], 0) / time_delta
-                        net_tx_bytes_per_sec = max(net_tx - prev['tx'], 0) / time_delta
+                # A counter that went backwards is a restart: every rate reads 0 this sample
+                if time_delta > 0 and net_rx >= prev['rx'] and net_tx >= prev['tx']:
+                    net_rx_bytes_per_sec = (net_rx - prev['rx']) / time_delta
+                    net_tx_bytes_per_sec = (net_tx - prev['tx']) / time_delta
+                    net_bytes_per_sec = net_rx_bytes_per_sec + net_tx_bytes_per_sec
 
-            # Update previous reading for next calculation
-            self.prev_network_stats[container_key] = {
-                'total': net_total,
-                'rx': net_rx,
-                'tx': net_tx,
-                'timestamp': current_time
-            }
+            self.prev_network_stats[container_key] = {'rx': net_rx, 'tx': net_tx, 'timestamp': current_time}
 
             # Store in circular buffer (no database)
             if hasattr(self.monitor, 'container_stats_history'):
@@ -747,11 +751,11 @@ class AgentWebSocketHandler:
                     memory_limit_bytes=stats.get("memory_limit")
                 )
 
-            # Cache latest full stats for REST API endpoints (not just sparkline data)
-            # This allows populate_container_stats() to access memory_usage, memory_limit, etc.
-            # Add the calculated net_bytes_per_sec to the stats
+            # Full stats cached per container so populate_container_stats() can serve REST without another round trip
             stats_with_rate = {
                 **stats,
+                'network_rx': net_rx,
+                'network_tx': net_tx,
                 'net_bytes_per_sec': net_bytes_per_sec,
                 'net_rx_bytes_per_sec': net_rx_bytes_per_sec,
                 'net_tx_bytes_per_sec': net_tx_bytes_per_sec,

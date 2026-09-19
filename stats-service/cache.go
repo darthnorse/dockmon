@@ -18,7 +18,7 @@ type ContainerStats struct {
 	MemoryPercent    float64   `json:"memory_percent"`
 	NetworkRx        uint64    `json:"network_rx"`
 	NetworkTx        uint64    `json:"network_tx"`
-	NetBytesPerSec   float64   `json:"net_bytes_per_sec"` // Calculated network rate
+	NetBytesPerSec   float64   `json:"net_bytes_per_sec"`
 	NetRxBytesPerSec float64   `json:"net_rx_bytes_per_sec"`
 	NetTxBytesPerSec float64   `json:"net_tx_bytes_per_sec"`
 	DiskRead         uint64    `json:"disk_read"`
@@ -47,7 +47,7 @@ type HostStats struct {
 type networkBaseline struct {
 	rxBytes   uint64
 	txBytes   uint64
-	timestamp time.Time // when this measurement was taken
+	timestamp time.Time
 }
 
 // StatsCache is a thread-safe cache for container and host stats
@@ -136,7 +136,6 @@ func (c *StatsCache) UpdateContainerStats(stats *ContainerStats) {
 		deltaTime := now.Sub(baseline.timestamp).Seconds()
 		switch {
 		case deltaTime <= 0:
-			// No time elapsed, keep previous rates if available
 			if prevStats, ok := c.containerStats[compositeKey]; ok {
 				stats.NetBytesPerSec = prevStats.NetBytesPerSec
 				stats.NetRxBytesPerSec = prevStats.NetRxBytesPerSec

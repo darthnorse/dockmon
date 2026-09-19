@@ -71,7 +71,7 @@ export function useContainerTagEditor({
         console.error('Failed to fetch tag suggestions:', error)
       }
     }
-    fetchSuggestions()
+    void fetchSuggestions()
   }, [])
 
   const handleStartEdit = () => {
@@ -124,7 +124,7 @@ export function useContainerTagEditor({
       setIsEditing(false)
 
       // Refetch containers to get updated tags
-      queryClient.invalidateQueries({ queryKey: ['containers'] })
+      void queryClient.invalidateQueries({ queryKey: ['containers'] })
     } catch (error) {
       console.error('Failed to update container tags:', error)
       toast.error('Failed to update container tags')

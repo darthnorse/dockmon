@@ -84,7 +84,7 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
       }
     }
 
-    const debounce = setTimeout(fetchSuggestions, 200)
+    const debounce = setTimeout(() => void fetchSuggestions(), 200)
     return () => {
       cancelled = true
       clearTimeout(debounce)
@@ -188,12 +188,12 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
       toast.success(message)
 
       // Refetch to get server state
-      queryClient.invalidateQueries({ queryKey: ['containers'] })
+      void queryClient.invalidateQueries({ queryKey: ['containers'] })
 
       handleCancel()
     } catch (err) {
       // Revert optimistic update
-      queryClient.invalidateQueries({ queryKey: ['containers'] })
+      void queryClient.invalidateQueries({ queryKey: ['containers'] })
 
       const errorMessage = err instanceof Error ? err.message : 'Failed to update tags'
       toast.error(errorMessage)
@@ -219,9 +219,9 @@ export function TagEditor({ tags, containerId, hostId }: TagEditorProps) {
       })
 
       toast.success(`Removed tag "${tagToRemove}"`)
-      queryClient.invalidateQueries({ queryKey: ['containers'] })
-    } catch (err) {
-      queryClient.invalidateQueries({ queryKey: ['containers'] })
+      void queryClient.invalidateQueries({ queryKey: ['containers'] })
+    } catch {
+      void queryClient.invalidateQueries({ queryKey: ['containers'] })
       toast.error('Failed to remove tag')
     }
   }

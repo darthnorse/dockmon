@@ -34,8 +34,15 @@ function isDebugEnabled(): boolean {
  * Enable debug mode in production
  * Run in browser console: window.enableDebug()
  */
+declare global {
+  interface Window {
+    enableDebug: () => void
+    disableDebug: () => void
+  }
+}
+
 if (typeof window !== 'undefined') {
-  ;(window as any).enableDebug = () => {
+  window.enableDebug = () => {
     try {
       localStorage.setItem(DEBUG_KEY, 'true')
       console.log('✅ Debug mode enabled. Reload to see debug messages.')
@@ -43,7 +50,7 @@ if (typeof window !== 'undefined') {
       console.error('Failed to enable debug mode (localStorage unavailable):', e)
     }
   }
-  ;(window as any).disableDebug = () => {
+  window.disableDebug = () => {
     try {
       localStorage.removeItem(DEBUG_KEY)
       console.log('❌ Debug mode disabled.')

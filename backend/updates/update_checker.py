@@ -100,9 +100,12 @@ class UpdateChecker:
         # Default (alpine, stable, bullseye, etc.)
         return CACHE_TTL_DEFAULT
 
-    async def check_all_containers(self) -> Dict[str, int]:
+    async def check_all_containers(self, host_ids: Optional[set] = None) -> Dict[str, int]:
         """
         Check all containers for updates.
+
+        Args:
+            host_ids: Restrict the check to these hosts (None = every host)
 
         Returns:
             Dict with keys: total, checked, updates_found, errors
@@ -123,6 +126,8 @@ class UpdateChecker:
 
         # Get all containers
         containers = await self._get_all_containers()
+        if host_ids is not None:
+            containers = [c for c in containers if c.get("host_id") in host_ids]
         stats["total"] = len(containers)
 
         logger.info(f"Found {len(containers)} containers to check")

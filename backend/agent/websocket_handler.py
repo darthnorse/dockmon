@@ -17,6 +17,7 @@ Message Types:
 import asyncio
 import json
 import logging
+import math
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -39,6 +40,17 @@ from event_logger import EventCategory, EventType as LogEventType, EventSeverity
 from utils.keys import make_composite_key
 
 logger = logging.getLogger(__name__)
+
+
+def _byte_counter(value) -> Optional[int]:
+    """A cumulative byte counter as a non-negative int, or None if the value cannot be one."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if value < 0 or value >= 2**64:
+        return None
+    return int(value)
 
 
 class AgentWebSocketHandler:
@@ -253,6 +265,9 @@ class AgentWebSocketHandler:
                         new_host_name = validated_data.hostname
 
                         try:
+                            # Tags moved to the new host id; refresh scoped sockets so the
+                            # host_migrated broadcast (keyed on new_host_id) reaches them
+                            await self.monitor.manager.refresh_all_visible_hosts()
                             await self.monitor.manager.broadcast({
                                 "type": "host_migrated",
                                 "data": {
@@ -284,22 +299,9 @@ class AgentWebSocketHandler:
                                 del self.monitor.clients[old_host_id]
 
                             # Unregister from Go stats and event services
-                            from stats_client import get_stats_client
-                            stats_client = get_stats_client()
-
-                            try:
-                                await stats_client.remove_docker_host(old_host_id)
-                                logger.info(f"Unregistered old host {old_host_name} from stats service")
-                            except asyncio.TimeoutError:
-                                logger.debug(f"Timeout unregistering {old_host_name} from stats service (expected during cleanup)")
-                            except Exception as e:
-                                logger.warning(f"Error unregistering from stats service: {e}")
-
-                            try:
-                                await stats_client.remove_event_host(old_host_id)
-                                logger.info(f"Unregistered old host {old_host_name} from event service")
-                            except Exception as e:
-                                logger.warning(f"Error unregistering from event service: {e}")
+                            await self.monitor.unregister_docker_host_services(
+                                old_host_id, old_host_name
+                            )
 
                             logger.info(f"Migration cleanup complete: old host {old_host_name} removed from active monitoring")
 
@@ -712,28 +714,31 @@ class AgentWebSocketHandler:
             # Create composite key for stats storage (validates 12-char format)
             container_key = make_composite_key(self.host_id, container_id)
 
-            # Calculate network rate (bytes/sec) by comparing with previous reading
+            # Network rates (bytes/sec) from the cumulative counters; an unusable counter pair
+            # (non-numeric, negative, non-finite, beyond uint64) reads as 0 so nothing non-finite
+            # can reach the JSON responses
             current_time = time.time()
-            net_rx = stats.get("network_rx", 0)
-            net_tx = stats.get("network_tx", 0)
-            net_total = net_rx + net_tx if isinstance(net_rx, (int, float)) and isinstance(net_tx, (int, float)) else 0
+            net_rx = _byte_counter(stats.get("network_rx", 0))
+            net_tx = _byte_counter(stats.get("network_tx", 0))
+            counters_usable = net_rx is not None and net_tx is not None
+            if not counters_usable:
+                net_rx = net_tx = 0
 
-            # Calculate rate if we have previous reading
-            net_bytes_per_sec = 0
-            if container_key in self.prev_network_stats:
-                prev = self.prev_network_stats[container_key]
+            net_bytes_per_sec = net_rx_bytes_per_sec = net_tx_bytes_per_sec = 0
+            prev = self.prev_network_stats.get(container_key)
+            if prev and counters_usable:
                 time_delta = current_time - prev['timestamp']
-                if time_delta > 0:
-                    bytes_delta = net_total - prev['total']
-                    # Prevent negative values (can happen if container restarted)
-                    if bytes_delta > 0:
-                        net_bytes_per_sec = bytes_delta / time_delta
+                # A counter that went backwards is a restart: every rate reads 0 this sample
+                if time_delta > 0 and net_rx >= prev['rx'] and net_tx >= prev['tx']:
+                    net_rx_bytes_per_sec = (net_rx - prev['rx']) / time_delta
+                    net_tx_bytes_per_sec = (net_tx - prev['tx']) / time_delta
+                    net_bytes_per_sec = net_rx_bytes_per_sec + net_tx_bytes_per_sec
 
-            # Update previous reading for next calculation
-            self.prev_network_stats[container_key] = {
-                'total': net_total,
-                'timestamp': current_time
-            }
+            # An unusable sample must not become the baseline: the next valid one would measure from zero
+            if counters_usable:
+                self.prev_network_stats[container_key] = {'rx': net_rx, 'tx': net_tx, 'timestamp': current_time}
+            else:
+                self.prev_network_stats.pop(container_key, None)
 
             # Store in circular buffer (no database)
             if hasattr(self.monitor, 'container_stats_history'):
@@ -751,10 +756,15 @@ class AgentWebSocketHandler:
                     memory_limit_bytes=stats.get("memory_limit")
                 )
 
-            # Cache latest full stats for REST API endpoints (not just sparkline data)
-            # This allows populate_container_stats() to access memory_usage, memory_limit, etc.
-            # Add the calculated net_bytes_per_sec to the stats
-            stats_with_rate = {**stats, 'net_bytes_per_sec': net_bytes_per_sec}
+            # Full stats cached per container so populate_container_stats() can serve REST without another round trip
+            stats_with_rate = {
+                **stats,
+                'network_rx': net_rx,
+                'network_tx': net_tx,
+                'net_bytes_per_sec': net_bytes_per_sec,
+                'net_rx_bytes_per_sec': net_rx_bytes_per_sec,
+                'net_tx_bytes_per_sec': net_tx_bytes_per_sec,
+            }
             if hasattr(self.monitor, 'agent_container_stats_cache'):
                 self.monitor.agent_container_stats_cache[container_key] = stats_with_rate
             else:
@@ -767,7 +777,7 @@ class AgentWebSocketHandler:
                     "type": "container_stats",
                     "container_id": container_id,
                     "host_id": self.host_id or self.agent_id,
-                    "stats": stats
+                    "stats": stats_with_rate
                 })
 
             logger.debug(f"Container stats processed for {container_id} (agent {self.agent_id})")

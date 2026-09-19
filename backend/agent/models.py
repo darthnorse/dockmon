@@ -13,7 +13,38 @@ from typing import Literal, Optional, Dict, List
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 
-class AgentRegistrationRequest(BaseModel):
+class AgentSystemInfo(BaseModel):
+    """
+    Host facts an agent reports about its machine, as stored on DockerHostDB.
+
+    Shared by registration and the nightly get_system_info refresh so both
+    write paths enforce the same bounds: an agent token is a low-privilege
+    identity, and these values reach every UI client via /api/hosts.
+    """
+    os_type: Optional[str] = Field(None, max_length=50, description="OS type (linux, windows, etc.)")
+    os_version: Optional[str] = Field(None, max_length=500, description="OS version string")
+    kernel_version: Optional[str] = Field(None, max_length=255, description="Kernel version")
+    docker_version: Optional[str] = Field(None, max_length=50, description="Docker version")
+    daemon_started_at: Optional[str] = Field(None, max_length=100, description="Docker daemon start time")
+    total_memory: Optional[int] = Field(None, gt=0, le=1000000000000000, description="Total memory in bytes (max 1PB)")
+    num_cpus: Optional[int] = Field(None, gt=0, le=10000, description="Number of CPUs (max 10k)")
+
+    @field_validator('os_version', 'kernel_version', 'docker_version', 'os_type', 'daemon_started_at')
+    @classmethod
+    def sanitize_system_info_html(cls, v: Optional[str]) -> Optional[str]:
+        return sanitize_agent_string(v)
+
+
+def sanitize_agent_string(v: Optional[str]) -> Optional[str]:
+    """Strip HTML angle brackets and non-printables from an agent-supplied string."""
+    if v:
+        v = re.sub(r'[<>]', '', v)
+        v = ''.join(c for c in v if c.isprintable() or c in '\n\r\t')
+        v = v.strip()
+    return v
+
+
+class AgentRegistrationRequest(AgentSystemInfo):
     """
     Validated agent registration request.
 
@@ -54,15 +85,6 @@ class AgentRegistrationRequest(BaseModel):
         ),
     )
 
-    # System information fields (collected from Docker daemon)
-    os_type: Optional[str] = Field(None, max_length=50, description="OS type (linux, windows, etc.)")
-    os_version: Optional[str] = Field(None, max_length=500, description="OS version string")
-    kernel_version: Optional[str] = Field(None, max_length=255, description="Kernel version")
-    docker_version: Optional[str] = Field(None, max_length=50, description="Docker version")
-    daemon_started_at: Optional[str] = Field(None, max_length=100, description="Docker daemon start time")
-    total_memory: Optional[int] = Field(None, gt=0, le=1000000000000000, description="Total memory in bytes (max 1PB)")
-    num_cpus: Optional[int] = Field(None, gt=0, le=10000, description="Number of CPUs (max 10k)")
-
     # Agent platform fields (for self-update binary selection)
     agent_os: Optional[str] = Field(None, max_length=20, description="Agent OS (GOOS: linux, darwin, windows)")
     agent_arch: Optional[str] = Field(None, max_length=20, description="Agent architecture (GOARCH: amd64, arm64, arm)")
@@ -71,7 +93,7 @@ class AgentRegistrationRequest(BaseModel):
     host_ip: Optional[str] = Field(None, max_length=45, description="Host IP address (IPv4 or IPv6)")
     host_ips: Optional[List[str]] = Field(None, max_length=50, description="All host IP addresses (max 50 items)")
 
-    @field_validator('hostname', 'os_version', 'kernel_version', 'docker_version', 'os_type', 'agent_os', 'agent_arch', 'host_ip')
+    @field_validator('hostname', 'agent_os', 'agent_arch', 'host_ip')
     @classmethod
     def sanitize_html(cls, v: Optional[str]) -> Optional[str]:
         """
@@ -86,11 +108,7 @@ class AgentRegistrationRequest(BaseModel):
         - <img src=x onerror=alert(1)>
         - etc.
         """
-        if v:
-            v = re.sub(r'[<>]', '', v)
-            v = ''.join(c for c in v if c.isprintable() or c in '\n\r\t')
-            v = v.strip()
-        return v
+        return sanitize_agent_string(v)
 
     @field_validator('host_ips')
     @classmethod

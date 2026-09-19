@@ -46,6 +46,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { useAddHost, useUpdateHost, useDeleteHost, type HostConfig } from '../hooks/useHosts'
 import { useGenerateToken } from '@/features/agents/hooks/useAgents'
 import type { Host } from '@/types/api'
+import type { AlertListResponse } from '@/types/alerts'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api/client'
 import { debug } from '@/lib/debug'
@@ -117,10 +118,10 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   const { data: alertsData } = useQuery({
     queryKey: ['alerts', 'host', host?.id],
     queryFn: async () => {
-      const response = await apiClient.get<{ alerts: any[]; total: number }>(
+      const response = await apiClient.get<AlertListResponse>(
         `/alerts/?state=open&page_size=500`
       )
-      return response.alerts.filter((alert: any) => alert.host_id === host?.id)
+      return response.alerts.filter((alert) => alert.host_id === host?.id)
     },
     enabled: showDeleteConfirm && !!host?.id,
   })
@@ -216,6 +217,8 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
   --restart unless-stopped \\
   -v /var/run/docker.sock:/var/run/docker.sock:ro \\
   -v dockmon-agent-data:/data \\
+  -v /proc:/host/proc:ro \\
+  -v /:/hostfs:ro \\
   -e DOCKMON_URL=${dockmonUrl} \\
   -e REGISTRATION_TOKEN=${token} \\
   -e TZ=${timezone} \\${isHttps ? '\n  -e INSECURE_SKIP_VERIFY=true \\' : ''}
@@ -297,7 +300,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
     const config: HostConfig = {
       name: data.name,
       // For agent hosts, keep the existing URL (agent://)
-      url: isAgentHost ? host!.url : data.url,
+      url: isAgentHost ? host.url : data.url,
       tags: [],
       description: data.description || null,
     }
@@ -339,7 +342,7 @@ export function HostModal({ isOpen, onClose, host }: HostModalProps) {
       await deleteMutation.mutateAsync(host.id)
       setShowDeleteConfirm(false)
       onClose()
-    } catch (error) {
+    } catch {
       setShowDeleteConfirm(false)
     }
   }

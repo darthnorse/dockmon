@@ -89,7 +89,7 @@ export function useUpdateHealthCheck() {
     },
     onSuccess: (_data, variables) => {
       // Invalidate the health check query to refetch
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: ['container-health-check', variables.hostId, variables.containerId],
       })
     },
@@ -108,7 +108,7 @@ export function useDeleteHealthCheck() {
     },
     onSuccess: (_data, variables) => {
       // Invalidate the health check query to refetch
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: ['container-health-check', variables.hostId, variables.containerId],
       })
     },
@@ -149,7 +149,7 @@ export function useTestHealthCheck() {
     },
     onSuccess: (_data, variables) => {
       // Invalidate the health check query to refetch updated status
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: ['container-health-check', variables.hostId, variables.containerId],
       })
     },

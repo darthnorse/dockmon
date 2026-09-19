@@ -21,7 +21,7 @@
  * 10. Actions - Details/Restart/Logs
  */
 
-import { useMemo, useState, useEffect } from 'react'
+import { useMemo, useState, useEffect, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   useReactTable,
@@ -294,15 +294,28 @@ function Uptime({ daemonStartedAt }: { daemonStartedAt?: string | null | undefin
 
 interface HostTableProps {
   onEditHost?: (host: Host) => void
+  searchQuery?: string
 }
 
-export function HostTable({ onEditHost }: HostTableProps = {}) {
+export function HostTable({ onEditHost, searchQuery = '' }: HostTableProps = {}) {
   const { hasCapability } = useAuth()
   const canManage = hasCapability('hosts.manage')
-  const { data: hosts = [], isLoading, error } = useHosts()
+  const { data: allHosts = [], isLoading, error } = useHosts()
+
+  const hosts = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase()
+    if (!query) return allHosts
+
+    return allHosts.filter((host) => {
+      if (host.name?.toLowerCase().includes(query)) return true
+      if (host.url?.toLowerCase().includes(query)) return true
+      if (host.tags?.some((tag) => tag.toLowerCase().includes(query))) return true
+      return false
+    })
+  }, [allHosts, searchQuery])
   const queryClient = useQueryClient()
   const { data: preferences } = useUserPreferences()
-  const updatePreferences = useUpdatePreferences()
+  const { mutate: savePreferences } = useUpdatePreferences()
   const { data: settings } = useGlobalSettings()  // For latest agent version
   const [sorting, setSorting] = useState<SortingState>(preferences?.host_table_sort || [])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
@@ -321,13 +334,16 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
     // Don't save on initial load (empty array)
     if (sorting.length === 0 && !preferences?.host_table_sort) return
 
+    // Skip the echo-save triggered by hydrating state from loaded preferences
+    if (JSON.stringify(sorting) === JSON.stringify(preferences?.host_table_sort ?? [])) return
+
     // Debounce to avoid too many updates
     const timer = setTimeout(() => {
-      updatePreferences.mutate({ host_table_sort: sorting })
+      savePreferences({ host_table_sort: sorting })
     }, 500)
 
     return () => clearTimeout(timer)
-  }, [sorting])
+  }, [sorting, preferences?.host_table_sort, savePreferences])
 
   // Fetch alert counts (host-level alerts only)
   const { data: alertCounts } = useHostAlertCounts()
@@ -360,10 +376,16 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
   // Selection state for bulk operations
   const [selectedHostIds, setSelectedHostIds] = useState<Set<string>>(new Set())
 
+  // Selection survives filtering otherwise, so the bulk action bar would act on
+  // hosts the query has hidden.
+  useEffect(() => {
+    setSelectedHostIds(new Set())
+  }, [searchQuery])
+
   const selectedHost = hosts.find(h => h.id === selectedHostId)
 
   // Selection handlers
-  const toggleHostSelection = (hostId: string) => {
+  const toggleHostSelection = useCallback((hostId: string) => {
     setSelectedHostIds(prev => {
       const newSet = new Set(prev)
       if (newSet.has(hostId)) {
@@ -373,9 +395,9 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
       }
       return newSet
     })
-  }
+  }, [])
 
-  const toggleSelectAll = (table: Table<Host>) => {
+  const toggleSelectAll = useCallback((table: Table<Host>) => {
     const currentRows = table.getFilteredRowModel().rows
     const currentIds = currentRows.map((row) => row.original.id)
 
@@ -397,7 +419,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
         return newSet
       })
     }
-  }
+  }, [selectedHostIds])
 
   const clearSelection = () => {
     setSelectedHostIds(new Set())
@@ -624,7 +646,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
         ),
       },
     ],
-    [selectedHostIds, toggleHostSelection, toggleSelectAll, onEditHost, alertCounts, simplifiedWorkflow, setSelectedHostId, setModalOpen, canManage]
+    [selectedHostIds, toggleHostSelection, toggleSelectAll, onEditHost, alertCounts, simplifiedWorkflow, setSelectedHostId, setModalOpen, canManage, settings?.latest_agent_version]
   )
 
   const table = useReactTable({
@@ -644,7 +666,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
   if (isLoading) {
     return (
       <div className="space-y-2">
-        {[...Array(5)].map((_, i) => (
+        {Array.from({ length: 5 }, (_, i) => (
           <Skeleton key={i} className="h-16 w-full" />
         ))}
       </div>
@@ -659,11 +681,20 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
     )
   }
 
-  if (hosts.length === 0) {
+  if (allHosts.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
         <p className="text-lg font-medium">No hosts configured</p>
         <p className="text-sm mt-1">Add your first Docker host to get started</p>
+      </div>
+    )
+  }
+
+  if (hosts.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
+        <p className="text-lg font-medium">No hosts match your search</p>
+        <p className="text-sm mt-1">Try a different name, URL, or tag</p>
       </div>
     )
   }
@@ -741,7 +772,7 @@ export function HostTable({ onEditHost }: HostTableProps = {}) {
           selectedHostIds={selectedHostIds}
           onClearSelection={clearSelection}
           onTagsUpdated={() => {
-            queryClient.invalidateQueries({ queryKey: ['hosts'] })
+            void queryClient.invalidateQueries({ queryKey: ['hosts'] })
           }}
         />
       )}

@@ -8,6 +8,27 @@ authentication system to use the test database instead of production.
 import pytest
 from contextlib import contextmanager
 
+from auth.api_key_auth import (
+    invalidate_group_permissions_cache,
+    invalidate_group_tag_scopes_cache,
+    invalidate_user_groups_cache,
+)
+
+
+def _reset_auth_caches():
+    invalidate_group_permissions_cache()
+    invalidate_user_groups_cache()
+    invalidate_group_tag_scopes_cache()
+
+
+@pytest.fixture(autouse=True)
+def reset_auth_caches():
+    """User/group ids repeat across the fresh test databases while the auth caches
+    are process-global, so a lookup made by one test must not leak into the next."""
+    _reset_auth_caches()
+    yield
+    _reset_auth_caches()
+
 
 @pytest.fixture(autouse=True)
 def use_test_database_for_auth(db_session, monkeypatch):

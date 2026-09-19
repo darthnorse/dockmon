@@ -1,26 +1,29 @@
 package main
 
 import (
-	"math"
 	"sync"
 	"time"
+
+	"github.com/darthnorse/dockmon-shared/hostdisk"
 )
 
 // ContainerStats holds real-time stats for a single container
 type ContainerStats struct {
-	ContainerID    string    `json:"container_id"`
-	ContainerName  string    `json:"container_name"`
-	HostID         string    `json:"host_id"`
-	CPUPercent     float64   `json:"cpu_percent"`
-	MemoryUsage    uint64    `json:"memory_usage"`
-	MemoryLimit    uint64    `json:"memory_limit"`
-	MemoryPercent  float64   `json:"memory_percent"`
-	NetworkRx      uint64    `json:"network_rx"`
-	NetworkTx      uint64    `json:"network_tx"`
-	NetBytesPerSec float64   `json:"net_bytes_per_sec"` // Calculated network rate
-	DiskRead       uint64    `json:"disk_read"`
-	DiskWrite      uint64    `json:"disk_write"`
-	LastUpdate     time.Time `json:"last_update"`
+	ContainerID      string    `json:"container_id"`
+	ContainerName    string    `json:"container_name"`
+	HostID           string    `json:"host_id"`
+	CPUPercent       float64   `json:"cpu_percent"`
+	MemoryUsage      uint64    `json:"memory_usage"`
+	MemoryLimit      uint64    `json:"memory_limit"`
+	MemoryPercent    float64   `json:"memory_percent"`
+	NetworkRx        uint64    `json:"network_rx"`
+	NetworkTx        uint64    `json:"network_tx"`
+	NetBytesPerSec   float64   `json:"net_bytes_per_sec"`
+	NetRxBytesPerSec float64   `json:"net_rx_bytes_per_sec"`
+	NetTxBytesPerSec float64   `json:"net_tx_bytes_per_sec"`
+	DiskRead         uint64    `json:"disk_read"`
+	DiskWrite        uint64    `json:"disk_write"`
+	LastUpdate       time.Time `json:"last_update"`
 }
 
 // HostStats holds aggregated stats for a host
@@ -34,12 +37,17 @@ type HostStats struct {
 	NetworkTxBytes   uint64    `json:"network_tx_bytes"`
 	ContainerCount   int       `json:"container_count"`
 	LastUpdate       time.Time `json:"last_update"`
+
+	// Nil serializes to no disk keys at all, so the evaluator sees the metric
+	// as absent rather than as 0% used.
+	*hostdisk.HostDisk
 }
 
 // networkBaseline tracks previous network values for rate calculation
 type networkBaseline struct {
-	totalBytes uint64    // rx + tx total
-	timestamp  time.Time // when this measurement was taken
+	rxBytes   uint64
+	txBytes   uint64
+	timestamp time.Time
 }
 
 // StatsCache is a thread-safe cache for container and host stats
@@ -121,59 +129,35 @@ func (c *StatsCache) UpdateContainerStats(stats *ContainerStats) {
 	// Use composite key to support containers with duplicate IDs on different hosts
 	compositeKey := stats.HostID + ":" + stats.ContainerID
 
-	// Calculate network rate (bytes per second)
-	currentTotal := stats.NetworkRx + stats.NetworkTx
-
+	// Calculate network rates (bytes per second) from the cumulative counters; whatever the
+	// caller put in the rate fields is not a measurement
+	stats.NetBytesPerSec, stats.NetRxBytesPerSec, stats.NetTxBytesPerSec = 0, 0, 0
 	if baseline, exists := c.lastNetStats[compositeKey]; exists {
-		// Calculate delta
-		// Calculate delta using unsigned arithmetic to avoid int64 overflow
-		var deltaBytes int64
-		if currentTotal >= baseline.totalBytes {
-			diff := currentTotal - baseline.totalBytes
-			if diff > uint64(math.MaxInt64) {
-				diff = uint64(math.MaxInt64)
-			}
-			deltaBytes = int64(diff) // #nosec G115
-		} else {
-			// Counter reset (container restart) - negative delta
-			deltaBytes = -1
-		}
 		deltaTime := now.Sub(baseline.timestamp).Seconds()
-
-		if deltaTime > 0 {
-			if deltaBytes < 0 {
-				// Counter reset detected (container restart)
-				stats.NetBytesPerSec = 0
-			} else {
-				// Normal case: calculate rate
-				rate := float64(deltaBytes) / deltaTime
-
-				// Sanity check: Cap at 10 Gbps per container (reasonable max)
-				maxRate := float64(10 * 1024 * 1024 * 1024) // 10 GB/s
-				if rate > maxRate {
-					// Outlier detected, drop it
-					stats.NetBytesPerSec = 0
-				} else {
-					stats.NetBytesPerSec = rate
-				}
-			}
-		} else {
-			// No time elapsed, keep previous rate if available
+		switch {
+		case deltaTime <= 0:
 			if prevStats, ok := c.containerStats[compositeKey]; ok {
 				stats.NetBytesPerSec = prevStats.NetBytesPerSec
-			} else {
-				stats.NetBytesPerSec = 0
+				stats.NetRxBytesPerSec = prevStats.NetRxBytesPerSec
+				stats.NetTxBytesPerSec = prevStats.NetTxBytesPerSec
+			}
+		case stats.NetworkRx < baseline.rxBytes || stats.NetworkTx < baseline.txBytes:
+			// A counter went backwards (container restart): rates stay 0 for this sample
+		default:
+			rx := float64(stats.NetworkRx-baseline.rxBytes) / deltaTime
+			tx := float64(stats.NetworkTx-baseline.txBytes) / deltaTime
+			// Sanity check: cap at 10 GB/s per container; an outlier drops all three rates
+			if rx+tx <= float64(10*1024*1024*1024) {
+				stats.NetRxBytesPerSec, stats.NetTxBytesPerSec, stats.NetBytesPerSec = rx, tx, rx+tx
 			}
 		}
-	} else {
-		// First measurement - no rate yet
-		stats.NetBytesPerSec = 0
 	}
 
 	// Update baseline for next calculation
 	c.lastNetStats[compositeKey] = &networkBaseline{
-		totalBytes: currentTotal,
-		timestamp:  now,
+		rxBytes:   stats.NetworkRx,
+		txBytes:   stats.NetworkTx,
+		timestamp: now,
 	}
 
 	// Store updated stats

@@ -62,7 +62,7 @@ describe('useWebSocket', () => {
     const onConnect = vi.fn()
 
     // First mount
-    const { unmount, rerender } = renderHook(() =>
+    const { unmount } = renderHook(() =>
       useWebSocket({
         url: 'wss://test.com/ws',
         onMessage,

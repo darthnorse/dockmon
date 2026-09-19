@@ -17,7 +17,15 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, Field
 
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, Capabilities
+from auth.api_key_auth import (
+    get_current_user_or_api_key as get_current_user,
+    require_capability,
+    check_auth_capability,
+    Capabilities,
+    check_host_access,
+    get_visible_host_ids_for_auth,
+    filter_visible_hosts,
+)
 from audit.audit_logger import AuditAction, log_stack_change
 from auth.utils import get_auditable_user_info
 from database import DatabaseManager, StackMetadata
@@ -149,6 +157,18 @@ class ValidatePortsResponse(BaseModel):
     conflicts: List[PortConflictItem]
 
 
+def _deployed_to(user) -> Dict[str, List[DeployedHost]]:
+    """Hosts running each stack, limited to the caller's visible hosts."""
+    monitor = get_docker_monitor()
+    deployed_stacks = scan_deployed_stacks(monitor.get_last_containers())
+    visible = get_visible_host_ids_for_auth(user)
+    return {
+        stack: [DeployedHost(host_id=h.host_id, host_name=h.host_name)
+                for h in filter_visible_hosts(info.hosts, visible)]
+        for stack, info in deployed_stacks.items()
+    }
+
+
 # ==================== Endpoints ====================
 
 @router.get("", response_model=List[StackListItem], dependencies=[Depends(require_capability("stacks.view"))])
@@ -165,23 +185,8 @@ async def list_stacks(user=Depends(get_current_user)):
     if not stack_names:
         return []
 
-    # Scan containers to find where stacks are deployed
-    monitor = get_docker_monitor()
-    all_containers = monitor.get_last_containers()
-    deployed_stacks = scan_deployed_stacks(all_containers)
-
-    # Build response
-    result = []
-    for name in stack_names:
-        deployed_to = []
-        if name in deployed_stacks:
-            deployed_to = [
-                DeployedHost(host_id=h.host_id, host_name=h.host_name)
-                for h in deployed_stacks[name].hosts
-            ]
-        result.append(StackListItem(name=name, deployed_to=deployed_to))
-
-    return result
+    deployed_to = _deployed_to(user)
+    return [StackListItem(name=name, deployed_to=deployed_to.get(name, [])) for name in stack_names]
 
 
 @router.get("/{name}", response_model=StackResponse, dependencies=[Depends(require_capability("stacks.view"))])
@@ -199,17 +204,7 @@ async def get_stack(name: str, user=Depends(get_current_user)):
     # Read stack content
     compose_yaml, env_files = await stack_storage.read_stack(name)
 
-    # Get deployed_to info from containers
-    monitor = get_docker_monitor()
-    all_containers = monitor.get_last_containers()
-    deployed_stacks = scan_deployed_stacks(all_containers)
-
-    deployed_to = []
-    if name in deployed_stacks:
-        deployed_to = [
-            DeployedHost(host_id=h.host_id, host_name=h.host_name)
-            for h in deployed_stacks[name].hosts
-        ]
+    deployed_to = _deployed_to(user).get(name, [])
 
     # Filter env_files for users without stacks.view_env capability
     can_view_env = check_auth_capability(user, Capabilities.STACKS_VIEW_ENV)
@@ -245,6 +240,7 @@ async def validate_stack_ports(
     Returns 404 if the stack doesn't exist, 400 if the compose is malformed,
     and 409 if the host is unreachable.
     """
+    check_host_access(request.host_id, user)
     try:
         # Only the compose is needed here; skip the directory scan for discovered files.
         compose_yaml, _env = await stack_storage.read_stack(name, include_discovered=False)
@@ -252,6 +248,8 @@ async def validate_stack_ports(
         raise HTTPException(status_code=404, detail=f"Stack '{name}' not found")
 
     try:
+        # Friendly message for a malformed compose instead of raw PyYAML text.
+        stack_storage.validate_compose_syntax(compose_yaml)
         requested = extract_ports_from_compose(compose_yaml)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -359,17 +357,7 @@ async def update_stack(name: str, request: StackUpdate, http_request: Request, u
         log_stack_change(session, user_id, display_name, AuditAction.UPDATE, name, http_request)
         session.commit()
 
-    # Get deployed_to info from containers
-    monitor = get_docker_monitor()
-    all_containers = monitor.get_last_containers()
-    deployed_stacks = scan_deployed_stacks(all_containers)
-
-    deployed_to = []
-    if name in deployed_stacks:
-        deployed_to = [
-            DeployedHost(host_id=h.host_id, host_name=h.host_name)
-            for h in deployed_stacks[name].hosts
-        ]
+    deployed_to = _deployed_to(user).get(name, [])
 
     logger.info(f"User {display_name} updated stack '{name}'")
 

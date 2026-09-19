@@ -20,14 +20,15 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple
 from ipaddress import ip_address, ip_network
 
-from fastapi import Header, Cookie, Request, HTTPException, Depends
+from fastapi import Header, Cookie, Request, HTTPException, Depends, Path
 from sqlalchemy.orm import Session
 
-from database import ApiKey, User, DatabaseManager, GroupPermission, UserGroupMembership, CustomGroup
+from database import ApiKey, User, DatabaseManager, GroupPermission, UserGroupMembership, CustomGroup, GroupTagScope, TagAssignment
 from sqlalchemy.orm import joinedload
 from auth.cookie_sessions import cookie_session_manager
 from auth.shared import db
 from utils.client_ip import get_client_ip
+from utils.keys import host_of_composite_key
 from security.audit import security_audit
 
 logger = logging.getLogger(__name__)
@@ -525,6 +526,50 @@ def require_capability(capability: str):
     return check_capability
 
 
+def check_host_access(host_id: Optional[str], current_user: dict) -> None:
+    """Inline form of require_host_access for host ids that are not path params
+    (records, bodies). 404 when the caller cannot see host_id; None never matches."""
+    check_host_ids_visible([host_id], current_user)
+
+
+def check_host_ids_visible(host_ids, current_user: dict) -> None:
+    """404 when any of the host ids a request names (body, record, selector) is one
+    the caller cannot see. None entries never match."""
+    visible = get_visible_host_ids_for_auth(current_user)
+    for host_id in host_ids:
+        if not host_is_visible(host_id, visible):
+            # repr: the id is caller-controlled and percent-decoded, so a raw newline would forge a log line
+            logger.info(f"{_get_auth_identifier(current_user, include_group=True)} denied host scope on {host_id!r}")
+            raise HTTPException(status_code=404, detail="Host not found")
+
+
+def check_composite_keys_visible(keys, current_user: dict) -> None:
+    """404 when any host_id:... composite key names a hidden host; a key with no
+    host prefix never matches."""
+    check_host_ids_visible(
+        [host_of_composite_key(key) if isinstance(key, str) and ":" in key else None for key in keys],
+        current_user,
+    )
+
+
+async def require_host_access(
+    host_id: str = Path(),
+    current_user: dict = Depends(get_current_user_or_api_key),
+):
+    """404 (not 403) when the caller cannot see host_id, so hidden ids are not enumerable.
+    Always listed AFTER require_capability in dependencies=[...].
+    Path() pins the id to the route's {host_id}; on a route without that param FastAPI
+    would otherwise bind a bare parameter to a caller-supplied ?host_id= query value."""
+    check_host_access(host_id, current_user)
+
+
+async def require_source_host_access(
+    source_host_id: str = Path(),
+    current_user: dict = Depends(get_current_user_or_api_key),
+):
+    check_host_access(source_host_id, current_user)
+
+
 # ==================== Group-Based Permissions ====================
 #
 # Group-based permission system for fine-grained access control.
@@ -544,6 +589,14 @@ _group_cache_lock = threading.RLock()  # RLock allows reentrant acquisition
 # Thread-safe: all reads and writes protected by RLock
 _user_groups_cache: dict[int, list[int]] = {}
 _user_groups_lock = threading.RLock()  # RLock allows reentrant acquisition
+
+# Host-visibility scopes: group_id -> set of tag ids. Holds ONLY groups that have
+# scope rows; a group absent from the cache is unrestricted, so group creation needs
+# no hook. Group delete MUST invalidate: SQLite reuses the rowid of the highest
+# deleted group, so a stale entry would restrict the next group created.
+_group_tag_scopes_cache: dict[int, set[str]] = {}
+_group_tag_scopes_loaded = False
+_group_tag_scopes_lock = threading.RLock()
 
 
 def _load_group_permissions_cache() -> None:
@@ -612,6 +665,96 @@ def invalidate_user_groups_cache(user_id: int = None) -> None:
         elif user_id in _user_groups_cache:
             del _user_groups_cache[user_id]
             logger.debug(f"User groups cache invalidated for user {user_id}")
+
+
+def _load_group_tag_scopes_cache() -> None:
+    global _group_tag_scopes_loaded
+
+    with _group_tag_scopes_lock:
+        _group_tag_scopes_cache.clear()
+        with db.get_session() as session:
+            for row in session.query(GroupTagScope.group_id, GroupTagScope.tag_id).all():
+                _group_tag_scopes_cache.setdefault(row.group_id, set()).add(row.tag_id)
+        _group_tag_scopes_loaded = True
+        logger.debug(f"Loaded group tag scopes cache: {len(_group_tag_scopes_cache)} scoped groups")
+
+
+def invalidate_group_tag_scopes_cache() -> None:
+    """Call after every GroupTagScope write and after a group delete."""
+    global _group_tag_scopes_loaded
+
+    with _group_tag_scopes_lock:
+        _group_tag_scopes_cache.clear()
+        _group_tag_scopes_loaded = False
+        logger.debug("Group tag scopes cache invalidated")
+
+
+def _hosts_with_any_tag(tag_ids: set[str]) -> set[str]:
+    if not tag_ids:
+        return set()
+    with db.get_session() as session:
+        rows = session.query(TagAssignment.subject_id).filter(
+            TagAssignment.subject_type == "host",
+            TagAssignment.tag_id.in_(tag_ids),
+        ).all()
+        return {r[0] for r in rows}
+
+
+def get_visible_host_ids_for_groups(group_ids) -> Optional[set[str]]:
+    """Union of the groups' tag scopes resolved to host ids.
+
+    None = unrestricted (any group without scope rows); set() = sees nothing;
+    non-empty = filter to these hosts. Callers must distinguish None from set().
+    Host tag assignments are read live, so re-tagging needs no invalidation.
+    """
+    if not group_ids:
+        return set()
+    accumulated: set[str] = set()
+    with _group_tag_scopes_lock:
+        if not _group_tag_scopes_loaded:
+            _load_group_tag_scopes_cache()
+        for gid in group_ids:
+            scope = _group_tag_scopes_cache.get(gid)
+            if not scope:
+                return None
+            accumulated |= scope
+    return _hosts_with_any_tag(accumulated)
+
+
+def get_visible_host_ids_for_user(user_id: Optional[int]) -> Optional[set[str]]:
+    """Session principal: union of the user's groups. No user = sees nothing."""
+    if user_id is None:
+        return set()
+    return get_visible_host_ids_for_groups(get_user_group_ids(user_id))
+
+
+def get_visible_host_ids_for_auth(current_user: dict) -> Optional[set[str]]:
+    """API key -> its single group; session -> union of the user's groups.
+
+    Same principal model as get_effective_capabilities().
+    """
+    if current_user.get("auth_type") == "api_key":
+        group_id = current_user.get("group_id")
+        return get_visible_host_ids_for_groups([group_id]) if group_id is not None else set()
+    return get_visible_host_ids_for_user(current_user.get("user_id"))
+
+
+def host_is_visible(host_id: Optional[str], visible: Optional[set[str]]) -> bool:
+    """None = unrestricted; a None host id never matches a restricted set."""
+    return visible is None or host_id in visible
+
+
+def filter_visible_hosts(items, visible: Optional[set[str]], key=lambda item: item.host_id):
+    """Keep items whose key(item) host id is visible. None = pass through unchanged.
+    The default key is the composite-key convention every container/record model follows."""
+    if visible is None:
+        return items
+    return [item for item in items if key(item) in visible]
+
+
+def visible_host_models(hosts, visible: Optional[set[str]]):
+    """filter_visible_hosts for host models, which carry their id as `id`."""
+    return filter_visible_hosts(list(hosts), visible, lambda h: h.id)
 
 
 def has_capability_for_group(group_id: int, capability: str) -> bool:

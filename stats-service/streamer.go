@@ -349,6 +349,22 @@ func (sm *StreamManager) HasHost(hostID string) bool {
 	return exists
 }
 
+// DockerRootDir returns the daemon data-root for a registered host, the
+// filesystem whose exhaustion takes containers down.
+func (sm *StreamManager) DockerRootDir(ctx context.Context, hostID string) (string, error) {
+	sm.clientsMu.RLock()
+	cli, ok := sm.clients[hostID]
+	sm.clientsMu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("no Docker client for host %s", truncateID(hostID, 8))
+	}
+	info, err := cli.Info(ctx)
+	if err != nil {
+		return "", err
+	}
+	return info.DockerRootDir, nil
+}
+
 // StopAllStreams stops all active streams and closes all Docker clients
 func (sm *StreamManager) StopAllStreams() {
 	// Stop all streams

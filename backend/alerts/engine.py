@@ -11,12 +11,12 @@ Handles both event-driven and metric-driven alert rule evaluation with:
 
 import json
 import logging
-import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 
+from alerts.safe_regex import selector_value_matches
 from database import DatabaseManager, AlertRuleV2, AlertV2, RuleRuntime, RuleEvaluation
 from utils.keys import parse_composite_key
 
@@ -334,9 +334,9 @@ class AlertEngine:
                     continue
 
                 # Check selectors
-                matches_selectors = self._check_selectors(rule, context)
-                logger.debug(f"Engine: Rule '{rule.name}' matches selectors: {matches_selectors}")
-                if not matches_selectors:
+                selectors_match = self.matches_selectors(rule, context)
+                logger.debug(f"Engine: Rule '{rule.name}' matches selectors: {selectors_match}")
+                if not selectors_match:
                     continue
 
                 # Check if we should suppress this alert during container update
@@ -706,7 +706,7 @@ class AlertEngine:
         # Add more mappings as needed
         return False
 
-    def _check_selectors(self, rule: AlertRuleV2, context: EvaluationContext) -> bool:
+    def matches_selectors(self, rule: AlertRuleV2, context: EvaluationContext) -> bool:
         """
         Check if rule selectors match the context
 
@@ -738,16 +738,8 @@ class AlertEngine:
 
                 # Supported keys: host_name (exact or regex), host_id (exact)
                 if 'host_name' in host_selector:
-                    pattern = host_selector['host_name']
-                    if pattern.startswith('regex:'):
-                        # Regex matching
-                        regex_pattern = pattern[6:]  # Remove 'regex:' prefix
-                        if not re.match(regex_pattern, context.host_name or ''):
-                            return False
-                    else:
-                        # Exact matching
-                        if context.host_name != pattern:
-                            return False
+                    if not selector_value_matches(host_selector['host_name'], context.host_name):
+                        return False
 
                 if 'host_id' in host_selector:
                     if context.host_id != host_selector['host_id']:
@@ -806,18 +798,12 @@ class AlertEngine:
                         if context.desired_state != 'on_demand':
                             return False
 
-                # Supported keys: container_name (exact or regex), container_id (exact), image (exact or regex)
+                # Supported keys: container_name (exact or regex), container_id (exact)
                 if 'container_name' in container_selector:
-                    pattern = container_selector['container_name']
-                    if pattern.startswith('regex:'):
-                        # Regex matching
-                        regex_pattern = pattern[6:]  # Remove 'regex:' prefix
-                        if not re.match(regex_pattern, context.container_name or ''):
-                            return False
-                    else:
-                        # Exact matching
-                        if context.container_name != pattern:
-                            return False
+                    if not selector_value_matches(
+                        container_selector['container_name'], context.container_name
+                    ):
+                        return False
 
                 if 'container_id' in container_selector:
                     if context.container_id != container_selector['container_id']:
@@ -915,7 +901,7 @@ class AlertEngine:
 
             for rule in rules:
                 # Check selectors
-                if not self._check_selectors(rule, context):
+                if not self.matches_selectors(rule, context):
                     continue
 
                 # Get or create runtime state
@@ -983,7 +969,11 @@ class AlertEngine:
                 # Record evaluation for debugging
                 self._record_evaluation(rule.id, context.scope_id, metric_value, breached, now)
 
-                if should_fire:
+                if should_fire and not breached:
+                    # The window still counts earlier breaches, so the alert keeps whatever state it has;
+                    # a sample under the threshold must not create, reopen, update or page with its value
+                    logger.debug(f"Rule {rule.id} fires on window for {context.scope_id} but sample is under threshold")
+                elif should_fire:
                     # Track breach start
                     if state["breach_started_at"] is None:
                         state["breach_started_at"] = now.isoformat()
@@ -1021,20 +1011,9 @@ class AlertEngine:
 
                         # Handle immediate clearing (alert_clear_delay_seconds = 0)
                         if clear_delay == 0:
-                            # Clear immediately without waiting
-                            dedup_key = self._make_dedup_key(rule.id, rule.kind, context.scope_type, context.scope_id)
-                            existing = session.query(AlertV2).filter(
-                                AlertV2.dedup_key == dedup_key,
-                                AlertV2.state == "open"
-                            ).first()
-
-                            if existing:
-                                self._resolve_alert(existing, "Clear condition met (immediate)")
-                                alerts_changed.append(existing)
-
-                            # Reset state
-                            state["breach_started_at"] = None
-                            state["clear_started_at"] = None
+                            resolved = self._clear_open_metric_alert(session, rule, context, state, "Clear condition met (immediate)")
+                            if resolved:
+                                alerts_changed.append(resolved)
                         else:
                             # Track clear start for sustained clearing
                             if state["clear_started_at"] is None:
@@ -1045,20 +1024,9 @@ class AlertEngine:
                             time_clearing = (now - clear_start).total_seconds()
 
                             if time_clearing >= clear_delay:
-                                # Clear the alert
-                                dedup_key = self._make_dedup_key(rule.id, rule.kind, context.scope_type, context.scope_id)
-                                existing = session.query(AlertV2).filter(
-                                    AlertV2.dedup_key == dedup_key,
-                                    AlertV2.state == "open"
-                                ).first()
-
-                                if existing:
-                                    self._resolve_alert(existing, "Clear condition met")
-                                    alerts_changed.append(existing)
-
-                                # Reset state
-                                state["breach_started_at"] = None
-                                state["clear_started_at"] = None
+                                resolved = self._clear_open_metric_alert(session, rule, context, state, "Clear condition met")
+                                if resolved:
+                                    alerts_changed.append(resolved)
                     else:
                         # Still breaching clear threshold, reset
                         state["clear_started_at"] = None
@@ -1069,6 +1037,22 @@ class AlertEngine:
                 session.commit()
 
         return alerts_changed
+
+    def _clear_open_metric_alert(self, session, rule: AlertRuleV2, context: EvaluationContext,
+                                 state: Dict[str, Any], reason: str) -> Optional[AlertV2]:
+        """Resolve the open alert for this rule/scope, if any, and reset the breach/clear timers.
+
+        Returns the refreshed copy from _resolve_alert: the instance loaded here belongs to
+        the caller's session, which commits (and so expires it) before the alert is read again.
+        """
+        dedup_key = self._make_dedup_key(rule.id, rule.kind, context.scope_type, context.scope_id)
+        existing = session.query(AlertV2).filter(
+            AlertV2.dedup_key == dedup_key,
+            AlertV2.state == "open"
+        ).first()
+        state["breach_started_at"] = None
+        state["clear_started_at"] = None
+        return self._resolve_alert(existing, reason) if existing else None
 
     def _check_breach(self, value: float, threshold: float, operator: str) -> bool:
         """Check if value breaches threshold"""

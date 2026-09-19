@@ -124,3 +124,19 @@ export interface CopyPermissionsResponse {
   message: string
   warning?: string
 }
+
+// Tag scopes: hosts a group may see are those carrying any listed tag; empty = unrestricted
+export interface GroupTagScopesResponse {
+  group_id: number
+  tag_ids: string[]
+}
+
+export interface UpdateGroupTagScopesRequest {
+  tag_ids: string[]
+}
+
+export interface HostTagWithMeta {
+  id: string
+  name: string
+  color: string | null
+}

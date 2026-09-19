@@ -1,21 +1,7 @@
-/**
- * Shared Layer Progress Display Component
- *
- * Beautiful layer-by-layer progress tracking used by:
- * - Container Updates (ContainerUpdatesTab)
- * - Deployments (DeploymentsPage)
- *
- * Displays:
- * - Overall progress bar with summary
- * - Layer-by-layer download details
- * - Download speeds (MB/s)
- * - Collapsible layer details
- * - Real-time updates via WebSocket
- */
-
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { cn } from '@/lib/utils'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
+import type { WebSocketMessage } from '@/lib/websocket/useWebSocket'
 
 interface LayerProgress {
   id: string
@@ -31,23 +17,20 @@ interface LayerProgressData {
   total_layers: number
   remaining_layers: number
   summary: string
-  speed_mbps?: number
+  speed_mbps?: number | undefined
 }
 
 interface SimpleProgress {
   stage: string
-  progress: number
+  progress?: number | undefined  // agent hosts report stages without a percentage
   message: string
 }
 
 interface LayerProgressDisplayProps {
   hostId: string
-  entityId: string  // container_id or deployment_id
-  eventType: 'container_update_layer_progress' | 'deployment_layer_progress'
-  simpleProgressEventType?: 'container_update_progress' | 'deployment_progress'
+  containerId: string
   initialProgress?: number
   initialMessage?: string
-  disableAutoCollapse?: boolean  // Disable auto-collapse for multi-service deployments
 }
 
 // Helper function to format bytes
@@ -59,18 +42,11 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
-/**
- * Shared layer progress display component
- * Extracted from ContainerUpdatesTab.tsx (the design you love!)
- */
 export function LayerProgressDisplay({
   hostId,
-  entityId,
-  eventType,
-  simpleProgressEventType,
+  containerId,
   initialProgress = 0,
   initialMessage = 'Starting...',
-  disableAutoCollapse = false,
 }: LayerProgressDisplayProps) {
   const { addMessageHandler } = useWebSocketContext()
 
@@ -83,6 +59,8 @@ export function LayerProgressDisplay({
 
   // Layer-by-layer progress state (detailed view)
   const [layerProgress, setLayerProgress] = useState<LayerProgressData | null>(null)
+  // The pull's layer view and the stage messages arrive on different events; the latest one owns the header
+  const [headerSource, setHeaderSource] = useState<'stage' | 'layers'>('stage')
   const [layerDetailsExpanded, setLayerDetailsExpanded] = useState(true)  // Default expanded
 
   // Store timeout IDs in refs (not state) so they are NOT effect deps — using
@@ -90,65 +68,52 @@ export function LayerProgressDisplay({
   const completionTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const collapseTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
-  // Listen for WebSocket progress messages
+  const clearProgressAfterDelay = useCallback(() => {
+    if (completionTimeoutRef.current) {
+      clearTimeout(completionTimeoutRef.current)
+    }
+    completionTimeoutRef.current = setTimeout(() => {
+      setUpdateProgress(null)
+      setLayerProgress(null)
+      completionTimeoutRef.current = null
+    }, 3000)
+  }, [])
+
   const handleProgressMessage = useCallback(
-    (message: any) => {
-      // Support both message structures:
-      // 1. Container updates: message.data.host_id, message.data.entity_id
-      // 2. Deployments: message.host_id, message.deployment_id
-      const msgHostId = message.data?.host_id || message.host_id
-      const msgEntityId = message.data?.entity_id || message.deployment_id
-
-      if (msgHostId === hostId && msgEntityId === entityId) {
-        // Handle simple progress (container updates use message.data, deployments use message.progress)
-        if (simpleProgressEventType && message.type === simpleProgressEventType) {
-          // Deployment progress structure
-          const progress = message.progress || message.data
-          setUpdateProgress({
-            stage: progress?.stage || message.data?.stage,
-            progress: progress?.overall_percent ?? message.data?.progress,
-            message: progress?.stage || message.data?.message || 'Processing...',
-          })
-
-          // Clear progress when update completes
-          const stage = progress?.stage || message.data?.stage
-          if (stage === 'completed' || message.status === 'running') {
-            // Clear any existing timeout first
-            if (completionTimeoutRef.current) {
-              clearTimeout(completionTimeoutRef.current)
-            }
-
-            // Set new timeout and store ID for cleanup
-            completionTimeoutRef.current = setTimeout(() => {
-              setUpdateProgress(null)
-              setLayerProgress(null)
-              completionTimeoutRef.current = null
-            }, 3000)
-          }
-        }
-
-        // Handle NEW layer progress (enhanced view)
-        if (message.type === eventType) {
-          // Build summary with speed appended if not already included
-          // Docker SDK includes speed in summary, agent sends it separately
-          let summary = message.data.summary || ''
-          const speedMbps = message.data.speed_mbps
-          if (speedMbps && speedMbps > 0 && !summary.includes('MB/s')) {
-            summary = `${summary} @ ${speedMbps.toFixed(1)} MB/s`
-          }
-
-          setLayerProgress({
-            overall_progress: message.data.overall_progress,
-            layers: message.data.layers,
-            total_layers: message.data.total_layers,
-            remaining_layers: message.data.remaining_layers,
-            summary: summary,
-            speed_mbps: message.data.speed_mbps,
-          })
+    (message: WebSocketMessage) => {
+      if (message.type === 'container_update_progress') {
+        if (message.data.host_id !== hostId || message.data.container_id !== containerId) return
+        setUpdateProgress({
+          stage: message.data.stage,
+          progress: message.data.progress,
+          message: message.data.message || message.data.stage || 'Processing...',
+        })
+        setHeaderSource('stage')
+        if (message.data.stage === 'completed') {
+          clearProgressAfterDelay()
         }
       }
+
+      if (message.type === 'container_update_layer_progress') {
+        if (message.data.host_id !== hostId || message.data.entity_id !== containerId) return
+        // Docker SDK includes speed in summary, agent sends it separately
+        let summary = message.data.summary || ''
+        const speedMbps = message.data.speed_mbps
+        if (speedMbps && speedMbps > 0 && !summary.includes('MB/s')) {
+          summary = `${summary} @ ${speedMbps.toFixed(1)} MB/s`
+        }
+        setLayerProgress({
+          overall_progress: message.data.overall_progress,
+          layers: message.data.layers,
+          total_layers: message.data.total_layers,
+          remaining_layers: message.data.remaining_layers,
+          summary,
+          speed_mbps: message.data.speed_mbps,
+        })
+        setHeaderSource('layers')
+      }
     },
-    [hostId, entityId, eventType, simpleProgressEventType]
+    [hostId, containerId, clearProgressAfterDelay]
   )
 
   useEffect(() => {
@@ -168,11 +133,8 @@ export function LayerProgressDisplay({
     }
   }, [])
 
-  // Auto-collapse layer details 2 seconds after reaching 100% (unless disabled).
   // Schedule only when no timer is already pending so the effect can't re-arm itself.
   useEffect(() => {
-    if (disableAutoCollapse) return
-
     if (
       layerProgress &&
       layerProgress.overall_progress === 100 &&
@@ -187,16 +149,14 @@ export function LayerProgressDisplay({
     // Depend on overall_progress (not the whole layerProgress object, which is a
     // fresh reference on every WS message) to avoid re-arming the timer each tick.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layerProgress?.overall_progress, layerDetailsExpanded, disableAutoCollapse])
+  }, [layerProgress?.overall_progress, layerDetailsExpanded])
 
   // Don't render if no progress data
   if (!updateProgress && !layerProgress) {
     return null
   }
 
-  // Determine if we have detailed layer progress or just simple progress
-  // Docker SDK deployments/updates have layerProgress, agent deployments don't
-  const hasDetailedProgress = layerProgress !== null
+  const hasDetailedProgress = layerProgress !== null && headerSource === 'layers'
 
   return (
     <div className="space-y-3 rounded-lg border border-blue-500/50 bg-blue-500/10 p-4" data-testid="layer-progress-display">
@@ -205,7 +165,7 @@ export function LayerProgressDisplay({
         <span className="font-medium text-blue-400">
           {hasDetailedProgress
             ? layerProgress.summary
-            : updateProgress?.message || 'Deploying, please wait...'}
+            : updateProgress?.message || 'Updating, please wait...'}
         </span>
         <span className="text-blue-400">
           {hasDetailedProgress

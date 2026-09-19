@@ -3,6 +3,8 @@ package handlers
 import (
 	"bufio"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,13 +12,29 @@ import (
 	"sync"
 	"time"
 
+	"github.com/darthnorse/dockmon-agent/internal/client/statsmsg"
+	"github.com/darthnorse/dockmon-shared/hostdisk"
 	"github.com/sirupsen/logrus"
 )
+
+// /proc/meminfo reports kilobytes.
+const bytesPerKB = 1024
+
+// errCPUBaseline marks the first /proc/stat read, which has no previous
+// counters to diff against and therefore no usable percentage.
+var errCPUBaseline = errors.New("first CPU reading is a baseline")
+
+// DiskReader supplies the host filesystem reading for the host sample.
+// *hostdisk.Reader satisfies it; nil disables disk reporting.
+type DiskReader interface {
+	Read(ctx context.Context) (*hostdisk.Reading, error)
+}
 
 // HostStatsHandler collects host-level metrics from /proc (or /host/proc in container mode)
 type HostStatsHandler struct {
 	log      *logrus.Logger
 	sendJSON func(payload interface{}) error
+	disk     DiskReader
 
 	// Paths to proc and sys filesystems (auto-detected)
 	procPath string // /proc or /host/proc
@@ -27,6 +45,17 @@ type HostStatsHandler struct {
 	prevNet  map[string]netStats
 	prevTime time.Time
 	mu       sync.Mutex
+
+	// Host samples reach the alert evaluator only through this dual-send —
+	// the control WebSocket feeds the UI ring buffer alone.
+	statsSink
+}
+
+// memReading is a single /proc/meminfo sample.
+type memReading struct {
+	percent    float64
+	usedBytes  uint64
+	totalBytes uint64
 }
 
 type cpuStats struct {
@@ -47,7 +76,7 @@ type netStats struct {
 
 // NewHostStatsHandler creates a new host stats handler
 // Auto-detects /host/proc (container mode) vs /proc (systemd mode)
-func NewHostStatsHandler(log *logrus.Logger, sendJSON func(interface{}) error) *HostStatsHandler {
+func NewHostStatsHandler(log *logrus.Logger, sendJSON func(interface{}) error, disk DiskReader) *HostStatsHandler {
 	procPath := "/proc"
 	sysPath := "/sys"
 
@@ -66,6 +95,7 @@ func NewHostStatsHandler(log *logrus.Logger, sendJSON func(interface{}) error) *
 	return &HostStatsHandler{
 		log:      log,
 		sendJSON: sendJSON,
+		disk:     disk,
 		procPath: procPath,
 		sysPath:  sysPath,
 		prevNet:  make(map[string]netStats),
@@ -77,7 +107,7 @@ func (h *HostStatsHandler) StartCollection(ctx context.Context, interval time.Du
 	h.log.Infof("Starting host stats collection every %v", interval)
 
 	// Initial collection to set baseline
-	h.collect()
+	h.collect(ctx)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -88,34 +118,47 @@ func (h *HostStatsHandler) StartCollection(ctx context.Context, interval time.Du
 			h.log.Info("Stopping host stats collection")
 			return
 		case <-ticker.C:
-			h.collect()
+			h.collect(ctx)
 		}
 	}
 }
 
-func (h *HostStatsHandler) collect() {
+func (h *HostStatsHandler) collect(ctx context.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	now := time.Now()
 
-	// Calculate CPU percentage
-	cpuPercent := h.calculateCPUPercent()
-
-	// Calculate memory percentage
-	memPercent := h.calculateMemPercent()
-
-	// Calculate network bytes/sec
+	// Read everything first so the deltas stay seeded even on a pass we do
+	// not publish.
+	cpuPercent, cpuErr := h.readCPUPercent()
+	mem, memErr := h.readMemory()
 	netBytesPerSec := h.calculateNetBytesPerSec(now)
-
 	h.prevTime = now
+
+	// A failed /proc read must not publish a sample: zeros are
+	// indistinguishable from a healthy idle host, on both the UI wire and
+	// the alert wire. The same goes for the first CPU read, which only seeds
+	// the counters — publishing its 0% could clear a live host CPU alert.
+	if cpuErr != nil {
+		if errors.Is(cpuErr, errCPUBaseline) {
+			h.log.Debug("Skipping first host stats sample (CPU baseline)")
+		} else {
+			h.log.Errorf("Skipping host stats sample: %v", cpuErr)
+		}
+		return
+	}
+	if memErr != nil {
+		h.log.Errorf("Skipping host stats sample: %v", memErr)
+		return
+	}
 
 	// Send to backend (format expected by _handle_system_stats)
 	msg := map[string]interface{}{
 		"type": "stats",
 		"stats": map[string]interface{}{
 			"cpu_percent":       cpuPercent,
-			"mem_percent":       memPercent,
+			"mem_percent":       mem.percent,
 			"net_bytes_per_sec": netBytesPerSec,
 		},
 	}
@@ -123,17 +166,42 @@ func (h *HostStatsHandler) collect() {
 	if err := h.sendJSON(msg); err != nil {
 		h.log.Errorf("Failed to send host stats: %v", err)
 	} else {
-		h.log.Debugf("Sent host stats: CPU=%.1f%%, MEM=%.1f%%, NET=%.0f B/s", cpuPercent, memPercent, netBytesPerSec)
+		h.log.Debugf("Sent host stats: CPU=%.1f%%, MEM=%.1f%%, NET=%.0f B/s", cpuPercent, mem.percent, netBytesPerSec)
+	}
+
+	if ss := h.sender(); ss != nil {
+		ss.Send(statsmsg.AgentStatsMsg{
+			Type:             statsmsg.TypeHostStats,
+			CPUPercent:       cpuPercent,
+			MemoryPercent:    mem.percent,
+			MemoryUsedBytes:  mem.usedBytes,
+			MemoryLimitBytes: mem.totalBytes,
+			Timestamp:        now.UTC().Format(time.RFC3339),
+			HostDisk:         h.readDisk(ctx),
+		})
 	}
 }
 
-// calculateCPUPercent reads /proc/stat (or /host/proc/stat) and calculates CPU usage percentage
-func (h *HostStatsHandler) calculateCPUPercent() float64 {
+// readDisk returns the host disk fields for the sample, or nil when they
+// cannot be measured. Unlike a /proc failure, a disk failure must not skip the
+// sample: that would silence host CPU and memory alerting to add disk.
+func (h *HostStatsHandler) readDisk(ctx context.Context) *hostdisk.HostDisk {
+	if h.disk == nil {
+		return nil
+	}
+	r, err := h.disk.Read(ctx)
+	if err != nil {
+		return nil
+	}
+	return r.Wire()
+}
+
+// readCPUPercent reads /proc/stat (or /host/proc/stat) and calculates CPU usage percentage
+func (h *HostStatsHandler) readCPUPercent() (float64, error) {
 	statPath := filepath.Join(h.procPath, "stat")
 	file, err := os.Open(statPath)
 	if err != nil {
-		h.log.Errorf("Failed to open %s: %v", statPath, err)
-		return 0
+		return 0, fmt.Errorf("failed to open %s: %w", statPath, err)
 	}
 	defer file.Close()
 
@@ -161,9 +229,8 @@ func (h *HostStatsHandler) calculateCPUPercent() float64 {
 
 			// Calculate deltas
 			if h.prevCPU.idle == 0 && h.prevCPU.user == 0 {
-				// First reading, store and return 0
 				h.prevCPU = curr
-				return 0
+				return 0, errCPUBaseline
 			}
 
 			prevTotal := h.prevCPU.user + h.prevCPU.nice + h.prevCPU.system + h.prevCPU.idle +
@@ -180,24 +247,24 @@ func (h *HostStatsHandler) calculateCPUPercent() float64 {
 			h.prevCPU = curr
 
 			if totalDelta == 0 {
-				return 0
+				return 0, nil
 			}
 
 			cpuPercent := float64(totalDelta-idleDelta) / float64(totalDelta) * 100
-			return cpuPercent
+			return cpuPercent, nil
 		}
 	}
 
-	return 0
+	return 0, fmt.Errorf("no aggregate cpu line in %s", statPath)
 }
 
-// calculateMemPercent reads /proc/meminfo (or /host/proc/meminfo) and calculates memory usage percentage
-func (h *HostStatsHandler) calculateMemPercent() float64 {
+// readMemory reads /proc/meminfo (or /host/proc/meminfo). Values there are in
+// kB, so they are scaled to bytes.
+func (h *HostStatsHandler) readMemory() (memReading, error) {
 	meminfoPath := filepath.Join(h.procPath, "meminfo")
 	file, err := os.Open(meminfoPath)
 	if err != nil {
-		h.log.Errorf("Failed to open %s: %v", meminfoPath, err)
-		return 0
+		return memReading{}, fmt.Errorf("failed to open %s: %w", meminfoPath, err)
 	}
 	defer file.Close()
 
@@ -227,7 +294,7 @@ func (h *HostStatsHandler) calculateMemPercent() float64 {
 	}
 
 	if memTotal == 0 {
-		return 0
+		return memReading{}, fmt.Errorf("no MemTotal in %s", meminfoPath)
 	}
 
 	// Underflow protection - shouldn't happen but be defensive
@@ -238,7 +305,11 @@ func (h *HostStatsHandler) calculateMemPercent() float64 {
 		memUsed = memTotal - memAvailable
 	}
 
-	return float64(memUsed) / float64(memTotal) * 100
+	return memReading{
+		percent:    float64(memUsed) / float64(memTotal) * 100,
+		usedBytes:  memUsed * bytesPerKB,
+		totalBytes: memTotal * bytesPerKB,
+	}, nil
 }
 
 // calculateNetBytesPerSec reads /sys/class/net/*/statistics and calculates total bytes/sec

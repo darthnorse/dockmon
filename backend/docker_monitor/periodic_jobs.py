@@ -10,6 +10,7 @@ import subprocess
 import os
 from datetime import datetime, time as dt_time, timezone, timedelta
 import re
+from typing import Optional
 
 from cronsim import CronSim
 from cronsim.cronsim import CronSimError
@@ -712,9 +713,12 @@ class PeriodicJobsManager:
         # Ensure we always sleep at least 60 seconds (prevent tight loop if time calculation is off)
         return max(60, sleep_seconds)
 
-    async def check_updates_now(self):
+    async def check_updates_now(self, host_ids: Optional[set] = None):
         """
         Manually trigger an immediate update check (called from API endpoint).
+
+        Args:
+            host_ids: Restrict the check to these hosts (None = every host)
 
         Returns:
             Dict with stats (total, checked, updates_found, errors)
@@ -724,7 +728,7 @@ class PeriodicJobsManager:
         try:
             logger.info("Manual update check triggered")
             checker = get_update_checker(self.db, self.monitor)
-            stats = await checker.check_all_containers()
+            stats = await checker.check_all_containers(host_ids=host_ids)
 
             # Log completion event
             self.event_logger.log_system_event(
@@ -735,7 +739,8 @@ class PeriodicJobsManager:
             )
 
             # Update last check time
-            self._last_update_check = datetime.now(timezone.utc)
+            if host_ids is None:
+                self._last_update_check = datetime.now(timezone.utc)
             logger.info(f"Manual update check complete: {stats}")
 
             # Also check DockMon and Agent updates (tied to container update schedule)
@@ -847,9 +852,11 @@ class PeriodicJobsManager:
         else:
             return datetime.now(timezone.utc)
 
-    async def cleanup_old_images(self) -> int:
+    async def cleanup_old_images(self, host_ids: Optional[set] = None) -> int:
         """
         Remove unused Docker images based on retention policy.
+
+        host_ids restricts the sweep to those hosts (None = every host).
 
         Removes:
         - Dangling images (<none>:<none>) older than grace period
@@ -882,6 +889,8 @@ class PeriodicJobsManager:
         try:
             # Process each host
             for host_id, client in self.monitor.clients.items():
+                if host_ids is not None and host_id not in host_ids:
+                    continue
                 try:
                     containers = await async_containers_list(client, all=True)
                     images_in_use = {c.image.id for c in containers}

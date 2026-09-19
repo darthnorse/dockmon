@@ -199,7 +199,7 @@ export function ContainerDetailsModal({
     setIsPerformingAction(true)
     try {
       // CRITICAL: Use current tracked containerId, not container.id which may be stale from fallback
-      const { hostId, containerId: currentId } = parseCompositeKey(containerId!)
+      const { hostId, containerId: currentId } = parseCompositeKey(containerId)
       await apiClient.post(`/hosts/${hostId}/containers/${currentId}/${action}`)
       const labels = { start: 'Started', stop: 'Stopped', restart: 'Restarting' } as const
       toast.success(`${labels[action]} ${container.name}`)
@@ -213,7 +213,7 @@ export function ContainerDetailsModal({
   const handleDelete = async (removeVolumes: boolean) => {
     setIsPerformingAction(true)
     try {
-      const { hostId, containerId: currentId } = parseCompositeKey(containerId!)
+      const { hostId, containerId: currentId } = parseCompositeKey(containerId)
       await apiClient.delete(`/hosts/${hostId}/containers/${currentId}`, {
         params: { removeVolumes },
       })
@@ -230,7 +230,7 @@ export function ContainerDetailsModal({
   const handleKill = async () => {
     setIsPerformingAction(true)
     try {
-      const { hostId, containerId: currentId } = parseCompositeKey(containerId!)
+      const { hostId, containerId: currentId } = parseCompositeKey(containerId)
       await apiClient.post(`/hosts/${hostId}/containers/${currentId}/kill`)
       toast.success(`Killed ${container.name}`)
     } catch (error) {
@@ -259,7 +259,7 @@ export function ContainerDetailsModal({
     }
     setIsPerformingAction(true)
     try {
-      const { hostId, containerId: currentId } = parseCompositeKey(containerId!)
+      const { hostId, containerId: currentId } = parseCompositeKey(containerId)
       await apiClient.post(`/hosts/${hostId}/containers/${currentId}/rename`, { name: trimmed })
       toast.success(`Renamed container to ${trimmed}`)
       setShowRenameDialog(false)
@@ -496,7 +496,7 @@ export function ContainerDetailsModal({
                   setRenameError(validateContainerName(e.target.value.trim()))
                 }}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !renameError) handleRename()
+                  if (e.key === 'Enter' && !renameError) void handleRename()
                   if (e.key === 'Escape') setShowRenameDialog(false)
                 }}
                 className={`w-full px-3 py-2 bg-background border rounded-md text-foreground focus:outline-none focus:ring-2 focus:ring-primary ${renameError ? 'border-red-500' : 'border-border'}`}
@@ -535,7 +535,7 @@ export function ContainerDetailsModal({
         onClose={() => setShowKillConfirm(false)}
         onConfirm={() => {
           setShowKillConfirm(false)
-          handleKill()
+          void handleKill()
         }}
         title="Kill Container"
         description={`This sends SIGKILL to ${container.name}, terminating it immediately with no chance for graceful shutdown. This may cause data loss or corruption.`}

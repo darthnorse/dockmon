@@ -12,6 +12,14 @@ from cronsim import CronSim
 from cronsim.cronsim import CronSimError
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 
+
+def _reject_bool(value):
+    """Pydantic coerces JSON booleans to 1.0/0.0 for float fields, so a bool has
+    to be refused before coercion rather than by a downstream numeric check."""
+    if isinstance(value, bool):
+        raise ValueError("must be a number, not a boolean")
+    return value
+
 class GlobalSettings(BaseModel):
     """Global monitoring settings"""
     max_retries: int = Field(3, ge=0, le=10)  # 0-10 retries
@@ -131,6 +139,10 @@ class AlertRuleV2Create(BaseModel):
     notify_channels_json: Optional[str] = None
     custom_template: Optional[str] = Field(None, max_length=2000)  # Custom template for this rule
 
+    _reject_bool_threshold = field_validator("threshold", "clear_threshold", mode="before")(
+        _reject_bool
+    )
+
 
 class AlertRuleV2Update(BaseModel):
     """Update alert rule v2 (all fields optional)"""
@@ -169,6 +181,10 @@ class AlertRuleV2Update(BaseModel):
     labels_json: Optional[str] = None
     notify_channels_json: Optional[str] = None
     custom_template: Optional[str] = Field(None, max_length=2000)  # Custom template for this rule
+
+    _reject_bool_threshold = field_validator("threshold", "clear_threshold", mode="before")(
+        _reject_bool
+    )
 
 
 class GlobalSettingsUpdate(BaseModel):

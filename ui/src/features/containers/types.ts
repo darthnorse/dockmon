@@ -36,6 +36,8 @@ export interface Container {
   network_rx?: number | null
   network_tx?: number | null
   net_bytes_per_sec?: number | null
+  net_rx_bytes_per_sec?: number | null
+  net_tx_bytes_per_sec?: number | null
   disk_read?: number | null
   disk_write?: number | null
   // IP addresses (GitHub Issue #37)

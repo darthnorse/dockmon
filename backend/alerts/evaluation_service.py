@@ -18,12 +18,35 @@ from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 
 from database import DatabaseManager, AlertRuleV2, AlertV2, DockerHostDB
+from alerts.capabilities import HOST_METRIC_FIELDS, STATS_MAX_AGE_SECONDS, sample_age_seconds
+from alerts.metrics import PRODUCED_METRICS_BY_SCOPE, is_produced
+from alerts.safe_regex import active_quarantines
 from alerts.engine import AlertEngine, EvaluationContext
 from agent.connection_manager import agent_connection_manager
 from event_logger import EventLogger, EventContext, EventCategory, EventType, EventSeverity
 from utils.keys import make_composite_key, parse_composite_key
 
 logger = logging.getLogger(__name__)
+
+
+# Bounds on the aggregated failure alert. Notification channels reject
+# oversized bodies (Discord caps at 2000 chars), which would drop the alert
+# precisely when the failure is fleet-wide.
+MAX_SCOPE_CHARS = 64
+MAX_LISTED_SCOPES = 10
+MAX_LISTED_ERRORS = 3
+MAX_ALERT_MESSAGE_CHARS = 1000
+
+
+def _summarize(items: List[str], limit: int, joiner: str = ", ") -> str:
+    """Join at most `limit` items, noting how many were left out."""
+    if not items:
+        return "unknown"
+    shown = items[:limit]
+    text = joiner.join(shown)
+    if len(items) > limit:
+        text += f" and {len(items) - limit} more"
+    return text
 
 
 # Lifecycle states treated as "recovered" when re-verifying a stopped/unhealthy alert.
@@ -97,6 +120,19 @@ class AlertEvaluationService:
     - Coordinate with notification system
     """
 
+    # /host/proc carries the host sample itself; disk additionally needs the host root.
+    _AGENT_HOST_PROC_MOUNT = "-v /proc:/host/proc:ro"
+    _AGENT_METRIC_MOUNTS = {
+        "cpu_percent": _AGENT_HOST_PROC_MOUNT,
+        "memory_percent": _AGENT_HOST_PROC_MOUNT,
+        "disk_percent": "-v /:/hostfs:ro",
+    }
+    _LOCAL_METRIC_MOUNTS = {
+        "cpu_percent": "/proc at /host/proc",
+        "memory_percent": "/proc at /host/proc",
+        "disk_percent": "the host root at /hostfs",
+    }
+
     def __init__(
         self,
         db: DatabaseManager,
@@ -121,6 +157,25 @@ class AlertEvaluationService:
         self._blackout_task: Optional[asyncio.Task] = None
         self._pending_event_alerts_task: Optional[asyncio.Task] = None
         self._resolve_loop_task: Optional[asyncio.Task] = None
+
+        # Hosts already reported as unable to serve a host-scope rule, so the
+        # warning fires once per host rather than every evaluation cycle.
+        self._hosts_missing_metrics_reported: set = set()
+        # (host_id, metric) pairs already warned about: the host reports other
+        # metrics but not this one, so the host-level warning above stays quiet.
+        self._host_metric_missing_reported: set = set()
+        # Same throttling for samples whose last_update cannot be parsed.
+        self._bad_timestamp_reported: set = set()
+        # (scope, metric) -> the rule ids already reported as unservable. Keyed
+        # by the id set, not just the metric, so a rule added later to an
+        # already-reported metric is still announced.
+        self._dead_metric_reported: Dict[tuple, frozenset] = {}
+        # Failures swallowed during the current cycle, reported as one alert at
+        # the end of it. Isolation keeps the cycle running; this keeps it visible.
+        self._cycle_failures: List[Dict[str, Any]] = []
+        # None until the first clean cycle checks the DB, so an alert left open
+        # by a previous process still gets resolved.
+        self._system_alert_open: Optional[bool] = None
 
     async def start(self):
         """Start the alert evaluation service"""
@@ -890,6 +945,7 @@ class AlertEvaluationService:
 
     async def _evaluate_all_rules(self):
         """Evaluate all enabled metric-driven rules"""
+        self._cycle_failures = []
         try:
             # Get all enabled metric-driven rules
             with self.db.get_session() as session:
@@ -898,8 +954,9 @@ class AlertEvaluationService:
                     AlertRuleV2.metric != None  # Metric-driven rules
                 ).all()
 
-                if not rules:
-                    return
+                # Before the empty-rule return, so disabling the last dead rule
+                # clears its entry and re-enabling it is announced again.
+                self._report_unservable_rules(rules)
 
                 # Group rules by metric type
                 rules_by_metric: Dict[str, List[AlertRuleV2]] = {}
@@ -908,19 +965,27 @@ class AlertEvaluationService:
                         rules_by_metric[rule.metric] = []
                     rules_by_metric[rule.metric].append(rule)
 
-            # Fetch container stats if we have stats client
-            if self.stats_client:
+            # No early return here: selector quarantines are reported below and
+            # also arise on the event-driven path, which has no metric rules.
+            if rules_by_metric and self.stats_client:
                 await self._evaluate_container_metrics(rules_by_metric)
                 await self._evaluate_host_metrics(rules_by_metric)
 
         except Exception as e:
-            logger.error(f"Error evaluating rules: {e}", exc_info=True)
-            # Create system alert to notify users of evaluation failure
-            await self._create_system_alert(
-                title="Alert Rule Evaluation Failed",
-                message=f"Failed to evaluate alert rules: {str(e)[:500]}",  # Truncate long error messages
-                severity="error"
-            )
+            self._record_failure("evaluation cycle", "alert service", e, pass_level=True)
+
+        self._report_quarantined_selectors()
+        await self._report_cycle_failures()
+
+    def _report_quarantined_selectors(self):
+        """Surface selector patterns that are currently not being evaluated.
+
+        Reported every cycle they remain quarantined, not once: the rules using
+        them silently stop matching, so the aggregated alert has to stay open
+        for as long as that is true rather than auto-resolving next cycle.
+        """
+        for pattern in active_quarantines():
+            self._record_failure("selector regex", pattern, error="SelectorRegexQuarantined")
 
     async def _evaluate_container_metrics(self, rules_by_metric: Dict[str, List[AlertRuleV2]]):
         """Evaluate container metric rules"""
@@ -946,38 +1011,50 @@ class AlertEvaluationService:
 
             # Evaluate each container's metrics
             # Note: container_id here is actually the composite key (host_id:container_id)
+            # One bad sample must not abort the containers behind it.
             for composite_key, container_stats in stats.items():
-                container = container_map.get(composite_key)
+                try:
+                    container = container_map.get(composite_key)
 
-                if not container:
-                    logger.debug(f"Container {composite_key} not found in cache")
-                    continue
+                    if not container:
+                        logger.debug(f"Container {composite_key} not found in cache")
+                        continue
 
-                # Use container's tags which include both user-created (from DB) and
-                # derived tags (from Docker labels like compose:*, swarm:*, dockmon.tag)
-                # This enables tag-based alert filtering to work with label-defined tags
-                # See: https://github.com/darthnorse/dockmon/issues/88
-                container_tags = container.tags or []
+                    if not self._is_sample_fresh(
+                        container_stats, f"container {composite_key}", f"container:{composite_key}"
+                    ):
+                        continue
 
-                # Create evaluation context
-                # Use composite key for scope_id to prevent cross-host collisions
-                context = EvaluationContext(
-                    scope_type="container",
-                    scope_id=make_composite_key(container.host_id, container.short_id),
-                    host_id=container.host_id,
-                    host_name=container.host_name,
-                    container_id=container.short_id,
-                    container_name=container.name,
-                    desired_state=container.desired_state or 'unspecified',
-                    labels=container.labels or {},
-                    tags=container_tags  # Container tags for tag-based filtering
-                )
+                    # Use container's tags which include both user-created (from DB) and
+                    # derived tags (from Docker labels like compose:*, swarm:*, dockmon.tag)
+                    # This enables tag-based alert filtering to work with label-defined tags
+                    container_tags = container.tags or []
 
-                # Evaluate metrics
-                await self._evaluate_container_stats(container_stats, context, rules_by_metric)
+                    # Use composite key for scope_id to prevent cross-host collisions
+                    context = EvaluationContext(
+                        scope_type="container",
+                        scope_id=make_composite_key(container.host_id, container.short_id),
+                        host_id=container.host_id,
+                        host_name=container.host_name,
+                        container_id=container.short_id,
+                        container_name=container.name,
+                        desired_state=container.desired_state or 'unspecified',
+                        labels=container.labels or {},
+                        tags=container_tags  # Container tags for tag-based filtering
+                    )
+
+                    await self._evaluate_container_stats(container_stats, context, rules_by_metric)
+                except Exception as e:
+                    self._record_failure("container", composite_key, e)
+
+            # Containers come and go; drop throttle entries for subjects that
+            # no longer report, so the set stays bounded by what exists now.
+            self._prune_bad_timestamps(
+                "container:", {f"container:{key}" for key in stats}
+            )
 
         except Exception as e:
-            logger.error(f"Error evaluating container metrics: {e}", exc_info=True)
+            self._record_failure("container pass", "all containers", e, pass_level=True)
 
     async def _evaluate_container_stats(
         self,
@@ -986,27 +1063,31 @@ class AlertEvaluationService:
         rules_by_metric: Dict[str, List[AlertRuleV2]]
     ):
         """Evaluate stats for a single container"""
-        # Map stats to metric names and evaluate
-        metric_mappings = {
-            "cpu_percent": stats.get("cpu_percent"),
-            "memory_percent": stats.get("memory_percent"),
-            "memory_usage": stats.get("memory_usage"),
-            "memory_limit": stats.get("memory_limit"),
-            "network_rx_bytes": stats.get("network_rx_bytes"),
-            "network_tx_bytes": stats.get("network_tx_bytes"),
-            "block_read_bytes": stats.get("block_read_bytes"),
-            "block_write_bytes": stats.get("block_write_bytes"),
-        }
+        await self._evaluate_scope_stats(
+            "container", context.container_name, stats, context, rules_by_metric
+        )
 
-        for metric_name, metric_value in metric_mappings.items():
+    async def _evaluate_scope_stats(
+        self,
+        scope: str,
+        subject: Optional[str],
+        stats: Dict[str, Any],
+        context: EvaluationContext,
+        rules_by_metric: Dict[str, List[AlertRuleV2]]
+    ):
+        """Evaluate one sample against the rules for its scope's metrics.
+
+        Failures stay per-metric: one unusable value must not skip the metrics
+        behind it.
+        """
+        for metric_name in PRODUCED_METRICS_BY_SCOPE[scope]:
+            metric_value = stats.get(metric_name)
             if metric_value is None:
                 continue
 
-            # Check if we have rules for this metric
             if metric_name not in rules_by_metric:
                 continue
 
-            # Evaluate metric against all matching rules
             try:
                 alerts = self.engine.evaluate_metric(
                     metric_name,
@@ -1016,62 +1097,241 @@ class AlertEvaluationService:
 
                 if alerts:
                     logger.info(
-                        f"Alert triggered for {context.container_name}: "
+                        f"Alert triggered for {scope} {subject}: "
                         f"{metric_name}={metric_value}"
                     )
 
-                    # Trigger notifications for all matched alerts
                     for alert in alerts:
                         await self._handle_alert_notification(alert)
 
             except Exception as e:
-                logger.error(
-                    f"Error evaluating {metric_name} for {context.container_name}: {e}",
-                    exc_info=True
+                self._record_failure(f"{scope} metric {metric_name}", subject or "", e)
+
+    def _is_sample_fresh(self, stats: Dict[str, Any], subject: str, key: str) -> bool:
+        """Whether a stats sample is recent enough to evaluate.
+
+        Unstamped or unreadable timestamps evaluate anyway: alerting on a
+        slightly old sample beats silently alerting on nothing. Parse problems
+        are surfaced here rather than left to the broad catches upstream.
+
+        `subject` is for humans; `key` throttles the warning and must be stable
+        across renames.
+        """
+        try:
+            age = sample_age_seconds(stats)
+        except Exception as e:
+            logger.warning(f"Could not read last_update for {subject} ({e}); evaluating anyway")
+            return True
+
+        if age is None:
+            if stats.get("last_update") is not None and key not in self._bad_timestamp_reported:
+                self._bad_timestamp_reported.add(key)
+                logger.warning(
+                    f"Unreadable last_update {stats.get('last_update')!r} for {subject}; "
+                    f"evaluating anyway"
                 )
+            return True
+
+        self._bad_timestamp_reported.discard(key)
+        if age > STATS_MAX_AGE_SECONDS:
+            logger.debug(f"Skipping stale stats for {subject} ({age:.0f}s old)")
+            return False
+        return True
+
+    def _prune_bad_timestamps(self, prefix: str, live_keys: set):
+        """Drop throttle entries whose subject no longer reports at all."""
+        self._bad_timestamp_reported.difference_update({
+            key for key in self._bad_timestamp_reported
+            if key.startswith(prefix) and key not in live_keys
+        })
+
+    def _host_scope_metric_rules(self, rules_by_metric: Dict[str, List[AlertRuleV2]]) -> List[AlertRuleV2]:
+        return [
+            rule
+            for rules in rules_by_metric.values()
+            for rule in rules
+            if rule.scope == "host"
+        ]
+
+    def _report_unservable_rules(self, rules: List[AlertRuleV2]):
+        """Warn about enabled rules whose (scope, metric) no producer serves.
+
+        Validation stops new ones, but rules stored before it existed stay
+        enabled and silently never evaluate. Call with the session open: the
+        rule objects are detached afterwards.
+        """
+        dead: Dict[tuple, List[AlertRuleV2]] = {}
+        for rule in rules:
+            key = (rule.scope, rule.metric)
+            if not is_produced(rule.scope, rule.metric):
+                dead.setdefault(key, []).append(rule)
+
+        for key, affected in dead.items():
+            rule_ids = frozenset(rule.id for rule in affected)
+            if self._dead_metric_reported.get(key) == rule_ids:
+                continue
+            self._dead_metric_reported[key] = rule_ids
+
+            scope, metric = key
+            named = ", ".join(f"{rule.name!r} (id={rule.id})" for rule in affected)
+            logger.warning(
+                f"Alert rule(s) target metric {metric!r} in {scope} scope, which no "
+                f"producer serves - they can never fire: {named}"
+            )
+
+        # Keep the throttle bounded by what currently exists.
+        for key in set(self._dead_metric_reported) - set(dead):
+            del self._dead_metric_reported[key]
+
+    def _report_host_without_metrics(
+        self,
+        host,
+        rules_by_metric: Dict[str, List[AlertRuleV2]],
+        reason: str,
+    ):
+        """Warn once per host when a host-scope rule has no metrics to evaluate.
+
+        Debug-level silence here is why a whole class of hosts could never fire
+        a metric alert without anything saying so.
+        """
+        if host.id in self._hosts_missing_metrics_reported:
+            return
+
+        # An offline host has an obvious reason to report nothing.
+        if getattr(host, "status", None) != "online":
+            return
+
+        host_rules = self._host_scope_metric_rules(rules_by_metric)
+        if not host_rules:
+            return
+
+        # Selector matching needs a context, so build it only once we know a
+        # warning is possible - hosts without stats are otherwise re-checked
+        # every cycle for the lifetime of the process.
+        context = self._host_context(host)
+        matching = [
+            rule for rule in host_rules
+            if self.engine.matches_selectors(rule, context)
+        ]
+        if not matching:
+            return
+
+        self._hosts_missing_metrics_reported.add(host.id)
+        metrics = sorted({rule.metric for rule in matching})
+        remedy = ""
+        if getattr(host, "connection_type", None) == "agent":
+            mounts = {self._AGENT_HOST_PROC_MOUNT}
+            mounts.update(self._AGENT_METRIC_MOUNTS[m] for m in metrics if m in self._AGENT_METRIC_MOUNTS)
+            remedy = f" Containerized agents need {' '.join(sorted(mounts))} to collect host metrics."
+        logger.warning(
+            f"Host {host.name} reports no host metrics ({reason}); "
+            f"{len(matching)} host-scope rule(s) on {', '.join(metrics)} cannot be evaluated.{remedy}"
+        )
+
+    def _report_host_missing_metrics(
+        self,
+        host,
+        stats: Dict[str, Any],
+        context: EvaluationContext,
+        rules_by_metric: Dict[str, List[AlertRuleV2]],
+    ):
+        """Warn once per (host, metric) when a fresh sample lacks a metric a
+        matching host-scope rule needs.
+
+        `_report_host_without_metrics` covers a host with no sample at all; this
+        is the per-metric gap - a host with /host/proc but no /hostfs reports
+        CPU and memory and silently never evaluates its disk rule.
+        """
+        for metric in HOST_METRIC_FIELDS:
+            key = (host.id, metric)
+            if stats.get(metric) is not None:
+                self._host_metric_missing_reported.discard(key)
+                continue
+            if key in self._host_metric_missing_reported:
+                continue
+
+            matching = [
+                rule for rule in rules_by_metric.get(metric, [])
+                if rule.scope == "host" and self.engine.matches_selectors(rule, context)
+            ]
+            if not matching:
+                continue
+
+            self._host_metric_missing_reported.add(key)
+            if getattr(host, "connection_type", None) == "agent":
+                remedy = f" A containerized agent needs {self._AGENT_METRIC_MOUNTS[metric]} to report it."
+            elif str(getattr(host, "url", "")).startswith("unix://"):
+                # The same test the monitor uses to register the host as local.
+                remedy = f" Mount {self._LOCAL_METRIC_MOUNTS[metric]} in docker-compose.yml to report it."
+            else:
+                remedy = f" Docker API hosts cannot report {metric}."
+            logger.warning(
+                f"Host {host.name} reports host metrics but not {metric}; "
+                f"{len(matching)} host-scope rule(s) on it cannot be evaluated for this host.{remedy}"
+            )
+
+    def _host_context(self, host) -> EvaluationContext:
+        """Evaluation context for a host, including tags for selector matching."""
+        return EvaluationContext(
+            scope_type="host",
+            scope_id=host.id,
+            host_id=host.id,
+            host_name=host.name,
+            tags=self.db.get_tags_for_subject('host', host.id),
+        )
 
     async def _evaluate_host_metrics(self, rules_by_metric: Dict[str, List[AlertRuleV2]]):
-        """Evaluate host metric rules"""
         try:
             # Get all host stats from stats service
-            stats = await self.stats_client.get_host_stats()
-
-            if not stats:
-                logger.debug("No host stats available")
-                return
+            stats = await self.stats_client.get_host_stats() or {}
 
             # Get hosts from monitor
             hosts = list(self.monitor.hosts.values())
+
+            # Hosts can be removed; keep the throttle sets bounded by what
+            # exists now rather than by everything ever seen.
+            live_host_ids = {host.id for host in hosts}
+            self._prune_bad_timestamps(
+                "host:", {f"host:{host_id}" for host_id in live_host_ids}
+            )
+            self._hosts_missing_metrics_reported.intersection_update(live_host_ids)
+            self._host_metric_missing_reported = {
+                key for key in self._host_metric_missing_reported if key[0] in live_host_ids
+            }
 
             if not hosts:
                 logger.debug("No hosts available")
                 return
 
-            # Evaluate each host's metrics
+            # One bad sample must not abort the hosts behind it.
             for host in hosts:
-                host_stats = stats.get(host.id)
+                try:
+                    host_stats = stats.get(host.id)
 
-                if not host_stats:
-                    logger.debug(f"Host {host.name} stats not found")
-                    continue
+                    if not host_stats:
+                        self._report_host_without_metrics(
+                            host, rules_by_metric, "no samples received"
+                        )
+                        continue
 
-                # Fetch host tags for tag-based selector matching
-                host_tags = self.db.get_tags_for_subject('host', host.id)
+                    if not self._is_sample_fresh(
+                        host_stats, f"host {host.name}", f"host:{host.id}"
+                    ):
+                        self._report_host_without_metrics(
+                            host, rules_by_metric, "samples are stale"
+                        )
+                        continue
 
-                # Create evaluation context
-                context = EvaluationContext(
-                    scope_type="host",
-                    scope_id=host.id,
-                    host_id=host.id,
-                    host_name=host.name,
-                    tags=host_tags
-                )
+                    self._hosts_missing_metrics_reported.discard(host.id)
 
-                # Evaluate metrics
-                await self._evaluate_host_stats(host_stats, context, rules_by_metric)
+                    context = self._host_context(host)
+                    self._report_host_missing_metrics(host, host_stats, context, rules_by_metric)
+                    await self._evaluate_host_stats(host_stats, context, rules_by_metric)
+                except Exception as e:
+                    self._record_failure("host", host.name, e)
 
         except Exception as e:
-            logger.error(f"Error evaluating host metrics: {e}", exc_info=True)
+            self._record_failure("host pass", "all hosts", e, pass_level=True)
 
     async def _evaluate_host_stats(
         self,
@@ -1080,43 +1340,9 @@ class AlertEvaluationService:
         rules_by_metric: Dict[str, List[AlertRuleV2]]
     ):
         """Evaluate stats for a single host"""
-        # Map stats to metric names and evaluate
-        metric_mappings = {
-            "cpu_percent": stats.get("cpu_percent"),
-            "memory_percent": stats.get("memory_percent"),
-        }
-
-        for metric_name, metric_value in metric_mappings.items():
-            if metric_value is None:
-                continue
-
-            # Check if we have rules for this metric
-            if metric_name not in rules_by_metric:
-                continue
-
-            # Evaluate metric against all matching rules
-            try:
-                alerts = self.engine.evaluate_metric(
-                    metric_name,
-                    float(metric_value),
-                    context
-                )
-
-                if alerts:
-                    logger.info(
-                        f"Alert triggered for host {context.host_name}: "
-                        f"{metric_name}={metric_value}"
-                    )
-
-                    # Trigger notifications for all matched alerts
-                    for alert in alerts:
-                        await self._handle_alert_notification(alert)
-
-            except Exception as e:
-                logger.error(
-                    f"Error evaluating {metric_name} for host {context.host_name}: {e}",
-                    exc_info=True
-                )
+        await self._evaluate_scope_stats(
+            "host", context.host_name, stats, context, rules_by_metric
+        )
 
     async def _handle_alert_notification(self, alert: AlertV2):
         """
@@ -1654,7 +1880,111 @@ class AlertEvaluationService:
             logger.error(f"Error auto-resolving orphaned container alerts: {e}", exc_info=True)
             return resolved_count
 
-    async def _create_system_alert(self, title: str, message: str, severity: str = "error"):
+    def _record_failure(
+        self,
+        site: str,
+        scope: str,
+        exc: Optional[Exception] = None,
+        pass_level: bool = False,
+        error: Optional[str] = None,
+    ):
+        """Record a swallowed evaluation failure and log it in full.
+
+        The record carries only the exception CLASS: it feeds an alert that can
+        be forwarded to external notification channels, and exception text can
+        carry sample contents or query parameters. The full error stays here.
+
+        `error` names a failure that has no exception behind it, so callers do
+        not have to invent one whose message would be discarded anyway.
+
+        pass_level marks a failure that took out a whole sweep rather than one
+        scope - the distinction an operator reads first.
+        """
+        if exc is not None:
+            logger.error(f"Error evaluating {site} for {scope}: {exc}", exc_info=True)
+        self._cycle_failures.append({
+            "site": site,
+            "scope": scope,
+            "error": error or type(exc).__name__,
+            "pass_level": pass_level,
+        })
+
+    async def _report_cycle_failures(self):
+        """Raise one aggregated system alert for everything swallowed this cycle.
+
+        Per-failure alerts would be unusable at a 10s cadence; the alert row is
+        refreshed every failing cycle while its notification obeys the system
+        rule's own cooldown.
+        """
+        if not self._cycle_failures:
+            await self._resolve_system_alert()
+            return
+
+        pass_count = sum(1 for f in self._cycle_failures if f["pass_level"])
+        # Scope names are unbounded in count and length (a container name is
+        # user-controlled); an oversized message is rejected by notification
+        # channels, losing the alert exactly when the failure is widespread.
+        scopes = sorted({f["scope"][:MAX_SCOPE_CHARS] for f in self._cycle_failures if f["scope"]})
+        errors = sorted({f"{f['error']} ({f['site']})" for f in self._cycle_failures})
+
+        message = (
+            f"{len(self._cycle_failures)} evaluation failure(s) this cycle "
+            f"({pass_count} pass-level). "
+            f"Affected: {_summarize(scopes, MAX_LISTED_SCOPES)}. "
+            f"Errors: {_summarize(errors, MAX_LISTED_ERRORS, joiner='; ')}"
+        )[:MAX_ALERT_MESSAGE_CHARS]
+
+        await self._create_system_alert(
+            title="Alert Evaluation Failing",
+            message=message,
+        )
+        self._system_alert_open = True
+
+    async def _resolve_system_alert(self):
+        """Clear the evaluation-failure alert once cycles are clean again.
+
+        Nothing else resolves system-scope alerts, so without this a single
+        transient failure would leave an open error alert forever.
+        """
+        if self._system_alert_open is False:
+            return
+
+        try:
+            system_rule = self.db.get_or_create_system_alert_rule()
+            dedup_key = self._system_alert_dedup_key(system_rule)
+            with self.db.get_session() as session:
+                alert = session.query(AlertV2).filter(
+                    AlertV2.dedup_key == dedup_key,
+                    AlertV2.state != "resolved",
+                ).first()
+                if alert:
+                    session.expunge(alert)
+            if alert:
+                self.engine._resolve_alert(alert, "Evaluation cycles are clean again")
+                logger.info("Alert evaluation recovered; system alert resolved")
+            # Only now is the alert known to be closed. Clearing this in a
+            # finally would strand it open after a transient DB error, because
+            # every later clean cycle would return before retrying.
+            self._system_alert_open = False
+        except Exception as e:
+            logger.error(f"Failed to resolve system alert: {e}", exc_info=True)
+
+    def _set_alert_text(self, alert: AlertV2, title: str, message: str) -> AlertV2:
+        """Persist a caller-supplied title/message onto an alert row."""
+        with self.db.get_session() as session:
+            alert = session.merge(alert)
+            alert.title = title
+            alert.message = message
+            session.commit()
+            session.refresh(alert)
+            session.expunge(alert)
+            return alert
+
+    @staticmethod
+    def _system_alert_dedup_key(system_rule) -> str:
+        return f"{system_rule.id}|system_error|system:alert_service"
+
+    async def _create_system_alert(self, title: str, message: str):
         """
         Create a system alert for internal failures.
 
@@ -1678,8 +2008,7 @@ class AlertEvaluationService:
                 host_name="Alert System"
             )
 
-            # Create dedup key for this specific error type
-            dedup_key = f"{system_rule.id}|system_error|system:alert_service"
+            dedup_key = self._system_alert_dedup_key(system_rule)
 
             # Get or create the alert (deduplicates if already exists)
             alert, is_new = self.engine._get_or_create_alert(
@@ -1692,10 +2021,21 @@ class AlertEvaluationService:
                 # Update existing alert with new occurrence
                 alert = self.engine._update_alert(alert)
 
-            # Send notification
-            await self._send_notification(alert)
+            # _get_or_create_alert derives title/message from the rule, so the
+            # caller's description of what actually failed would be lost.
+            alert = self._set_alert_text(alert, title, message)
 
-            logger.info(f"Created system alert: {title}")
+            # Every other alert path honours the rule's cooldown; this one used
+            # to notify on every call, which at a 10s cadence is a flood.
+            # `or` would treat a configured 0 (notify immediately) as unset.
+            cooldown = system_rule.notification_cooldown_seconds
+            if cooldown is None:
+                cooldown = 3600
+            if not self.engine._check_cooldown(alert, cooldown):
+                await self._send_notification(alert)
+                logger.info(f"System alert notified: {title}")
+            else:
+                logger.debug(f"System alert in cooldown, not re-notifying: {title}")
 
         except Exception as e:
             # Fail silently - we don't want system alert creation to crash the service

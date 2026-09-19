@@ -38,6 +38,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { toast } from 'sonner'
+import type { CapabilityInfo } from '@/types/roles'
 
 export function GroupPermissionsSettings() {
   // Queries
@@ -74,9 +75,9 @@ export function GroupPermissionsSettings() {
 
   // Group capabilities by category
   const categorizedCapabilities = useMemo(() => {
-    if (!capabilitiesData?.capabilities) return new Map()
+    const map = new Map<string, CapabilityInfo[]>()
+    if (!capabilitiesData?.capabilities) return map
 
-    const map = new Map<string, typeof capabilitiesData.capabilities>()
     for (const cap of capabilitiesData.capabilities) {
       const existing = map.get(cap.category) || []
       existing.push(cap)

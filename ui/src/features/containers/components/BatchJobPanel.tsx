@@ -84,7 +84,7 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
       }
     }
 
-    fetchJob()
+    void fetchJob()
 
     return () => {
       cancelled = true
@@ -115,7 +115,7 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
             const action = prev?.action || (data.action as string)
 
             // Invalidate cache regardless of success/failure (shows current state)
-            queryClient.invalidateQueries({ queryKey: ['containers'] })
+            void queryClient.invalidateQueries({ queryKey: ['containers'] })
 
             // For delete-images action, invalidate host-images queries
             if (action === 'delete-images') {
@@ -124,7 +124,7 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
                 // Get unique host IDs from items
                 const hostIds = new Set(items.map((item: BatchJobItem) => item.host_id))
                 hostIds.forEach((hostId) => {
-                  queryClient.invalidateQueries({ queryKey: ['host-images', hostId] })
+                  void queryClient.invalidateQueries({ queryKey: ['host-images', hostId] })
                 })
               }
             }
@@ -138,21 +138,21 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
               if (items && items.length > 0) {
                 // Invalidate only the specific containers that were affected
                 items.forEach((item: BatchJobItem) => {
-                  queryClient.invalidateQueries({
+                  void queryClient.invalidateQueries({
                     queryKey: ['container-update-status', item.host_id, item.container_id],
                     refetchType: 'active'
                   })
                 })
               } else {
                 // Fallback: invalidate all if we don't have item details
-                queryClient.invalidateQueries({
+                void queryClient.invalidateQueries({
                   queryKey: ['container-update-status'],
                   refetchType: 'active'
                 })
               }
 
               // Also invalidate updates-summary so filters update immediately (fixes #115)
-              queryClient.invalidateQueries({ queryKey: ['updates-summary'] })
+              void queryClient.invalidateQueries({ queryKey: ['updates-summary'] })
             }
 
             debug.log('BatchJobPanel', `Job ${jobId} finished (${newStatus}), invalidated queries for action: ${action}`)

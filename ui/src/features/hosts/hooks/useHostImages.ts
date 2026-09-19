@@ -85,7 +85,7 @@ export function usePruneImages(hostId: string) {
     mutationFn: () => pruneImages(hostId),
     onSuccess: (data) => {
       // Invalidate immediately to refresh the list
-      queryClient.invalidateQueries({ queryKey: ['host-images', hostId] })
+      void queryClient.invalidateQueries({ queryKey: ['host-images', hostId] })
 
       if (data.removed_count > 0) {
         const spaceStr = formatBytes(data.space_reclaimed)
@@ -139,7 +139,7 @@ export function useDeleteImages() {
     onSettled: (_data, _error, variables) => {
       // Refetch after a delay to sync with actual state
       setTimeout(() => {
-        queryClient.invalidateQueries({ queryKey: ['host-images', variables.hostId] })
+        void queryClient.invalidateQueries({ queryKey: ['host-images', variables.hostId] })
       }, 2000)
     },
   })

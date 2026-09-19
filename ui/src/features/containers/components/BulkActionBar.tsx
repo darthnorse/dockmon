@@ -133,7 +133,7 @@ export function BulkActionBar({
       }
     }
 
-    const debounce = setTimeout(fetchSuggestions, 200)
+    const debounce = setTimeout(() => void fetchSuggestions(), 200)
     return () => {
       cancelled = true
       clearTimeout(debounce)
@@ -643,7 +643,7 @@ export function BulkActionBar({
                                 </div>
                               ) : inputValue.trim() ? (
                                 <div className="p-3 text-sm text-muted-foreground">
-                                  Press Enter to create "{inputValue.trim()}"
+                                  Press Enter to create &quot;{inputValue.trim()}&quot;
                                 </div>
                               ) : (
                                 <div className="p-3 text-sm text-muted-foreground">

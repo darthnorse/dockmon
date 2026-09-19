@@ -47,6 +47,11 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock  # For local Docker monitoring (auto-configured on first run)
       # Optional: Mount host proc for CPU/memory stats and IP detection (local host only; agent-based hosts detect IPs independently)
       # - /proc:/host/proc:ro
+      # Optional: Mount the host root for local-host disk usage (disk_percent / "Low Disk Space" alerts).
+      # Measures the filesystem holding Docker's data-root. This exposes the entire host filesystem
+      # read-only to the container, so it is opt-in. On kernels before 5.12 the :ro flag does not
+      # propagate to submounts.
+      # - /:/hostfs:ro
     logging:
       driver: "json-file"
       options:

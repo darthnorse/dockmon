@@ -56,7 +56,7 @@ export function useStackAction() {
     },
     onSuccess: () => {
       // Invalidate stacks to refresh deployed_to info
-      queryClient.invalidateQueries({ queryKey: ['stacks'] })
+      void queryClient.invalidateQueries({ queryKey: ['stacks'] })
     },
     onError: (error: Error) => {
       toast.error(`Failed: ${error.message}`)
@@ -95,7 +95,7 @@ export function useImportDeployment() {
       return apiClient.post<ImportDeploymentResponse>('/deployments/import', request)
     },
     onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ['stacks'] })
+      void queryClient.invalidateQueries({ queryKey: ['stacks'] })
 
       if (result.success && result.deployments_created.length > 0) {
         const count = result.deployments_created.length

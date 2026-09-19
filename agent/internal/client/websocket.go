@@ -16,6 +16,7 @@ import (
 	"github.com/darthnorse/dockmon-agent/internal/handlers"
 	"github.com/darthnorse/dockmon-agent/internal/protocol"
 	"github.com/darthnorse/dockmon-agent/pkg/types"
+	"github.com/darthnorse/dockmon-shared/hostdisk"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 )
@@ -33,6 +34,15 @@ type WebSocketClient struct {
 	registered    bool
 	agentID       string
 	hostID        string
+
+	// procCtx is the process-lifetime context. The dual-send client runs on
+	// it, not on a per-connection context, so it survives reconnects.
+	procCtx context.Context
+
+	// Dual-send to stats-service starts at most once, from whichever of
+	// startup or first registration first has a persisted permanent token.
+	statsServiceOnce sync.Once
+	newStatsService  func(url, token string, insecureSkipVerify bool, log *logrus.Logger) statsServiceClient
 
 	statsHandler       *handlers.StatsHandler
 	hostStatsHandler   *handlers.HostStatsHandler
@@ -74,8 +84,12 @@ func NewWebSocketClient(
 		engineID:      engineID,
 		myContainerID: myContainerID,
 		log:           log,
+		procCtx:       ctx,
 		stopChan:      make(chan struct{}),
 		doneChan:      make(chan struct{}),
+		newStatsService: func(url, token string, insecureSkipVerify bool, log *logrus.Logger) statsServiceClient {
+			return NewStatsServiceClient(url, token, insecureSkipVerify, log)
+		},
 	}
 
 	// Initialize stats handler with sendEvent callback
@@ -94,6 +108,7 @@ func NewWebSocketClient(
 		client.hostStatsHandler = handlers.NewHostStatsHandler(
 			log,
 			client.sendJSON,
+			newHostDiskReader(dockerClient, "", log),
 		)
 		log.Info("Host stats handler initialized (systemd mode)")
 	} else if _, err := os.Stat("/host/proc/stat"); err == nil {
@@ -101,8 +116,16 @@ func NewWebSocketClient(
 		client.hostStatsHandler = handlers.NewHostStatsHandler(
 			log,
 			client.sendJSON,
+			newHostDiskReader(dockerClient, hostdisk.DefaultHostRoot, log),
 		)
 		log.Info("Host stats handler initialized (container mode with /host/proc mount)")
+	} else {
+		log.Warn("Host stats disabled: /host/proc is not mounted. Host CPU/memory will be missing " +
+			"and host-scope metric alerts cannot fire. Add -v /proc:/host/proc:ro to the agent container.")
+	}
+
+	if myContainerID != "" {
+		warnIfHostRootUnmounted(log)
 	}
 
 	// Initialize update handler with sendEvent callback
@@ -158,10 +181,42 @@ func NewWebSocketClient(
 	return client, nil
 }
 
-// StatsHandler returns the internal StatsHandler so main.go can wire the
-// stats-service dual-send path into it at startup.
-func (c *WebSocketClient) StatsHandler() *handlers.StatsHandler {
-	return c.statsHandler
+// statsServiceClient is the dual-send transport: a sender the handlers can
+// push samples into, plus its own reconnect loop.
+type statsServiceClient interface {
+	handlers.StatsServiceSender
+	Run(ctx context.Context)
+}
+
+// EnsureStatsServiceDualSend starts the stats-service dual-send client once a
+// permanent token is available, and attaches it to both the container and host
+// stats handlers. Safe to call repeatedly: startup calls it, and so does the
+// registration path once the token is durably persisted, because on an agent's
+// first run there is no token at startup. The backend hands out a permanent
+// token on every reconnect, so the once-guard is what keeps a reconnect from
+// starting a second client.
+func (c *WebSocketClient) EnsureStatsServiceDualSend() {
+	if c.cfg.PermanentToken == "" || c.cfg.DockMonURL == "" {
+		c.log.WithFields(logrus.Fields{
+			"have_token": c.cfg.PermanentToken != "",
+			"have_url":   c.cfg.DockMonURL != "",
+		}).Debug("Stats service dual-send not started yet (missing token or URL)")
+		return
+	}
+
+	c.statsServiceOnce.Do(func() {
+		statsClient := c.newStatsService(c.cfg.DockMonURL, c.cfg.PermanentToken, c.cfg.InsecureSkipVerify, c.log)
+
+		c.statsHandler.SetStatsServiceClient(statsClient)
+		if c.hostStatsHandler != nil {
+			// Without this, host CPU/memory never reaches the alert
+			// evaluator: the control WebSocket feeds the UI only.
+			c.hostStatsHandler.SetStatsServiceClient(statsClient)
+		}
+
+		go statsClient.Run(c.procCtx)
+		c.log.Info("Stats service dual-send enabled")
+	})
 }
 
 // Run starts the WebSocket client with automatic reconnection
@@ -373,13 +428,9 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 
 	// Add system information if available (aligns with DockerHostDB schema)
 	if systemInfo != nil {
-		regMsg["os_type"] = systemInfo.OSType
-		regMsg["os_version"] = systemInfo.OSVersion
-		regMsg["kernel_version"] = systemInfo.KernelVersion
-		regMsg["docker_version"] = systemInfo.DockerVersion
-		regMsg["daemon_started_at"] = systemInfo.DaemonStartedAt
-		regMsg["total_memory"] = systemInfo.TotalMemory
-		regMsg["num_cpus"] = systemInfo.NumCPUs
+		for k, v := range systemInfoPayload(systemInfo) {
+			regMsg[k] = v
+		}
 
 		// Collect host IPs from all available sources
 		var hostIPs []string
@@ -472,6 +523,10 @@ func (c *WebSocketClient) register(ctx context.Context) error {
 			c.log.WithError(err).Fatalf("CRITICAL: Failed to persist permanent token to %s - agent will lose identity on restart! Ensure volume is mounted: -v agent-data:/data", tokenPath)
 		}
 		c.log.WithField("path", tokenPath).Info("Permanent token persisted securely")
+
+		// First run has no token at startup, so this is where dual-send
+		// begins; later reconnects hit the once-guard.
+		c.EnsureStatsServiceDualSend()
 	}
 
 	return nil
@@ -897,6 +952,14 @@ func (c *WebSocketClient) handleMessage(ctx context.Context, msg *types.Message)
 	case "prune_volumes":
 		// Prune all unused volumes (including named volumes)
 		result, err = c.docker.PruneVolumes(ctx)
+
+	case "get_system_info":
+		// The backend's nightly host-card refresh; registration sends the
+		// same payload, so a long-lived connection does not go stale.
+		var info *docker.SystemInfo
+		if info, err = c.docker.GetSystemInfo(ctx); err == nil {
+			result = systemInfoPayload(info)
+		}
 
 	default:
 		err = fmt.Errorf("unknown command: %s", msg.Command)

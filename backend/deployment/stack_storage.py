@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import aiofiles
+import yaml
 
 from utils.env_files import (
     is_safe_env_filename,
@@ -368,6 +369,46 @@ async def _atomic_write_file(target_path: Path, content: str) -> None:
         raise
 
 
+def _format_compose_yaml_error(exc: yaml.YAMLError, compose_yaml: str) -> str:
+    """Turn a PyYAML error into an actionable message, with a dedicated hint for
+    invisible tab characters."""
+    mark = getattr(exc, "problem_mark", None)
+    problem = (getattr(exc, "problem", None) or "").strip()
+    if mark is None:
+        return f"Invalid compose YAML: {problem or str(exc).strip()}"
+
+    line_no, col_no = mark.line + 1, mark.column + 1
+    lines = compose_yaml.splitlines()
+    source_line = lines[mark.line] if 0 <= mark.line < len(lines) else ""
+    if "\t" in source_line or "\\t" in problem:
+        return (
+            f"Compose file has a tab character at line {line_no}, column {col_no}. "
+            "YAML uses spaces, not tabs, for indentation — replace the tab with spaces."
+        )
+    return (
+        f"Invalid compose YAML at line {line_no}: {problem}"
+        if problem
+        else f"Invalid compose YAML at line {line_no}."
+    )
+
+
+def validate_compose_syntax(compose_yaml: str) -> None:
+    """Raise ValueError with a user-friendly message if compose_yaml is not
+    parseable YAML.
+
+    Syntax-only gate (empty content allowed); semantic checks stay at deploy time.
+    """
+    if not compose_yaml or not compose_yaml.strip():
+        return
+    try:
+        yaml.safe_load(compose_yaml)
+    except yaml.YAMLError as exc:
+        raise ValueError(_format_compose_yaml_error(exc, compose_yaml)) from exc
+    except RecursionError as exc:
+        # PyYAML raises RecursionError (not YAMLError) on deeply-nested input.
+        raise ValueError("Compose file is nested too deeply.") from exc
+
+
 async def write_stack(
     name: str,
     compose_yaml: str,
@@ -383,10 +424,13 @@ async def write_stack(
     env files as harmless, invisible orphans.
 
     Raises:
-        ValueError: If the stack name or any env filename is invalid, or (with
-            create_only) the stack already exists.
+        ValueError: If the stack name or any env filename is invalid, the
+            compose YAML is malformed, or (with create_only) the stack already
+            exists.
     """
     validate_stack_name(name)
+    # Offload the parse: a near-1MB compose can stall the event loop.
+    await asyncio.to_thread(validate_compose_syntax, compose_yaml)
     env_files = env_files or {}
     for fname in env_files:
         if not is_safe_env_filename(fname):

@@ -56,13 +56,10 @@ export interface MiniChartProps {
    * reference** (use `useCallback`) — a new identity per render forces uPlot
    * to rebuild on every WS tick.
    */
-  // eslint-disable-next-line no-unused-vars
   formatTooltipTime?: ((unixSec: number) => string) | undefined
   /** Optional formatter for values shown in the hover tooltip. */
-  // eslint-disable-next-line no-unused-vars
   formatTooltipValue?: ((value: number, index: number) => string | string[]) | undefined
   /** Optional formatter for Y-axis tick labels. */
-  // eslint-disable-next-line no-unused-vars
   formatYAxisTick?: ((value: number) => string) | undefined
 }
 

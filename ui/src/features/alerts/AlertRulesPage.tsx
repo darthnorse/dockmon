@@ -4,7 +4,7 @@
  * Manage alert rules with CRUD operations
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAlertRules, useDeleteAlertRule, useToggleAlertRule } from './hooks/useAlertRules'
 import type { AlertRule } from '@/types/alerts'
@@ -24,7 +24,7 @@ export function AlertRulesPage() {
   const [editingRule, setEditingRule] = useState<AlertRule | null>(null)
   const [deletingRuleId, setDeletingRuleId] = useState<string | null>(null)
 
-  const rules = rulesData?.rules ?? []
+  const rules = useMemo(() => rulesData?.rules ?? [], [rulesData])
 
   // Handle URL param for opening specific rule for editing
   useEffect(() => {

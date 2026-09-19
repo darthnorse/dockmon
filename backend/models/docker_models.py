@@ -252,6 +252,8 @@ class Container(BaseModel):
     network_rx: Optional[int] = None
     network_tx: Optional[int] = None
     net_bytes_per_sec: Optional[float] = None
+    net_rx_bytes_per_sec: Optional[float] = None
+    net_tx_bytes_per_sec: Optional[float] = None
     disk_read: Optional[int] = None
     disk_write: Optional[int] = None
     # Labels from Docker (Phase 3d)

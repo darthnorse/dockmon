@@ -159,7 +159,7 @@ export function useUpdateAuditRetention() {
     mutationFn: (request: UpdateRetentionRequest) =>
       apiClient.put<RetentionUpdateResponse>('/v2/audit-log/retention', request),
     onSuccess: (response) => {
-      queryClient.invalidateQueries({ queryKey: AUDIT_LOG_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: AUDIT_LOG_QUERY_KEY })
       toast.success(response.message)
     },
     onError: (error: Error) => {
@@ -177,7 +177,7 @@ export function useCleanupAuditLog() {
   return useMutation({
     mutationFn: () => apiClient.post<CleanupResponse>('/v2/audit-log/cleanup'),
     onSuccess: (response) => {
-      queryClient.invalidateQueries({ queryKey: AUDIT_LOG_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: AUDIT_LOG_QUERY_KEY })
       toast.success(response.message)
     },
     onError: (error: Error) => {

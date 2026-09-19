@@ -3,80 +3,121 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"reflect"
+	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	sharedDocker "github.com/darthnorse/dockmon-shared/docker"
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/darthnorse/dockmon-agent/internal/client/statsmsg"
 	"github.com/darthnorse/dockmon-agent/internal/docker"
+	sharedDocker "github.com/darthnorse/dockmon-shared/docker"
 	"github.com/docker/docker/api/types/container"
 	"github.com/sirupsen/logrus"
 )
 
-// StatsServiceSender is the narrow interface the StatsHandler uses to ship
-// stats samples to stats-service. *client.StatsServiceClient satisfies this
-// interface structurally — handlers cannot import `client` directly because
-// `client` already imports `handlers` for the main WebSocket client.
-type StatsServiceSender interface {
-	Send(msg statsmsg.AgentStatsMsg)
+const (
+	statsRetryInitialBackoff = 1 * time.Second
+	statsRetryMaxBackoff     = 30 * time.Second
+
+	// An attempt counts as stable — and so resets the backoff — only after it
+	// has carried live samples for this long. Resetting on the first sample
+	// lets a stream that dies right after one frame retry every second.
+	statsStreamStableAfter = 30 * time.Second
+
+	// The daemon publishes roughly one frame per second even for a stopped
+	// container, so a stream that goes quiet is wedged, not idle.
+	statsStreamIdleTimeout = 60 * time.Second
+
+	statsWarnInterval = 5 * time.Minute
+)
+
+var (
+	// errStreamNotLive ends an attempt when the daemon serves zero-read frames:
+	// the stream is open but the container is not running. Expected, not a fault.
+	errStreamNotLive = errors.New("stats stream is not live")
+
+	// errStreamIdle names a watchdog abort, which would otherwise reach the log
+	// as a bare cancellation - the one condition the watchdog exists to report.
+	errStreamIdle = errors.New("stats stream went idle")
+)
+
+// statsDockerClient is the Docker surface this handler needs. *docker.Client
+// satisfies it; tests substitute a fake.
+type statsDockerClient interface {
+	ListContainers(ctx context.Context) ([]docker.ContainerWithDigest, error)
+	ContainerStats(ctx context.Context, containerID string, stream bool) (container.StatsResponseReader, error)
+}
+
+// statsStream is one collector registration. Its pointer identity is the token
+// the collector uses to release only its own entry.
+type statsStream struct {
+	cancel context.CancelFunc
 }
 
 // StatsHandler manages container stats collection and streaming
 type StatsHandler struct {
-	dockerClient *docker.Client
+	dockerClient statsDockerClient
 	log          *logrus.Logger
 
 	// Active stats streams
-	streams   map[string]context.CancelFunc
+	streams   map[string]*statsStream
 	streamsMu sync.RWMutex
 
 	// Callback to send stats to backend
 	sendMessage func(msgType string, payload interface{}) error
 
-	// Optional: if non-nil, stats are also dual-sent to stats-service for
-	// historical persistence. nil disables the dual-send. See spec §10.
-	// Protected by statsServiceMu because collectStats goroutines read it
-	// concurrently with SetStatsServiceClient writes.
-	statsService   StatsServiceSender
-	statsServiceMu sync.RWMutex
+	// Retry timing, as fields so tests can drive the loop without real delays.
+	wait         func(ctx context.Context, d time.Duration) bool
+	now          func() time.Time
+	idleTimeout  time.Duration
+	stableAfter  time.Duration
+	warnInterval time.Duration
+
+	// Dual-send to stats-service for historical persistence; disabled while
+	// no client is attached. See spec §10.
+	statsSink
 }
 
 // NewStatsHandler creates a new stats handler
 func NewStatsHandler(dockerClient *docker.Client, log *logrus.Logger, sendMessage func(string, interface{}) error) *StatsHandler {
+	return newStatsHandler(dockerClient, log, sendMessage)
+}
+
+func newStatsHandler(dockerClient statsDockerClient, log *logrus.Logger, sendMessage func(string, interface{}) error) *StatsHandler {
 	return &StatsHandler{
 		dockerClient: dockerClient,
 		log:          log,
-		streams:      make(map[string]context.CancelFunc),
+		streams:      make(map[string]*statsStream),
 		sendMessage:  sendMessage,
+		wait:         waitWithJitter,
+		now:          time.Now,
+		idleTimeout:  statsStreamIdleTimeout,
+		stableAfter:  statsStreamStableAfter,
+		warnInterval: statsWarnInterval,
 	}
 }
 
-// SetStatsServiceClient enables dual-send to stats-service. Pass nil to disable.
-// Accepts any implementation of StatsServiceSender; *client.StatsServiceClient
-// satisfies the interface structurally. Safe to call concurrently with
-// processStats goroutines.
-func (h *StatsHandler) SetStatsServiceClient(c StatsServiceSender) {
-	h.statsServiceMu.Lock()
-	defer h.statsServiceMu.Unlock()
-	// Normalize typed-nil to untyped nil so processStats can use a simple
-	// nil check. A typed-nil *client.StatsServiceClient would pass `!= nil`
-	// but panic on the nil receiver.
-	if c == nil || isNilPointer(c) {
-		h.statsService = nil
-		return
+// waitWithJitter sleeps for d (±20%) and reports whether it completed. The
+// jitter keeps a daemon restart from resynchronising every collector.
+func waitWithJitter(ctx context.Context, d time.Duration) bool {
+	if d > 0 {
+		spread := int64(d / 5)
+		if spread > 0 {
+			d += time.Duration(rand.Int63n(2*spread) - spread) // #nosec G404 -- retry jitter, not security
+		}
 	}
-	h.statsService = c
-}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
 
-// isNilPointer reports whether v is an interface value wrapping a nil
-// pointer (the "typed nil" footgun). It returns false for non-pointer
-// concrete types, for non-nil pointers, and for an already-nil interface
-// (callers should check `c == nil` separately for clarity).
-func isNilPointer(v interface{}) bool {
-	rv := reflect.ValueOf(v)
-	return rv.Kind() == reflect.Ptr && rv.IsNil()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // StartStatsCollection begins stats collection for all running containers
@@ -90,12 +131,17 @@ func (h *StatsHandler) StartStatsCollection(ctx context.Context) error {
 	h.log.Infof("Starting stats collection for %d containers", len(containers))
 
 	// Start stats stream for each running container
-	for _, container := range containers {
-		if container.State == "running" {
-			if err := h.StartContainerStats(ctx, container.ID, container.Names[0]); err != nil {
-				h.log.Errorf("Failed to start stats for container %s: %v", container.ID, err)
-				// Continue with other containers
-			}
+	for _, c := range containers {
+		if c.State != "running" {
+			continue
+		}
+		name := ""
+		if len(c.Names) > 0 {
+			name = c.Names[0]
+		}
+		if err := h.StartContainerStats(ctx, c.ID, name); err != nil {
+			h.log.Errorf("Failed to start stats for container %s: %v", safeShortID(c.ID), err)
+			// Continue with other containers
 		}
 	}
 
@@ -107,18 +153,27 @@ func (h *StatsHandler) StartContainerStats(parentCtx context.Context, containerI
 	h.streamsMu.Lock()
 	defer h.streamsMu.Unlock()
 
+	// Checked under the lock so a start racing teardown cannot register an
+	// entry bound to a dead context — the next connection would see it and
+	// skip the container.
+	if parentCtx.Err() != nil {
+		h.log.Debugf("Not starting stats for %s: context already cancelled", safeShortID(containerID))
+		return nil
+	}
+
 	// Check if already streaming
 	if _, exists := h.streams[containerID]; exists {
-		h.log.Debugf("Stats stream already exists for container %s", containerID)
+		h.log.Debugf("Stats stream already exists for container %s", safeShortID(containerID))
 		return nil
 	}
 
 	// Create cancellable context for this stream
 	ctx, cancel := context.WithCancel(parentCtx) // #nosec G118
-	h.streams[containerID] = cancel
+	stream := &statsStream{cancel: cancel}
+	h.streams[containerID] = stream
 
 	// Start stats collection in goroutine
-	go h.collectStats(ctx, containerID, containerName)
+	go h.collectStats(ctx, containerID, containerName, stream)
 
 	h.log.Infof("Started stats collection for container %s (%s)", containerName, safeShortID(containerID))
 	return nil
@@ -129,8 +184,8 @@ func (h *StatsHandler) StopContainerStats(containerID string) {
 	h.streamsMu.Lock()
 	defer h.streamsMu.Unlock()
 
-	if cancel, exists := h.streams[containerID]; exists {
-		cancel()
+	if stream, exists := h.streams[containerID]; exists {
+		stream.cancel()
 		delete(h.streams, containerID)
 		h.log.Infof("Stopped stats collection for container %s", safeShortID(containerID))
 	}
@@ -141,48 +196,187 @@ func (h *StatsHandler) StopAll() {
 	h.streamsMu.Lock()
 	defer h.streamsMu.Unlock()
 
-	for containerID, cancel := range h.streams {
-		cancel()
+	for containerID, stream := range h.streams {
+		stream.cancel()
 		h.log.Debugf("Stopped stats stream for %s", safeShortID(containerID))
 	}
-	h.streams = make(map[string]context.CancelFunc)
+	h.streams = make(map[string]*statsStream)
 	h.log.Info("Stopped all stats collection")
 }
 
-// collectStats collects stats for a single container
-func (h *StatsHandler) collectStats(ctx context.Context, containerID, containerName string) {
-	defer func() {
-		h.streamsMu.Lock()
+// releaseStream deregisters a collector, but only if the registration is still
+// its own: a departing goroutine must never delete a newer collector's entry.
+func (h *StatsHandler) releaseStream(containerID string, stream *statsStream) {
+	h.streamsMu.Lock()
+	defer h.streamsMu.Unlock()
+
+	if current, exists := h.streams[containerID]; exists && current == stream {
 		delete(h.streams, containerID)
-		h.streamsMu.Unlock()
-	}()
-
-	// Docker stats stream (stream = true)
-	stream, err := h.dockerClient.ContainerStats(ctx, containerID, true)
-	if err != nil {
-		h.log.Errorf("Failed to open stats stream for %s: %v", safeShortID(containerID), err)
-		return
 	}
-	defer stream.Body.Close()
+	stream.cancel()
+}
 
-	decoder := json.NewDecoder(stream.Body)
+// collectorState carries what has to survive across attempts: how many have
+// failed since the last live sample, and when we last said so out loud.
+type collectorState struct {
+	failures int
+	lastWarn time.Time
+}
+
+// collectStats collects stats for a single container, reopening the stream for
+// as long as the collector is registered. It stops only on cancellation or
+// when the container no longer exists.
+func (h *StatsHandler) collectStats(ctx context.Context, containerID, containerName string, stream *statsStream) {
+	defer h.releaseStream(containerID, stream)
+
+	state := &collectorState{}
+	backoff := statsRetryInitialBackoff
 
 	for {
-		select {
-		case <-ctx.Done():
+		stable, err := h.streamContainerStats(ctx, containerID, containerName, state)
+
+		if ctx.Err() != nil {
 			h.log.Debugf("Stats collection cancelled for %s", safeShortID(containerID))
 			return
-		default:
-			var stats container.StatsResponse
-			if err := decoder.Decode(&stats); err != nil {
-				h.log.Errorf("Failed to decode stats for %s: %v", safeShortID(containerID), err)
-				return
-			}
+		}
+		if cerrdefs.IsNotFound(err) {
+			h.log.Infof("Stopping stats collection for %s: container no longer exists", safeShortID(containerID))
+			return
+		}
 
-			// Process stats using shared package
-			h.processStats(&stats, containerID, containerName)
+		if stable {
+			backoff = statsRetryInitialBackoff
+		}
+		h.logAttemptFailure(state, containerID, err, backoff)
+
+		if !h.wait(ctx, backoff) {
+			h.log.Debugf("Stats collection cancelled for %s", safeShortID(containerID))
+			return
+		}
+
+		backoff *= 2
+		if backoff > statsRetryMaxBackoff {
+			backoff = statsRetryMaxBackoff
 		}
 	}
+}
+
+// streamContainerStats runs a single stream attempt. It reports whether the
+// attempt was stable enough to reset the retry backoff, plus the error that
+// ended it.
+func (h *StatsHandler) streamContainerStats(ctx context.Context, containerID, containerName string, state *collectorState) (bool, error) {
+	// The attempt owns the request context so the idle watchdog can abort a
+	// wedged read; cancelling the stream's own context is what unblocks Decode.
+	attemptCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Armed before the open, not after: the Docker client carries no request
+	// timeout, so a daemon that accepts the connection and never answers would
+	// otherwise block here for the life of the connection.
+	var idleFired atomic.Bool
+	idle := time.AfterFunc(h.idleTimeout, func() {
+		idleFired.Store(true)
+		cancel()
+	})
+	defer idle.Stop()
+
+	classify := func(err error) error {
+		// A removed container is terminal however the attempt ended; never let
+		// the watchdog's error hide it, or the collector retries forever.
+		if cerrdefs.IsNotFound(err) {
+			return err
+		}
+		if idleFired.Load() && ctx.Err() == nil {
+			return errStreamIdle
+		}
+		return err
+	}
+
+	stream, err := h.dockerClient.ContainerStats(attemptCtx, containerID, true)
+	if err != nil {
+		return false, classify(err)
+	}
+	defer stream.Body.Close()
+	idle.Reset(h.idleTimeout)
+
+	decoder := json.NewDecoder(stream.Body)
+	var liveSince time.Time
+	stable := false
+
+	for {
+		if err := attemptCtx.Err(); err != nil {
+			return stable, classify(err)
+		}
+
+		var stats container.StatsResponse
+		if err := decoder.Decode(&stats); err != nil {
+			return stable, classify(err)
+		}
+
+		// The frame was already in flight when cancellation landed; sending it
+		// now would put it on a socket the next connection owns.
+		if err := attemptCtx.Err(); err != nil {
+			return stable, classify(err)
+		}
+
+		// A zero read timestamp is how the daemon reports "subscribed, but this
+		// container is not running". Publishing it would look like a healthy
+		// idle container on both the UI and the alert wire.
+		if stats.Read.IsZero() {
+			return stable, errStreamNotLive
+		}
+
+		// Stability is latched by a later sample, never computed when the
+		// attempt ends: one frame followed by a long silence is the shape this
+		// must not credit.
+		switch {
+		case liveSince.IsZero():
+			liveSince = h.now()
+		case !stable && h.now().Sub(liveSince) >= h.stableAfter:
+			stable = true
+			h.logRecovery(state, containerID)
+		}
+
+		// Disarmed across the send: the window measures daemon silence, and a
+		// slow shared WebSocket write must not be read as a wedged stream.
+		idle.Stop()
+		h.processStats(&stats, containerID, containerName)
+		idle.Reset(h.idleTimeout)
+	}
+}
+
+// logRecovery reports a stream coming back, once per run of failures, and only
+// once it has been live long enough to count - a stream that delivers one frame
+// per retry must not clear the warning throttle every cycle. It has to happen
+// here rather than in the retry loop: a healthy stream never returns to it.
+func (h *StatsHandler) logRecovery(state *collectorState, containerID string) {
+	if state.failures == 0 {
+		return
+	}
+	h.log.Infof("Stats stream for %s recovered after %d failed attempt(s)", safeShortID(containerID), state.failures)
+	state.failures = 0
+	state.lastWarn = time.Time{}
+}
+
+// logAttemptFailure keeps a persistent fault visible without letting a wedged
+// daemon flood the log: the first failure warns, repeats drop to debug, and the
+// warning resurfaces once per interval.
+func (h *StatsHandler) logAttemptFailure(state *collectorState, containerID string, err error, backoff time.Duration) {
+	if errors.Is(err, errStreamNotLive) {
+		h.log.Debugf("Stats stream for %s is not live (container not running); retrying in %v", safeShortID(containerID), backoff)
+		return
+	}
+
+	state.failures++
+	now := h.now()
+	if state.failures == 1 || now.Sub(state.lastWarn) >= h.warnInterval {
+		state.lastWarn = now
+		h.log.Warnf("Stats stream for %s failed (attempt %d, retrying in %v): %v",
+			safeShortID(containerID), state.failures, backoff, err)
+		return
+	}
+	h.log.Debugf("Stats stream for %s failed (attempt %d, retrying in %v): %v",
+		safeShortID(containerID), state.failures, backoff, err)
 }
 
 // processStats processes raw Docker stats and sends to backend
@@ -211,11 +405,9 @@ func (h *StatsHandler) processStats(stat *container.StatsResponse, containerID, 
 		h.log.Errorf("Failed to send stats for %s: %v", safeShortID(containerID), err)
 	}
 
-	h.statsServiceMu.RLock()
-	ss := h.statsService
-	h.statsServiceMu.RUnlock()
-	if ss != nil {
+	if ss := h.sender(); ss != nil {
 		ss.Send(statsmsg.AgentStatsMsg{
+			Type:          statsmsg.TypeContainerStats,
 			ContainerID:   containerID,
 			ContainerName: containerName,
 			CPUPercent:    cpuPct,

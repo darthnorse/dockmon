@@ -18,6 +18,7 @@ import pytest
 from deployment import stack_storage
 from deployment.stack_storage import (
     validate_stack_name,
+    validate_compose_syntax,
     sanitize_stack_name,
     get_unique_stack_name,
     validate_path_safety,
@@ -103,6 +104,68 @@ class TestValidateStackName:
         """Should reject names starting with underscore"""
         with pytest.raises(ValueError, match="start with"):
             validate_stack_name("_myapp")
+
+
+class TestValidateComposeSyntax:
+    """Test compose YAML syntax validation (the save-time backstop).
+
+    Regression: a TAB character in a compose file was written verbatim and only
+    surfaced as a confusing 'could not check ports' error at deploy time. The
+    frontend's js-yaml is lenient (accepts non-leading tabs); PyYAML rejects all
+    tabs, so this server-side gate is authoritative.
+    """
+
+    def test_accepts_valid_compose(self):
+        validate_compose_syntax("services:\n  app:\n    image: nginx\n")
+
+    def test_accepts_empty_or_whitespace(self):
+        # 'required' is enforced at the form/API layer, not here.
+        validate_compose_syntax("")
+        validate_compose_syntax("   \n  \n")
+
+    def test_rejects_leading_indentation_tab(self):
+        with pytest.raises(ValueError, match="tab character at line 2"):
+            validate_compose_syntax("services:\n\tapp:\n\t\timage: nginx\n")
+
+    def test_rejects_tab_after_colon(self):
+        # This is the js-yaml-lenient case that slips past the frontend hint.
+        with pytest.raises(ValueError, match="tab character"):
+            validate_compose_syntax("services:\n  app:\n    image:\tnginx\n")
+
+    def test_rejects_trailing_tab(self):
+        with pytest.raises(ValueError, match="tab character"):
+            validate_compose_syntax("services:\n  app:\n    image: nginx\t\n")
+
+    def test_rejects_tab_mixed_with_spaces(self):
+        with pytest.raises(ValueError, match="tab character at line 4"):
+            validate_compose_syntax(
+                "services:\n  app:\n    image: nginx\n  \tweb:\n    image: caddy\n"
+            )
+
+    def test_tab_message_mentions_spaces_not_tabs(self):
+        with pytest.raises(ValueError, match="spaces, not tabs"):
+            validate_compose_syntax("services:\n\tapp:\n")
+
+    def test_accepts_tab_inside_quoted_string(self):
+        # PyYAML (and compose) allow tabs inside quoted scalars; don't over-block.
+        validate_compose_syntax('services:\n  app:\n    command: "echo\thi"\n')
+
+    def test_accepts_tab_inside_block_scalar(self):
+        validate_compose_syntax("services:\n  app:\n    command: |\n      echo\thi\n")
+
+    def test_generic_syntax_error_reports_line_without_tab_message(self):
+        with pytest.raises(ValueError, match="line 4") as exc_info:
+            validate_compose_syntax(
+                "services:\n  app:\n   image: nginx\n     bad: x\n"
+            )
+        assert "tab character" not in str(exc_info.value)
+
+    def test_deeply_nested_yaml_raises_valueerror_not_recursionerror(self):
+        # PyYAML raises RecursionError (not YAMLError) on deep nesting; without
+        # handling it, the route surfaces a 500 instead of an actionable 400.
+        payload = "[" * 20000 + "]" * 20000
+        with pytest.raises(ValueError, match="nested too deeply"):
+            validate_compose_syntax(payload)
 
 
 class TestSanitizeStackName:
@@ -302,6 +365,14 @@ class TestWriteStack:
         compose_path = temp_stacks_dir / "myapp" / "compose.yaml"
         assert compose_path.exists()
         assert "nginx" in compose_path.read_text()
+
+    @pytest.mark.asyncio
+    async def test_write_rejects_tabbed_compose(self, temp_stacks_dir):
+        """A compose with a structural tab is rejected before anything is written."""
+        with pytest.raises(ValueError, match="tab character"):
+            await write_stack("myapp", "services:\n\tapp:\n\t\timage: nginx\n")
+
+        assert not (temp_stacks_dir / "myapp").exists()
 
     @pytest.mark.asyncio
     async def test_write_compose_and_env(self, temp_stacks_dir):

@@ -4,19 +4,40 @@
  * Form for creating and editing alert rules
  */
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { X, Search, Check, Bell, BellRing, Send, MessageSquare, MessageCircle, Hash, Smartphone, Mail, Globe, Users } from 'lucide-react'
+import { X, Search, Check, Bell, BellRing, Send, MessageSquare, MessageCircle, Hash, Smartphone, Mail, Globe, Users, AlertTriangle } from 'lucide-react'
 import { RemoveScroll } from 'react-remove-scroll'
 import { useCreateAlertRule, useUpdateAlertRule } from '../hooks/useAlertRules'
 import { useNotificationChannels } from '../hooks/useNotificationChannels'
+import {
+  useMetricCapabilities,
+  hostsNeedingMetricWarning,
+  isCollectedHostMetric,
+  isHostMetricRule,
+  anyAgentHost,
+  agentMountRemedy,
+} from '../hooks/useMetricCapabilities'
+import { maxThresholdFor } from '../utils/metricBounds'
 import type { AlertRule, AlertSeverity, AlertScope, AlertRuleRequest } from '@/types/alerts'
+import { parseSelectorJson } from '../utils/selectorJson'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import type { Host } from '@/types/api'
 import type { Container } from '@/features/containers/types'
 import { apiClient } from '@/lib/api/client'
 import { NoChannelsConfirmModal } from './NoChannelsConfirmModal'
 import { useAuth } from '@/features/auth/AuthContext'
+
+function MetricWarning({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="rounded-md border border-amber-600/50 bg-amber-950/30 p-3">
+      <div className="flex gap-2">
+        <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
+        <div className="text-sm text-amber-200">{children}</div>
+      </div>
+    </div>
+  )
+}
 
 interface Props {
   rule?: AlertRule | null
@@ -69,9 +90,7 @@ interface ContainerSelector {
   should_run?: boolean | null
 }
 
-// CPU metrics can exceed 100% on multi-core containers (up to cores * 100%)
 const CPU_METRIC = 'cpu_percent'
-const MAX_CPU_THRESHOLD = 6400
 
 const RULE_KINDS = [
   {
@@ -226,19 +245,12 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
 
   const hosts: Host[] = hostsData || []
   const containers: Container[] = containersData || []
-  const configuredChannels = channelsData?.channels || []
+  const configuredChannels = useMemo(() => channelsData?.channels ?? [], [channelsData])
 
-  // Parse existing selectors
   const parseSelector = (json: string | null | undefined) => {
-    if (!json) return { all: true, selected: [] }
-    try {
-      const parsed = JSON.parse(json)
-      if (parsed.include_all) return { all: true, selected: [] }
-      if (parsed.include) return { all: false, selected: parsed.include }
-      return { all: true, selected: [] }
-    } catch {
-      return { all: true, selected: [] }
-    }
+    const parsed = parseSelectorJson(json)
+    if (!parsed.include_all && parsed.include) return { all: false, selected: parsed.include }
+    return { all: true, selected: [] }
   }
 
   const [formData, setFormData] = useState<AlertRuleFormData>(() => {
@@ -247,30 +259,15 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
     const kindConfig = RULE_KINDS.find((k) => k.value === ruleKind)
     const isMetricDriven = kindConfig?.requiresMetric ?? true
 
-    // Parse container selector to extract should_run filter and include list
     const parseContainerSelector = (json: string | null | undefined) => {
-      if (!json) return { all: true, included: [], should_run: null }
-      try {
-        const parsed = JSON.parse(json)
-        if (parsed.include_all) {
-          return {
-            all: true,
-            included: [],
-            should_run: parsed.should_run || null
-          }
-        }
-        if (parsed.include) {
-          // Explicit include list for manual selection
-          return {
-            all: false,
-            included: parsed.include,
-            should_run: parsed.should_run || null
-          }
-        }
-        return { all: true, included: [], should_run: null }
-      } catch {
-        return { all: true, included: [], should_run: null }
+      const parsed = parseSelectorJson(json)
+      if (parsed.include_all) {
+        return { all: true, included: [], should_run: parsed.should_run || null }
       }
+      if (parsed.include) {
+        return { all: false, included: parsed.include, should_run: parsed.should_run || null }
+      }
+      return { all: true, included: [], should_run: null }
     }
 
     const containerSelector = parseContainerSelector(rule?.container_selector_json)
@@ -343,22 +340,10 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
   const [tagSearchInput, setTagSearchInput] = useState('')
   const [availableTags, setAvailableTags] = useState<TagWithSource[]>([])
   const [selectedTags, setSelectedTags] = useState<string[]>(() => {
-    // Initialize with existing tags if editing - check selectors not labels_json
-    if (rule) {
-      try {
-        // Check host_selector for tags
-        if (rule.host_selector_json) {
-          const parsed = JSON.parse(rule.host_selector_json)
-          if (parsed.tags && Array.isArray(parsed.tags)) return parsed.tags
-        }
-        // Check container_selector for tags
-        if (rule.container_selector_json) {
-          const parsed = JSON.parse(rule.container_selector_json)
-          if (parsed.tags && Array.isArray(parsed.tags)) return parsed.tags
-        }
-      } catch {
-        // Parsing failed, fall through
-      }
+    // Tags live in the selectors, not labels_json
+    for (const json of [rule?.host_selector_json, rule?.container_selector_json]) {
+      const { tags } = parseSelectorJson(json)
+      if (Array.isArray(tags)) return tags
     }
     return []
   })
@@ -384,7 +369,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       }
     }
 
-    const timer = setTimeout(fetchTags, 300)
+    const timer = setTimeout(() => void fetchTags(), 300)
     return () => clearTimeout(timer)
   }, [tagSearchInput, formData.scope])
 
@@ -393,6 +378,25 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
 
   // Filter rule kinds based on selected scope
   const availableRuleKinds = RULE_KINDS.filter((k) => k.scopes.includes(formData.scope))
+
+  // A host-scope metric rule can only fire on hosts that report that metric.
+  // Tag-based selection is resolved server-side, so it is not checked here.
+  const hostMetricRule = isHostMetricRule(formData.scope, requiresMetric, formData.metric)
+  const { data: metricCapabilities } = useMetricCapabilities(hostMetricRule)
+  const targetedHosts =
+    !hostMetricRule || selectedTags.length > 0
+      ? []
+      : formData.host_selector_all
+        ? hosts
+        : hosts.filter((h) => formData.host_selector_ids.includes(h.id))
+  const metricNotCollected =
+    hostMetricRule && !isCollectedHostMetric(metricCapabilities, formData.metric)
+  const hostsWithoutMetric = hostsNeedingMetricWarning(
+    metricCapabilities,
+    targetedHosts,
+    formData.metric,
+  )
+  const showMountRemedy = anyAgentHost(hostsWithoutMetric, targetedHosts)
 
   // Filter hosts/containers based on search
   const filteredHosts = hosts.filter(
@@ -429,8 +433,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  // Clean up non-existent channel IDs when editing a rule (#166)
-  // This handles orphaned references from channels deleted before the backend fix
+  // Drop channel ids orphaned by channels deleted before the backend cascaded them
   useEffect(() => {
     if (isEditing && configuredChannels.length > 0 && formData.notify_channels.length > 0) {
       const validChannelIds = new Set(configuredChannels.map(c => c.id))
@@ -439,7 +442,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
         setFormData(prev => ({ ...prev, notify_channels: cleanedChannels }))
       }
     }
-  }, [isEditing, configuredChannels]) // Only run when channels load, not on every formData change
+  }, [isEditing, configuredChannels, formData.notify_channels])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -677,8 +680,6 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       if (scopeText) {
         parts.push(`Scope: ${scopeText}`)
       }
-    } else {
-      parts.push(`Scope: ${formData.scope}`)
     }
 
     // Severity
@@ -980,7 +981,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                     onChange={(e) => handleChange('threshold', e.target.value ? parseFloat(e.target.value) : undefined)}
                     required={requiresMetric}
                     min={0}
-                    max={formData.metric === CPU_METRIC ? MAX_CPU_THRESHOLD : 100}
+                    max={maxThresholdFor(formData.scope, formData.metric)}
                     step={0.1}
                     className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
@@ -998,7 +999,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                     value={formData.clear_threshold || ''}
                     onChange={(e) => handleChange('clear_threshold', e.target.value ? parseFloat(e.target.value) : undefined)}
                     min={0}
-                    max={formData.metric === CPU_METRIC ? MAX_CPU_THRESHOLD : 100}
+                    max={maxThresholdFor(formData.scope, formData.metric)}
                     step={0.1}
                     className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     placeholder="Optional"
@@ -1040,6 +1041,37 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                   </div>
                 )}
               </div>
+
+              {metricNotCollected && (
+                <MetricWarning>
+                  <p>
+                    DockMon does not collect {formData.metric?.replace(/_/g, ' ')} for hosts yet, so no host can
+                    report it and this rule will never fire.
+                  </p>
+                </MetricWarning>
+              )}
+
+              {hostsWithoutMetric.length > 0 && (
+                <MetricWarning>
+                  <p>
+                    {hostsWithoutMetric.length === 1 ? 'This host is' : `${hostsWithoutMetric.length} of these hosts are`}{' '}
+                    not reporting {formData.metric?.replace(/_/g, ' ')}, so this rule cannot fire for{' '}
+                    {hostsWithoutMetric.length === 1 ? 'it' : 'them'}:{' '}
+                    <span className="font-medium">
+                      {hostsWithoutMetric.map((h) => h.host_name).join(', ')}
+                    </span>
+                  </p>
+                  {showMountRemedy && (
+                    <p className="mt-1 text-amber-300/80">
+                      A containerized agent needs <code className="text-amber-200">{agentMountRemedy(formData.metric)}</code> to
+                      collect this metric.
+                    </p>
+                  )}
+                  <p className="mt-1 text-amber-300/80">
+                    The rule can still be saved and starts working once metrics arrive.
+                  </p>
+                </MetricWarning>
+              )}
 
               {selectedTags.length > 0 ? (
                 <div className="rounded-md bg-gray-900/50 border border-gray-700 p-4 text-center">
@@ -1300,7 +1332,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                 </div>
                 <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-3">
                   <p className="text-xs text-blue-300">
-                    All containers with run mode "{formData.container_run_mode === 'should_run' ? 'Should Run' : 'On-Demand'}" will be monitored automatically.
+                    All containers with run mode &quot;{formData.container_run_mode === 'should_run' ? 'Should Run' : 'On-Demand'}&quot; will be monitored automatically.
                     To exclude specific containers from this rule, change their run mode in the container settings.
                   </p>
                 </div>
@@ -1483,7 +1515,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                   Resolve immediately after notification
                 </label>
                 <p className="mt-1 text-xs text-gray-400">
-                  Alert will be auto-resolved immediately after sending notification. Use this for notification-only mode if you don't want alerts to accumulate in the DockMon alert list.
+                  Alert will be auto-resolved immediately after sending notification. Use this for notification-only mode if you don&apos;t want alerts to accumulate in the DockMon alert list.
                 </p>
               </div>
             </div>
@@ -1530,7 +1562,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                   Suppress alert during container updates
                 </label>
                 <p className="mt-1 text-xs text-gray-400">
-                  Don't trigger this alert while a container is being updated. The alert will be re-evaluated after the update completes - only firing if the issue persists (e.g., container still stopped after update).
+                  Don&apos;t trigger this alert while a container is being updated. The alert will be re-evaluated after the update completes - only firing if the issue persists (e.g., container still stopped after update).
                 </p>
               </div>
             </div>

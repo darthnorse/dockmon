@@ -2,7 +2,7 @@
 # Multi-stage build: Go stats service + Python backend + React frontend
 
 # Stage 1: Build Go services (stats-service and compose-service)
-FROM golang:1.25.11-alpine AS go-builder
+FROM golang:1.26.6-alpine AS go-builder
 
 WORKDIR /build
 
@@ -101,7 +101,9 @@ RUN pip install --no-cache-dir supervisor==4.3.0
 COPY backend/requirements.txt /app/backend/
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt \
     # Remove build dependencies to keep image small
-    && apk del .build-deps
+    && apk del .build-deps \
+    # Nothing installs at runtime; pip's vendored copies of msgpack/setuptools carry advisories
+    && pip uninstall -y pip setuptools 2>/dev/null || true
 
 # Copy backend code
 COPY backend/ /app/backend/
@@ -124,9 +126,11 @@ COPY docker/nginx.conf /etc/nginx/http.d/default.conf
 COPY docker/nginx-http.conf /docker/nginx-http.conf
 # Shared security-headers snippet included by both nginx configs
 COPY docker/security-headers.conf /etc/nginx/snippets/security-headers.conf
+# Forwarded-header maps (used by nginx-http.conf); must be in the http block
+COPY docker/forwarded-headers.conf /etc/nginx/snippets/forwarded-headers.conf
 
 # Add WebSocket upgrade mapping to main nginx.conf (must be in http block)
-RUN sed -i '/^http {/a \    # WebSocket upgrade mapping\n    map $http_upgrade $connection_upgrade {\n        default upgrade;\n        '"''"' close;\n    }\n' /etc/nginx/nginx.conf
+RUN sed -i '/^http {/a \    # WebSocket upgrade mapping\n    map $http_upgrade $connection_upgrade {\n        default upgrade;\n        '"''"' close;\n    }\n    include /etc/nginx/snippets/forwarded-headers.conf;\n' /etc/nginx/nginx.conf
 
 # Copy supervisor configuration
 COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf

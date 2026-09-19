@@ -4,7 +4,7 @@ import {
   useSensor,
   useSensors,
 } from '@dnd-kit/core'
-import { sortableKeyboardCoordinates } from '@dnd-kit/sortable'
+import { sortableKeyboardCoordinates, type useSortable } from '@dnd-kit/sortable'
 
 export function useDndSensors() {
   return useSensors(
@@ -14,3 +14,5 @@ export function useDndSensors() {
     })
   )
 }
+
+export type DragHandleProps = Pick<ReturnType<typeof useSortable>, 'attributes' | 'listeners'>

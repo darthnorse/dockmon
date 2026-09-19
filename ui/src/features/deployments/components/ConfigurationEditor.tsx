@@ -18,6 +18,7 @@ import { json as jsonLang } from '@codemirror/lang-json'
 import * as themes from '@uiw/codemirror-themes-all'
 import { Button } from '@/components/ui/button'
 import { useGlobalSettings } from '@/hooks/useSettings'
+import { findIndentationTab } from '../utils'
 
 // Type guard for services object
 function isServicesRecord(value: unknown): value is Record<string, unknown> {
@@ -88,7 +89,6 @@ interface ConfigurationEditorProps {
   type: 'container' | 'stack' | 'env'
   value: string
   onChange: (value: string) => void
-  mode?: 'json'  // Future: add 'form' mode for structured editing
   error?: string | undefined
   className?: string
   rows?: number
@@ -111,8 +111,6 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
   type,
   value,
   onChange,
-  // @ts-expect-error - mode reserved for future 'form' editing mode
-  mode = 'json',
   error,
   className = '',
   rows = 12,
@@ -155,6 +153,15 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
 
     try {
       if (type === 'stack') {
+        // js-yaml tolerates some tabs; flag indentation tabs up front.
+        const tabLine = findIndentationTab(value)
+        if (tabLine !== null) {
+          return {
+            valid: false,
+            error: `Line ${tabLine}: tab character in indentation — YAML requires spaces, not tabs.`,
+          }
+        }
+
         // Try parsing YAML as-is
         let parsed: unknown
         try {
@@ -253,7 +260,7 @@ export const ConfigurationEditor = forwardRef<ConfigurationEditorHandle, Configu
         }
       } else {
         // Parse and format JSON
-        const parsed = JSON.parse(value)
+        const parsed: unknown = JSON.parse(value)
         const formatted = JSON.stringify(parsed, null, 2)
         return formatted
       }

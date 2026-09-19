@@ -13,6 +13,7 @@ SECURITY:
 import json
 import logging
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Depends
@@ -32,7 +33,7 @@ from database import OIDCConfig, OIDCGroupMapping, CustomGroup
 from audit import get_client_info, AuditAction
 from audit.audit_logger import AuditEntityType
 from utils.encryption import encrypt_password, decrypt_password
-from utils.oidc import build_discovery_url
+from utils.oidc import CALLBACK_PATH, build_callback_url, build_discovery_url
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,10 @@ class OIDCConfigResponse(BaseModel):
     disable_pkce_with_secret: bool
     require_approval: bool  # New in v2.6.0
     approval_notify_channel_ids: list[int] | None = None  # New in v2.6.0
+    redirect_uri_override: str | None = None
+    # The redirect_uri this DockMon will actually send, so the value shown for
+    # provider registration cannot drift from the value used at login time
+    callback_url: str
     created_at: str
     updated_at: str
 
@@ -73,6 +78,7 @@ class OIDCConfigUpdateRequest(BaseModel):
     disable_pkce_with_secret: bool | None = None
     require_approval: bool | None = None  # New in v2.6.0
     approval_notify_channel_ids: list[int] | None = None  # New in v2.6.0
+    redirect_uri_override: str | None = Field(None, max_length=500)
 
     @field_validator('provider_url')
     @classmethod
@@ -81,6 +87,37 @@ class OIDCConfigUpdateRequest(BaseModel):
             if not v.startswith('https://'):
                 raise ValueError("Provider URL must use HTTPS")
             v = v.rstrip('/')
+        return v
+
+    @field_validator('redirect_uri_override')
+    @classmethod
+    def validate_redirect_uri_override(cls, v: str | None) -> str | None:
+        """Empty clears the override; anything else must be a usable absolute URL.
+
+        Sent to the provider verbatim, so a value that cannot reach the callback
+        route would fail the login with no diagnostic anywhere.
+        """
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return ''
+        parsed = urlparse(v)
+        if parsed.scheme not in ('http', 'https') or not parsed.hostname:
+            raise ValueError("Redirect URI override must be an absolute http(s) URL")
+        if parsed.query or parsed.fragment or parsed.params:
+            raise ValueError(
+                "Redirect URI override must not contain a query string, fragment, or path parameters"
+            )
+        if parsed.username or parsed.password or '@' in parsed.netloc:
+            raise ValueError("Redirect URI override must not contain credentials")
+        try:
+            parsed.port  # raises when the authority carries a non-numeric port
+        except ValueError:
+            raise ValueError("Redirect URI override has an invalid port") from None
+        v = v.rstrip('/')
+        if not urlparse(v).path.endswith(CALLBACK_PATH):
+            raise ValueError(f"Redirect URI override must end with {CALLBACK_PATH}")
         return v
 
 
@@ -163,7 +200,7 @@ def _deserialize_channel_ids(raw: str | None) -> list[int] | None:
         return None
 
 
-def _config_to_response(config: OIDCConfig, session) -> OIDCConfigResponse:
+def _config_to_response(config: OIDCConfig, session, request: Request) -> OIDCConfigResponse:
     """Convert OIDCConfig model to response"""
     # Get default group name for display
     default_group_name = None
@@ -185,6 +222,8 @@ def _config_to_response(config: OIDCConfig, session) -> OIDCConfigResponse:
         disable_pkce_with_secret=config.disable_pkce_with_secret,
         require_approval=config.require_approval,
         approval_notify_channel_ids=_deserialize_channel_ids(config.approval_notify_channel_ids),
+        redirect_uri_override=config.redirect_uri_override,
+        callback_url=build_callback_url(request, config.redirect_uri_override),
         created_at=format_timestamp_required(config.created_at),
         updated_at=format_timestamp_required(config.updated_at),
     )
@@ -280,6 +319,7 @@ async def get_oidc_status() -> OIDCStatusResponse:
 
 @router.get("/config", response_model=OIDCConfigResponse, dependencies=[Depends(require_capability("oidc.manage"))])
 async def get_oidc_config(
+    request: Request,
     current_user: dict = Depends(get_current_user_or_api_key)
 ) -> OIDCConfigResponse:
     """
@@ -287,7 +327,7 @@ async def get_oidc_config(
     """
     with db.get_session() as session:
         config = _get_or_create_config(session)
-        return _config_to_response(config, session)
+        return _config_to_response(config, session, request)
 
 
 @router.put("/config", response_model=OIDCConfigResponse, dependencies=[Depends(require_capability("oidc.manage"))])
@@ -365,6 +405,11 @@ async def update_oidc_config(
             }
             config.approval_notify_channel_ids = json.dumps(config_data.approval_notify_channel_ids)
 
+        if config_data.redirect_uri_override is not None:
+            new_override = config_data.redirect_uri_override or None
+            changes['redirect_uri_override'] = {'old': config.redirect_uri_override, 'new': new_override}
+            config.redirect_uri_override = new_override
+
         # Lockout guard: refuse a change that would make OIDC unusable while local
         # login is effectively disabled (SSO-only) — that would leave no working way
         # to sign in. Break-glass via the manage_auth CLI or DOCKMON_FORCE_LOCAL_LOGIN
@@ -398,7 +443,7 @@ async def update_oidc_config(
 
         logger.info(f"OIDC configuration updated by {display_name}")
 
-        return _config_to_response(config, session)
+        return _config_to_response(config, session, request)
 
 
 @router.put(

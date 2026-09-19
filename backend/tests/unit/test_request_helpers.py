@@ -11,7 +11,13 @@ from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from utils.client_ip import get_request_scheme, get_request_host, _get_cors_origin_parts, get_client_ip
+from utils.client_ip import (
+    get_request_scheme,
+    get_request_host,
+    _get_cors_origin_parts,
+    _split_host_port,
+    get_client_ip,
+)
 
 
 def _make_request(headers: dict[str, str] | None = None, scheme: str = "http", netloc: str = "internal:8080", peer: str = "127.0.0.1") -> MagicMock:
@@ -265,6 +271,377 @@ class TestGetRequestHost:
             mock_config.REVERSE_PROXY_MODE = False
             mock_config.CORS_ORIGINS = "https://dockmon.lokal"
             assert get_request_host(request) == "internal:8080"
+
+
+class TestSplitHostPort:
+    """netloc splitting must survive IPv6 literals."""
+
+    def test_hostname_without_port(self):
+        assert _split_host_port("dockmon.lokal") == ("dockmon.lokal", None)
+
+    def test_hostname_with_port(self):
+        assert _split_host_port("dockmon.lokal:8314") == ("dockmon.lokal", "8314")
+
+    def test_ipv6_literal_without_port(self):
+        assert _split_host_port("[2001:db8::1]") == ("[2001:db8::1]", None)
+
+    def test_ipv6_literal_with_port(self):
+        assert _split_host_port("[2001:db8::1]:8314") == ("[2001:db8::1]", "8314")
+
+    def test_bare_ipv6_is_not_split_on_its_colons(self):
+        assert _split_host_port("2001:db8::1") == ("2001:db8::1", None)
+
+    def test_trailing_colon_has_no_port(self):
+        assert _split_host_port("dockmon.lokal:") == ("dockmon.lokal", None)
+
+    def test_unterminated_bracket_is_returned_whole(self):
+        assert _split_host_port("[2001:db8::1") == ("[2001:db8::1", None)
+
+
+class TestForwardedPortRecovery:
+    """A proxy forwarding `Host: $host` drops the port; recover it so OIDC
+    redirect URIs keep the non-standard port the browser actually used."""
+
+    def test_recovers_port_from_forwarded_port_header(self):
+        request = _make_request(headers={
+            "x-forwarded-host": "dockmon.lokal",
+            "x-forwarded-port": "8314",
+        })
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = None
+            assert get_request_host(request, "https") == "dockmon.lokal:8314"
+
+    def test_ignores_forwarded_port_443_for_https(self):
+        request = _make_request(headers={
+            "x-forwarded-host": "dockmon.lokal",
+            "x-forwarded-port": "443",
+        })
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = None
+            assert get_request_host(request, "https") == "dockmon.lokal"
+
+    def test_ignores_forwarded_port_80_for_http(self):
+        request = _make_request(headers={
+            "x-forwarded-host": "dockmon.lokal",
+            "x-forwarded-port": "80",
+        })
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = None
+            assert get_request_host(request, "http") == "dockmon.lokal"
+
+    def test_ignores_cross_scheme_default_port(self):
+        """:80 on https is far more likely the proxy's backend hop than a real
+        public port, and writing it in would break the provider's exact match."""
+        request = _make_request(headers={
+            "x-forwarded-host": "dockmon.lokal",
+            "x-forwarded-port": "80",
+        })
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = None
+            assert get_request_host(request, "https") == "dockmon.lokal"
+
+    def test_ignores_cross_scheme_default_port_443_on_http(self):
+        request = _make_request(headers={
+            "x-forwarded-host": "dockmon.lokal",
+            "x-forwarded-port": "443",
+        })
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = None
+            assert get_request_host(request, "http") == "dockmon.lokal"
+
+    def test_strips_implicit_port_already_in_forwarded_host(self):
+        """An explicit :443 on https must not reach the redirect URI either."""
+        request = _make_request(headers={"x-forwarded-host": "dockmon.lokal:443"})
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = None
+            assert get_request_host(request, "https") == "dockmon.lokal"
+
+    def test_keeps_a_stated_cross_scheme_port_in_forwarded_host(self):
+        """A port stated outright is a declaration, however unusual — unlike
+        X-Forwarded-Port, which is the proxy's guess and may name its own hop."""
+        request = _make_request(headers={"x-forwarded-host": "dockmon.lokal:80"})
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = None
+            assert get_request_host(request, "https") == "dockmon.lokal:80"
+
+    def test_leaves_unbracketed_ipv6_literal_alone(self):
+        """Appending a port to a bare IPv6 literal would yield an unparsable URL."""
+        request = _make_request(headers={
+            "x-forwarded-host": "2001:db8::1",
+            "x-forwarded-port": "8314",
+        })
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = None
+            assert get_request_host(request, "https") == "2001:db8::1"
+
+    def test_explicit_port_in_forwarded_host_wins(self):
+        request = _make_request(headers={
+            "x-forwarded-host": "dockmon.lokal:9000",
+            "x-forwarded-port": "8314",
+        })
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = None
+            assert get_request_host(request, "https") == "dockmon.lokal:9000"
+
+    def test_takes_first_value_from_multi_hop_forwarded_port(self):
+        request = _make_request(headers={
+            "x-forwarded-host": "dockmon.lokal",
+            "x-forwarded-port": "8314, 443",
+        })
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = None
+            assert get_request_host(request, "https") == "dockmon.lokal:8314"
+
+    def test_ignores_non_numeric_forwarded_port(self):
+        request = _make_request(headers={
+            "x-forwarded-host": "dockmon.lokal",
+            "x-forwarded-port": "not-a-port",
+        })
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = None
+            assert get_request_host(request, "https") == "dockmon.lokal"
+
+    def test_ignores_out_of_range_forwarded_port(self):
+        for bad_port in ("0", "70000", "-1"):
+            request = _make_request(headers={
+                "x-forwarded-host": "dockmon.lokal",
+                "x-forwarded-port": bad_port,
+            })
+            with patch("utils.client_ip.AppConfig") as mock_config:
+                mock_config.REVERSE_PROXY_MODE = True
+                mock_config.CORS_ORIGINS = None
+                assert get_request_host(request, "https") == "dockmon.lokal", bad_port
+
+    def test_recovers_port_on_host_header_fallback(self):
+        """No X-Forwarded-Host and no CORS_ORIGINS: the Host header is the last
+        resort, and the port is still recoverable from X-Forwarded-Port."""
+        request = _make_request(headers={
+            "host": "dockmon.lokal",
+            "x-forwarded-port": "8314",
+        })
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = None
+            assert get_request_host(request, "https") == "dockmon.lokal:8314"
+
+    def test_recovers_port_for_ipv6_literal_host(self):
+        request = _make_request(headers={
+            "x-forwarded-host": "[2001:db8::1]",
+            "x-forwarded-port": "8314",
+        })
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = None
+            assert get_request_host(request, "https") == "[2001:db8::1]:8314"
+
+    def test_ignores_forwarded_port_in_default_mode(self):
+        """Outside REVERSE_PROXY_MODE nothing overwrites X-Forwarded-Port, so a
+        client could set it freely; the bundled nginx forwards the real port in
+        the Host header instead."""
+        request = _make_request(headers={
+            "host": "dockmon.lokal",
+            "x-forwarded-port": "8314",
+        })
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = False
+            assert get_request_host(request, "https") == "dockmon.lokal"
+
+    def test_derives_scheme_when_not_supplied(self):
+        """Callers may omit the scheme; it is then derived to decide which port
+        counts as the default."""
+        request = _make_request(headers={
+            "x-forwarded-host": "dockmon.lokal",
+            "x-forwarded-proto": "https",
+            "x-forwarded-port": "443",
+        })
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = None
+            assert get_request_host(request) == "dockmon.lokal"
+
+
+class TestCorsOriginsPortRecovery:
+    """DOCKMON_CORS_ORIGINS is the operator's declaration of the public origin,
+    so its port is authoritative for the hostname it names."""
+
+    def test_recovers_port_from_cors_origins(self):
+        request = _make_request(headers={"x-forwarded-host": "dockmon.lokal"})
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "https://dockmon.lokal:8314"
+            assert get_request_host(request, "https") == "dockmon.lokal:8314"
+
+    def test_host_match_is_case_insensitive(self):
+        request = _make_request(headers={"x-forwarded-host": "DockMon.Lokal"})
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "https://dockmon.lokal:8314"
+            assert get_request_host(request, "https") == "DockMon.Lokal:8314"
+
+    def test_does_not_graft_port_onto_a_different_host(self):
+        """A multi-domain deployment declares each origin separately; one
+        origin's port must not be grafted onto a sibling that has none."""
+        request = _make_request(headers={"x-forwarded-host": "other.lokal"})
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "https://dockmon.lokal:8314,https://other.lokal"
+            assert get_request_host(request, "https") == "other.lokal"
+
+    def test_does_not_graft_port_when_scheme_differs(self):
+        """A port declared for http says nothing about the https listener."""
+        request = _make_request(headers={"x-forwarded-host": "dockmon.lokal"})
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "http://dockmon.lokal:8314"
+            assert get_request_host(request, "https") == "dockmon.lokal"
+
+    def test_ignores_cors_default_port(self):
+        request = _make_request(headers={"x-forwarded-host": "dockmon.lokal"})
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "https://dockmon.lokal:443"
+            assert get_request_host(request, "https") == "dockmon.lokal"
+
+    def test_forwarded_port_wins_over_cors_port(self):
+        request = _make_request(headers={
+            "x-forwarded-host": "dockmon.lokal",
+            "x-forwarded-port": "9443",
+        })
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "https://dockmon.lokal:8314"
+            assert get_request_host(request, "https") == "dockmon.lokal:9443"
+
+    def test_cors_fallback_host_keeps_its_own_port(self):
+        """When CORS_ORIGINS supplies the host outright (no X-Forwarded-Host),
+        its netloc already carries the port."""
+        request = _make_request()
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "https://dockmon.lokal:8314"
+            assert get_request_host(request, "https") == "dockmon.lokal:8314"
+
+    def test_cors_fallback_host_drops_an_implicit_port(self):
+        """A declared https://host:443 must not put :443 in the redirect URI."""
+        request = _make_request()
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "https://dockmon.lokal:443"
+            assert get_request_host(request, "https") == "dockmon.lokal"
+
+    def test_recovers_port_from_a_later_cors_origin(self):
+        """The port-bearing origin is not necessarily declared first."""
+        request = _make_request(headers={"x-forwarded-host": "dockmon.lokal"})
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "http://192.168.1.5:8001,https://dockmon.lokal:8314"
+            assert get_request_host(request, "https") == "dockmon.lokal:8314"
+
+
+class TestForwardedHostMustBeDeclared:
+    """X-Forwarded-Host reaches outward-facing URLs (OIDC redirect URIs) and the
+    fronting proxy may pass a client-supplied value straight through, so it is
+    only honored for a hostname the operator declared."""
+
+    def test_undeclared_forwarded_host_falls_back_to_declared_origin(self):
+        request = _make_request(headers={"x-forwarded-host": "dockmon.example.com@evil.tld"})
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "https://dockmon.lokal:8314"
+            assert get_request_host(request, "https") == "dockmon.lokal:8314"
+
+    def test_declared_forwarded_host_is_honored(self):
+        request = _make_request(headers={"x-forwarded-host": "second.lokal"})
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "https://dockmon.lokal,https://second.lokal"
+            assert get_request_host(request, "https") == "second.lokal"
+
+    def test_forwarded_host_trusted_when_nothing_declared(self):
+        """Fails open: DOCKMON_CORS_ORIGINS is unset by default."""
+        request = _make_request(headers={"x-forwarded-host": "anything.lokal"})
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = None
+            assert get_request_host(request, "https") == "anything.lokal"
+
+    def test_fallback_prefers_a_declared_origin_matching_the_scheme(self):
+        """Pairing the effective scheme with another origin's netloc would name a
+        host the operator never published under that scheme."""
+        request = _make_request(headers={"x-forwarded-host": "evil.tld"})
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "http://lan.lokal:8001,https://dockmon.lokal:8314"
+            assert get_request_host(request, "https") == "dockmon.lokal:8314"
+
+    def test_declared_match_ignores_the_port(self):
+        """The declaration names a host; the request may carry a port with it."""
+        request = _make_request(headers={"x-forwarded-host": "dockmon.lokal:8314"})
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "https://dockmon.lokal:8314"
+            assert get_request_host(request, "https") == "dockmon.lokal:8314"
+
+
+class TestNonStandardPortScenario:
+    """End-to-end test for the reported non-standard-port issue (#242)."""
+
+    def test_external_nginx_stripping_the_port_still_yields_it(self):
+        """An external nginx using the ubiquitous `proxy_set_header Host $host`
+        drops :8314, and the bundled nginx then derives X-Forwarded-Host from
+        that stripped Host. The operator's CORS_ORIGINS restores the port."""
+        request = _make_request(
+            headers={
+                "host": "dockmon.lokal",
+                "x-forwarded-host": "dockmon.lokal",
+                "x-forwarded-proto": "https",
+            },
+            scheme="http",
+            netloc="dockmon.lokal",
+        )
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = "https://dockmon.lokal:8314"
+
+            scheme = get_request_scheme(request)
+            host = get_request_host(request, scheme)
+            redirect_uri = f"{scheme}://{host}/api/v2/auth/oidc/callback"
+
+            assert redirect_uri == "https://dockmon.lokal:8314/api/v2/auth/oidc/callback"
+
+    def test_proxy_forwarding_the_port_header_yields_it(self):
+        """Proxies that send X-Forwarded-Port (Traefik and similar) need no
+        DockMon-side configuration at all."""
+        request = _make_request(
+            headers={
+                "host": "dockmon.lokal",
+                "x-forwarded-host": "dockmon.lokal",
+                "x-forwarded-proto": "https",
+                "x-forwarded-port": "8314",
+            },
+            scheme="http",
+            netloc="dockmon.lokal",
+        )
+        with patch("utils.client_ip.AppConfig") as mock_config:
+            mock_config.REVERSE_PROXY_MODE = True
+            mock_config.CORS_ORIGINS = None
+
+            scheme = get_request_scheme(request)
+            host = get_request_host(request, scheme)
+            redirect_uri = f"{scheme}://{host}/api/v2/auth/oidc/callback"
+
+            assert redirect_uri == "https://dockmon.lokal:8314/api/v2/auth/oidc/callback"
 
 
 class TestCaddyScenario:

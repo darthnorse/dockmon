@@ -5,11 +5,37 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api/client'
 
+export type ChannelType = 'telegram' | 'discord' | 'slack' | 'teams' | 'google_chat' | 'pushover' | 'gotify' | 'ntfy' | 'smtp' | 'webhook'
+
+// Union of every provider's fields; the backend stores config as opaque JSON
+export interface ChannelConfig {
+  bot_token?: string
+  token?: string
+  chat_id?: string
+  webhook_url?: string
+  url?: string
+  app_token?: string
+  user_key?: string
+  access_token?: string
+  server_url?: string
+  topic?: string
+  smtp_host?: string
+  smtp_port?: number
+  smtp_user?: string
+  smtp_password?: string
+  from_email?: string
+  to_email?: string
+  use_tls?: boolean
+  method?: string
+  payload_format?: string
+  headers?: Record<string, string> | string
+}
+
 export interface NotificationChannel {
   id: number
   name: string
-  type: 'telegram' | 'discord' | 'slack' | 'teams' | 'google_chat' | 'pushover' | 'gotify' | 'ntfy' | 'smtp' | 'webhook'
-  config: Record<string, any>
+  type: ChannelType
+  config: ChannelConfig
   enabled: boolean
   created_at: string
   updated_at: string
@@ -17,14 +43,14 @@ export interface NotificationChannel {
 
 export interface ChannelCreateRequest {
   name: string
-  type: string
-  config: Record<string, any>
+  type: ChannelType
+  config: ChannelConfig
   enabled: boolean
 }
 
 export interface ChannelUpdateRequest {
   name?: string
-  config?: Record<string, any>
+  config?: ChannelConfig
   enabled?: boolean
 }
 
@@ -50,7 +76,7 @@ export function useCreateChannel() {
       return apiClient.post<NotificationChannel>(API_BASE, channel)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['notification-channels'] })
+      void queryClient.invalidateQueries({ queryKey: ['notification-channels'] })
     },
   })
 }
@@ -63,7 +89,7 @@ export function useUpdateChannel() {
       return apiClient.put<NotificationChannel>(`${API_BASE}/${channelId}`, updates)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['notification-channels'] })
+      void queryClient.invalidateQueries({ queryKey: ['notification-channels'] })
     },
   })
 }
@@ -76,7 +102,7 @@ export function useDeleteChannel() {
       return apiClient.delete(`${API_BASE}/${channelId}`)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['notification-channels'] })
+      void queryClient.invalidateQueries({ queryKey: ['notification-channels'] })
     },
   })
 }

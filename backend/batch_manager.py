@@ -266,7 +266,7 @@ class BatchJobManager:
                         session.commit()
 
                 # Broadcast item update
-                await self._broadcast_item_update(job_id, item_id, 'running', None)
+                await self._broadcast_item_update(job_id, item_id, host_id, 'running', None)
 
                 # Get job action and params
                 with self.db.get_session() as session:
@@ -302,7 +302,7 @@ class BatchJobManager:
                         session.commit()
 
                 # Broadcast item completion
-                await self._broadcast_item_update(job_id, item_id, result['status'], result['message'])
+                await self._broadcast_item_update(job_id, item_id, host_id, result['status'], result['message'])
 
             except Exception as e:
                 logger.error(f"Error processing item {item_id}: {e}")
@@ -320,7 +320,7 @@ class BatchJobManager:
                         job.error_items += 1
                         session.commit()
 
-                await self._broadcast_item_update(job_id, item_id, 'error', str(e))
+                await self._broadcast_item_update(job_id, item_id, host_id, 'error', str(e))
 
     async def _execute_action(
         self,
@@ -602,10 +602,14 @@ class BatchJobManager:
         with self.db.get_session() as session:
             job = session.query(BatchJob).filter_by(id=job_id).first()
             if job:
+                host_ids = sorted({
+                    row[0] for row in session.query(BatchJobItem.host_id).filter_by(job_id=job_id).distinct()
+                })
                 job_data = {
                     'job_id': job_id,
                     'status': status,
                     'message': message,
+                    'host_ids': host_ids,
                     'total_items': job.total_items,
                     'completed_items': job.completed_items,
                     'success_items': job.success_items,
@@ -637,6 +641,7 @@ class BatchJobManager:
         self,
         job_id: str,
         item_id: int,
+        host_id: str,
         status: str,
         message: Optional[str]
     ):
@@ -647,6 +652,7 @@ class BatchJobManager:
             'data': {
                 'job_id': job_id,
                 'item_id': item_id,
+                'host_id': host_id,
                 'status': status,
                 'message': message
             }

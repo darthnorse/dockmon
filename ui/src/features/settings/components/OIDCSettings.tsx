@@ -106,6 +106,7 @@ export function OIDCSettings() {
   const [ssoDefault, setSsoDefault] = useState(false)
   const [requireApproval, setRequireApproval] = useState(false)
   const [approvalNotifyChannelIds, setApprovalNotifyChannelIds] = useState<number[]>([])
+  const [redirectUriOverride, setRedirectUriOverride] = useState('')
   const [showApprovalConfirm, setShowApprovalConfirm] = useState(false)
   const [showDisableLocalConfirm, setShowDisableLocalConfirm] = useState(false)
   const localLoginDisabled = oidcStatus?.local_login_disabled ?? false
@@ -125,9 +126,17 @@ export function OIDCSettings() {
     setLocalLogin.mutate(true)
   }
 
-  const callbackUrl = useMemo(() => {
+  // What the backend will actually send as redirect_uri. Deriving it in the
+  // browser instead would silently disagree whenever a proxy strips the port
+  // or hostname from the forwarded headers.
+  const callbackUrl = config?.callback_url ?? ''
+  const browserCallbackUrl = useMemo(() => {
     return `${window.location.origin}${getBasePath()}/api/v2/auth/oidc/callback`
   }, [])
+  // Only a diagnostic for the detection path: with an override set, differing
+  // from the admin's current origin is the intended configuration.
+  const hasOverride = Boolean(config?.redirect_uri_override)
+  const callbackMismatch = Boolean(callbackUrl) && !hasOverride && callbackUrl !== browserCallbackUrl
   const [callbackCopied, setCallbackCopied] = useState(false)
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -148,6 +157,7 @@ export function OIDCSettings() {
       setSsoDefault(config.sso_default)
       setRequireApproval(config.require_approval)
       setApprovalNotifyChannelIds(config.approval_notify_channel_ids || [])
+      setRedirectUriOverride(config.redirect_uri_override || '')
       // Don't sync client_secret - it's never returned
     }
   }, [config])
@@ -170,9 +180,10 @@ export function OIDCSettings() {
       defaultGroupId !== (config.default_group_id ? config.default_group_id.toString() : NO_DEFAULT_GROUP) ||
       ssoDefault !== config.sso_default ||
       requireApproval !== config.require_approval ||
-      !arraysEqual(approvalNotifyChannelIds, config.approval_notify_channel_ids || [])
+      !arraysEqual(approvalNotifyChannelIds, config.approval_notify_channel_ids || []) ||
+      redirectUriOverride.trim() !== (config.redirect_uri_override || '')
     )
-  }, [config, enabled, providerUrl, clientId, clientSecret, scopes, claimForGroups, defaultGroupId, ssoDefault, requireApproval, approvalNotifyChannelIds])
+  }, [config, enabled, providerUrl, clientId, clientSecret, scopes, claimForGroups, defaultGroupId, ssoDefault, requireApproval, approvalNotifyChannelIds, redirectUriOverride])
 
   const buildConfigData = useCallback((): OIDCConfigUpdateRequest => {
     const data: OIDCConfigUpdateRequest = {}
@@ -190,8 +201,11 @@ export function OIDCSettings() {
     if (!arraysEqual(approvalNotifyChannelIds, config?.approval_notify_channel_ids || [])) {
       data.approval_notify_channel_ids = approvalNotifyChannelIds
     }
+    if (redirectUriOverride.trim() !== (config?.redirect_uri_override || '')) {
+      data.redirect_uri_override = redirectUriOverride.trim()
+    }
     return data
-  }, [config, enabled, providerUrl, clientId, clientSecret, scopes, claimForGroups, defaultGroupId, ssoDefault, requireApproval, approvalNotifyChannelIds])
+  }, [config, enabled, providerUrl, clientId, clientSecret, scopes, claimForGroups, defaultGroupId, ssoDefault, requireApproval, approvalNotifyChannelIds, redirectUriOverride])
 
   const doSaveConfig = useCallback(async (data: OIDCConfigUpdateRequest) => {
     try {
@@ -346,7 +360,7 @@ export function OIDCSettings() {
                 size="icon"
                 className="shrink-0"
                 onClick={() => {
-                  navigator.clipboard.writeText(callbackUrl)
+                  void navigator.clipboard.writeText(callbackUrl)
                   setCallbackCopied(true)
                   if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
                   copyTimerRef.current = setTimeout(() => setCallbackCopied(false), 2000)
@@ -360,7 +374,40 @@ export function OIDCSettings() {
               </Button>
             </div>
             <p className="text-xs text-gray-500">
-              Add this URL as an allowed redirect URI in your OIDC provider
+              Add this URL as an allowed redirect URI in your OIDC provider. This is the exact
+              value DockMon sends when signing in.
+            </p>
+            {callbackMismatch && (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 space-y-1">
+                <p className="text-xs text-amber-400">
+                  This differs from the URL in your browser
+                  (<span className="font-mono">{browserCallbackUrl}</span>), so your reverse proxy is
+                  not forwarding the public origin. Register the URL above, or set an override.
+                </p>
+              </div>
+            )}
+            {hasOverride && (
+              <p className="text-xs text-gray-500">
+                Set from the override below, not detected from this request.
+              </p>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="redirect-uri-override" className="text-sm text-gray-300">
+              Callback URL override (optional)
+            </Label>
+            <Input
+              id="redirect-uri-override"
+              placeholder={browserCallbackUrl}
+              value={redirectUriOverride}
+              onChange={(e) => setRedirectUriOverride(e.target.value)}
+              className="font-mono text-sm"
+            />
+            <p className="text-xs text-gray-500">
+              Leave empty to detect the callback URL from the request. Set it when a reverse proxy
+              does not forward the public host, scheme, or port &mdash; for example when DockMon is
+              served on a non-standard port and the detected URL is missing it.
             </p>
           </div>
 
@@ -711,7 +758,7 @@ export function OIDCSettings() {
           <div className="text-sm">
             <p className="font-medium text-yellow-300">Default Group</p>
             <p className="text-yellow-200/70">
-              Users whose OIDC groups don't match any mapping will be assigned to{' '}
+              Users whose OIDC groups don&apos;t match any mapping will be assigned to{' '}
               {config?.default_group_name ? (
                 <strong>{config.default_group_name}</strong>
               ) : (

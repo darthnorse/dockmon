@@ -43,7 +43,7 @@ export function useCreateApiKey() {
     onSuccess: () => {
       // Invalidate list but DON'T refetch immediately
       // User needs to copy the key first
-      queryClient.invalidateQueries({ queryKey: API_KEYS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: API_KEYS_QUERY_KEY })
     },
     onError: (error) => {
       console.error('Failed to create API key:', error)
@@ -63,7 +63,7 @@ export function useUpdateApiKey() {
       return response
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: API_KEYS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: API_KEYS_QUERY_KEY })
       toast.success('API key updated successfully')
     },
     onError: (error) => {
@@ -84,7 +84,7 @@ export function useRevokeApiKey() {
       await apiClient.delete<{ message: string }>(`/v2/api-keys/${keyId}`)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: API_KEYS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: API_KEYS_QUERY_KEY })
       toast.success('API key revoked successfully')
     },
     onError: (error) => {

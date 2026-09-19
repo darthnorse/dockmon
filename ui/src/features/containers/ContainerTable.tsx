@@ -20,6 +20,7 @@ import {
 
 // Extend TanStack Table's ColumnMeta to include our custom align property
 declare module '@tanstack/react-table' {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- declaration merging requires the upstream parameter names
   interface ColumnMeta<TData, TValue> {
     align?: 'left' | 'center' | 'right'
   }
@@ -40,6 +41,8 @@ import {
   Package,
   ExternalLink,
   Activity,
+  ArrowDown,
+  ArrowUp,
   Filter,
   X,
   ChevronDown,
@@ -65,6 +68,7 @@ import { BatchUpdateValidationConfirmModal } from './components/BatchUpdateValid
 import { BatchJobPanel } from './components/BatchJobPanel'
 import { ColumnCustomizationPanel } from './components/ColumnCustomizationPanel'
 import { IPAddressCell } from './components/IPAddressCell'
+import { compareIpAddresses } from './utils/ipSort'
 import type { Container } from './types'
 import { useAuth } from '@/features/auth/AuthContext'
 import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
@@ -74,7 +78,7 @@ import { useContainerHealthCheck } from './hooks/useContainerHealthCheck'
 import { isCustomColumnId, extractColumnValue, buildCustomColumnDef } from './utils/customColumns'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
 import { sanitizeHref } from '@/lib/utils/urlSanitize'
-import { formatBytes } from '@/lib/utils/formatting'
+import { formatBytes, formatNetworkRate } from '@/lib/utils/formatting'
 import { useContainerModal } from '@/providers'
 import { useHosts } from '@/features/hosts/hooks/useHosts'
 import { HostDetailsModal } from '@/features/hosts/components/HostDetailsModal'
@@ -354,7 +358,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
   const { hasCapability } = useAuth()
   const canOperate = hasCapability('containers.operate')
   const { data: preferences } = useUserPreferences()
-  const updatePreferences = useUpdatePreferences()
+  const { mutate: savePreferences } = useUpdatePreferences()
   const [sorting, setSorting] = useState<SortingState>(preferences?.container_table_sort || [])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   const [globalFilter, setGlobalFilter] = useState('')
@@ -424,11 +428,11 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
 
     // Debounce to avoid too many updates
     const timer = setTimeout(() => {
-      updatePreferences.mutate({ container_table_sort: sorting })
+      savePreferences({ container_table_sort: sorting })
     }, 500)
 
     return () => clearTimeout(timer)
-  }, [sorting])
+  }, [sorting, preferences?.container_table_sort, savePreferences])
 
   // Initialize column visibility from preferences when loaded
   useEffect(() => {
@@ -447,11 +451,11 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
 
     // Debounce to avoid too many updates
     const timer = setTimeout(() => {
-      updatePreferences.mutate({ container_table_column_visibility: columnVisibility })
+      savePreferences({ container_table_column_visibility: columnVisibility })
     }, 500)
 
     return () => clearTimeout(timer)
-  }, [columnVisibility])
+  }, [columnVisibility, preferences?.container_table_column_visibility, savePreferences])
 
   // Initialize column order from preferences when loaded
   useEffect(() => {
@@ -475,11 +479,11 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
 
     // Debounce to avoid too many updates
     const timer = setTimeout(() => {
-      updatePreferences.mutate({ container_table_column_order: orderWithoutSelect })
+      savePreferences({ container_table_column_order: orderWithoutSelect })
     }, 500)
 
     return () => clearTimeout(timer)
-  }, [columnOrder])
+  }, [columnOrder, preferences?.container_table_column_order, savePreferences])
 
   // Fetch all alert counts in one batched request
   const { data: alertCounts } = useAlertCounts('container')
@@ -768,7 +772,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
       // Open batch job progress panel
       setBatchJobId(jobId)
       setShowJobPanel(true)
-      queryClient.invalidateQueries({ queryKey: ['containers'] })
+      void queryClient.invalidateQueries({ queryKey: ['containers'] })
     },
     onError: (error) => {
       debug.error('ContainerTable', 'Batch action failed:', error)
@@ -853,7 +857,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
 
       return true
     })
-  }, [data, filters, updatesSummary, allAutoUpdateConfigs, allHealthCheckConfigs])
+  }, [data, filters, propHostId, updatesSummary, allAutoUpdateConfigs, allHealthCheckConfigs])
 
   // Single source for both the columns memo and the global filter.
   const customColumnIds = useMemo<string[]>(
@@ -1123,7 +1127,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
           return (
             <button
               className="text-sm text-left hover:text-primary transition-colors cursor-pointer"
-              onClick={(e) => { e.stopPropagation(); host_id && setHostModalHostId(host_id) }}
+              onClick={(e) => { e.stopPropagation(); if (host_id) setHostModalHostId(host_id) }}
             >
               {host_name || 'localhost'}
             </button>
@@ -1133,10 +1137,28 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
       // 7. IP Address (Docker network IPs)
       {
         id: 'ip',
-        header: 'IP Address',
+        // Undefined (rather than null) so sortUndefined can pin the
+        // not-connected rows last in both directions.
+        accessorFn: (row) => row.docker_ip ?? undefined,
+        sortUndefined: 'last',
+        header: ({ column }) => {
+          const sortDirection = column.getIsSorted()
+          return (
+            <Button
+              variant="ghost"
+              onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+              className="h-8 px-2 hover:bg-surface-2"
+            >
+              IP Address
+              <ArrowUpDown className={`ml-2 h-4 w-4 ${sortDirection ? 'text-primary' : 'text-muted-foreground'}`} />
+            </Button>
+          )
+        },
         cell: ({ row }) => <IPAddressCell container={row.original} />,
         size: 150,
-        enableSorting: false,
+        // Sorts on the primary IP, which is the one the cell shows first.
+        sortingFn: (rowA, rowB) =>
+          compareIpAddresses(rowA.original.docker_ip, rowB.original.docker_ip),
       },
       // 8. Ports
       {
@@ -1259,6 +1281,58 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
             )
           }
           return <span className="text-sm text-muted-foreground">-</span>
+        },
+        enableSorting: true,
+      },
+      // 9b. NETWORK (current throughput; lifetime received/sent in the tooltip)
+      {
+        id: 'network',
+        header: ({ column }) => {
+          const sortDirection = column.getIsSorted()
+          return (
+            <Button
+              variant="ghost"
+              onClick={() => column.toggleSorting(sortDirection === 'asc')}
+              className="h-8 px-2 hover:bg-surface-2"
+            >
+              Network
+              <ArrowUpDown className={`ml-2 h-4 w-4 ${sortDirection ? 'text-primary' : 'text-muted-foreground'}`} />
+            </Button>
+          )
+        },
+        // -1 sinks rows the cell renders as a dash below a running container with zero traffic
+        accessorFn: (row) =>
+          row.state !== 'running' || row.net_bytes_per_sec == null ? -1 : row.net_bytes_per_sec,
+        cell: ({ row }) => {
+          const container = row.original
+          const {
+            net_bytes_per_sec: rate, net_rx_bytes_per_sec: rxRate, net_tx_bytes_per_sec: txRate,
+            network_rx: rx, network_tx: tx,
+          } = container
+
+          if (container.state !== 'running' || rate == null) {
+            return <span className="text-sm text-muted-foreground">-</span>
+          }
+
+          const lifetime = rx == null && tx == null ? undefined
+            : `Received ${formatBytes(rx)} / Sent ${formatBytes(tx)} since start`
+
+          return (
+            <div
+              className="flex flex-col gap-0.5 text-xs text-muted-foreground leading-tight"
+              title={lifetime}
+              data-testid="network-io"
+            >
+              <span className="flex items-center gap-1">
+                <ArrowDown className="h-3 w-3 text-info shrink-0" />
+                {formatNetworkRate(rxRate)}
+              </span>
+              <span className="flex items-center gap-1">
+                <ArrowUp className="h-3 w-3 text-warning shrink-0" />
+                {formatNetworkRate(txRate)}
+              </span>
+            </div>
+          )
         },
         enableSorting: true,
       },
@@ -1606,7 +1680,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
     return (
       <div className="space-y-4">
         <div className="animate-pulse space-y-2">
-          {[...Array(5)].map((_, i) => (
+          {Array.from({ length: 5 }, (_, i) => (
             <div key={i} className="h-14 rounded-lg bg-surface-1" />
           ))}
         </div>

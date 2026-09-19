@@ -296,7 +296,7 @@ describe('HostModal', () => {
       render(<HostModal isOpen={true} onClose={mockOnClose} host={existingHost} />)
 
       // mTLS checkbox should be checked
-      const mtlsToggle = screen.getByLabelText(/enable mtls/i) as HTMLInputElement
+      const mtlsToggle = screen.getByLabelText(/enable mtls/i)
       expect(mtlsToggle.checked).toBe(true)
 
       // Should show 3 masked placeholders (one for each cert field)
@@ -393,9 +393,9 @@ describe('HostModal', () => {
       })
 
       // Fill in all three required certificates
-      const caInput = screen.getByLabelText(/ca certificate/i) as HTMLTextAreaElement
-      const certInput = screen.getByLabelText(/client certificate/i) as HTMLTextAreaElement
-      const keyInput = screen.getByLabelText(/client.*key/i) as HTMLTextAreaElement
+      const caInput = screen.getByLabelText(/ca certificate/i)
+      const certInput = screen.getByLabelText(/client certificate/i)
+      const keyInput = screen.getByLabelText(/client.*key/i)
 
       await user.type(caInput, 'test-ca-cert')
       await user.type(certInput, 'test-client-cert')

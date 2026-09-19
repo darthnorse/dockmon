@@ -1,10 +1,11 @@
-fastapi==0.123.5
+fastapi==0.141.1
+starlette==1.6.0
 uvicorn[standard]==0.34.0
 docker==7.1.0
 pydantic==2.10.6
 email-validator==2.3.0
-python-multipart==0.0.27
-aiohttp==3.14.0
+python-multipart==0.0.31
+aiohttp==3.14.3
 aiofiles==25.1.0
 httpx==0.28.1
 sqlalchemy==2.0.36
@@ -13,9 +14,10 @@ requests==2.33.0
 bcrypt==4.2.1
 argon2-cffi==23.1.0
 itsdangerous==2.1.2
-aiosmtplib==3.0.2
-cryptography==46.0.7
+aiosmtplib==5.1.3
+cryptography==50.0.1
 PyJWT[crypto]==2.13.0
 packaging==25.0
 python-dateutil==2.9.0.post0
 cronsim==2.7
+regex==2026.2.28

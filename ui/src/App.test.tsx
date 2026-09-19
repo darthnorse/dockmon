@@ -5,7 +5,8 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { screen, waitFor, render } from '@testing-library/react'
-import { App, queryClient } from './App'
+import { App } from './App'
+import { queryClient } from '@/lib/queryClient'
 import { authApi } from '@/features/auth/api'
 
 // Mock the auth API

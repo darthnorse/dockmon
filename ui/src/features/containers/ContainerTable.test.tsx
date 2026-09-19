@@ -237,6 +237,54 @@ describe('ContainerTable', () => {
     })
   })
 
+  describe('network column', () => {
+    it('shows download and upload rates, keeps lifetime totals in the tooltip, and dashes a stopped container', async () => {
+      vi.mocked(apiClient.apiClient.get).mockResolvedValue([
+        { ...mockContainers[0], net_bytes_per_sec: 1.5 * 1024 * 1024 + 2048, net_rx_bytes_per_sec: 1.5 * 1024 * 1024,
+          net_tx_bytes_per_sec: 2048, network_rx: 1536, network_tx: 2 * 1024 * 1024 },
+        { ...mockContainers[1], net_bytes_per_sec: 999999, net_rx_bytes_per_sec: 999999, net_tx_bytes_per_sec: 0,
+          network_rx: 999999, network_tx: 999999 },
+      ])
+
+      renderTable()
+
+      await waitFor(() => {
+        expect(screen.getByText('Network')).toBeInTheDocument()
+      })
+      const cells = screen.getAllByTestId('network-io')
+      expect(cells).toHaveLength(1)
+      expect(cells[0]).toHaveTextContent('1.5 MB/s')
+      expect(cells[0]).toHaveTextContent('2.0 KB/s')
+      expect(cells[0]).not.toHaveTextContent('1.5 KB ')
+      expect(cells[0]).toHaveAttribute('title', 'Received 1.5 KB / Sent 2.0 MB since start')
+    })
+
+    it('shows the rates even before lifetime counters arrive', async () => {
+      vi.mocked(apiClient.apiClient.get).mockResolvedValue([
+        { ...mockContainers[0], net_bytes_per_sec: 3072, net_rx_bytes_per_sec: 2048, net_tx_bytes_per_sec: 1024 },
+      ])
+
+      renderTable()
+
+      await waitFor(() => {
+        expect(screen.getByText('nginx')).toBeInTheDocument()
+      })
+      expect(screen.getByTestId('network-io')).toHaveTextContent('2.0 KB/s')
+      expect(screen.getByTestId('network-io')).toHaveTextContent('1.0 KB/s')
+    })
+
+    it('shows a dash when a running container has no network data yet', async () => {
+      vi.mocked(apiClient.apiClient.get).mockResolvedValue([mockContainers[0]])
+
+      renderTable()
+
+      await waitFor(() => {
+        expect(screen.getByText('nginx')).toBeInTheDocument()
+      })
+      expect(screen.queryByTestId('network-io')).not.toBeInTheDocument()
+    })
+  })
+
   describe('table structure', () => {
     it('should render table with proper columns', async () => {
       vi.mocked(apiClient.apiClient.get).mockResolvedValue(mockContainers)

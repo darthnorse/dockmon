@@ -5,7 +5,7 @@ Uses SQLite for persistent storage of configuration and settings
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
-from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, DateTime, JSON, ForeignKey, Text, Table, UniqueConstraint, CheckConstraint, text, Float, func, Index
+from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, DateTime, JSON, ForeignKey, Text, Table, UniqueConstraint, CheckConstraint, text, Float, func, Index, and_, or_
 from sqlalchemy.orm import sessionmaker, Session, relationship, declarative_base
 from sqlalchemy.pool import StaticPool
 import os
@@ -15,6 +15,7 @@ import uuid
 
 from auth.capabilities import ALL_CAPABILITIES, OPERATOR_CAPABILITIES, READONLY_CAPABILITIES
 from utils.keys import make_composite_key
+from utils.response_filtering import ADMIN_ONLY_EVENT_TYPES, GLOBAL_EVENT_CATEGORIES
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,27 @@ class GroupPermission(Base):
     )
 
 
+class GroupTagScope(Base):
+    """Restricts a group's host visibility to hosts carrying any listed tag.
+    Zero rows for a group = unrestricted."""
+    __tablename__ = "group_tag_scopes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    group_id = Column(Integer, ForeignKey('custom_groups.id', ondelete='CASCADE'), nullable=False)
+    # RESTRICT: losing a scope must be an explicit admin action, never a tag-cleanup side effect
+    tag_id = Column(String, ForeignKey('tags.id', ondelete='RESTRICT'), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+    group = relationship("CustomGroup", back_populates="tag_scopes")
+    tag = relationship("Tag")
+
+    __table_args__ = (
+        UniqueConstraint('group_id', 'tag_id', name='uq_group_tag_scope'),
+        Index('idx_group_tag_scopes_group', 'group_id'),
+        Index('idx_group_tag_scopes_tag', 'tag_id'),
+    )
+
+
 class PasswordResetToken(Base):
     """
     Password reset tokens for self-service password recovery (v2.3.0).
@@ -191,6 +213,10 @@ class OIDCConfig(Base):
 
     # Provider compatibility: some providers (e.g. Authentik) reject client_secret + PKCE together
     disable_pkce_with_secret = Column(Boolean, nullable=False, default=False)
+
+    # Escape hatch for proxy chains that forward no usable public origin, leaving
+    # the auto-detected redirect_uri unable to match the provider's registration
+    redirect_uri_override = Column(Text, nullable=True)
 
     # Pending approval for new OIDC users (v2.6.0)
     require_approval = Column(Boolean, nullable=False, server_default='0', default=False)
@@ -271,6 +297,7 @@ class CustomGroup(Base):
     # Relationships
     memberships = relationship("UserGroupMembership", back_populates="group", cascade="all, delete-orphan")
     permissions = relationship("GroupPermission", back_populates="group", cascade="all, delete-orphan")
+    tag_scopes = relationship("GroupTagScope", back_populates="group", cascade="all, delete-orphan")
 
 
 class UserGroupMembership(Base):
@@ -1438,6 +1465,44 @@ host_stats_history = Table(
     Column("container_count", Integer, nullable=True),
     UniqueConstraint("host_id", "resolution", "timestamp", name="uq_host_stats"),
 )
+
+
+def event_visibility_predicate(visible_host_ids: set):
+    """SQL twin of utils.response_filtering.event_scope: an event is visible when its
+    host is visible, or it has no host but its host_id:short_id container is, or it
+    is host-less bookkeeping in a global category (a host-less rule_triggered is the
+    system alert firing: admin-only). Every other null-host row is hidden."""
+    composite_host = func.substr(EventLog.container_id, 1, func.instr(EventLog.container_id, ':') - 1)
+    # '' counts as absent, as the Python twin's truthiness tests do
+    no_host = or_(EventLog.host_id.is_(None), EventLog.host_id == '')
+    no_container = or_(EventLog.container_id.is_(None), EventLog.container_id == '')
+    return or_(
+        EventLog.host_id.in_(visible_host_ids),
+        and_(no_host, EventLog.container_id.isnot(None), composite_host.in_(visible_host_ids)),
+        and_(no_host, no_container,
+             EventLog.category.in_(GLOBAL_EVENT_CATEGORIES),
+             EventLog.event_type.notin_(ADMIN_ONLY_EVENT_TYPES)),
+    )
+
+
+def scoped_alert_query(session, visible_host_ids: Optional[set]):
+    """AlertV2 query limited to the caller's visible hosts (None = unrestricted)."""
+    query = session.query(AlertV2)
+    if visible_host_ids is not None:
+        query = query.filter(alert_visibility_predicate(visible_host_ids))
+    return query
+
+
+def alert_visibility_predicate(visible_host_ids: set):
+    """SQL twin of utils.response_filtering.alert_is_visible. Splits the container
+    scope_id on ':' rather than assuming a 36-char host UUID: sanitize_host_id admits
+    any [A-Za-z0-9-]+ id. System-scope alerts have no host and stay admin-only."""
+    composite_host = func.substr(AlertV2.scope_id, 1, func.instr(AlertV2.scope_id, ':') - 1)
+    return or_(
+        AlertV2.host_id.in_(visible_host_ids),
+        and_(AlertV2.scope_type == 'host', AlertV2.scope_id.in_(visible_host_ids)),
+        and_(AlertV2.scope_type == 'container', composite_host.in_(visible_host_ids)),
+    )
 
 
 class DatabaseManager:
@@ -3552,6 +3617,7 @@ class DatabaseManager:
         A tag is considered unused if:
         1. It has no current assignments (assignment count = 0)
         2. Its last_used_at timestamp is older than days_unused
+        3. It does not scope any group's host visibility (GroupTagScope)
 
         Args:
             days_unused: Remove tags not used in this many days (0 = never delete)
@@ -3566,11 +3632,13 @@ class DatabaseManager:
             from datetime import timedelta
             cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_unused)
 
-            # Find tags with no assignments and not used recently
+            # Find tags with no assignments and not used recently; a tag that scopes a
+            # group's host visibility is in use even with zero assignments (RESTRICT FK)
             tags_to_delete = session.query(Tag).outerjoin(TagAssignment).group_by(Tag.id).having(
                 func.count(TagAssignment.tag_id) == 0
             ).filter(
-                Tag.last_used_at < cutoff_date
+                Tag.last_used_at < cutoff_date,
+                ~Tag.id.in_(session.query(GroupTagScope.tag_id)),
             ).limit(1000).all()  # Add safety limit to prevent memory exhaustion
 
             deleted_count = 0
@@ -3926,13 +3994,17 @@ class DatabaseManager:
                    search: Optional[str] = None,
                    limit: int = 100,
                    offset: int = 0,
-                   sort_order: str = 'desc') -> tuple[List[EventLog], int]:
+                   sort_order: str = 'desc',
+                   visible_host_ids: Optional[set] = None) -> tuple[List[EventLog], int]:
         """Get events with filtering and pagination - returns (events, total_count)
 
         Multi-select filters (category, severity, host_id, container_id) accept lists for OR filtering.
+        visible_host_ids restricts the caller's view (None = unrestricted) before pagination.
         """
         with self.get_session() as session:
             query = session.query(EventLog)
+            if visible_host_ids is not None:
+                query = query.filter(event_visibility_predicate(visible_host_ids))
 
             # Apply filters - use IN clause for lists
             if category:
@@ -4145,16 +4217,20 @@ class DatabaseManager:
 
     def get_event_statistics(self,
                            start_date: Optional[datetime] = None,
-                           end_date: Optional[datetime] = None) -> Dict[str, Any]:
+                           end_date: Optional[datetime] = None,
+                           visible_host_ids: Optional[set] = None) -> Dict[str, Any]:
         """Get event statistics for dashboard
 
         BUG FIX: Apply date filters to ALL queries to ensure consistent counts.
         Previously, category_counts and severity_counts ignored the date filters,
         causing total_events to differ from the sum of categories/severities.
+        visible_host_ids restricts the counts like get_events (None = unrestricted).
         """
         with self.get_session() as session:
             # Build base query with date filters
             query = session.query(EventLog)
+            if visible_host_ids is not None:
+                query = query.filter(event_visibility_predicate(visible_host_ids))
 
             if start_date:
                 query = query.filter(EventLog.timestamp >= start_date)
@@ -4168,7 +4244,7 @@ class DatabaseManager:
             category_counts = {}
             for category, count in query.with_entities(
                 EventLog.category,
-                session.func.count(EventLog.id)
+                func.count(EventLog.id)
             ).group_by(EventLog.category).all():
                 category_counts[category] = count
 
@@ -4177,7 +4253,7 @@ class DatabaseManager:
             severity_counts = {}
             for severity, count in query.with_entities(
                 EventLog.severity,
-                session.func.count(EventLog.id)
+                func.count(EventLog.id)
             ).group_by(EventLog.severity).all():
                 severity_counts[severity] = count
 

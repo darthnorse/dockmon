@@ -46,10 +46,10 @@ export function AgentUpdateBanner({ isCollapsed }: AgentUpdateBannerProps) {
     }
 
     // Initial fetch
-    fetchData()
+    void fetchData()
 
     // Poll every 30 seconds
-    const interval = setInterval(fetchData, 30000)
+    const interval = setInterval(() => void fetchData(), 30000)
     return () => clearInterval(interval)
   }, [])
 
@@ -119,7 +119,7 @@ export function AgentUpdateBanner({ isCollapsed }: AgentUpdateBannerProps) {
               onClick={handleSeeWhatsNew}
             >
               <ExternalLink className="h-3 w-3 mr-1.5" />
-              See what's new
+              See what&apos;s new
             </Button>
             <Button
               variant="ghost"

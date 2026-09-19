@@ -212,6 +212,7 @@ export function ansiToHtml(text: string): string {
   // Strip non-printable control characters (except ANSI escape sequences)
   // Keep: \x1b (ESC for ANSI), \t (tab), \n (newline)
   // Remove: other control chars like \x00-\x08, \x0b, \x0c, \x0e-\x1a, \x1c-\x1f
+  // eslint-disable-next-line no-control-regex -- stripping control characters is the point
   const cleaned = text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f]/g, '')
 
   // Escape HTML FIRST (security: prevent XSS)
@@ -222,6 +223,7 @@ export function ansiToHtml(text: string): string {
   let spanOpen = false
 
   // ANSI escape sequence pattern: ESC [ <params> m
+  // eslint-disable-next-line no-control-regex -- ESC introduces every SGR sequence
   const ansiRegex = /\x1b\[([0-9;]*)m/g
 
   const result = escaped.replace(ansiRegex, (_match, params: string) => {

@@ -19,6 +19,8 @@ export interface OIDCConfig {
   sso_default: boolean
   require_approval: boolean
   approval_notify_channel_ids: number[] | null
+  redirect_uri_override: string | null
+  callback_url: string  // The redirect_uri the backend will actually send
   created_at: string
   updated_at: string
 }
@@ -34,6 +36,7 @@ export interface OIDCConfigUpdateRequest {
   sso_default?: boolean
   require_approval?: boolean
   approval_notify_channel_ids?: number[] | null
+  redirect_uri_override?: string | null
 }
 
 // ==================== OIDC Discovery ====================

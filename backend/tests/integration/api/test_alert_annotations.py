@@ -39,6 +39,10 @@ from database import (
     UserGroupMembership,
 )
 
+# An API key in a group with no tag-scope rows is unrestricted (cache absent = unrestricted)
+UNRESTRICTED_CALLER = {"auth_type": "api_key", "group_id": 1, "api_key_name": "test"}
+
+
 
 def _make_alert(db_session) -> str:
     """Create an open alert and return its id."""
@@ -66,6 +70,11 @@ def _make_alert(db_session) -> str:
 async def test_add_annotation_stores_session_username(db_session, test_user, test_database_manager):
     """Session-auth: annotation row stores current_user['username'], not request.user."""
     alert_id = _make_alert(db_session)
+    group = CustomGroup(name="Unscoped", description="sees every host")
+    db_session.add(group)
+    db_session.flush()
+    db_session.add(UserGroupMembership(user_id=test_user.id, group_id=group.id))
+    db_session.commit()
     current_user = {
         "auth_type": "session",
         "user_id": test_user.id,
@@ -112,7 +121,7 @@ async def test_get_annotations_resolves_display_name(db_session, test_user, test
     test_user.display_name = "Patrik Runald"
     db_session.commit()
 
-    result = await get_annotations(alert_id=alert_id, db=test_database_manager)
+    result = await get_annotations(alert_id=alert_id, db=test_database_manager, current_user=UNRESTRICTED_CALLER)
 
     assert [a["user"] for a in result["annotations"]] == ["Patrik Runald", "Patrik Runald"]
 
@@ -142,7 +151,7 @@ async def test_get_annotations_falls_back_to_stored_string(db_session, test_data
     ])
     db_session.commit()
 
-    result = await get_annotations(alert_id=alert_id, db=test_database_manager)
+    result = await get_annotations(alert_id=alert_id, db=test_database_manager, current_user=UNRESTRICTED_CALLER)
     users = {a["text"]: a["user"] for a in result["annotations"]}
     assert users["orphan"] == "ghost_user"
     assert users["from a key"] == "API Key: Deploy Bot"
@@ -179,7 +188,7 @@ async def test_get_annotations_no_user_row_query_n_plus_1(db_session, test_user,
 
     event.listen(db_session.get_bind(), "before_execute", _before_execute)
     try:
-        await get_annotations(alert_id=alert_id, db=test_database_manager)
+        await get_annotations(alert_id=alert_id, db=test_database_manager, current_user=UNRESTRICTED_CALLER)
     finally:
         event.remove(db_session.get_bind(), "before_execute", _before_execute)
 

@@ -1029,6 +1029,8 @@ class ContainerDiscovery:
                                 container.network_tx = cached_stats.get('network_tx')
                                 # Use pre-calculated net_bytes_per_sec from WebSocket handler
                                 container.net_bytes_per_sec = cached_stats.get('net_bytes_per_sec', 0)
+                                container.net_rx_bytes_per_sec = cached_stats.get('net_rx_bytes_per_sec', 0)
+                                container.net_tx_bytes_per_sec = cached_stats.get('net_tx_bytes_per_sec', 0)
                                 container.disk_read = cached_stats.get('disk_read')
                                 container.disk_write = cached_stats.get('disk_write')
                                 logger.debug(f"Populated stats for agent container {container.name} from WebSocket cache: CPU {container.cpu_percent}%, RAM {container.memory_percent}%")
@@ -1044,6 +1046,8 @@ class ContainerDiscovery:
                     container.network_rx = stats.get('network_rx')
                     container.network_tx = stats.get('network_tx')
                     container.net_bytes_per_sec = stats.get('net_bytes_per_sec')
+                    container.net_rx_bytes_per_sec = stats.get('net_rx_bytes_per_sec')
+                    container.net_tx_bytes_per_sec = stats.get('net_tx_bytes_per_sec')
                     container.disk_read = stats.get('disk_read')
                     container.disk_write = stats.get('disk_write')
                     logger.debug(f"Populated stats for {container.name} ({container.short_id}) on {container.host_name}: CPU {container.cpu_percent}%")

@@ -18,10 +18,18 @@ from typing import Dict, List, Optional, Any
 from fastapi import APIRouter, HTTPException, Depends, Query, status
 from pydantic import BaseModel, Field, ConfigDict, field_serializer
 
-from database import DatabaseManager, AlertV2, AlertAnnotation, User
+from database import DatabaseManager, AlertV2, AlertAnnotation, User, scoped_alert_query
+from alerts.capabilities import HOST_METRIC_FIELDS, host_metric_capabilities
 from alerts.engine import AlertEngine
+from stats_client import get_stats_client
 from security.rate_limiting import get_rate_limit_dependency
-from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability  # v2 hybrid auth (cookies + API keys)
+from auth.api_key_auth import (  # v2 hybrid auth (cookies + API keys)
+    get_current_user_or_api_key as get_current_user,
+    require_capability,
+    get_visible_host_ids_for_auth,
+    visible_host_models,
+)
+from utils.response_filtering import alert_is_visible
 from auth.utils import get_auditable_user_info
 from security.audit import security_audit
 
@@ -97,6 +105,19 @@ class AddAnnotationRequest(BaseModel):
     text: str = Field(min_length=1, max_length=5000)
 
 
+class HostMetricCapability(BaseModel):
+    """Host metrics a single host is currently observed to report"""
+    host_id: str
+    host_name: str
+    metrics: List[str]
+
+
+class MetricCapabilitiesResponse(BaseModel):
+    """Per-host metric capability plus the full set of host metrics"""
+    hosts: List[HostMetricCapability]
+    host_metrics: List[str]
+
+
 # ==================== Dependencies ====================
 
 def get_db() -> DatabaseManager:
@@ -111,7 +132,59 @@ def get_alert_engine(db: DatabaseManager = Depends(get_db)) -> AlertEngine:
     return AlertEngine(db)
 
 
+def _require_alert_visible(session, alert_id: str, current_user: dict) -> AlertV2:
+    """404 for a missing alert and, identically, for one whose host the caller
+    cannot see (no derivable host = hidden)."""
+    alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
+    if alert is None or not alert_is_visible(
+        alert.scope_type, alert.scope_id, alert.host_id, get_visible_host_ids_for_auth(current_user)
+    ):
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return alert
+
+
+def _scoped_alert_query(session, current_user: dict):
+    return scoped_alert_query(session, get_visible_host_ids_for_auth(current_user))
+
+
 # ==================== Alert Endpoints ====================
+
+@router.get(
+    "/metrics/capabilities",
+    response_model=MetricCapabilitiesResponse,
+    dependencies=[Depends(get_rate_limit_dependency("alerts")), Depends(require_capability("alerts.view"))],
+)
+async def get_metric_capabilities(current_user: dict = Depends(get_current_user)):
+    """Which host metrics each host is currently observed to report.
+
+    Derived from samples actually arriving and still fresh, never from
+    connection type: two agent hosts of the same type differ purely by whether
+    /host/proc is mounted. A rule targeting a host with no capability for its
+    metric can never fire, so the UI surfaces it instead of accepting silently.
+    """
+    from main import monitor
+
+    try:
+        host_stats = await get_stats_client().get_host_stats()
+    except Exception as e:
+        logger.warning(f"Could not read host stats for metric capabilities: {e}")
+        host_stats = {}
+
+    hosts = visible_host_models(monitor.hosts.values(), get_visible_host_ids_for_auth(current_user))
+    capabilities = host_metric_capabilities(host_stats, [h.id for h in hosts])
+
+    return MetricCapabilitiesResponse(
+        hosts=[
+            HostMetricCapability(
+                host_id=host.id,
+                host_name=host.name,
+                metrics=capabilities.get(host.id, []),
+            )
+            for host in hosts
+        ],
+        host_metrics=list(HOST_METRIC_FIELDS),
+    )
+
 
 @router.get("/", response_model=AlertListResponse, dependencies=[Depends(get_rate_limit_dependency("alerts")), Depends(require_capability("alerts.view"))])
 async def list_alerts(
@@ -136,7 +209,7 @@ async def list_alerts(
     - rule_id: Filter by rule that created the alert
     """
     with db.get_session() as session:
-        query = session.query(AlertV2)
+        query = _scoped_alert_query(session, current_user)
 
         # Apply filters
         if state:
@@ -178,14 +251,12 @@ async def list_alerts(
 @router.get("/{alert_id}", response_model=AlertResponse, dependencies=[Depends(get_rate_limit_dependency("alerts")), Depends(require_capability("alerts.view"))])
 async def get_alert(
     alert_id: str,
-    db: DatabaseManager = Depends(get_db)
+    db: DatabaseManager = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
     """Get alert details by ID"""
     with db.get_session() as session:
-        alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
-
-        if not alert:
-            raise HTTPException(status_code=404, detail="Alert not found")
+        alert = _require_alert_visible(session, alert_id, current_user)
 
         labels = json.loads(alert.labels_json) if alert.labels_json else None
 
@@ -206,10 +277,7 @@ async def resolve_alert(
     """Manually resolve an alert"""
     user_id, display_name = get_auditable_user_info(current_user)
     with db.get_session() as session:
-        alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
-
-        if not alert:
-            raise HTTPException(status_code=404, detail="Alert not found")
+        alert = _require_alert_visible(session, alert_id, current_user)
 
         if alert.state == "resolved":
             raise HTTPException(status_code=400, detail="Alert already resolved")
@@ -245,10 +313,7 @@ async def snooze_alert(
     """Snooze an alert for a specified duration"""
     user_id, display_name = get_auditable_user_info(current_user)
     with db.get_session() as session:
-        alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
-
-        if not alert:
-            raise HTTPException(status_code=404, detail="Alert not found")
+        alert = _require_alert_visible(session, alert_id, current_user)
 
         if alert.state == "resolved":
             raise HTTPException(status_code=400, detail="Cannot snooze resolved alert")
@@ -285,10 +350,7 @@ async def unsnooze_alert(
     """Unsnooze an alert"""
     user_id, display_name = get_auditable_user_info(current_user)
     with db.get_session() as session:
-        alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
-
-        if not alert:
-            raise HTTPException(status_code=404, detail="Alert not found")
+        alert = _require_alert_visible(session, alert_id, current_user)
 
         if alert.state != "snoozed":
             raise HTTPException(status_code=400, detail="Alert is not snoozed")
@@ -331,9 +393,7 @@ async def add_annotation(
         author = current_user.get("username")
 
     with db.get_session() as session:
-        alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
-        if not alert:
-            raise HTTPException(status_code=404, detail="Alert not found")
+        alert = _require_alert_visible(session, alert_id, current_user)
 
         annotation = AlertAnnotation(
             alert_id=alert_id,
@@ -361,12 +421,11 @@ async def add_annotation(
 async def get_annotations(
     alert_id: str,
     db: DatabaseManager = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
     """List annotations; resolves stored usernames to current display names."""
     with db.get_session() as session:
-        alert = session.query(AlertV2).filter(AlertV2.id == alert_id).first()
-        if not alert:
-            raise HTTPException(status_code=404, detail="Alert not found")
+        _require_alert_visible(session, alert_id, current_user)
 
         annotations = session.query(AlertAnnotation).filter(
             AlertAnnotation.alert_id == alert_id,
@@ -398,25 +457,27 @@ async def get_annotations(
 
 @router.get("/stats/", dependencies=[Depends(get_rate_limit_dependency("alerts")), Depends(require_capability("alerts.view"))])
 async def get_alert_stats(
-    db: DatabaseManager = Depends(get_db)
+    db: DatabaseManager = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
     """Get alert statistics"""
     with db.get_session() as session:
-        total = session.query(AlertV2).count()
-        open_count = session.query(AlertV2).filter(AlertV2.state == "open").count()
-        snoozed_count = session.query(AlertV2).filter(AlertV2.state == "snoozed").count()
-        resolved_count = session.query(AlertV2).filter(AlertV2.state == "resolved").count()
+        scoped = _scoped_alert_query(session, current_user)
+        total = scoped.count()
+        open_count = scoped.filter(AlertV2.state == "open").count()
+        snoozed_count = scoped.filter(AlertV2.state == "snoozed").count()
+        resolved_count = scoped.filter(AlertV2.state == "resolved").count()
 
         # Count by severity (open only)
-        critical = session.query(AlertV2).filter(
+        critical = scoped.filter(
             AlertV2.state == "open",
             AlertV2.severity == "critical"
         ).count()
-        error = session.query(AlertV2).filter(
+        error = scoped.filter(
             AlertV2.state == "open",
             AlertV2.severity == "error"
         ).count()
-        warning = session.query(AlertV2).filter(
+        warning = scoped.filter(
             AlertV2.state == "open",
             AlertV2.severity == "warning"
         ).count()

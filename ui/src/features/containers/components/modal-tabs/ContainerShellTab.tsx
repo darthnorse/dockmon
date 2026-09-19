@@ -119,7 +119,7 @@ export function ContainerShellTab({
         terminal.focus()
       }
 
-      ws.onmessage = (event) => {
+      ws.onmessage = (event: MessageEvent<ArrayBuffer | string>) => {
         if (event.data instanceof ArrayBuffer) {
           terminal.write(new Uint8Array(event.data))
         } else {

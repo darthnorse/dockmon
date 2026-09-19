@@ -19,6 +19,8 @@ from fastapi import HTTPException
 
 from config.paths import DATABASE_PATH, CERTS_DIR
 from database import DatabaseManager, AutoRestartConfig, GlobalSettings, DockerHostDB, Agent
+from agent.models import AgentSystemInfo
+from pydantic import ValidationError
 from models.docker_models import DockerHost, DockerHostConfig, Container
 from models.settings_models import NotificationSettings
 from websocket.connection import ConnectionManager
@@ -281,6 +283,7 @@ class DockerMonitor:
     def __init__(self):
         self.hosts: Dict[str, DockerHost] = {}
         self.clients: Dict[str, DockerClient] = {}
+        self._main_loop: Optional[asyncio.AbstractEventLoop] = None
         self.db = DatabaseManager(DATABASE_PATH)  # Initialize database with centralized path
         self.settings = self.db.get_settings()  # Load settings from DB
         self.notification_settings = NotificationSettings()
@@ -295,6 +298,7 @@ class DockerMonitor:
         self.manager = ConnectionManager()
         self.realtime = RealtimeMonitor()  # Real-time monitoring
         self.realtime.connection_manager = self.manager
+        self.manager.realtime = self.realtime
         self.event_logger = EventLogger(self.db, self.manager)  # Event logging service with WebSocket support
         self.notification_service = NotificationService(self.db, self.event_logger)  # Notification service (v1 - for channels only)
         self._container_states: Dict[str, str] = {}  # Track container states for change detection
@@ -354,12 +358,9 @@ class DockerMonitor:
         try:
             # Check if host URL already exists (prevent duplicates)
             if not skip_db_save:  # Only check for new hosts, not when loading from DB
-                for existing_host in self.hosts.values():
-                    if existing_host.url == config.url:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Host with URL '{config.url}' already exists as '{existing_host.name}'"
-                        )
+                # Generic message: naming the other host would reveal one the caller may not see
+                if self._url_in_use(config.url):
+                    raise HTTPException(status_code=400, detail="A host with this URL already exists")
 
             # Validate certificates if provided (before trying to use them)
             if config.tls_cert or config.tls_key or config.tls_ca:
@@ -872,25 +873,8 @@ class DockerMonitor:
                 self.clients[host_id].close()
                 del self.clients[host_id]
 
-            # Remove from Go stats and event services (await to ensure cleanup completes before returning)
-            try:
-                stats_client = get_stats_client()
-
-                try:
-                    # Remove from stats service (closes Docker client and stops all container streams)
-                    await stats_client.remove_docker_host(host_id)
-                    logger.info(f"Removed {host_name} ({host_id[:8]}) from stats service")
-
-                    # Remove from event service
-                    await stats_client.remove_event_host(host_id)
-                    logger.info(f"Removed {host_name} ({host_id[:8]}) from event service")
-                except asyncio.TimeoutError:
-                    # Timeout during cleanup is expected - Go service closes connections immediately
-                    logger.debug(f"Timeout removing {host_name} from Go services (expected during cleanup)")
-                except Exception as e:
-                    logger.error(f"Failed to remove {host_name} from Go services: {e}")
-            except Exception as e:
-                logger.warning(f"Failed to remove host {host_name} ({host_id[:8]}) from Go services: {e}")
+            # Await so cleanup completes before returning
+            await self.unregister_docker_host_services(host_id, host_name)
 
             # Clean up certificate files
             self._cleanup_host_certificates(host_id)
@@ -998,8 +982,18 @@ class DockerMonitor:
             else:
                 raise ValueError(f"Host {host_id} not found")
 
+    def _url_in_use(self, url: str, exclude_host_id: Optional[str] = None) -> bool:
+        # Every agent host shares the agent:// placeholder; only real daemon URLs are unique
+        if url.startswith("agent://"):
+            return False
+        return any(h.url == url and hid != exclude_host_id for hid, h in self.hosts.items())
+
     def update_host(self, host_id: str, config: DockerHostConfig):
         """Update an existing Docker host"""
+        # Rebinding a host record onto another host's daemon would let its tags
+        # (and every scoped user's visibility) carry over to that daemon
+        if self._url_in_use(config.url, exclude_host_id=host_id):
+            raise HTTPException(status_code=400, detail="A host with this URL already exists")
         # Validate host_id to prevent path traversal
         try:
             host_id = sanitize_host_id(host_id)
@@ -1095,6 +1089,12 @@ class DockerMonitor:
                     num_cpus=updated_db_host.num_cpus,
                 )
                 self.hosts[host_id] = host
+
+                # A host edited into agent:// keeps any Docker registration it
+                # had, which would keep writing the same stats-service host
+                # cache key the agent's own samples write.
+                self._schedule_docker_host_unregistration(host_id, config.name)
+
                 logger.info(f"Updated agent host: {config.name} ({host_id[:8]}...)")
                 return host
 
@@ -1269,8 +1269,21 @@ class DockerMonitor:
             security_status: Security status (default: "unknown")
         """
         if host_id in self.hosts:
-            # Host already exists - mark it online (reconnection case)
-            self.hosts[host_id].status = "online"
+            existing = self.hosts[host_id]
+
+            # An agent claiming a host_id that is still registered as a Docker
+            # host would leave two writers on the same stats-service host cache
+            # key. Repair the registration instead of returning early.
+            if existing.connection_type != "agent":
+                logger.warning(
+                    f"Agent claimed host {name} ({host_id[:8]}...) which was registered as "
+                    f"'{existing.connection_type}'; converting it to an agent host"
+                )
+                self._convert_host_to_agent(host_id, existing.name)
+                existing.connection_type = "agent"
+                existing.url = "agent://"
+
+            existing.status = "online"
             logger.info(f"Agent host {name} ({host_id[:8]}...) reconnected, marked online")
             self._schedule_host_status_broadcast(host_id, "online")
             return
@@ -1295,6 +1308,83 @@ class DockerMonitor:
 
         # Broadcast status change for real-time UI update
         self._schedule_host_status_broadcast(host_id, "online")
+
+    def bind_event_loop(self, loop: asyncio.AbstractEventLoop):
+        """Record the application event loop for use from worker threads."""
+        self._main_loop = loop
+
+    def _schedule_docker_host_unregistration(self, host_id: str, host_name: str):
+        """Run the Go-service unregistration without blocking the caller.
+
+        Works from both the event loop (agent registration) and a worker thread
+        (update_host runs under asyncio.to_thread). The stats client's session
+        is bound to the main loop, so a worker thread hands the work back to it
+        rather than running it on a loop of its own.
+        """
+        coro = self.unregister_docker_host_services(host_id, host_name)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            loop = self._main_loop
+            if loop is None:
+                coro.close()
+                logger.warning(
+                    f"No event loop available to unregister {host_name} from the stats "
+                    f"service; its Docker registration may linger until restart"
+                )
+                return
+            asyncio.run_coroutine_threadsafe(coro, loop)
+            return
+
+        task = asyncio.create_task(coro)
+        task.add_done_callback(_handle_task_exception)
+
+    async def unregister_docker_host_services(self, host_id: str, host_name: str):
+        """Drop a host's Docker registration from the Go stats and event services.
+
+        Used on host removal and on every transition to agent: the aggregator
+        writes the host stats cache for registered Docker hosts and ingest
+        writes it for agents, both under the same key.
+        """
+        try:
+            stats_client = get_stats_client()
+            unregisters = (
+                ("stats service", stats_client.remove_docker_host),
+                ("event service", stats_client.remove_event_host),
+            )
+        except Exception as e:
+            logger.warning(f"Could not reach stats service to unregister {host_name}: {e}")
+            return
+
+        for service, unregister in unregisters:
+            try:
+                await unregister(host_id)
+                logger.info(f"Unregistered {host_name} ({host_id[:8]}) from {service}")
+            except asyncio.TimeoutError:
+                logger.debug(f"Timeout unregistering {host_name} from {service} (expected during cleanup)")
+            except Exception as e:
+                logger.warning(f"Failed to unregister {host_name} from {service}: {e}")
+
+    def _convert_host_to_agent(self, host_id: str, host_name: str):
+        """Repair a host that an agent has taken over from a Docker connection."""
+        client = self.clients.pop(host_id, None)
+        if client is not None:
+            try:
+                client.close()
+            except Exception as e:
+                logger.debug(f"Error closing Docker client for {host_name}: {e}")
+
+        try:
+            with self.db.get_session() as session:
+                db_host = session.query(DockerHostDB).filter_by(id=host_id).first()
+                if db_host:
+                    db_host.connection_type = "agent"
+                    db_host.url = "agent://"
+                    session.commit()
+        except Exception as e:
+            logger.error(f"Failed to persist agent takeover for {host_name}: {e}")
+
+        self._schedule_docker_host_unregistration(host_id, host_name)
 
     def _schedule_host_status_broadcast(self, host_id: str, status: str):
         """
@@ -2033,6 +2123,7 @@ class DockerMonitor:
                 await self.manager.broadcast({
                     "type": "auto_restart_success",
                     "data": {
+                        "host_id": container.host_id,
                         "container_id": container_id,
                         "container_name": container.name,
                         "host": container.host_name
@@ -2059,6 +2150,7 @@ class DockerMonitor:
                 await self.manager.broadcast({
                     "type": "auto_restart_failed",
                     "data": {
+                        "host_id": container.host_id,
                         "container_id": container_id,
                         "container_name": container.name,
                         "attempts": attempt,
@@ -2340,6 +2432,8 @@ class DockerMonitor:
 
         # Refresh legacy hosts (existing logic)
         for host_id, host in list(self.hosts.items()):  # Use list() to avoid dict iteration issues
+            if host.connection_type == "agent":
+                continue  # handled above over the agent WebSocket; there is no Docker client
             try:
                 # Get client for this host
                 client = self.clients.get(host_id)
@@ -2408,84 +2502,112 @@ class DockerMonitor:
         else:
             logger.debug("Host system info refresh complete: no changes detected")
 
+    # Concurrent get_system_info requests during the nightly refresh. Bounded so
+    # a large fleet does not fan out unboundedly, but wide enough that one
+    # unresponsive agent's timeout does not stall the maintenance job behind it.
+    _AGENT_SYSTEM_INFO_CONCURRENCY = 5
+    _AGENT_SYSTEM_INFO_TIMEOUT = 10.0
+
     async def _refresh_agent_hosts_system_info(self) -> int:
         """
         Refresh system information for all connected agent hosts.
 
         Sends "get_system_info" command to each connected agent and updates database.
-        Aligns with legacy host refresh behavior (daily updates).
+        Aligns with legacy host refresh behavior (daily updates). Registration also
+        refreshes these fields, so this only matters for a connection that has
+        stayed up across a Docker or OS upgrade.
 
         Returns:
-            Number of agent hosts successfully refreshed
+            Number of agent hosts whose record changed
         """
+        from agent.command_executor import get_agent_command_executor
         from agent.connection_manager import agent_connection_manager
 
-        updated_count = 0
+        executor = get_agent_command_executor()
 
-        # Get all agents from database
         with self.db.get_session() as session:
-            agents = session.query(Agent).all()
-            agent_data = [(a.id, a.host_id) for a in agents]
+            agent_data = [(a.id, a.host_id) for a in session.query(Agent).all()]
 
-        for agent_id, host_id in agent_data:
-            try:
-                # Check if agent is connected
-                if not agent_connection_manager.is_connected(agent_id):
-                    logger.debug(f"Agent {agent_id[:8]}... not connected, skipping system info refresh")
-                    continue
+        connected = [
+            (agent_id, host_id) for agent_id, host_id in agent_data
+            if agent_connection_manager.is_connected(agent_id)
+        ]
+        semaphore = asyncio.Semaphore(self._AGENT_SYSTEM_INFO_CONCURRENCY)
 
-                # Send get_system_info command
-                response = await agent_connection_manager.send_command(
-                    agent_id,
-                    "get_system_info",
-                    {},
-                    timeout=10
-                )
+        async def refresh_one(agent_id: str, host_id: str) -> int:
+            async with semaphore:
+                try:
+                    return await self._refresh_agent_host_system_info(executor, agent_id, host_id)
+                except Exception as e:
+                    logger.error(f"Failed to refresh system info for agent {agent_id[:8]}...: {e}")
+                    return 0
 
-                if response.get("error"):
-                    logger.warning(f"Agent {agent_id[:8]}... returned error for system info: {response['error']}")
-                    continue
-
-                # Extract system info from response
-                sys_info = response.get("result", {})
-                if not sys_info:
-                    logger.warning(f"Agent {agent_id[:8]}... returned empty system info")
-                    continue
-
-                # Update database host record
-                with self.db.get_session() as session:
-                    db_host = session.query(DockerHostDB).filter(DockerHostDB.id == host_id).first()
-                    if db_host:
-                        # Check if anything changed (avoid unnecessary writes)
-                        changed = (
-                            sys_info.get('os_type') != db_host.os_type or
-                            sys_info.get('os_version') != db_host.os_version or
-                            sys_info.get('kernel_version') != db_host.kernel_version or
-                            sys_info.get('docker_version') != db_host.docker_version or
-                            sys_info.get('daemon_started_at') != db_host.daemon_started_at or
-                            sys_info.get('total_memory') != db_host.total_memory or
-                            sys_info.get('num_cpus') != db_host.num_cpus
-                        )
-
-                        if changed:
-                            db_host.os_type = sys_info.get('os_type')
-                            db_host.os_version = sys_info.get('os_version')
-                            db_host.kernel_version = sys_info.get('kernel_version')
-                            db_host.docker_version = sys_info.get('docker_version')
-                            db_host.daemon_started_at = sys_info.get('daemon_started_at')
-                            db_host.total_memory = sys_info.get('total_memory')
-                            db_host.num_cpus = sys_info.get('num_cpus')
-                            session.commit()
-
-                            logger.info(f"Refreshed system info for agent host {db_host.name} ({host_id[:8]}): {sys_info.get('os_version')} / Docker {sys_info.get('docker_version')}")
-                            updated_count += 1
-                        else:
-                            logger.debug(f"System info unchanged for agent host {db_host.name} ({host_id[:8]})")
-
-            except Exception as e:
-                logger.error(f"Failed to refresh system info for agent {agent_id[:8]}...: {e}")
+        results = await asyncio.gather(*(refresh_one(a, h) for a, h in connected))
+        updated_count = sum(results)
 
         if updated_count > 0:
             logger.info(f"Agent host system info refresh: {updated_count} updated")
 
         return updated_count
+
+    async def _refresh_agent_host_system_info(self, executor, agent_id: str, host_id: str) -> int:
+        """Ask one agent for its host facts and apply them. Returns 1 if the row changed."""
+        result = await executor.execute_command(
+            agent_id,
+            {"type": "command", "command": "get_system_info"},
+            timeout=self._AGENT_SYSTEM_INFO_TIMEOUT,
+        )
+
+        if not result.success:
+            # Agents predating the command answer "unknown command"; that is a
+            # fleet mid-upgrade, and registration keeps their record fresh.
+            if result.error and "unknown command" in result.error:
+                logger.debug(f"Agent {agent_id[:8]}... predates get_system_info, skipping")
+            else:
+                logger.warning(f"Agent {agent_id[:8]}... returned error for system info: {result.error}")
+            return 0
+
+        if not isinstance(result.response, dict):
+            logger.warning(f"Agent {agent_id[:8]}... returned malformed system info ({type(result.response).__name__})")
+            return 0
+
+        # The agent's payload carries every key, zero-valued when unknown (e.g. no
+        # daemon start time without a "bridge" network). Like registration, an
+        # empty value never overwrites a stored one.
+        incoming = {
+            k: v for k, v in result.response.items()
+            if k in AgentSystemInfo.model_fields and v not in (None, "", 0)
+        }
+        try:
+            # Sanitizing can empty a value ("<>" -> ""), so filter again after it.
+            sys_info = {
+                k: v for k, v in AgentSystemInfo(**incoming).model_dump().items()
+                if v not in (None, "", 0)
+            }
+        except ValidationError as e:
+            logger.warning(
+                f"Agent {agent_id[:8]}... returned invalid system info: "
+                f"{'; '.join(f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors())}"
+            )
+            return 0
+        if not sys_info:
+            return 0
+
+        with self.db.get_session() as session:
+            db_host = session.query(DockerHostDB).filter(DockerHostDB.id == host_id).first()
+            if not db_host:
+                return 0
+
+            changed = {k: v for k, v in sys_info.items() if getattr(db_host, k) != v}
+            if not changed:
+                logger.debug(f"System info unchanged for agent host {db_host.name} ({host_id[:8]})")
+                return 0
+
+            for k, v in changed.items():
+                setattr(db_host, k, v)
+            session.commit()
+            logger.info(
+                f"Refreshed system info for agent host {db_host.name} ({host_id[:8]}): "
+                f"{sys_info.get('os_version')} / Docker {sys_info.get('docker_version')}"
+            )
+            return 1

@@ -23,11 +23,15 @@ import type {
   UpdatePermissionsResponse,
   AllGroupPermissionsResponse,
   CopyPermissionsResponse,
+  GroupTagScopesResponse,
+  UpdateGroupTagScopesRequest,
+  HostTagWithMeta,
 } from '@/types/groups'
 import { toast } from 'sonner'
 
 const GROUPS_QUERY_KEY = ['groups']
 const PERMISSIONS_QUERY_KEY = ['group-permissions']
+const TAG_SCOPES_QUERY_KEY = ['group-tag-scopes']
 
 /**
  * Fetch all groups (admin only)
@@ -73,7 +77,7 @@ export function useCreateGroup() {
   return useMutation({
     mutationFn: (request: CreateGroupRequest) => apiClient.post<Group>('/v2/groups', request),
     onSuccess: (group) => {
-      queryClient.invalidateQueries({ queryKey: GROUPS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: GROUPS_QUERY_KEY })
       toast.success(`Group "${group.name}" created successfully`)
     },
     onError: (error: Error) => {
@@ -93,7 +97,7 @@ export function useUpdateGroup() {
     mutationFn: ({ groupId, request }: { groupId: number; request: UpdateGroupRequest }) =>
       apiClient.put<Group>(`/v2/groups/${groupId}`, request),
     onSuccess: (group) => {
-      queryClient.invalidateQueries({ queryKey: GROUPS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: GROUPS_QUERY_KEY })
       toast.success(`Group "${group.name}" updated successfully`)
     },
     onError: (error: Error) => {
@@ -112,7 +116,7 @@ export function useDeleteGroup() {
   return useMutation({
     mutationFn: (groupId: number) => apiClient.delete<DeleteGroupResponse>(`/v2/groups/${groupId}`),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: GROUPS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: GROUPS_QUERY_KEY })
       toast.success(data.message || 'Group deleted successfully')
     },
     onError: (error: Error) => {
@@ -132,7 +136,7 @@ export function useAddGroupMember() {
     mutationFn: ({ groupId, request }: { groupId: number; request: AddMemberRequest }) =>
       apiClient.post<AddMemberResponse>(`/v2/groups/${groupId}/members`, request),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: GROUPS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: GROUPS_QUERY_KEY })
       toast.success(data.message || 'Member added successfully')
     },
     onError: (error: Error) => {
@@ -152,7 +156,7 @@ export function useRemoveGroupMember() {
     mutationFn: ({ groupId, userId }: { groupId: number; userId: number }) =>
       apiClient.delete<RemoveMemberResponse>(`/v2/groups/${groupId}/members/${userId}`),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: GROUPS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: GROUPS_QUERY_KEY })
       toast.success(data.message || 'Member removed successfully')
     },
     onError: (error: Error) => {
@@ -209,7 +213,7 @@ export function useUpdateGroupPermissions() {
     mutationFn: ({ groupId, request }: { groupId: number; request: UpdateGroupPermissionsRequest }) =>
       apiClient.put<UpdatePermissionsResponse>(`/v2/groups/${groupId}/permissions`, request),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: PERMISSIONS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: PERMISSIONS_QUERY_KEY })
       toast.success(data.message || 'Permissions updated successfully')
     },
     onError: (error: Error) => {
@@ -229,7 +233,7 @@ export function useCopyGroupPermissions() {
     mutationFn: ({ targetGroupId, sourceGroupId }: { targetGroupId: number; sourceGroupId: number }) =>
       apiClient.post<CopyPermissionsResponse>(`/v2/groups/${targetGroupId}/permissions/copy-from/${sourceGroupId}`, {}),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: PERMISSIONS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: PERMISSIONS_QUERY_KEY })
       // Show warning if present (e.g., copying from empty source group)
       if (data.warning) {
         toast.warning(data.warning)
@@ -241,5 +245,53 @@ export function useCopyGroupPermissions() {
       console.error('Failed to copy permissions:', error)
       toast.error('Failed to copy permissions. Please try again.')
     },
+  })
+}
+
+/**
+ * Fetch the tags that scope a group's host visibility (empty = unrestricted)
+ */
+export function useGroupTagScopes(groupId: number | null) {
+  return useQuery({
+    queryKey: [...TAG_SCOPES_QUERY_KEY, groupId],
+    queryFn: () => apiClient.get<GroupTagScopesResponse>(`/v2/groups/${groupId}/tag-scopes`),
+    enabled: groupId !== null,
+    staleTime: 30 * 1000,
+  })
+}
+
+/**
+ * Replace a group's tag scopes. Hosts and containers are re-fetched because the
+ * caller's own visibility may have changed.
+ */
+export function useUpdateGroupTagScopes() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: ({ groupId, request }: { groupId: number; request: UpdateGroupTagScopesRequest }) =>
+      apiClient.put<GroupTagScopesResponse>(`/v2/groups/${groupId}/tag-scopes`, request),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: TAG_SCOPES_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: ['hosts'] })
+      void queryClient.invalidateQueries({ queryKey: ['containers'] })
+      toast.success('Host visibility updated')
+    },
+    onError: (error: Error) => {
+      console.error('Failed to update tag scopes:', error)
+      toast.error('Failed to update host visibility. Please try again.')
+    },
+  })
+}
+
+/**
+ * Tags a group can be scoped by: every tag on a host, plus tags that already scope
+ * a group (kept even when no host carries them right now)
+ */
+export function useHostTagsWithMeta(enabled = true) {
+  return useQuery({
+    queryKey: ['group-host-tags'],
+    queryFn: () => apiClient.get<HostTagWithMeta[]>('/v2/groups/host-tags'),
+    enabled,
+    staleTime: 30 * 1000,
   })
 }

@@ -45,10 +45,9 @@ type HostStats struct {
 
 // networkBaseline tracks previous network values for rate calculation
 type networkBaseline struct {
-	totalBytes uint64 // rx + tx total
-	rxBytes    uint64
-	txBytes    uint64
-	timestamp  time.Time // when this measurement was taken
+	rxBytes   uint64
+	txBytes   uint64
+	timestamp time.Time // when this measurement was taken
 }
 
 // StatsCache is a thread-safe cache for container and host stats
@@ -130,7 +129,9 @@ func (c *StatsCache) UpdateContainerStats(stats *ContainerStats) {
 	// Use composite key to support containers with duplicate IDs on different hosts
 	compositeKey := stats.HostID + ":" + stats.ContainerID
 
-	// Calculate network rates (bytes per second) from the cumulative counters
+	// Calculate network rates (bytes per second) from the cumulative counters; whatever the
+	// caller put in the rate fields is not a measurement
+	stats.NetBytesPerSec, stats.NetRxBytesPerSec, stats.NetTxBytesPerSec = 0, 0, 0
 	if baseline, exists := c.lastNetStats[compositeKey]; exists {
 		deltaTime := now.Sub(baseline.timestamp).Seconds()
 		switch {

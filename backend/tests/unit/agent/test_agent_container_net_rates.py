@@ -1,6 +1,7 @@
 """Agent container stats: the handler derives per-direction network rates from the
 cumulative counters, alongside the combined rate the sparklines already use."""
 
+import json
 import math
 import time
 from types import SimpleNamespace
@@ -76,3 +77,27 @@ async def test_unusable_counters_yield_finite_zero_rates(bad):
     assert rates == (0, 0, 0)
     assert all(math.isfinite(r) for r in rates)
     assert cached["network_rx"] == 0 and cached["network_tx"] == 0
+
+
+async def test_unusable_sample_does_not_become_the_baseline():
+    handler = _handler()
+    key = f"{handler.host_id}:aaa111111111"
+    await handler._handle_container_stats({"container_id": "aaa111111111", "network_rx": float("inf"), "network_tx": 1})
+    assert key not in handler.prev_network_stats
+
+    # The next valid sample is a warm-up, not a jump from zero
+    await handler._handle_container_stats({"container_id": "aaa111111111", "network_rx": 10**9, "network_tx": 10**9})
+    cached = handler.monitor.agent_container_stats_cache[key]
+    assert (cached["net_bytes_per_sec"], cached["net_rx_bytes_per_sec"], cached["net_tx_bytes_per_sec"]) == (0, 0, 0)
+
+
+async def test_broadcast_carries_sanitized_counters_and_rates():
+    handler = _handler()
+    await handler._handle_container_stats({"container_id": "aaa111111111", "network_rx": float("nan"), "network_tx": 1})
+
+    payload = handler.monitor.manager.broadcast.await_args.args[0]
+    assert payload["type"] == "container_stats"
+    stats = payload["stats"]
+    assert stats["network_rx"] == 0 and stats["network_tx"] == 0
+    assert all(math.isfinite(stats[k]) for k in ("net_bytes_per_sec", "net_rx_bytes_per_sec", "net_tx_bytes_per_sec"))
+    json.dumps(payload, allow_nan=False)

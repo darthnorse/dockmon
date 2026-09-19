@@ -76,3 +76,24 @@ func TestUpdateContainerStats_TotalIsSumOfDirections(t *testing.T) {
 		t.Fatalf("total %v != rx %v + tx %v", after.NetBytesPerSec, after.NetRxBytesPerSec, after.NetTxBytesPerSec)
 	}
 }
+
+// Rate fields are outputs: whatever a caller left in them is discarded when no measurement is made.
+func TestUpdateContainerStats_IgnoresCallerSuppliedRates(t *testing.T) {
+	c := NewStatsCache()
+	first := &ContainerStats{ContainerID: "aaa111111111", HostID: "h1", NetworkRx: 100, NetworkTx: 100,
+		NetBytesPerSec: 999, NetRxBytesPerSec: 999, NetTxBytesPerSec: 999}
+	c.UpdateContainerStats(first)
+	if first.NetBytesPerSec != 0 || first.NetRxBytesPerSec != 0 || first.NetTxBytesPerSec != 0 {
+		t.Fatalf("first sample kept caller rates: %v/%v/%v", first.NetBytesPerSec, first.NetRxBytesPerSec, first.NetTxBytesPerSec)
+	}
+
+	c.mu.Lock()
+	c.lastNetStats["h1:aaa111111111"].timestamp = time.Now().Add(-time.Second)
+	c.mu.Unlock()
+	reset := &ContainerStats{ContainerID: "aaa111111111", HostID: "h1", NetworkRx: 10, NetworkTx: 10,
+		NetBytesPerSec: 999, NetRxBytesPerSec: 999, NetTxBytesPerSec: 999}
+	c.UpdateContainerStats(reset)
+	if reset.NetBytesPerSec != 0 || reset.NetRxBytesPerSec != 0 || reset.NetTxBytesPerSec != 0 {
+		t.Fatalf("reset sample kept caller rates: %v/%v/%v", reset.NetBytesPerSec, reset.NetRxBytesPerSec, reset.NetTxBytesPerSec)
+	}
+}

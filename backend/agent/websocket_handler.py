@@ -720,12 +720,13 @@ class AgentWebSocketHandler:
             current_time = time.time()
             net_rx = _byte_counter(stats.get("network_rx", 0))
             net_tx = _byte_counter(stats.get("network_tx", 0))
-            if net_rx is None or net_tx is None:
+            counters_usable = net_rx is not None and net_tx is not None
+            if not counters_usable:
                 net_rx = net_tx = 0
 
             net_bytes_per_sec = net_rx_bytes_per_sec = net_tx_bytes_per_sec = 0
             prev = self.prev_network_stats.get(container_key)
-            if prev:
+            if prev and counters_usable:
                 time_delta = current_time - prev['timestamp']
                 # A counter that went backwards is a restart: every rate reads 0 this sample
                 if time_delta > 0 and net_rx >= prev['rx'] and net_tx >= prev['tx']:
@@ -733,7 +734,11 @@ class AgentWebSocketHandler:
                     net_tx_bytes_per_sec = (net_tx - prev['tx']) / time_delta
                     net_bytes_per_sec = net_rx_bytes_per_sec + net_tx_bytes_per_sec
 
-            self.prev_network_stats[container_key] = {'rx': net_rx, 'tx': net_tx, 'timestamp': current_time}
+            # An unusable sample must not become the baseline: the next valid one would measure from zero
+            if counters_usable:
+                self.prev_network_stats[container_key] = {'rx': net_rx, 'tx': net_tx, 'timestamp': current_time}
+            else:
+                self.prev_network_stats.pop(container_key, None)
 
             # Store in circular buffer (no database)
             if hasattr(self.monitor, 'container_stats_history'):
@@ -772,7 +777,7 @@ class AgentWebSocketHandler:
                     "type": "container_stats",
                     "container_id": container_id,
                     "host_id": self.host_id or self.agent_id,
-                    "stats": stats
+                    "stats": stats_with_rate
                 })
 
             logger.debug(f"Container stats processed for {container_id} (agent {self.agent_id})")

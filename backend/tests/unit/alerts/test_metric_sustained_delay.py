@@ -20,7 +20,7 @@ from database import AlertRuleV2, AlertV2, RuleRuntime
 
 T0 = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
 HOST_ID = "b689ba69-f943-4287-9554-68375c37194f"
-NEW_STATE_KEYS = {"breach_started_at", "breach_count", "clear_started_at", "last_sample_at"}
+NEW_STATE_KEYS = {"breach_started_at", "breach_count", "clear_started_at", "last_sample_at", "condition"}
 
 
 def at(seconds):
@@ -171,6 +171,44 @@ def test_a_duplicate_sample_counts_once_and_cannot_create_or_reopen(db):
     assert _alert(db).state == "resolved"
 
 
+def test_a_duplicate_of_an_unsustained_breach_does_not_renotify(db):
+    """A re-read after a dip must not page: the fresh copy of that sample did not qualify either."""
+    _cpu_rule(db)
+    engine = AlertEngine(db)
+    _open_alert(db, engine)
+    _expire_cooldown(db)
+
+    assert engine.evaluate_metric("cpu_percent", 2.5, _context(), sampled_at=at(310)) == []
+    assert engine.evaluate_metric("cpu_percent", 95.0, _context(), sampled_at=at(320)) == []
+    assert engine.evaluate_metric("cpu_percent", 95.0, _context(), sampled_at=at(320)) == []
+    assert _alert(db).occurrences == 1
+
+
+def test_a_duplicate_renotify_does_not_count_as_an_occurrence(db):
+    _cpu_rule(db, active_delay=0, occurrences=None)
+    engine = AlertEngine(db)
+    assert len(engine.evaluate_metric("cpu_percent", 95.0, _context(), sampled_at=at(0))) == 1
+    _expire_cooldown(db)
+
+    assert len(engine.evaluate_metric("cpu_percent", 95.0, _context(), sampled_at=at(0))) == 1
+    assert _alert(db).occurrences == 1
+
+
+def test_editing_the_condition_restarts_the_run(db):
+    rule_id = _cpu_rule(db, occurrences=1)
+    engine = AlertEngine(db)
+    _sustain(engine, 95.0, 0, 300)
+
+    with db.get_session() as session:
+        session.query(AlertRuleV2).filter(AlertRuleV2.id == rule_id).one().threshold = 90.0
+        session.commit()
+
+    assert engine.evaluate_metric("cpu_percent", 95.0, _context(), sampled_at=at(300)) == []
+    assert _state(db, rule_id)["breach_started_at"] == at(300).isoformat()
+    _sustain(engine, 95.0, 310, 600)
+    assert len(engine.evaluate_metric("cpu_percent", 95.0, _context(), sampled_at=at(600))) == 1
+
+
 def test_a_backward_timestamp_restarts_the_run(db):
     rule_id = _cpu_rule(db, occurrences=1)
     engine = AlertEngine(db)
@@ -197,6 +235,18 @@ def test_service_derives_max_gap_from_the_evaluation_interval(db):
 
     slow = AlertEvaluationService(db=db, evaluation_interval=100)
     assert slow.engine.max_gap_seconds == 200
+
+
+def test_service_widens_max_gap_to_the_cadence_it_actually_achieves(db):
+    """A cycle that takes longer than the interval must not make every sample a gap."""
+    service = AlertEvaluationService(db=db)
+
+    service._begin_cycle(1000.0)
+    assert service.engine.max_gap_seconds == STATS_MAX_AGE_SECONDS
+    service._begin_cycle(1090.0)
+    assert service.engine.max_gap_seconds == 180
+    service._begin_cycle(1100.0)
+    assert service.engine.max_gap_seconds == STATS_MAX_AGE_SECONDS
 
 
 # --- clearing ---
@@ -317,6 +367,18 @@ def test_old_window_state_cannot_fire_on_the_first_sample_after_upgrade(db):
     state = _state(db, rule_id)
     assert set(state) == NEW_STATE_KEYS
     assert state["breach_started_at"] == at(0).isoformat()
+
+
+def test_a_malformed_stored_timestamp_does_not_stall_the_run(db):
+    rule_id = _cpu_rule(db, active_delay=0, occurrences=1)
+    _seed_runtime(db, rule_id, json.dumps({
+        "breach_started_at": "garbage", "breach_count": 5,
+        "clear_started_at": None, "last_sample_at": at(-10).isoformat(),
+        "condition": "cpu_percent|>=|80.0|None",
+    }))
+    engine = AlertEngine(db)
+
+    assert len(engine.evaluate_metric("cpu_percent", 95.0, _context(), sampled_at=at(0))) == 1
 
 
 @pytest.mark.parametrize("state_json", ["null", "[]", "not json"])

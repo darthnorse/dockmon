@@ -1366,7 +1366,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                       className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />
                     <p className="mt-1 text-xs text-gray-500">
-                      Condition must stay true for this long, without interruption, before the alert triggers. 0 fires on the first breaching evaluation.
+                      Condition must stay true for this long, without interruption, before the alert triggers. 0 fires as soon as the Occurrences count below is met.
                     </p>
                   </div>
 

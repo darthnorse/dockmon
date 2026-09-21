@@ -153,8 +153,8 @@ class AlertEvaluationService:
         self.event_logger = event_logger
         self.notification_service = notification_service
         self.evaluation_interval = evaluation_interval
-        # A slow evaluator must not see its own cadence as a gap in the source.
-        self.engine = AlertEngine(db, max_gap_seconds=max(STATS_MAX_AGE_SECONDS, 2 * evaluation_interval))
+        self.engine = AlertEngine(db, max_gap_seconds=self._gap_tolerance(evaluation_interval))
+        self._cycle_started_at: Optional[float] = None
 
         self._running = False
         self._task: Optional[asyncio.Task] = None
@@ -949,8 +949,24 @@ class AlertEvaluationService:
                 logger.error(f"Error in resolve notification loop: {e}", exc_info=True)
                 await asyncio.sleep(check_interval)
 
+    @staticmethod
+    def _gap_tolerance(cadence_seconds: float) -> int:
+        return max(STATS_MAX_AGE_SECONDS, int(2 * cadence_seconds))
+
+    def _begin_cycle(self, now: float) -> None:
+        """Size the engine's gap tolerance from the cadence actually achieved.
+
+        The loop sleeps `evaluation_interval` after a cycle, so the distance
+        between the samples the engine sees is interval plus cycle time; if that
+        outgrows the tolerance, every run restarts and no delayed rule ever fires.
+        """
+        if self._cycle_started_at is not None:
+            self.engine.max_gap_seconds = self._gap_tolerance(now - self._cycle_started_at)
+        self._cycle_started_at = now
+
     async def _evaluate_all_rules(self):
         """Evaluate all enabled metric-driven rules"""
+        self._begin_cycle(time.monotonic())
         self._cycle_failures = []
         try:
             # Get all enabled metric-driven rules

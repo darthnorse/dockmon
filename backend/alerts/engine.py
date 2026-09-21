@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 
-from alerts.capabilities import STATS_MAX_AGE_SECONDS
+from alerts.capabilities import STATS_MAX_AGE_SECONDS, parse_stats_timestamp
 from alerts.safe_regex import selector_value_matches
 from database import DatabaseManager, AlertRuleV2, AlertV2, RuleRuntime, RuleEvaluation
 from utils.keys import parse_composite_key
@@ -924,15 +924,18 @@ class AlertEngine:
                 breached = self._check_breach(metric_value, rule.threshold, rule.operator)
                 self._record_evaluation(rule.id, context.scope_id, metric_value, breached, now)
 
-                last_sample_at = self._parse_ts(state["last_sample_at"])
+                last_sample_at = parse_stats_timestamp(state["last_sample_at"])
                 duplicate = last_sample_at is not None and sampled_at == last_sample_at
                 if not duplicate:
-                    if last_sample_at is None or not (
+                    condition = self._condition_fingerprint(rule)
+                    continuous = last_sample_at is not None and (
                         timedelta(0) <= sampled_at - last_sample_at <= timedelta(seconds=self.max_gap_seconds)
-                    ):
+                    )
+                    if not continuous or state["condition"] != condition:
                         state["breach_started_at"] = None
                         state["breach_count"] = 0
                         state["clear_started_at"] = None
+                        state["condition"] = condition
                     state["last_sample_at"] = sampled_at.isoformat()
                     self._advance_runs(state, rule, metric_value, breached, sampled_at)
 
@@ -946,24 +949,20 @@ class AlertEngine:
                     else:
                         if not is_new:
                             alert = self._update_alert(
-                                alert, metric_value,
+                                alert, metric_value, increment_occurrences=not duplicate,
                                 message=self._generate_alert_message(rule, context, metric_value),
                             )
                         alerts_changed.append(alert)
                         logger.info(f"Alert {alert.id} ready for notification")
-                elif not duplicate and (clear_started := self._parse_ts(state["clear_started_at"])):
+                elif not duplicate and (clear_started := parse_stats_timestamp(state["clear_started_at"])):
                     clear_delay = (
                         rule.alert_clear_delay_seconds if rule.alert_clear_delay_seconds is not None
                         else (rule.alert_active_delay_seconds or 60)
                     )
-                    if clear_delay == 0:
-                        resolved = self._clear_open_metric_alert(session, rule, context, state, "Clear condition met (immediate)")
-                    elif sampled_at - clear_started >= timedelta(seconds=clear_delay):
-                        resolved = self._clear_open_metric_alert(session, rule, context, state, "Clear condition met")
-                    else:
-                        resolved = None
-                    if resolved:
-                        alerts_changed.append(resolved)
+                    if clear_delay == 0 or sampled_at - clear_started >= timedelta(seconds=clear_delay):
+                        reason = "Clear condition met (immediate)" if clear_delay == 0 else "Clear condition met"
+                        if resolved := self._clear_open_metric_alert(session, dedup_key, state, reason):
+                            alerts_changed.append(resolved)
 
                 runtime.state_json = json.dumps(state)
                 runtime.updated_at = now
@@ -999,30 +998,35 @@ class AlertEngine:
         A duplicate sample carries no new information, so it may only keep an
         already-open alert on its notification cadence - never open one.
         """
+        started = parse_stats_timestamp(state["breach_started_at"])
+        sustained = (
+            started is not None
+            and state["breach_count"] >= (rule.occurrences or 1)
+            and sampled_at - started >= timedelta(seconds=rule.alert_active_delay_seconds or 0)
+        )
         if duplicate:
-            return session.query(AlertV2).filter(
-                AlertV2.dedup_key == dedup_key, AlertV2.state == "open"
-            ).first() is not None
+            return sustained and self._open_alert(session, dedup_key) is not None
+        return sustained
 
-        started = self._parse_ts(state["breach_started_at"])
-        if started is None:
-            return False
-        if state["breach_count"] < (rule.occurrences or 1):
-            return False
-        return sampled_at - started >= timedelta(seconds=rule.alert_active_delay_seconds or 0)
+    @staticmethod
+    def _open_alert(session, dedup_key: str) -> Optional[AlertV2]:
+        return session.query(AlertV2).filter(
+            AlertV2.dedup_key == dedup_key, AlertV2.state == "open"
+        ).first()
 
-    def _clear_open_metric_alert(self, session, rule: AlertRuleV2, context: EvaluationContext,
+    @staticmethod
+    def _condition_fingerprint(rule: AlertRuleV2) -> str:
+        """The rule fields a breach or clear run was measured against; editing any of them restarts both."""
+        return f"{rule.metric}|{rule.operator}|{rule.threshold}|{rule.clear_threshold}"
+
+    def _clear_open_metric_alert(self, session, dedup_key: str,
                                  state: Dict[str, Any], reason: str) -> Optional[AlertV2]:
         """Resolve the open alert for this rule/scope, if any, and reset the breach/clear timers.
 
         Returns the refreshed copy from _resolve_alert: the instance loaded here belongs to
         the caller's session, which commits (and so expires it) before the alert is read again.
         """
-        dedup_key = self._make_dedup_key(rule.id, rule.kind, context.scope_type, context.scope_id)
-        existing = session.query(AlertV2).filter(
-            AlertV2.dedup_key == dedup_key,
-            AlertV2.state == "open"
-        ).first()
+        existing = self._open_alert(session, dedup_key)
         state["breach_started_at"] = None
         state["clear_started_at"] = None
         return self._resolve_alert(existing, reason) if existing else None
@@ -1052,6 +1056,7 @@ class AlertEngine:
             "breach_count": 0,
             "clear_started_at": None,
             "last_sample_at": None,
+            "condition": None,
         }
 
     def _parse_metric_state(self, state_json: str) -> Dict[str, Any]:
@@ -1068,22 +1073,14 @@ class AlertEngine:
             return state
         if not isinstance(stored, dict):
             return state
-        for key in state:
-            if key in stored and stored[key] is not None:
+        for key in ("breach_started_at", "clear_started_at", "last_sample_at"):
+            if parse_stats_timestamp(stored.get(key)) is not None:
                 state[key] = stored[key]
-        if not isinstance(state["breach_count"], int):
-            state["breach_count"] = 0
+        if isinstance(stored.get("breach_count"), int):
+            state["breach_count"] = stored["breach_count"]
+        if isinstance(stored.get("condition"), str):
+            state["condition"] = stored["condition"]
         return state
-
-    @staticmethod
-    def _parse_ts(value: Optional[str]) -> Optional[datetime]:
-        if not value:
-            return None
-        try:
-            parsed = datetime.fromisoformat(value)
-        except (TypeError, ValueError):
-            return None
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
     def _record_evaluation(
         self,

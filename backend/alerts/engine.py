@@ -924,18 +924,19 @@ class AlertEngine:
                 breached = self._check_breach(metric_value, rule.threshold, rule.operator)
                 self._record_evaluation(rule.id, context.scope_id, metric_value, breached, now)
 
+                condition = self._condition_fingerprint(rule)
+                if state["condition"] != condition:
+                    self._reset_runs(state)
+                    state["condition"] = condition
+
                 last_sample_at = parse_stats_timestamp(state["last_sample_at"])
                 duplicate = last_sample_at is not None and sampled_at == last_sample_at
                 if not duplicate:
-                    condition = self._condition_fingerprint(rule)
                     continuous = last_sample_at is not None and (
                         timedelta(0) <= sampled_at - last_sample_at <= timedelta(seconds=self.max_gap_seconds)
                     )
-                    if not continuous or state["condition"] != condition:
-                        state["breach_started_at"] = None
-                        state["breach_count"] = 0
-                        state["clear_started_at"] = None
-                        state["condition"] = condition
+                    if not continuous:
+                        self._reset_runs(state)
                     state["last_sample_at"] = sampled_at.isoformat()
                     self._advance_runs(state, rule, metric_value, breached, sampled_at)
 
@@ -969,6 +970,12 @@ class AlertEngine:
                 session.commit()
 
         return alerts_changed
+
+    @staticmethod
+    def _reset_runs(state: Dict[str, Any]) -> None:
+        state["breach_started_at"] = None
+        state["breach_count"] = 0
+        state["clear_started_at"] = None
 
     def _advance_runs(self, state: Dict[str, Any], rule: AlertRuleV2, value: float,
                       breached: bool, sampled_at: datetime) -> None:
@@ -1076,8 +1083,9 @@ class AlertEngine:
         for key in ("breach_started_at", "clear_started_at", "last_sample_at"):
             if parse_stats_timestamp(stored.get(key)) is not None:
                 state[key] = stored[key]
-        if isinstance(stored.get("breach_count"), int):
-            state["breach_count"] = stored["breach_count"]
+        count = stored.get("breach_count")
+        if state["breach_started_at"] is not None and type(count) is int and count >= 0:
+            state["breach_count"] = count
         if isinstance(stored.get("condition"), str):
             state["condition"] = stored["condition"]
         return state

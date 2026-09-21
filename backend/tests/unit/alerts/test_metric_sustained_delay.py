@@ -209,6 +209,19 @@ def test_editing_the_condition_restarts_the_run(db):
     assert len(engine.evaluate_metric("cpu_percent", 95.0, _context(), sampled_at=at(600))) == 1
 
 
+def test_editing_the_condition_during_a_frozen_sample_cannot_renotify(db):
+    rule_id = _cpu_rule(db)
+    engine = AlertEngine(db)
+    _open_alert(db, engine)
+    _expire_cooldown(db)
+    with db.get_session() as session:
+        session.query(AlertRuleV2).filter(AlertRuleV2.id == rule_id).one().threshold = 90.0
+        session.commit()
+
+    assert engine.evaluate_metric("cpu_percent", 95.0, _context(), sampled_at=at(300)) == []
+    assert _state(db, rule_id)["breach_started_at"] is None
+
+
 def test_a_backward_timestamp_restarts_the_run(db):
     rule_id = _cpu_rule(db, occurrences=1)
     engine = AlertEngine(db)
@@ -237,16 +250,28 @@ def test_service_derives_max_gap_from_the_evaluation_interval(db):
     assert slow.engine.max_gap_seconds == 200
 
 
-def test_service_widens_max_gap_to_the_cadence_it_actually_achieves(db):
-    """A cycle that takes longer than the interval must not make every sample a gap."""
+def test_service_widens_max_gap_to_a_sustained_slow_cadence(db):
+    """Cycles that keep taking longer than the interval must not make every sample a gap."""
     service = AlertEvaluationService(db=db)
 
-    service._begin_cycle(1000.0)
+    now = 1000.0
+    service._begin_cycle(now)
     assert service.engine.max_gap_seconds == STATS_MAX_AGE_SECONDS
-    service._begin_cycle(1090.0)
-    assert service.engine.max_gap_seconds == 180
-    service._begin_cycle(1100.0)
-    assert service.engine.max_gap_seconds == STATS_MAX_AGE_SECONDS
+    for _ in range(5):
+        now += 90.0
+        service._begin_cycle(now)
+    assert service.engine.max_gap_seconds > 90
+
+
+def test_service_does_not_bridge_a_single_long_stall(db):
+    service = AlertEvaluationService(db=db)
+    now = 1000.0
+    service._begin_cycle(now)
+
+    now += 1800.0
+    service._begin_cycle(now)
+
+    assert service.engine.max_gap_seconds < 1800
 
 
 # --- clearing ---
@@ -367,6 +392,19 @@ def test_old_window_state_cannot_fire_on_the_first_sample_after_upgrade(db):
     state = _state(db, rule_id)
     assert set(state) == NEW_STATE_KEYS
     assert state["breach_started_at"] == at(0).isoformat()
+
+
+def test_a_count_without_a_valid_start_is_discarded(db):
+    rule_id = _cpu_rule(db, active_delay=0, occurrences=3)
+    _seed_runtime(db, rule_id, json.dumps({
+        "breach_started_at": "garbage", "breach_count": 5,
+        "clear_started_at": None, "last_sample_at": at(-10).isoformat(),
+        "condition": "cpu_percent|>=|80.0|None",
+    }))
+    engine = AlertEngine(db)
+
+    assert engine.evaluate_metric("cpu_percent", 95.0, _context(), sampled_at=at(0)) == []
+    assert _state(db, rule_id)["breach_count"] == 1
 
 
 def test_a_malformed_stored_timestamp_does_not_stall_the_run(db):

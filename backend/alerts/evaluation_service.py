@@ -155,6 +155,7 @@ class AlertEvaluationService:
         self.evaluation_interval = evaluation_interval
         self.engine = AlertEngine(db, max_gap_seconds=self._gap_tolerance(evaluation_interval))
         self._cycle_started_at: Optional[float] = None
+        self._cadence_estimate = float(evaluation_interval)
 
         self._running = False
         self._task: Optional[asyncio.Task] = None
@@ -959,9 +960,12 @@ class AlertEvaluationService:
         The loop sleeps `evaluation_interval` after a cycle, so the distance
         between the samples the engine sees is interval plus cycle time; if that
         outgrows the tolerance, every run restarts and no delayed rule ever fires.
+        A smoothed estimate follows a sustained slowdown within a few cycles but
+        stays well under a one-off stall, which therefore still breaks the run.
         """
         if self._cycle_started_at is not None:
-            self.engine.max_gap_seconds = self._gap_tolerance(now - self._cycle_started_at)
+            self._cadence_estimate += 0.2 * ((now - self._cycle_started_at) - self._cadence_estimate)
+            self.engine.max_gap_seconds = self._gap_tolerance(self._cadence_estimate)
         self._cycle_started_at = now
 
     async def _evaluate_all_rules(self):

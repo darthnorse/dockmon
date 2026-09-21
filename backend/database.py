@@ -975,7 +975,7 @@ class AlertRuleV2(Base):
     metric = Column(String, nullable=True)  # 'docker_cpu_workload_pct', etc.
     operator = Column(String, nullable=True)  # '>=', '<=', '=='
     threshold = Column(Float, nullable=True)
-    occurrences = Column(Integer, nullable=True)  # 3 for '3/5m'
+    occurrences = Column(Integer, nullable=True)
 
     # Clearing (metric-driven rules)
     clear_threshold = Column(Float, nullable=True)
@@ -1093,7 +1093,7 @@ class AlertAnnotation(Base):
 
 
 class RuleRuntime(Base):
-    """Rule evaluation runtime state - sliding windows, breach tracking"""
+    """Rule evaluation runtime state - breach and clear run tracking for metric rules"""
     __tablename__ = "rule_runtime"
 
     dedup_key = Column(String, primary_key=True)

@@ -1,6 +1,6 @@
 """Alerts returned by evaluate_metric must stay readable after the engine's
 session closes (the evaluation service reads .state on them next), and a
-sample under the threshold must not page while the occurrence window fires."""
+sample under the threshold must never page, create or reopen an alert."""
 
 import json
 import uuid
@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 
 from alerts.engine import AlertEngine, EvaluationContext
 from database import AlertRuleV2, AlertV2, RuleRuntime
+
+T0 = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
 
 
 def _cpu_rule(db, clear_delay=0, active_delay=0, occurrences=None):
@@ -77,53 +79,64 @@ def test_sustained_clear_alert_is_readable_after_return(db):
     assert resolved[0].resolved_reason == "Clear condition met"
 
 
-def test_window_keeps_alert_open_but_only_a_breaching_sample_renotifies(db):
+def _sustained_breach(engine, value=95.0, seconds=300):
+    """Hold `value` for `seconds` at 10 s spacing; the last sample is the one that fires."""
+    alerts = []
+    for s in range(0, seconds + 1, 10):
+        alerts = engine.evaluate_metric("cpu_percent", value, _context(), sampled_at=T0 + timedelta(seconds=s))
+    return alerts
+
+
+def test_open_alert_renotifies_only_on_a_breaching_sample(db):
     _cpu_rule(db, clear_delay=60, active_delay=300, occurrences=3)
-    engine = AlertEngine(db=db)
-    for _ in range(2):
-        assert engine.evaluate_metric("cpu_percent", 95.0, _context()) == []
-    assert len(engine.evaluate_metric("cpu_percent", 95.0, _context())) == 1  # third breach in window
+    engine = AlertEngine(db)
+    assert len(_sustained_breach(engine)) == 1
 
     _expire_cooldown(db)
-    # Window still holds the three breaches, but this sample is under threshold: stay open, do not page
-    assert engine.evaluate_metric("cpu_percent", 2.5, _context()) == []
+    # Under threshold: stays open (clear delay not reached), does not page
+    assert engine.evaluate_metric("cpu_percent", 2.5, _context(), sampled_at=T0 + timedelta(seconds=310)) == []
     assert _alert_state(db) == "open"
 
-    # A sample that breaches again, past the cooldown, does re-notify
-    renotified = engine.evaluate_metric("cpu_percent", 97.0, _context())
+    # A breach past the cooldown re-notifies, but only once it is sustained again
+    for s in range(320, 620, 10):
+        assert engine.evaluate_metric("cpu_percent", 97.0, _context(), sampled_at=T0 + timedelta(seconds=s)) == []
+    renotified = engine.evaluate_metric("cpu_percent", 97.0, _context(), sampled_at=T0 + timedelta(seconds=620))
     assert len(renotified) == 1 and renotified[0].state == "open"
 
 
 def test_non_breaching_sample_does_not_reopen_a_resolved_alert(db):
     _cpu_rule(db, clear_delay=60, active_delay=300, occurrences=3)
-    engine = AlertEngine(db=db)
-    for _ in range(3):
-        engine.evaluate_metric("cpu_percent", 95.0, _context())
+    engine = AlertEngine(db)
+    _sustained_breach(engine)
     with db.get_session() as session:
         engine._resolve_alert(session.query(AlertV2).one(), "manual", notify=False)
     _expire_cooldown(db)
 
-    assert engine.evaluate_metric("cpu_percent", 2.5, _context()) == []
+    assert engine.evaluate_metric("cpu_percent", 2.5, _context(), sampled_at=T0 + timedelta(seconds=310)) == []
     assert _alert_state(db) == "resolved"
 
-    reopened = engine.evaluate_metric("cpu_percent", 97.0, _context())
+    for s in range(320, 620, 10):
+        engine.evaluate_metric("cpu_percent", 97.0, _context(), sampled_at=T0 + timedelta(seconds=s))
+    reopened = engine.evaluate_metric("cpu_percent", 97.0, _context(), sampled_at=T0 + timedelta(seconds=620))
     assert len(reopened) == 1 and reopened[0].state == "open"
 
 
-def test_window_alone_does_not_create_an_alert_from_a_non_breaching_sample(db):
-    """A window that already fires (e.g. after lowering occurrences) must wait for a breaching sample."""
-    rule_id = _cpu_rule(db, clear_delay=60, active_delay=300, occurrences=5)
-    engine = AlertEngine(db=db)
-    for _ in range(3):
-        assert engine.evaluate_metric("cpu_percent", 95.0, _context()) == []
+def test_lowering_occurrences_mid_run_still_waits_for_a_breaching_sample(db):
+    """A run that already satisfies the rule after an edit must wait for a breaching sample."""
+    rule_id = _cpu_rule(db, clear_delay=60, active_delay=0, occurrences=5)
+    engine = AlertEngine(db)
+    for s in range(0, 30, 10):
+        assert engine.evaluate_metric("cpu_percent", 95.0, _context(), sampled_at=T0 + timedelta(seconds=s)) == []
 
     with db.get_session() as session:
         session.query(AlertRuleV2).filter(AlertRuleV2.id == rule_id).one().occurrences = 3
         session.commit()
 
-    assert engine.evaluate_metric("cpu_percent", 2.5, _context()) == []
+    assert engine.evaluate_metric("cpu_percent", 2.5, _context(), sampled_at=T0 + timedelta(seconds=30)) == []
     with db.get_session() as session:
         assert session.query(AlertV2).count() == 0
 
-    created = engine.evaluate_metric("cpu_percent", 97.0, _context())
+    for s in range(40, 60, 10):
+        assert engine.evaluate_metric("cpu_percent", 97.0, _context(), sampled_at=T0 + timedelta(seconds=s)) == []
+    created = engine.evaluate_metric("cpu_percent", 97.0, _context(), sampled_at=T0 + timedelta(seconds=60))
     assert len(created) == 1 and created[0].current_value == 97.0

@@ -644,7 +644,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
       const metricName = formData.metric?.replace('_', ' ')
       parts.push(`Trigger: ${metricName || 'metric'}`)
       parts.push(`Threshold: ${formData.operator} ${formData.threshold}%`)
-      parts.push(`Alert Active Delay: ${formData.alert_active_delay_seconds}s (${formData.occurrences} breaches)`)
+      parts.push(`Alert Active Delay: ${formData.alert_active_delay_seconds}s sustained (min ${formData.occurrences} evaluations)`)
     } else {
       const kindLabel = selectedKind?.label || formData.kind
       parts.push(`Trigger: ${kindLabel}`)
@@ -1365,7 +1365,9 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                       min={0}
                       className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />
-                    <p className="mt-1 text-xs text-gray-500">How long condition must be true before alert triggers</p>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Condition must stay true for this long, without interruption, before the alert triggers. 0 fires on the first breaching evaluation.
+                    </p>
                   </div>
 
                   <div>
@@ -1394,7 +1396,7 @@ export function AlertRuleFormModal({ rule, onClose }: Props) {
                       max={100}
                       className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />
-                    <p className="mt-1 text-xs text-gray-500">Breaches needed to trigger alert</p>
+                    <p className="mt-1 text-xs text-gray-500">Consecutive breaching evaluations required (metrics are evaluated every 10 s)</p>
                   </div>
                 </div>
               </>

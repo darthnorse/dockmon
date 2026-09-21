@@ -18,7 +18,12 @@ from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 
 from database import DatabaseManager, AlertRuleV2, AlertV2, DockerHostDB
-from alerts.capabilities import HOST_METRIC_FIELDS, STATS_MAX_AGE_SECONDS, sample_age_seconds
+from alerts.capabilities import (
+    HOST_METRIC_FIELDS,
+    STATS_MAX_AGE_SECONDS,
+    parse_stats_timestamp,
+    sample_age_seconds,
+)
 from alerts.metrics import PRODUCED_METRICS_BY_SCOPE, is_produced
 from alerts.safe_regex import active_quarantines
 from alerts.engine import AlertEngine, EvaluationContext
@@ -148,7 +153,8 @@ class AlertEvaluationService:
         self.event_logger = event_logger
         self.notification_service = notification_service
         self.evaluation_interval = evaluation_interval
-        self.engine = AlertEngine(db)
+        # A slow evaluator must not see its own cadence as a gap in the source.
+        self.engine = AlertEngine(db, max_gap_seconds=max(STATS_MAX_AGE_SECONDS, 2 * evaluation_interval))
 
         self._running = False
         self._task: Optional[asyncio.Task] = None
@@ -1080,6 +1086,7 @@ class AlertEvaluationService:
         Failures stay per-metric: one unusable value must not skip the metrics
         behind it.
         """
+        sampled_at = parse_stats_timestamp(stats.get("last_update"))
         for metric_name in PRODUCED_METRICS_BY_SCOPE[scope]:
             metric_value = stats.get(metric_name)
             if metric_value is None:
@@ -1092,7 +1099,8 @@ class AlertEvaluationService:
                 alerts = self.engine.evaluate_metric(
                     metric_name,
                     float(metric_value),
-                    context
+                    context,
+                    sampled_at=sampled_at,
                 )
 
                 if alerts:

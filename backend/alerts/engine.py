@@ -3,7 +3,7 @@ Alert Rule Evaluation Engine for DockMon
 
 Handles both event-driven and metric-driven alert rule evaluation with:
 - Deduplication using dedup_key pattern
-- Sliding window breach detection for metric rules
+- Sustained-breach detection for metric rules, timed in the source's own clock
 - Alert lifecycle management (open → snoozed → resolved)
 - Cooldown enforcement
 - Grace period support
@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 
+from alerts.capabilities import STATS_MAX_AGE_SECONDS
 from alerts.safe_regex import selector_value_matches
 from database import DatabaseManager, AlertRuleV2, AlertV2, RuleRuntime, RuleEvaluation
 from utils.keys import parse_composite_key
@@ -35,14 +36,6 @@ class EvaluationContext:
     desired_state: Optional[str] = None  # Container desired state: 'should_run', 'on_demand', 'unspecified'
     labels: Optional[Dict[str, str]] = None
     tags: Optional[List[str]] = None  # Container or host tags for tag-based filtering
-
-
-@dataclass
-class MetricSample:
-    """Single metric observation"""
-    timestamp: datetime
-    value: float
-    breached: bool
 
 
 @dataclass
@@ -78,12 +71,15 @@ class AlertEngine:
     - Evaluate rules against events/metrics
     - Manage alert lifecycle (create, update, resolve)
     - Enforce deduplication using dedup_key
-    - Track rule runtime state for sliding windows
+    - Track rule runtime state for sustained metric breaches
     - Handle cooldowns and grace periods
     """
 
-    def __init__(self, db: DatabaseManager):
+    def __init__(self, db: DatabaseManager, max_gap_seconds: int = STATS_MAX_AGE_SECONDS):
         self.db = db
+        # Source-time distance between two accepted samples beyond which a
+        # breach or clear run restarts: silence is not a sustained condition.
+        self.max_gap_seconds = max_gap_seconds
         # Track pending event-driven alerts waiting for delay to pass
         # Key: dedup_key, Value: PendingEventAlert
         self._pending_event_alerts: Dict[str, PendingEventAlert] = {}
@@ -176,7 +172,8 @@ class AlertEngine:
         alert: AlertV2,
         current_value: Optional[float] = None,
         increment_occurrences: bool = True,
-        event_data: Optional[Dict[str, Any]] = None
+        event_data: Optional[Dict[str, Any]] = None,
+        message: Optional[str] = None,
     ) -> AlertV2:
         """Update existing alert with new occurrence"""
         with self.db.get_session() as session:
@@ -218,6 +215,8 @@ class AlertEngine:
                 alert.occurrences += 1
             if current_value is not None:
                 alert.current_value = current_value
+            if message is not None:
+                alert.message = message
             if event_data is not None:
                 # Merge new event_data with existing, preserving important fields like exit_code
                 existing_context = {}
@@ -876,23 +875,29 @@ class AlertEngine:
         self,
         metric_name: str,
         metric_value: float,
-        context: EvaluationContext
+        context: EvaluationContext,
+        sampled_at: Optional[datetime] = None,
     ) -> List[AlertV2]:
         """
         Evaluate metric-driven rules for a specific metric
 
-        Metric-driven rules use sliding windows:
-        - CPU > 90% for 5 minutes
-        - Memory > 80% for 3 minutes
-        - Disk usage > 95%
+        A rule fires once the condition has held without interruption for
+        alert_active_delay_seconds and for at least `occurrences` consecutive
+        samples; it clears once the clear condition has held for
+        alert_clear_delay_seconds. Both runs are timed by `sampled_at`, the
+        source's own timestamp: the evaluator re-reads a cache, so a sample it
+        has already seen (same timestamp) advances nothing and cannot create or
+        reopen an alert, and a gap or backward step wider than max_gap_seconds
+        restarts the run. Without a timestamp the evaluation time stands in,
+        which counts every read of a frozen cache as a new sample.
 
         Returns: List of alerts created/updated
         """
         alerts_changed = []
         now = datetime.now(timezone.utc)
+        sampled_at = sampled_at or now
 
         with self.db.get_session() as session:
-            # Find all enabled metric-driven rules for this metric
             rules = session.query(AlertRuleV2).filter(
                 AlertRuleV2.enabled.is_(True),
                 AlertRuleV2.metric == metric_name,
@@ -900,143 +905,111 @@ class AlertEngine:
             ).all()
 
             for rule in rules:
-                # Check selectors
                 if not self.matches_selectors(rule, context):
                     continue
 
-                # Get or create runtime state
                 runtime_key = self._make_runtime_key(rule.id, context.scope_type, context.scope_id)
                 runtime = session.query(RuleRuntime).filter(RuleRuntime.dedup_key == runtime_key).first()
-
                 if not runtime:
-                    # Initialize new runtime state
-                    initial_state = {
-                        "window_start": now.isoformat(),
-                        "samples": [],
-                        "breach_count": 0,
-                        "breach_started_at": None,
-                        "clear_started_at": None,
-                        "last_notified_at": None,
-                        "last_occurrence_milestone": 0
-                    }
-
                     runtime = RuleRuntime(
                         dedup_key=runtime_key,
                         rule_id=rule.id,
-                        state_json=json.dumps(initial_state),
+                        state_json=json.dumps(self._default_metric_state()),
                         updated_at=now
                     )
-
                     session.add(runtime)
-                    session.flush()  # Get the ID without committing
+                    session.flush()
 
-                # Parse state
                 state = self._parse_metric_state(runtime.state_json)
-
-                # Check if metric breaches threshold
                 breached = self._check_breach(metric_value, rule.threshold, rule.operator)
-
-                # Add sample to sliding window
-                sample = MetricSample(timestamp=now, value=metric_value, breached=breached)
-                state["samples"].append({
-                    "ts": sample.timestamp.isoformat(),
-                    "val": sample.value,
-                    "breached": sample.breached
-                })
-
-                # Trim old samples outside duration window
-                active_delay = rule.alert_active_delay_seconds or 0
-                if active_delay > 0:
-                    cutoff = now - timedelta(seconds=active_delay)
-                    state["samples"] = [
-                        s for s in state["samples"]
-                        if datetime.fromisoformat(s["ts"]) > cutoff
-                    ]
-
-                # Count breaches in window
-                breach_count = sum(1 for s in state["samples"] if s["breached"])
-                state["breach_count"] = breach_count
-
-                # Check if we should fire alert
-                should_fire = False
-                if rule.occurrences:
-                    # Need N breaches in window
-                    should_fire = breach_count >= rule.occurrences
-                else:
-                    # Just need to be breaching
-                    should_fire = breached
-
-                # Record evaluation for debugging
                 self._record_evaluation(rule.id, context.scope_id, metric_value, breached, now)
 
-                if should_fire and not breached:
-                    # The window still counts earlier breaches, so the alert keeps whatever state it has;
-                    # a sample under the threshold must not create, reopen, update or page with its value
-                    logger.debug(f"Rule {rule.id} fires on window for {context.scope_id} but sample is under threshold")
-                elif should_fire:
-                    # Track breach start
-                    if state["breach_started_at"] is None:
-                        state["breach_started_at"] = now.isoformat()
+                last_sample_at = self._parse_ts(state["last_sample_at"])
+                duplicate = last_sample_at is not None and sampled_at == last_sample_at
+                if not duplicate:
+                    if last_sample_at is None or not (
+                        timedelta(0) <= sampled_at - last_sample_at <= timedelta(seconds=self.max_gap_seconds)
+                    ):
+                        state["breach_started_at"] = None
+                        state["breach_count"] = 0
+                        state["clear_started_at"] = None
+                    state["last_sample_at"] = sampled_at.isoformat()
+                    self._advance_runs(state, rule, metric_value, breached, sampled_at)
 
-                    # Generate dedup key (includes rule_id to allow multiple rules for same condition)
-                    dedup_key = self._make_dedup_key(rule.id, rule.kind, context.scope_type, context.scope_id)
+                dedup_key = self._make_dedup_key(rule.id, rule.kind, context.scope_type, context.scope_id)
 
-                    # Get or create alert
+                if breached and self._run_satisfies_rule(state, rule, sampled_at, duplicate, session, dedup_key):
                     alert, is_new = self._get_or_create_alert(dedup_key, rule, context, metric_value)
-
-                    # Check notification cooldown
                     cooldown = rule.notification_cooldown_seconds or 300
                     if not is_new and self._check_cooldown(alert, cooldown):
                         logger.debug(f"Alert {alert.id} in cooldown, skipping")
                     else:
-                        # Update alert
                         if not is_new:
-                            alert = self._update_alert(alert, metric_value)
-
+                            alert = self._update_alert(
+                                alert, metric_value,
+                                message=self._generate_alert_message(rule, context, metric_value),
+                            )
                         alerts_changed.append(alert)
-
-                        # Check grace period before notifying
-                        # Alert ready for notification (handled by evaluation_service)
                         logger.info(f"Alert {alert.id} ready for notification")
-
-                else:
-                    # Not breaching - check if we should clear
-                    # Use clear_threshold if set, otherwise fall back to threshold (Issue #73)
-                    effective_clear_threshold = rule.clear_threshold if rule.clear_threshold is not None else rule.threshold
-                    clear_breached = self._check_breach(metric_value, effective_clear_threshold, rule.operator)
-
-                    if not clear_breached:
-                        # Determine clear delay (alert_clear_delay_seconds, fallback to alert_active_delay, then 60s default)
-                        clear_delay = rule.alert_clear_delay_seconds if rule.alert_clear_delay_seconds is not None else (rule.alert_active_delay_seconds if rule.alert_active_delay_seconds else 60)
-
-                        # Handle immediate clearing (alert_clear_delay_seconds = 0)
-                        if clear_delay == 0:
-                            resolved = self._clear_open_metric_alert(session, rule, context, state, "Clear condition met (immediate)")
-                            if resolved:
-                                alerts_changed.append(resolved)
-                        else:
-                            # Track clear start for sustained clearing
-                            if state["clear_started_at"] is None:
-                                state["clear_started_at"] = now.isoformat()
-
-                            # Check if we've been below clear threshold long enough
-                            clear_start = datetime.fromisoformat(state["clear_started_at"])
-                            time_clearing = (now - clear_start).total_seconds()
-
-                            if time_clearing >= clear_delay:
-                                resolved = self._clear_open_metric_alert(session, rule, context, state, "Clear condition met")
-                                if resolved:
-                                    alerts_changed.append(resolved)
+                elif not duplicate and (clear_started := self._parse_ts(state["clear_started_at"])):
+                    clear_delay = (
+                        rule.alert_clear_delay_seconds if rule.alert_clear_delay_seconds is not None
+                        else (rule.alert_active_delay_seconds or 60)
+                    )
+                    if clear_delay == 0:
+                        resolved = self._clear_open_metric_alert(session, rule, context, state, "Clear condition met (immediate)")
+                    elif sampled_at - clear_started >= timedelta(seconds=clear_delay):
+                        resolved = self._clear_open_metric_alert(session, rule, context, state, "Clear condition met")
                     else:
-                        # Still breaching clear threshold, reset
-                        state["clear_started_at"] = None
+                        resolved = None
+                    if resolved:
+                        alerts_changed.append(resolved)
 
-                # Save updated state
                 runtime.state_json = json.dumps(state)
                 runtime.updated_at = now
                 session.commit()
 
         return alerts_changed
+
+    def _advance_runs(self, state: Dict[str, Any], rule: AlertRuleV2, value: float,
+                      breached: bool, sampled_at: datetime) -> None:
+        """Move the breach run and the clear run one fresh sample forward.
+
+        The two are tracked independently: a breach interrupts a clear run, and
+        any sample that is not itself a breach ends the breach run - including
+        one inside the hysteresis band, which also interrupts the clear run.
+        """
+        if breached:
+            state["breach_started_at"] = state["breach_started_at"] or sampled_at.isoformat()
+            state["breach_count"] += 1
+        else:
+            state["breach_started_at"] = None
+            state["breach_count"] = 0
+
+        clear_threshold = rule.clear_threshold if rule.clear_threshold is not None else rule.threshold
+        if self._check_breach(value, clear_threshold, rule.operator):
+            state["clear_started_at"] = None
+        else:
+            state["clear_started_at"] = state["clear_started_at"] or sampled_at.isoformat()
+
+    def _run_satisfies_rule(self, state: Dict[str, Any], rule: AlertRuleV2, sampled_at: datetime,
+                            duplicate: bool, session, dedup_key: str) -> bool:
+        """Whether the current breach run is long enough to fire.
+
+        A duplicate sample carries no new information, so it may only keep an
+        already-open alert on its notification cadence - never open one.
+        """
+        if duplicate:
+            return session.query(AlertV2).filter(
+                AlertV2.dedup_key == dedup_key, AlertV2.state == "open"
+            ).first() is not None
+
+        started = self._parse_ts(state["breach_started_at"])
+        if started is None:
+            return False
+        if state["breach_count"] < (rule.occurrences or 1):
+            return False
+        return sampled_at - started >= timedelta(seconds=rule.alert_active_delay_seconds or 0)
 
     def _clear_open_metric_alert(self, session, rule: AlertRuleV2, context: EvaluationContext,
                                  state: Dict[str, Any], reason: str) -> Optional[AlertV2]:
@@ -1072,51 +1045,45 @@ class AlertEngine:
             logger.warning(f"Unknown operator: {operator}")
             return False
 
-    def _get_or_create_runtime(self, runtime_key: str, rule_id: str) -> RuleRuntime:
-        """Get or create runtime state for rule evaluation"""
-        with self.db.get_session() as session:
-            runtime = session.query(RuleRuntime).filter(RuleRuntime.dedup_key == runtime_key).first()
-
-            if not runtime:
-                # Initialize new runtime state
-                initial_state = {
-                    "window_start": datetime.now(timezone.utc).isoformat(),
-                    "samples": [],
-                    "breach_count": 0,
-                    "breach_started_at": None,
-                    "clear_started_at": None,
-                    "last_notified_at": None,
-                    "last_occurrence_milestone": 0
-                }
-
-                runtime = RuleRuntime(
-                    dedup_key=runtime_key,
-                    rule_id=rule_id,
-                    state_json=json.dumps(initial_state),
-                    updated_at=datetime.now(timezone.utc)
-                )
-
-                session.add(runtime)
-                session.commit()
-                session.refresh(runtime)
-
-            return runtime
+    @staticmethod
+    def _default_metric_state() -> Dict[str, Any]:
+        return {
+            "breach_started_at": None,
+            "breach_count": 0,
+            "clear_started_at": None,
+            "last_sample_at": None,
+        }
 
     def _parse_metric_state(self, state_json: str) -> Dict[str, Any]:
-        """Parse metric rule state JSON"""
+        """Parse metric rule state JSON, reduced to the keys the engine uses.
+
+        Rows written before sustained-delay evaluation carry a sample window and
+        no last_sample_at; the missing timestamp reads as a gap, so an old
+        breach_started_at can never fire on the first sample after an upgrade.
+        """
+        state = self._default_metric_state()
         try:
-            return json.loads(state_json)
-        except json.JSONDecodeError:
-            # Return default state if invalid
-            return {
-                "window_start": datetime.now(timezone.utc).isoformat(),
-                "samples": [],
-                "breach_count": 0,
-                "breach_started_at": None,
-                "clear_started_at": None,
-                "last_notified_at": None,
-                "last_occurrence_milestone": 0
-            }
+            stored = json.loads(state_json)
+        except (json.JSONDecodeError, TypeError):
+            return state
+        if not isinstance(stored, dict):
+            return state
+        for key in state:
+            if key in stored and stored[key] is not None:
+                state[key] = stored[key]
+        if not isinstance(state["breach_count"], int):
+            state["breach_count"] = 0
+        return state
+
+    @staticmethod
+    def _parse_ts(value: Optional[str]) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
     def _record_evaluation(
         self,

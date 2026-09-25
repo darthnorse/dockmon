@@ -264,6 +264,10 @@ def _recover(paths: BackupPaths) -> ApplyOutcome:
         logger.warning("Finishing a restore interrupted after it was committed")
         _finish(paths, plan)
         return ApplyOutcome.APPLIED
+    if plan.get("phase") == "rolled_back":
+        logger.warning("Finishing cleanup of a restore that was rolled back")
+        _close_out_rollback(paths)
+        return ApplyOutcome.FAILED
     logger.warning("Rolling back a restore interrupted before it was committed")
     return _rollback(paths, plan)
 
@@ -433,21 +437,29 @@ def _rollback(paths: BackupPaths, plan: dict) -> ApplyOutcome:
             path = Path(directory)
             if path.is_dir() and not path.is_symlink() and not any(path.iterdir()):
                 path.rmdir()
-        _fail_pending(paths)
-        _remove(paths.journal_path)
+                fsync_dir(path.parent)
+        _write_json_atomic(paths.journal_path, dict(plan, phase="rolled_back"))
     except Exception as e:
         raise RestoreStateError(
             f"Restore could not be rolled back ({e}); the journal at {paths.journal_path} "
             "was kept and the rollback will be retried on the next start"
         ) from e
-    _best_effort(_clean_work_dirs, paths)
     logger.error("Restore rolled back; DockMon is running on its previous data")
+    _close_out_rollback(paths)
     return ApplyOutcome.FAILED
 
 
+def _close_out_rollback(paths: BackupPaths) -> None:
+    """Live state is fully old; cleanup failures are retried on the next start."""
+    _best_effort(_fail_pending, paths)
+    if not paths.pending_dir.exists():
+        _best_effort(_remove, paths.journal_path)
+    _best_effort(_clean_work_dirs, paths)
+
+
 def _finish(paths: BackupPaths, plan: dict) -> None:
-    """Post-commit cleanup. Only the pending and journal removals are strict:
-    a pending dir left behind would be applied again on the next start."""
+    """Post-commit cleanup; live state is fully new. The committed journal is kept
+    until pending is gone, so a leftover pending dir is never applied twice."""
     _best_effort(_remove, paths.certs_dir)
     _best_effort(_remove, paths.session_secret_path)
     _best_effort(
@@ -455,14 +467,17 @@ def _finish(paths: BackupPaths, plan: dict) -> None:
         paths.completed_marker,
         {"restored_at": utc_now_iso(), "rollback_id": plan["rollback_id"], "backup": plan.get("backup")},
     )
-    _remove(paths.pending_dir)
+    _best_effort(_remove, paths.pending_dir)
     for root in _roots(paths):
         _best_effort(_remove, root / STAGED_DIRNAME)
         current = _rollback_dir(root, plan["rollback_id"])
         for old in sorted(root.glob(f"{ROLLBACK_PREFIX}*")):
             if old != current:
                 _best_effort(_remove, old)
-    _remove(paths.journal_path)
+    if paths.pending_dir.exists():
+        logger.error("Restore applied, but its staging area could not be removed; retrying on the next start")
+        return
+    _best_effort(_remove, paths.journal_path)
 
 
 def _fail_pending(paths: BackupPaths) -> None:

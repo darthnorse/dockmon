@@ -93,10 +93,11 @@ def _check_format_limits(manifest: dict) -> None:
         raise BackupError(f"Database is larger than the {MAX_DB_BYTES} byte backup limit")
     if files[KEY_NAME]["size"] > MAX_KEY_BYTES:
         raise BackupError("Encryption key file is unexpectedly large")
-    if sum(entry["size"] for entry in files.values()) > MAX_TOTAL_BYTES:
-        raise BackupError(f"Backup would exceed the {MAX_TOTAL_BYTES} byte limit")
-    if len(_manifest_bytes(manifest)) > MAX_MANIFEST_BYTES:
+    manifest_size = len(_manifest_bytes(manifest))
+    if manifest_size > MAX_MANIFEST_BYTES:
         raise BackupError("Backup manifest would exceed its size limit")
+    if manifest_size + sum(entry["size"] for entry in files.values()) > MAX_TOTAL_BYTES:
+        raise BackupError(f"Backup would exceed the {MAX_TOTAL_BYTES} byte limit")
 
 
 def _manifest_bytes(manifest: dict) -> bytes:

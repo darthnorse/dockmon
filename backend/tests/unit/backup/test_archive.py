@@ -211,3 +211,11 @@ def test_managed_stack_files_does_not_parse_an_oversized_compose(install, monkey
     monkeypatch.setattr(stack_storage, "MAX_COMPOSE_SCAN_BYTES", 10)
     files = stack_storage.managed_stack_files(install.stacks_dir / "web")
     assert [p.name for p in files] == ["compose.yaml"]
+
+
+def test_creation_total_counts_the_manifest_like_restore_does(install, monkeypatch):
+    manifest = create_backup(install, io.BytesIO(), PASSPHRASE, kdf=FAST_KDF)
+    payload = sum(entry["size"] for entry in manifest["files"].values())
+    monkeypatch.setattr(archive, "MAX_TOTAL_BYTES", payload + 10)
+    with pytest.raises(BackupError, match="limit"):
+        _backup(install)

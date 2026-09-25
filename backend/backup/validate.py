@@ -103,7 +103,8 @@ def parse_manifest(data: bytes) -> dict:
             raise BackupValidationError("Backup manifest lists itself")
         if (
             not isinstance(entry, dict)
-            or not isinstance(entry.get("size"), int)
+            or not _is_count(entry.get("size"))
+            or entry["size"] > _size_limit(name)
             or not isinstance(entry.get("sha256"), str)
             or not _SHA256.match(entry["sha256"])
         ):

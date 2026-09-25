@@ -171,7 +171,7 @@ def test_unsupported_format_version_rejected(tmp_path):
 def test_oversized_member_rejected(tmp_path, monkeypatch):
     monkeypatch.setattr(validate, "MAX_STACK_FILE_BYTES", 4)
     tar_path = _write_tar(tmp_path / "a.tar.gz", _valid_members())
-    with pytest.raises(BackupValidationError, match="large"):
+    with pytest.raises(BackupValidationError, match="large|malformed"):
         extract_archive(tar_path, tmp_path / "out")
 
 
@@ -313,3 +313,15 @@ def test_member_size_must_match_manifest_before_writing(tmp_path):
     with pytest.raises(BackupValidationError, match="size"):
         extract_archive(tar_path, tmp_path / "out")
     assert not (tmp_path / "out" / info.name).exists()
+
+
+@pytest.mark.parametrize("size", [-1, True, 10**12])
+def test_manifest_sizes_must_be_plausible(tmp_path, size):
+    members = _valid_members()
+    manifest = json.loads(members[0][1])
+    manifest["files"]["stacks/web/compose.yaml"]["size"] = size
+    data = json.dumps(manifest).encode()
+    members[0] = _regular("manifest.json", data)
+    tar_path = _write_tar(tmp_path / "a.tar.gz", members)
+    with pytest.raises(BackupValidationError, match="malformed"):
+        extract_archive(tar_path, tmp_path / "out")

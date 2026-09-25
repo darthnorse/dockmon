@@ -559,3 +559,42 @@ def test_verify_leaves_other_upload_workspaces_alone(target, archive_file):
     assert other.exists()
     apply_staged(target, ok_migrate)
     assert not other.exists()
+
+
+def test_cleanup_failure_after_rollback_does_not_block_start(target, archive_file, monkeypatch):
+    old_key = target.key_path.read_bytes()
+    stage_archive(target, archive_file, PASSPHRASE)
+    monkeypatch.setattr(restore, "_swap", lambda plan: (_ for _ in ()).throw(OSError("I/O error")))
+    monkeypatch.setattr(restore, "_fail_pending", lambda paths: (_ for _ in ()).throw(OSError("still busy")))
+
+    assert apply_staged(target, ok_migrate) is ApplyOutcome.FAILED
+    _assert_old(target, old_key)
+    monkeypatch.undo()
+
+    assert apply_staged(target, ok_migrate) is ApplyOutcome.FAILED
+    assert pending_manifest(target) is None
+    assert apply_staged(target, ok_migrate) is ApplyOutcome.NONE
+
+
+def test_pending_removal_failure_after_commit_does_not_block_start_or_reapply(target, archive_file, monkeypatch):
+    old_key = target.key_path.read_bytes()
+    stage_archive(target, archive_file, PASSPHRASE)
+    real_remove = restore._remove
+
+    def pending_stuck(path):
+        if path == target.pending_dir:
+            raise OSError("device busy")
+        real_remove(path)
+
+    monkeypatch.setattr(restore, "_remove", pending_stuck)
+    assert apply_staged(target, ok_migrate) is ApplyOutcome.APPLIED
+    assert (_restore_root(target) / "journal.json").exists()
+    monkeypatch.undo()
+
+    (target.stacks_dir / "web" / ".env").write_text("A=edited-after-restore\n")
+    assert apply_staged(target, ok_migrate) is ApplyOutcome.APPLIED
+    assert (target.stacks_dir / "web" / ".env").read_text() == "A=edited-after-restore\n"
+    assert pending_manifest(target) is None
+    assert apply_staged(target, ok_migrate) is ApplyOutcome.NONE
+    assert host_names(target.db_path) == ["backup-host"]
+    assert target.key_path.read_bytes() != old_key

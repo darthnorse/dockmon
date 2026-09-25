@@ -12,7 +12,7 @@ from backup import archive
 from deployment import stack_storage
 from backup.archive import create_backup
 from backup.crypto import decrypt_stream
-from backup.errors import BackupError
+from backup.errors import BackupError, BackupSpaceError
 from backup.validate import extract_archive
 from tests.unit.backup.conftest import FAST_KDF, HEAD_REVISION, PASSPHRASE, host_names
 
@@ -218,4 +218,17 @@ def test_creation_total_counts_the_manifest_like_restore_does(install, monkeypat
     payload = sum(entry["size"] for entry in manifest["files"].values())
     monkeypatch.setattr(archive, "MAX_TOTAL_BYTES", payload + 10)
     with pytest.raises(BackupError, match="limit"):
+        _backup(install)
+
+
+def test_stack_bytes_held_in_memory_are_capped(install, monkeypatch):
+    monkeypatch.setattr(archive, "MAX_STACK_BYTES_IN_MEMORY", 10)
+    with pytest.raises(BackupError, match="stack"):
+        _backup(install)
+
+
+def test_insufficient_space_is_a_space_error(install, monkeypatch):
+    usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr(archive.shutil, "disk_usage", lambda _p: usage(100, 99, 1))
+    with pytest.raises(BackupSpaceError):
         _backup(install)

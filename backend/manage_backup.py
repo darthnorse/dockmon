@@ -31,6 +31,7 @@ from backup.archive import create_backup
 from backup.crypto import DEFAULT_KDF, MIN_PASSPHRASE_LENGTH
 from backup.errors import BackupError, RestoreStateError
 from backup.fsutil import fsync_dir
+from backup.oplock import operation_lock
 from backup.paths import BackupPaths
 from backup.restore import (
     ApplyOutcome,
@@ -46,6 +47,7 @@ from backup.restore import (
 from migrate import run_migrations
 
 BACKUP_KDF = DEFAULT_KDF
+CLI_INITIATOR = {"username": "manage_backup CLI"}
 RESTART_HINT = "Restart the DockMon container to apply it: docker restart dockmon"
 
 
@@ -118,7 +120,9 @@ def cmd_verify(paths: BackupPaths, args) -> None:
 
 
 def cmd_stage(paths: BackupPaths, args) -> None:
-    manifest = stage_archive(paths, Path(args.archive), _read_passphrase(args, confirm=False), replace=args.replace)
+    manifest = stage_archive(
+        paths, Path(args.archive), _read_passphrase(args, confirm=False), replace=args.replace, initiator=CLI_INITIATOR
+    )
     print(f"Staged: {_describe(manifest)}")
     print(RESTART_HINT)
 
@@ -157,7 +161,7 @@ def cmd_list_rollbacks(paths: BackupPaths, _args) -> None:
 
 
 def cmd_rollback(paths: BackupPaths, args) -> None:
-    manifest = stage_rollback(paths, args.rollback_id, replace=args.replace)
+    manifest = stage_rollback(paths, args.rollback_id, replace=args.replace, initiator=CLI_INITIATOR)
     print(f"Staged rollback: {_describe(manifest)}")
     print(RESTART_HINT)
 
@@ -200,6 +204,8 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+READ_ONLY_COMMANDS = {"status", "list-rollbacks"}
+
 COMMANDS = {
     "create": cmd_create,
     "verify": cmd_verify,
@@ -217,7 +223,11 @@ def main(argv: Optional[List[str]] = None, paths: Optional[BackupPaths] = None) 
     args = _parser().parse_args(argv)
     paths = paths or BackupPaths.from_environment()
     try:
-        COMMANDS[args.command](paths, args)
+        if args.command in READ_ONLY_COMMANDS:
+            COMMANDS[args.command](paths, args)
+        else:
+            with operation_lock(paths):
+                COMMANDS[args.command](paths, args)
     except RestoreStateError as e:
         print(f"RESTORE STATE ERROR: {e}", file=sys.stderr)
         return 1

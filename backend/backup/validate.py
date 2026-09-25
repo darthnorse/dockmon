@@ -30,7 +30,7 @@ from backup.archive import (
     MAX_TOTAL_BYTES,
     STACKS_PREFIX,
 )
-from backup.errors import BackupError, BackupValidationError
+from backup.errors import BackupError, BackupSpaceError, BackupValidationError
 from backup.fsutil import IO_BLOCK, write_new_file
 from deployment.stack_storage import COMPOSE_FILENAMES, validate_stack_name
 from utils.env_files import is_safe_env_filename
@@ -45,6 +45,8 @@ ENCRYPTED_COLUMNS = (
 
 _STACK_MEMBER = re.compile(rf"^{STACKS_PREFIX}/([^/]+)/([^/]+)$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_UTC_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
+MAX_APP_VERSION_LENGTH = 64
 
 
 @lru_cache(maxsize=1)
@@ -109,9 +111,13 @@ def parse_manifest(data: bytes) -> dict:
             or not _SHA256.match(entry["sha256"])
         ):
             raise BackupValidationError(f"Backup manifest entry for {name} is malformed")
-    for field in ("alembic_revision", "created_at"):
-        if not isinstance(manifest.get(field), str):
-            raise BackupValidationError(f"Backup manifest is missing {field}")
+    if not isinstance(manifest.get("alembic_revision"), str):
+        raise BackupValidationError("Backup manifest is missing alembic_revision")
+    if not isinstance(manifest.get("created_at"), str) or not _UTC_TIMESTAMP.match(manifest["created_at"]):
+        raise BackupValidationError("Backup manifest has an invalid created_at")
+    app_version = manifest.get("app_version")
+    if not isinstance(app_version, str) or len(app_version) > MAX_APP_VERSION_LENGTH:
+        raise BackupValidationError("Backup manifest has an invalid app_version")
     _check_summary(manifest.get("summary"))
     return manifest
 
@@ -225,7 +231,7 @@ def _check_room_for(manifest: dict, dest_dir: Path) -> None:
     if declared > MAX_TOTAL_BYTES:
         raise BackupValidationError("Backup archive is too large")
     if shutil.disk_usage(dest_dir).free < declared + FREE_SPACE_MARGIN:
-        raise BackupValidationError("Not enough free disk space to extract the backup")
+        raise BackupSpaceError("Not enough free disk space to extract the backup")
 
 
 def check_database(db_path: Path, key: bytes, expected_revision: str) -> None:

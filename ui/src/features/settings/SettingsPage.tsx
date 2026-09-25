@@ -4,7 +4,7 @@
  */
 
 import { useState, useMemo } from 'react'
-import { LayoutDashboard, Bell, AlertTriangle, Settings, Package, Key, ScrollText, Users, LucideIcon, KeyRound, Shield, UserSquare2, ClipboardList } from 'lucide-react'
+import { LayoutDashboard, Bell, AlertTriangle, Settings, Package, Key, ScrollText, Users, LucideIcon, KeyRound, Shield, UserSquare2, ClipboardList, Archive } from 'lucide-react'
 import { DashboardSettings } from './components/DashboardSettings'
 import { NotificationChannelsSection } from './components/NotificationChannelsSection'
 import { AlertTemplateSettings } from './components/AlertTemplateSettings'
@@ -18,10 +18,11 @@ import { OIDCSettings } from './components/OIDCSettings'
 import { GroupsSettings } from './components/GroupsSettings'
 import { GroupPermissionsSettings } from './components/GroupPermissionsSettings'
 import { AuditLogSettings } from './components/AuditLogSettings'
+import { BackupSettings } from './components/BackupSettings'
 import { useAuth } from '@/features/auth/AuthContext'
 import { usePendingUserCount } from '@/hooks/useUsers'
 
-type TabId = 'dashboard' | 'alerts' | 'notifications' | 'updates' | 'events' | 'api-keys' | 'users' | 'groups' | 'permissions' | 'oidc' | 'audit-log' | 'system'
+type TabId = 'dashboard' | 'alerts' | 'notifications' | 'updates' | 'events' | 'api-keys' | 'users' | 'groups' | 'permissions' | 'oidc' | 'audit-log' | 'backup' | 'system'
 
 interface Tab {
   id: TabId
@@ -45,6 +46,7 @@ const TABS: Tab[] = [
   { id: 'permissions', label: 'Permissions', icon: Shield, capabilities: ['groups.manage'] },
   { id: 'oidc', label: 'OIDC', icon: KeyRound, capabilities: ['oidc.manage'] },
   { id: 'audit-log', label: 'Audit Log', icon: ClipboardList, capabilities: ['audit.view'], wideLayout: true },
+  { id: 'backup', label: 'Backup', icon: Archive, capabilities: ['backup.manage'] },
   { id: 'system', label: 'System', icon: Settings, capabilities: ['settings.manage'] },
 ]
 
@@ -126,6 +128,7 @@ export function SettingsPage() {
           {activeTab === 'permissions' && hasCapability('groups.manage') && <GroupPermissionsSettings />}
           {activeTab === 'oidc' && hasCapability('oidc.manage') && <OIDCSettings />}
           {activeTab === 'audit-log' && hasCapability('audit.view') && <AuditLogSettings />}
+          {activeTab === 'backup' && hasCapability('backup.manage') && <BackupSettings />}
           {activeTab === 'system' && hasCapability('settings.manage') && <SystemSettings />}
         </div>
       </div>

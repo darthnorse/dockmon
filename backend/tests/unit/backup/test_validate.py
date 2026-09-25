@@ -12,7 +12,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 from backup import validate
-from backup.errors import BackupValidationError
+from backup.errors import BackupSpaceError, BackupValidationError
 from backup.validate import check_database, extract_archive
 from tests.unit.backup.conftest import HEAD_REVISION as HEAD
 from tests.unit.backup.conftest import OLDER_REVISION, seed_database
@@ -297,7 +297,7 @@ def test_declared_total_must_fit_before_anything_is_written(tmp_path, monkeypatc
     usage = collections.namedtuple("usage", "total used free")
     monkeypatch.setattr(validate.shutil, "disk_usage", lambda _p: usage(100, 99, 1))
     tar_path = _write_tar(tmp_path / "a.tar.gz", _valid_members())
-    with pytest.raises(BackupValidationError, match="space"):
+    with pytest.raises(BackupSpaceError):
         extract_archive(tar_path, tmp_path / "out")
     assert not (tmp_path / "out" / "dockmon.db").exists()
 
@@ -321,4 +321,14 @@ def test_manifest_sizes_must_be_plausible(tmp_path, size):
     members[0] = _regular("manifest.json", data)
     tar_path = _write_tar(tmp_path / "a.tar.gz", members)
     with pytest.raises(BackupValidationError, match="malformed"):
+        extract_archive(tar_path, tmp_path / "out")
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"created_at": "2026-09-25 10:00:00"}, {"created_at": "yesterday"}, {"app_version": 5}, {"app_version": "x" * 65}],
+)
+def test_manifest_timestamp_and_version_are_checked(tmp_path, overrides):
+    tar_path = _write_tar(tmp_path / "a.tar.gz", _valid_members(manifest_overrides=overrides))
+    with pytest.raises(BackupValidationError):
         extract_archive(tar_path, tmp_path / "out")

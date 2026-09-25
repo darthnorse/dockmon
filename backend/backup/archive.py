@@ -6,6 +6,7 @@ Container data (including relative bind mounts inside stack directories) is
 deliberately not included.
 """
 
+import errno
 import hashlib
 import io
 import json
@@ -21,7 +22,7 @@ from pathlib import Path
 from typing import BinaryIO, Dict, List, Tuple
 
 from backup.crypto import DEFAULT_KDF, MIN_PASSPHRASE_LENGTH, KdfParams, encrypt_stream
-from backup.errors import BackupError
+from backup.errors import BackupError, BackupSpaceError
 from backup.fsutil import IO_BLOCK
 from backup.paths import BackupPaths
 from deployment.stack_storage import managed_stack_files, validate_stack_name
@@ -45,6 +46,9 @@ MAX_KEY_BYTES = 4096
 MAX_STACK_FILE_BYTES = 16 * 1024 * 1024
 MAX_DB_BYTES = 64 * 1024**3
 MAX_TOTAL_BYTES = 64 * 1024**3
+# Encrypted file cap: members plus tar, gzip and per-chunk GCM overhead.
+MAX_ARCHIVE_BYTES = MAX_TOTAL_BYTES + MAX_TOTAL_BYTES // 64 + 64 * 1024 * 1024
+MAX_STACK_BYTES_IN_MEMORY = 256 * 1024 * 1024
 
 
 def create_backup(
@@ -63,22 +67,30 @@ def create_backup(
     paths.backup_tmp_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(dir=paths.backup_tmp_dir))
     try:
-        _check_free_space(paths.db_path, work)
-        snapshot = work / DB_NAME
-        before = _stack_fingerprint(_collect_stack_files(paths.stacks_dir))
-        _snapshot_database(paths.db_path, snapshot, include_stats)
-        stacks = _read_stacks_consistently(paths.stacks_dir, before)
-        key = paths.key_path.read_bytes()
-
-        manifest = build_manifest(snapshot, key, stacks, include_stats)
-        _check_format_limits(manifest)
-        tar_path = work / "backup.tar.gz"
-        _write_tar(tar_path, manifest, snapshot, key, stacks)
-        with open(tar_path, "rb") as src:
-            encrypt_stream(src, dest, passphrase, kdf=kdf)
-        return manifest
+        return _create(paths, dest, passphrase, include_stats, kdf, work)
+    except OSError as e:
+        if e.errno == errno.ENOSPC:
+            raise BackupSpaceError("Ran out of disk space while writing the backup") from e
+        raise
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _create(paths: BackupPaths, dest: BinaryIO, passphrase: str, include_stats: bool, kdf: KdfParams, work: Path) -> dict:
+    _check_free_space(paths.db_path, work)
+    snapshot = work / DB_NAME
+    before = _stack_fingerprint(_collect_stack_files(paths.stacks_dir))
+    _snapshot_database(paths.db_path, snapshot, include_stats)
+    stacks = _read_stacks_consistently(paths.stacks_dir, before)
+    key = paths.key_path.read_bytes()
+
+    manifest = build_manifest(snapshot, key, stacks, include_stats)
+    _check_format_limits(manifest)
+    tar_path = work / "backup.tar.gz"
+    _write_tar(tar_path, manifest, snapshot, key, stacks)
+    with open(tar_path, "rb") as src:
+        encrypt_stream(src, dest, passphrase, kdf=kdf)
+    return manifest
 
 
 def utc_now_iso() -> str:
@@ -149,7 +161,7 @@ def _check_free_space(db_path: Path, work: Path) -> None:
     needed = 2 * _live_database_bytes(db_path) + FREE_SPACE_MARGIN
     free = shutil.disk_usage(work).free
     if free < needed:
-        raise BackupError(
+        raise BackupSpaceError(
             f"Not enough free disk space for a backup: need {needed // (1024 * 1024)} MiB, "
             f"have {free // (1024 * 1024)} MiB"
         )
@@ -237,10 +249,15 @@ def _read_stacks_consistently(stacks_dir: Path, before: tuple) -> Dict[str, byte
     for _ in range(STACK_COPY_ATTEMPTS):
         files = _collect_stack_files(stacks_dir)
         contents = {}
+        held = 0
         try:
             for name, path in files:
-                if path.stat().st_size > MAX_STACK_FILE_BYTES:
+                size = path.stat().st_size
+                if size > MAX_STACK_FILE_BYTES:
                     raise BackupError(f"{name} is larger than {MAX_STACK_FILE_BYTES} bytes")
+                held += size
+                if held > MAX_STACK_BYTES_IN_MEMORY:
+                    raise BackupError(f"Managed stack files exceed {MAX_STACK_BYTES_IN_MEMORY} bytes in total")
                 contents[name] = path.read_bytes()
         except FileNotFoundError:
             contents = None

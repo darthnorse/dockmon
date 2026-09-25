@@ -5,6 +5,7 @@ import pytest
 import manage_backup
 from backup import restore
 from backup.errors import RestoreStateError
+from backup.oplock import operation_lock
 from tests.unit.backup.conftest import FAST_KDF, PASSPHRASE, build_install, host_names
 
 
@@ -112,3 +113,10 @@ def test_rollback_commands(tmp_path, head_db_template, install, passphrase_file,
     assert _run(install, "delete-rollback", newest["id"]) == 0
     assert restore.list_rollbacks(install) == []
     assert _run(install, "delete-rollback", "../../etc") == 1
+
+
+def test_commands_refuse_while_another_operation_runs(install, tmp_path, passphrase_file, capsys):
+    with operation_lock(install):
+        assert _run(install, "create", str(tmp_path / "out.dmbak"), "--passphrase-file", str(passphrase_file)) == 1
+        assert "Another backup or restore operation is running" in capsys.readouterr().err
+        assert _run(install, "status") == 0

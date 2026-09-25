@@ -108,6 +108,11 @@ class RateLimiter:
                 _get_int_env('DOCKMON_RATE_BURST_RULES_TEST', 2),
                 _get_int_env('DOCKMON_RATE_VIOLATIONS_RULES_TEST', 3)
             ),
+            "backup": (
+                _get_int_env('DOCKMON_RATE_LIMIT_BACKUP', 10),
+                _get_int_env('DOCKMON_RATE_BURST_BACKUP', 5),
+                _get_int_env('DOCKMON_RATE_VIOLATIONS_BACKUP', 5)
+            ),
             "stacks": (
                 _get_int_env('DOCKMON_RATE_LIMIT_STACKS', 60),  # Stack CRUD operations
                 _get_int_env('DOCKMON_RATE_BURST_STACKS', 15),

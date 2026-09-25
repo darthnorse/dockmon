@@ -75,6 +75,8 @@ from models.request_models import (
     RenameContainerRequest, CreateNetworkRequest
 )
 from audit.audit_logger import AuditAction, AuditEntityType, log_audit, log_container_action, log_host_change, log_settings_change, get_client_info
+from backup.completion import announce_completed_restore
+from backup.paths import BackupPaths
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, get_capabilities_for_user, Capabilities, get_visible_host_ids_for_auth, get_visible_host_ids_for_user, filter_visible_hosts, visible_host_models, host_is_visible, require_host_access, require_source_host_access, check_host_access, check_composite_keys_visible, check_host_ids_visible
@@ -218,6 +220,7 @@ async def lifespan(app: FastAPI):
 
     await monitor.event_logger.start()
     monitor.event_logger.log_system_event("DockMon Backend Starting", "DockMon backend is initializing", EventSeverity.INFO, LogEventType.STARTUP)
+    await announce_completed_restore(BackupPaths.from_environment(), monitor.db, monitor.event_logger)
 
     # Connect security audit logger to event logger
     security_audit.set_event_logger(monitor.event_logger)
@@ -549,6 +552,8 @@ app.include_router(capabilities_router)  # Capabilities metadata for permissions
 # Audit log routes (v2.3.0 Phase 6) - audit log viewer and management
 from audit.audit_routes import router as audit_routes_router
 app.include_router(audit_routes_router)  # Audit log management (admin only)
+from backup.routes import router as backup_router
+app.include_router(backup_router)  # Backup & restore (admin, all hosts)
 
 # Action token routes (v2.2.0+) - notification action links
 from auth import action_token_routes

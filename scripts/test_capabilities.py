@@ -287,6 +287,13 @@ def build_endpoint_matrix(host_id: str, container_id: str) -> list[Endpoint]:
         Endpoint("GET", "/api/v2/audit-log/stats", "audit.view"),
         Endpoint("GET", "/api/v2/audit-log/export", "audit.view"),
 
+        # ---- backup.manage ----
+        Endpoint("GET", "/api/v2/backup/status", "backup.manage"),
+        Endpoint("POST", "/api/v2/backup", "backup.manage", body={}),
+        Endpoint("POST", "/api/v2/backup/restore", "backup.manage", body={}),
+        Endpoint("POST", "/api/v2/backup/rollbacks/19700101T000000000000Z/stage", "backup.manage", body={}),
+        Endpoint("DELETE", "/api/v2/backup/rollbacks/19700101T000000000000Z", "backup.manage"),
+
         # ---- registry.view ----
         Endpoint("GET", "/api/registry-credentials", "registry.view"),
 

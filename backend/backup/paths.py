@@ -52,6 +52,14 @@ class BackupPaths:
         return self.restore_dir / "upload"
 
     @property
+    def incoming_dir(self) -> Path:
+        return self.restore_dir / "incoming"
+
+    @property
+    def downloads_dir(self) -> Path:
+        return self.data_dir / ".backup-downloads"
+
+    @property
     def journal_path(self) -> Path:
         return self.restore_dir / "journal.json"
 

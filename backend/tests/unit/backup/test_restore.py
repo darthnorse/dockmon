@@ -1,3 +1,5 @@
+import collections
+import errno
 import io
 import os
 import shutil
@@ -9,7 +11,14 @@ import pytest
 
 from backup import restore
 from backup.archive import create_backup
-from backup.errors import BackupDecryptError, BackupError, RestoreStateError
+from backup.errors import (
+    BackupConflictError,
+    BackupDecryptError,
+    BackupError,
+    BackupNotFoundError,
+    BackupSpaceError,
+    RestoreStateError,
+)
 from backup.restore import (
     ApplyOutcome,
     apply_staged,
@@ -17,6 +26,7 @@ from backup.restore import (
     delete_rollback,
     list_rollbacks,
     pending_manifest,
+    read_completed_marker,
     stage_archive,
     stage_rollback,
     verify_archive,
@@ -578,3 +588,79 @@ def test_pending_removal_failure_after_commit_does_not_block_start_or_reapply(ta
     assert apply_staged(target, ok_migrate) is ApplyOutcome.NONE
     assert host_names(target.db_path) == ["backup-host"]
     assert target.key_path.read_bytes() != old_key
+
+
+def test_initiator_is_carried_into_the_completion_marker(target, archive_file):
+    initiator = {"username": "alice", "user_id": 7, "api_key_name": None, "ip": "10.0.0.5"}
+    stage_archive(target, archive_file, PASSPHRASE, initiator=initiator)
+
+    apply_staged(target, ok_migrate)
+
+    marker = read_completed_marker(target)
+    assert marker["initiator"] == initiator
+    assert marker["restore_id"] == list_rollbacks(target)[0]["id"]
+    assert marker["logged"] is False
+
+
+def test_marker_write_failure_keeps_the_journal_for_a_retry(target, archive_file, monkeypatch):
+    stage_archive(target, archive_file, PASSPHRASE, initiator={"username": "alice"})
+    real_write = restore._write_json_atomic
+
+    def marker_fails(path, data):
+        if path == target.completed_marker:
+            raise OSError("I/O error")
+        real_write(path, data)
+
+    monkeypatch.setattr(restore, "_write_json_atomic", marker_fails)
+    assert apply_staged(target, ok_migrate) is ApplyOutcome.APPLIED
+    assert (_restore_root(target) / "journal.json").exists()
+    monkeypatch.undo()
+
+    assert apply_staged(target, ok_migrate) is ApplyOutcome.APPLIED
+    assert read_completed_marker(target)["initiator"] == {"username": "alice"}
+    assert not (_restore_root(target) / "journal.json").exists()
+
+
+def test_staging_checks_free_space_before_decrypting(target, archive_file, monkeypatch):
+    usage = collections.namedtuple("usage", "total used free")
+    monkeypatch.setattr(restore.shutil, "disk_usage", lambda _p: usage(100, 99, 1))
+    monkeypatch.setattr(restore, "decrypt_stream", lambda *a, **k: pytest.fail("decrypted"))
+    with pytest.raises(BackupSpaceError):
+        stage_archive(target, archive_file, PASSPHRASE)
+
+
+def test_no_space_while_decrypting_is_a_space_error(target, archive_file, monkeypatch):
+    def full(*_a, **_k):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(restore, "decrypt_stream", full)
+    with pytest.raises(BackupSpaceError):
+        stage_archive(target, archive_file, PASSPHRASE)
+
+
+def test_typed_errors_for_conflict_and_not_found(target, archive_file):
+    stage_archive(target, archive_file, PASSPHRASE)
+    with pytest.raises(BackupConflictError):
+        stage_archive(target, archive_file, PASSPHRASE)
+    with pytest.raises(BackupNotFoundError):
+        delete_rollback(target, "20260101T000000000000Z")
+
+
+def test_list_rollbacks_skips_unreadable_entries(target, archive_file):
+    stage_archive(target, archive_file, PASSPHRASE)
+    apply_staged(target, ok_migrate)
+    broken = _restore_root(target) / "rollback-20200101T000000000000Z"
+    broken.mkdir()
+    (broken / "dockmon.db").write_text("x")
+    (broken / "rollback.json").write_text("{not json")
+
+    assert len(list_rollbacks(target)) == 1
+
+
+def test_startup_sweeps_backup_temp_files_left_by_a_crash(target):
+    leftover = target.backup_tmp_dir / "tmpabc123"
+    leftover.mkdir(parents=True)
+    (leftover / "dockmon.db").write_text("half-written snapshot")
+
+    assert apply_staged(target, ok_migrate) is ApplyOutcome.NONE
+    assert not leftover.exists()

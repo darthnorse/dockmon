@@ -13,6 +13,7 @@ finds the journal in phase "swapping" rolls every move back; one in phase
 """
 
 import enum
+import errno
 import json
 import logging
 import os
@@ -24,9 +25,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-from backup.archive import DB_NAME, KEY_NAME, MANIFEST_NAME, STACKS_PREFIX, build_manifest, utc_now_iso
+from backup.archive import (
+    DB_NAME,
+    FREE_SPACE_MARGIN,
+    KEY_NAME,
+    MANIFEST_NAME,
+    STACKS_PREFIX,
+    build_manifest,
+    utc_now_iso,
+)
 from backup.crypto import decrypt_stream
-from backup.errors import BackupError, RestoreStateError
+from backup.errors import (
+    BackupConflictError,
+    BackupError,
+    BackupNotFoundError,
+    BackupSpaceError,
+    RestoreStateError,
+)
 from backup.fsutil import copy_new_file, fsync_dir
 from backup.paths import RESTORE_DIRNAME, BackupPaths
 from backup.validate import check_database, check_member_name, extract_archive
@@ -37,6 +52,7 @@ logger = logging.getLogger(__name__)
 ROLLBACK_PREFIX = "rollback-"
 FAILED_PREFIX = "failed-"
 ROLLBACK_INFO = "rollback.json"
+INITIATOR_NAME = "initiator.json"
 CANDIDATE_NAME = "candidate.db"
 STAGED_DIRNAME = "staged"
 DB_SIDECARS = ("-wal", "-shm")
@@ -119,7 +135,7 @@ def _roots(paths: BackupPaths) -> List[Path]:
 
 def _validate_rollback_id(rollback_id: str) -> None:
     if not isinstance(rollback_id, str) or not _TIMESTAMP_ID.match(rollback_id):
-        raise BackupError(f"Invalid rollback id: {rollback_id!r}")
+        raise BackupNotFoundError(f"No rollback copy {rollback_id!r}")
 
 
 def _checkpoint_and_close(db_path: Path) -> None:
@@ -143,9 +159,9 @@ def _best_effort(action: Callable, *args) -> None:
 
 def _guard_can_stage(paths: BackupPaths, replace: bool) -> None:
     if paths.journal_path.exists():
-        raise BackupError("A restore is being applied; restart DockMon to finish it first")
+        raise BackupConflictError("A restore is being applied; restart DockMon to finish it first")
     if paths.pending_dir.exists() and not replace:
-        raise BackupError("A restore is already staged; cancel it first")
+        raise BackupConflictError("A restore is already staged; cancel it first")
 
 
 def _new_upload_workspace(paths: BackupPaths) -> Path:
@@ -154,16 +170,28 @@ def _new_upload_workspace(paths: BackupPaths) -> Path:
     return Path(tempfile.mkdtemp(dir=paths.upload_dir))
 
 
-def _promote_to_pending(paths: BackupPaths, extracted: Path, replace: bool) -> None:
+def _promote_to_pending(paths: BackupPaths, extracted: Path, replace: bool, initiator: Optional[dict]) -> None:
+    _write_json_atomic(extracted / INITIATOR_NAME, initiator or {})
     if paths.pending_dir.exists():
         if not replace:
-            raise BackupError("A restore is already staged; cancel it first")
+            raise BackupConflictError("A restore is already staged; cancel it first")
         shutil.rmtree(paths.pending_dir)
     os.rename(extracted, paths.pending_dir)
     fsync_dir(paths.restore_dir)
 
 
 def _unpack(archive_path: Path, passphrase: str, work: Path) -> tuple:
+    try:
+        return _decrypt_and_check(archive_path, passphrase, work)
+    except OSError as e:
+        if e.errno == errno.ENOSPC:
+            raise BackupSpaceError("Ran out of disk space while unpacking the backup") from e
+        raise
+
+
+def _decrypt_and_check(archive_path: Path, passphrase: str, work: Path) -> tuple:
+    if shutil.disk_usage(work).free < archive_path.stat().st_size + FREE_SPACE_MARGIN:
+        raise BackupSpaceError("Not enough free disk space to unpack the backup")
     tar_path = work / "backup.tar.gz"
     fd = os.open(tar_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with open(archive_path, "rb") as src, os.fdopen(fd, "wb") as dst:
@@ -184,13 +212,23 @@ def verify_archive(paths: BackupPaths, archive_path: Path, passphrase: str) -> d
         shutil.rmtree(work, ignore_errors=True)
 
 
-def stage_archive(paths: BackupPaths, archive_path: Path, passphrase: str, replace: bool = False) -> dict:
-    """Decrypt, validate and stage an archive. Nothing live changes."""
+def stage_archive(
+    paths: BackupPaths,
+    archive_path: Path,
+    passphrase: str,
+    replace: bool = False,
+    initiator: Optional[dict] = None,
+) -> dict:
+    """Decrypt, validate and stage an archive. Nothing live changes.
+
+    `initiator` (who asked, no secrets) is kept beside the staged files because
+    the audit log it would go to is part of the database being replaced.
+    """
     _guard_can_stage(paths, replace)
     work = _new_upload_workspace(paths)
     try:
         extracted, manifest = _unpack(archive_path, passphrase, work)
-        _promote_to_pending(paths, extracted, replace)
+        _promote_to_pending(paths, extracted, replace, initiator)
         return manifest
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -203,9 +241,27 @@ def pending_manifest(paths: BackupPaths) -> Optional[dict]:
     return json.loads(manifest_path.read_text())
 
 
+def _read_json_or_none(path: Path) -> Optional[dict]:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def read_completed_marker(paths: BackupPaths) -> Optional[dict]:
+    return _read_json_or_none(paths.completed_marker)
+
+
+def mark_completed_logged(paths: BackupPaths) -> None:
+    marker = read_completed_marker(paths)
+    if marker is not None:
+        _write_json_atomic(paths.completed_marker, dict(marker, logged=True))
+
+
 def cancel_staged(paths: BackupPaths) -> bool:
     if paths.journal_path.exists():
-        raise BackupError("A restore is being applied; it can no longer be cancelled")
+        raise BackupConflictError("A restore is being applied; it can no longer be cancelled")
     if not paths.pending_dir.exists():
         return False
     shutil.rmtree(paths.pending_dir)
@@ -456,11 +512,19 @@ def _finish(paths: BackupPaths, plan: dict) -> None:
     until pending is gone, so a leftover pending dir is never applied twice."""
     _best_effort(_remove, paths.certs_dir)
     _best_effort(_remove, paths.session_secret_path)
-    _best_effort(
-        _write_json_atomic,
-        paths.completed_marker,
-        {"restored_at": utc_now_iso(), "rollback_id": plan["rollback_id"], "backup": plan.get("backup")},
-    )
+    if paths.pending_dir.exists():
+        marker = {
+            "restore_id": plan["rollback_id"],
+            "restored_at": utc_now_iso(),
+            "backup": plan.get("backup"),
+            "initiator": _read_json_or_none(paths.pending_dir / INITIATOR_NAME) or {},
+            "logged": False,
+        }
+        try:
+            _write_json_atomic(paths.completed_marker, marker)
+        except Exception as e:
+            logger.error(f"Restore applied, but its completion record could not be written ({e}); retrying on the next start")
+            return
     _best_effort(_remove, paths.pending_dir)
     for root in _roots(paths):
         _best_effort(_remove, root / STAGED_DIRNAME)
@@ -488,11 +552,13 @@ def _abandon(paths: BackupPaths) -> None:
 
 
 def _clean_work_dirs(paths: BackupPaths) -> None:
-    """Remove upload, staging and journal leftovers, and rollback dirs that hold no parked database.
+    """Remove upload, backup-temp, staging and journal leftovers, and rollback dirs that hold no parked database.
 
     Only safe while nothing else can be staging, i.e. from apply at startup.
     """
     shutil.rmtree(paths.upload_dir, ignore_errors=True)
+    shutil.rmtree(paths.incoming_dir, ignore_errors=True)
+    shutil.rmtree(paths.backup_tmp_dir, ignore_errors=True)
     paths.journal_path.with_name(paths.journal_path.name + ".tmp").unlink(missing_ok=True)
     db_root = _work_root(paths.db_path.parent)
     complete = {
@@ -511,22 +577,27 @@ def list_rollbacks(paths: BackupPaths) -> List[dict]:
     db_root = _work_root(paths.db_path.parent)
     found = []
     for d in db_root.glob(f"{ROLLBACK_PREFIX}*"):
-        info_path = d / ROLLBACK_INFO
-        if not (d / DB_NAME).exists() or not info_path.exists():
+        info = _read_json_or_none(d / ROLLBACK_INFO)
+        if info is None or not isinstance(info.get("id"), str) or not (d / DB_NAME).exists():
             continue
-        found.append(json.loads(info_path.read_text()))
+        found.append(info)
     return sorted(found, key=lambda r: r["id"], reverse=True)
 
 
 def delete_rollback(paths: BackupPaths, rollback_id: str) -> None:
     _validate_rollback_id(rollback_id)
     if not _rollback_dir(_work_root(paths.db_path.parent), rollback_id).exists():
-        raise BackupError(f"No rollback copy {rollback_id}")
+        raise BackupNotFoundError(f"No rollback copy {rollback_id}")
     for root in _roots(paths):
         _remove(_rollback_dir(root, rollback_id))
 
 
-def stage_rollback(paths: BackupPaths, rollback_id: str, replace: bool = False) -> dict:
+def stage_rollback(
+    paths: BackupPaths,
+    rollback_id: str,
+    replace: bool = False,
+    initiator: Optional[dict] = None,
+) -> dict:
     """Stage a rollback copy like an uploaded backup.
 
     It restores the database, key and stack files the earlier restore replaced;
@@ -537,7 +608,7 @@ def stage_rollback(paths: BackupPaths, rollback_id: str, replace: bool = False) 
     key_file = _rollback_dir(_work_root(paths.key_path.parent), rollback_id) / KEY_NAME
     stacks_dir = _rollback_dir(_work_root(paths.stacks_dir), rollback_id)
     if not (db_dir / DB_NAME).exists() or not key_file.exists():
-        raise BackupError(f"No complete rollback copy {rollback_id}")
+        raise BackupNotFoundError(f"No complete rollback copy {rollback_id}")
     _guard_can_stage(paths, replace)
 
     work = _new_upload_workspace(paths)
@@ -566,7 +637,7 @@ def stage_rollback(paths: BackupPaths, rollback_id: str, replace: bool = False) 
         manifest = build_manifest(extracted / DB_NAME, key, stacks, include_stats=True)
         _write_json_atomic(extracted / MANIFEST_NAME, manifest)
         check_database(extracted / DB_NAME, key, manifest["alembic_revision"])
-        _promote_to_pending(paths, extracted, replace)
+        _promote_to_pending(paths, extracted, replace, initiator)
         return manifest
     finally:
         shutil.rmtree(work, ignore_errors=True)

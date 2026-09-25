@@ -141,9 +141,6 @@ def _best_effort(action: Callable, *args) -> None:
         logger.warning(f"Restore cleanup step failed, continuing: {e}")
 
 
-# --- staging --------------------------------------------------------------
-
-
 def _guard_can_stage(paths: BackupPaths, replace: bool) -> None:
     if paths.journal_path.exists():
         raise BackupError("A restore is being applied; restart DockMon to finish it first")
@@ -213,9 +210,6 @@ def cancel_staged(paths: BackupPaths) -> bool:
         return False
     shutil.rmtree(paths.pending_dir)
     return True
-
-
-# --- apply ----------------------------------------------------------------
 
 
 def apply_staged(paths: BackupPaths, migrate: MigrateFn) -> ApplyOutcome:
@@ -511,9 +505,6 @@ def _clean_work_dirs(paths: BackupPaths) -> None:
         for d in root.glob(f"{ROLLBACK_PREFIX}*"):
             if d.name not in complete:
                 shutil.rmtree(d, ignore_errors=True)
-
-
-# --- rollback copies ------------------------------------------------------
 
 
 def list_rollbacks(paths: BackupPaths) -> List[dict]:

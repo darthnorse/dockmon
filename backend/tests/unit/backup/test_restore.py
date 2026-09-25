@@ -101,9 +101,6 @@ def _restore_root(paths) -> Path:
     return paths.data_dir / ".dockmon-restore"
 
 
-# --- staging --------------------------------------------------------------
-
-
 def test_stage_validates_and_leaves_live_data_untouched(target, archive_file):
     old_key = target.key_path.read_bytes()
 
@@ -134,9 +131,6 @@ def test_cancel_removes_the_staged_restore(target, archive_file):
     assert cancel_staged(target) is True
     assert pending_manifest(target) is None
     assert cancel_staged(target) is False
-
-
-# --- apply: happy path ----------------------------------------------------
 
 
 def test_apply_without_staged_restore_is_a_noop(target):
@@ -226,9 +220,6 @@ def test_real_migration_of_an_older_backup(tmp_path, older_db_template, target, 
     conn.close()
 
 
-# --- apply: failures before the swap --------------------------------------
-
-
 def test_failed_migration_cancels_restore_and_keeps_live_data(target, archive_file):
     old_key = target.key_path.read_bytes()
     stage_archive(target, archive_file, PASSPHRASE)
@@ -290,8 +281,6 @@ def test_rollback_failure_raises_and_keeps_the_journal(target, archive_file, mon
     assert (_restore_root(target) / "journal.json").exists()
 
 
-# --- apply: power loss at every step --------------------------------------
-
 FS_STEPS = ("_move", "_remove", "_write_json_atomic")
 
 
@@ -348,9 +337,6 @@ def test_power_loss_at_every_step_ends_fully_old_or_fully_new(
         outcomes.add(outcome)
 
     assert ApplyOutcome.APPLIED in outcomes and ApplyOutcome.FAILED in outcomes
-
-
-# --- rollback copies ------------------------------------------------------
 
 
 def test_rollback_copy_restores_the_previous_install(target, archive_file):
@@ -412,9 +398,6 @@ def test_rollback_ids_are_validated(target, bad_id):
         stage_rollback(target, bad_id)
 
 
-# --- same-filesystem guarantee --------------------------------------------
-
-
 def test_stack_dir_on_another_filesystem_fails_before_the_swap(target, archive_file, monkeypatch):
     old_key = target.key_path.read_bytes()
     stage_archive(target, archive_file, PASSPHRASE)
@@ -437,9 +420,6 @@ def test_verify_checks_without_staging(target, archive_file):
     assert pending_manifest(target) is None
     with pytest.raises(BackupDecryptError):
         verify_archive(target, archive_file, "wrong passphrase!!")
-
-
-# --- review regressions ---------------------------------------------------
 
 
 def test_live_directory_in_place_of_an_archived_file_is_never_moved(target, archive_file):

@@ -196,9 +196,6 @@ def test_not_a_gzip_tar_rejected(tmp_path):
         extract_archive(path, tmp_path / "out")
 
 
-# --- check_database -------------------------------------------------------
-
-
 @pytest.fixture
 def key() -> bytes:
     return Fernet.generate_key()

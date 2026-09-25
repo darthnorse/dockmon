@@ -109,9 +109,6 @@ def _upload(client, keys, blob: bytes):
     )
 
 
-# --- access control -------------------------------------------------------
-
-
 @pytest.mark.integration
 class TestAccess:
     def test_capability_is_admin_only(self):
@@ -149,9 +146,6 @@ class TestAccess:
             assert client.get("/api/v2/backup/status").status_code == 200
         finally:
             app.dependency_overrides.pop(get_current_user_or_api_key, None)
-
-
-# --- create / download ----------------------------------------------------
 
 
 @pytest.mark.integration
@@ -228,9 +222,6 @@ class TestDownload:
         asyncio.run(run())
         assert sent[0] == "http.response.start"
         assert len(_download(client, keys, meta["download_id"])) == meta["size"]
-
-
-# --- upload / restore -----------------------------------------------------
 
 
 @pytest.mark.integration
@@ -361,9 +352,6 @@ class TestRestore:
         assert client.delete(f"/api/v2/backup/rollbacks/{rollback_id}", headers=keys.admin).status_code == 204
         assert client.delete(f"/api/v2/backup/rollbacks/{rollback_id}", headers=keys.admin).status_code == 404
         assert client.delete("/api/v2/backup/rollbacks/..%2F..%2Fetc", headers=keys.admin).status_code == 404
-
-
-# --- post-restore audit hook ----------------------------------------------
 
 
 @pytest.mark.integration

@@ -19,6 +19,9 @@ CREDENTIALS_FILE = os.path.join(DATA_DIR, 'frontend_credentials.txt')
 # Certificates directory for TLS
 CERTS_DIR = os.path.join(DATA_DIR, 'certs')
 
+# Default when SESSION_SECRET_FILE is unset; not DATA_DIR-relative, matching existing installs
+DEFAULT_SESSION_SECRET_FILE = '/app/data/.session_secret'
+
 # Ensure data directory exists with proper permissions
 def ensure_data_dirs():
     """Create data directories if they don't exist"""

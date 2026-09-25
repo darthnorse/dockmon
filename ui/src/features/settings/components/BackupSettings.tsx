@@ -11,8 +11,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { useAuth } from '@/features/auth/AuthContext'
 import {
+  backupDownloadUrl,
   isAllHostsRequired,
   useBackupStatus,
   useCancelStagedRestore,
@@ -22,8 +22,9 @@ import {
   useStageRollback,
 } from '@/hooks/useBackup'
 import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
+import { pluralize } from '@/lib/utils/formatting'
 import { formatDateTime } from '@/lib/utils/timeFormat'
-import type { BackupManifestSummary } from '@/types/backup'
+import type { BackupDownload, BackupManifestSummary, RollbackCopy } from '@/types/backup'
 import { ToggleSwitch } from './ToggleSwitch'
 
 const MIN_PASSPHRASE_LENGTH = 8
@@ -31,7 +32,7 @@ const INPUT_CLASS =
   'w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500'
 
 function plural(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? '' : 's'}`
+  return `${count} ${pluralize(count, noun)}`
 }
 
 function SectionHeader({ title, description }: { title: string; description: string }) {
@@ -108,7 +109,7 @@ function CreateBackupSection({ busy }: { busy: boolean }) {
             />
           </div>
         </div>
-        {tooShort && <p className="text-xs text-red-400">The passphrase must be at least 8 characters.</p>}
+        {tooShort && <p className="text-xs text-red-400">The passphrase must be at least {MIN_PASSPHRASE_LENGTH} characters.</p>}
         {mismatch && <p className="text-xs text-red-400">The passphrases do not match.</p>}
         <ToggleSwitch
           id="backup-include-stats"
@@ -240,7 +241,7 @@ function RestoreSection({ busy, hasPending }: { busy: boolean; hasPending: boole
   )
 }
 
-function RollbackCopiesSection({ rollbacks }: { rollbacks: { id: string; created_at: string | null }[] }) {
+function RollbackCopiesSection({ rollbacks }: { rollbacks: RollbackCopy[] }) {
   const stageRollback = useStageRollback()
   const deleteRollback = useDeleteRollback()
   const { timeFormat } = useTimeFormat()
@@ -311,10 +312,21 @@ function RollbackCopiesSection({ rollbacks }: { rollbacks: { id: string; created
   )
 }
 
+function LatestDownload({ download }: { download: BackupDownload }) {
+  const { timeFormat } = useTimeFormat()
+  return (
+    <p className="text-xs text-gray-400">
+      Latest backup:{' '}
+      <a href={backupDownloadUrl(download.download_id)} download={download.filename} className="text-blue-400 underline">
+        {download.filename}
+      </a>{' '}
+      (link valid until {formatDateTime(download.expires_at, timeFormat)})
+    </p>
+  )
+}
+
 export function BackupSettings() {
-  const { hasCapability } = useAuth()
-  const canManage = hasCapability('backup.manage')
-  const { data: status, error, isLoading } = useBackupStatus()
+  const { data: status, error, isLoading, refetch } = useBackupStatus()
   const { timeFormat } = useTimeFormat()
 
   if (isAllHostsRequired(error)) {
@@ -324,13 +336,23 @@ export function BackupSettings() {
       </p>
     )
   }
+  if (error) {
+    return (
+      <div className="space-y-3 text-sm text-gray-400">
+        <p>Could not load backup status: {error.message}</p>
+        <Button variant="outline" size="sm" onClick={() => void refetch()}>
+          Retry
+        </Button>
+      </div>
+    )
+  }
   if (isLoading || !status) {
     return <p className="text-sm text-gray-400">Loading…</p>
   }
 
   const lastRestore = status.last_restore
   return (
-    <fieldset disabled={!canManage} className="space-y-8 disabled:opacity-60">
+    <div className="space-y-8">
       {status.pending && <StagedRestoreBanner pending={status.pending} />}
       {lastRestore?.restored_at && (
         <p className="text-xs text-gray-400">
@@ -341,9 +363,10 @@ export function BackupSettings() {
         </p>
       )}
       {status.busy && <p className="text-xs text-gray-400">A backup or restore operation is running…</p>}
+      {status.download && <LatestDownload download={status.download} />}
       <CreateBackupSection busy={status.busy} />
       <RestoreSection busy={status.busy} hasPending={status.pending !== null} />
       <RollbackCopiesSection rollbacks={status.rollbacks} />
-    </fieldset>
+    </div>
   )
 }

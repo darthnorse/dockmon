@@ -310,6 +310,17 @@ class TestRestore:
             )
             assert response.status_code == expected, response.text
 
+    def test_an_unstaged_upload_survives_another_upload(self, client, keys):
+        blob = self._backup_blob(client, keys)
+        first = _upload(client, keys, blob).json()
+        _upload(client, keys, blob)
+        response = client.post(
+            "/api/v2/backup/restore",
+            json={"upload_id": first["upload_id"], "passphrase": PASSPHRASE},
+            headers=keys.admin,
+        )
+        assert response.status_code == 200, response.text
+
     def test_cancel_pending(self, client, keys, paths):
         upload = _upload(client, keys, self._backup_blob(client, keys)).json()
         client.post("/api/v2/backup/restore", json={"upload_id": upload["upload_id"], "passphrase": PASSPHRASE},
@@ -360,12 +371,13 @@ class TestCompletionHook:
         assert rows[0].username == "API Key: admin-key"
         assert rows[0].user_id is None
 
-    def test_existing_audit_row_suppresses_a_duplicate_after_a_crash(self, client, keys, paths, db_session):
+    def test_a_crash_before_flagging_retries_the_event_but_never_duplicates_the_audit_row(self, client, keys, paths, db_session):
         self._applied(client, keys, paths)
         marker = record_completed_restore(paths, monitor.db)
         assert marker is not None
         marker_path = paths.data_dir / ".dockmon-restore" / "completed.json"
         marker_path.write_text(marker_path.read_text().replace('"logged": true', '"logged": false'))
 
-        assert record_completed_restore(paths, monitor.db) is None
+        assert record_completed_restore(paths, monitor.db) is not None
         assert db_session.query(AuditLog).filter(AuditLog.entity_id == marker["restore_id"]).count() == 1
+        assert record_completed_restore(paths, monitor.db) is None

@@ -6,7 +6,6 @@ Container data (including relative bind mounts inside stack directories) is
 deliberately not included.
 """
 
-import errno
 import hashlib
 import io
 import json
@@ -22,7 +21,7 @@ from pathlib import Path
 from typing import BinaryIO, Dict, List, Tuple
 
 from backup.crypto import DEFAULT_KDF, MIN_PASSPHRASE_LENGTH, KdfParams, encrypt_stream
-from backup.errors import BackupError, BackupSpaceError
+from backup.errors import BackupError, BackupSpaceError, disk_space_errors
 from backup.fsutil import IO_BLOCK
 from backup.paths import BackupPaths
 from deployment.stack_storage import managed_stack_files, validate_stack_name
@@ -67,34 +66,31 @@ def create_backup(
     paths.backup_tmp_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(dir=paths.backup_tmp_dir))
     try:
-        return _create(paths, dest, passphrase, include_stats, kdf, work)
-    except OSError as e:
-        if e.errno == errno.ENOSPC:
-            raise BackupSpaceError("Ran out of disk space while writing the backup") from e
-        raise
+        with disk_space_errors("Ran out of disk space while writing the backup"):
+            _check_free_space(paths.db_path, work)
+            snapshot = work / DB_NAME
+            before = _stack_fingerprint(_collect_stack_files(paths.stacks_dir))
+            _snapshot_database(paths.db_path, snapshot, include_stats)
+            stacks = _read_stacks_consistently(paths.stacks_dir, before)
+            key = paths.key_path.read_bytes()
+
+            manifest = build_manifest(snapshot, key, stacks, include_stats)
+            _check_format_limits(manifest)
+            tar_path = work / "backup.tar.gz"
+            _write_tar(tar_path, manifest, snapshot, key, stacks)
+            with open(tar_path, "rb") as src:
+                encrypt_stream(src, dest, passphrase, kdf=kdf)
+            return manifest
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _create(paths: BackupPaths, dest: BinaryIO, passphrase: str, include_stats: bool, kdf: KdfParams, work: Path) -> dict:
-    _check_free_space(paths.db_path, work)
-    snapshot = work / DB_NAME
-    before = _stack_fingerprint(_collect_stack_files(paths.stacks_dir))
-    _snapshot_database(paths.db_path, snapshot, include_stats)
-    stacks = _read_stacks_consistently(paths.stacks_dir, before)
-    key = paths.key_path.read_bytes()
-
-    manifest = build_manifest(snapshot, key, stacks, include_stats)
-    _check_format_limits(manifest)
-    tar_path = work / "backup.tar.gz"
-    _write_tar(tar_path, manifest, snapshot, key, stacks)
-    with open(tar_path, "rb") as src:
-        encrypt_stream(src, dest, passphrase, kdf=kdf)
-    return manifest
+def utc_iso(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
 
 
 def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
+    return utc_iso(datetime.now(timezone.utc))
 
 
 def _check_format_limits(manifest: dict) -> None:
@@ -158,7 +154,8 @@ def _live_database_bytes(db_path: Path) -> int:
 
 
 def _check_free_space(db_path: Path, work: Path) -> None:
-    needed = 2 * _live_database_bytes(db_path) + FREE_SPACE_MARGIN
+    # snapshot, compressed tar and encrypted output can all sit on this filesystem at once
+    needed = 3 * _live_database_bytes(db_path) + FREE_SPACE_MARGIN
     free = shutil.disk_usage(work).free
     if free < needed:
         raise BackupSpaceError(

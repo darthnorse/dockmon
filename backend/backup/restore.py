@@ -13,7 +13,6 @@ finds the journal in phase "swapping" rolls every move back; one in phase
 """
 
 import enum
-import errno
 import json
 import logging
 import os
@@ -35,12 +34,14 @@ from backup.archive import (
     utc_now_iso,
 )
 from backup.crypto import decrypt_stream
+from backup.downloads import sweep as sweep_downloads
 from backup.errors import (
     BackupConflictError,
     BackupError,
     BackupNotFoundError,
     BackupSpaceError,
     RestoreStateError,
+    disk_space_errors,
 )
 from backup.fsutil import copy_new_file, fsync_dir
 from backup.paths import RESTORE_DIRNAME, BackupPaths
@@ -181,26 +182,18 @@ def _promote_to_pending(paths: BackupPaths, extracted: Path, replace: bool, init
 
 
 def _unpack(archive_path: Path, passphrase: str, work: Path) -> tuple:
-    try:
-        return _decrypt_and_check(archive_path, passphrase, work)
-    except OSError as e:
-        if e.errno == errno.ENOSPC:
-            raise BackupSpaceError("Ran out of disk space while unpacking the backup") from e
-        raise
-
-
-def _decrypt_and_check(archive_path: Path, passphrase: str, work: Path) -> tuple:
     if shutil.disk_usage(work).free < archive_path.stat().st_size + FREE_SPACE_MARGIN:
         raise BackupSpaceError("Not enough free disk space to unpack the backup")
-    tar_path = work / "backup.tar.gz"
-    fd = os.open(tar_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with open(archive_path, "rb") as src, os.fdopen(fd, "wb") as dst:
-        decrypt_stream(src, dst, passphrase)
-    extracted = work / "extracted"
-    manifest = extract_archive(tar_path, extracted)
-    tar_path.unlink()
-    check_database(extracted / DB_NAME, (extracted / KEY_NAME).read_bytes(), manifest["alembic_revision"])
-    return extracted, manifest
+    with disk_space_errors("Ran out of disk space while unpacking the backup"):
+        tar_path = work / "backup.tar.gz"
+        fd = os.open(tar_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with open(archive_path, "rb") as src, os.fdopen(fd, "wb") as dst:
+            decrypt_stream(src, dst, passphrase)
+        extracted = work / "extracted"
+        manifest = extract_archive(tar_path, extracted)
+        tar_path.unlink()
+        check_database(extracted / DB_NAME, (extracted / KEY_NAME).read_bytes(), manifest["alembic_revision"])
+        return extracted, manifest
 
 
 def verify_archive(paths: BackupPaths, archive_path: Path, passphrase: str) -> dict:
@@ -235,10 +228,7 @@ def stage_archive(
 
 
 def pending_manifest(paths: BackupPaths) -> Optional[dict]:
-    manifest_path = paths.pending_dir / MANIFEST_NAME
-    if not manifest_path.exists():
-        return None
-    return json.loads(manifest_path.read_text())
+    return _read_json_or_none(paths.pending_dir / MANIFEST_NAME)
 
 
 def _read_json_or_none(path: Path) -> Optional[dict]:
@@ -552,13 +542,14 @@ def _abandon(paths: BackupPaths) -> None:
 
 
 def _clean_work_dirs(paths: BackupPaths) -> None:
-    """Remove upload, backup-temp, staging and journal leftovers, and rollback dirs that hold no parked database.
+    """Remove upload, backup-temp, download, staging and journal leftovers, and rollback dirs that hold no parked database.
 
     Only safe while nothing else can be staging, i.e. from apply at startup.
     """
     shutil.rmtree(paths.upload_dir, ignore_errors=True)
     shutil.rmtree(paths.incoming_dir, ignore_errors=True)
     shutil.rmtree(paths.backup_tmp_dir, ignore_errors=True)
+    sweep_downloads(paths, locked=True)
     paths.journal_path.with_name(paths.journal_path.name + ".tmp").unlink(missing_ok=True)
     db_root = _work_root(paths.db_path.parent)
     complete = {

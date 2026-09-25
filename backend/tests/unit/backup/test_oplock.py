@@ -1,4 +1,5 @@
 import threading
+import time
 
 import pytest
 
@@ -43,3 +44,19 @@ def test_lock_excludes_other_threads(install):
         release.set()
         thread.join(5)
     assert not is_busy(install)
+
+
+def test_a_brief_holder_such_as_a_status_probe_does_not_cause_busy(install):
+    held = threading.Event()
+
+    def probe():
+        with operation_lock(install, attempts=1):
+            held.set()
+            time.sleep(0.03)
+
+    thread = threading.Thread(target=probe)
+    thread.start()
+    held.wait(5)
+    with operation_lock(install):
+        pass
+    thread.join(5)

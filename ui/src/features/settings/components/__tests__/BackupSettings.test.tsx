@@ -18,8 +18,8 @@ vi.mock('@/hooks/useBackup', () => ({
   useStageRollback: vi.fn(),
   useDeleteRollback: vi.fn(),
   isAllHostsRequired: (error: unknown) => error instanceof ApiError && error.status === 403,
+  backupDownloadUrl: (id: string) => `/api/v2/backup/downloads/${id}`,
 }))
-vi.mock('@/features/auth/AuthContext', () => ({ useAuth: () => ({ hasCapability: () => true }) }))
 vi.mock('@/lib/hooks/useUserPreferences', () => ({ useTimeFormat: () => ({ timeFormat: '24h' }) }))
 vi.mock('@/lib/utils/timeFormat', () => ({ formatDateTime: (value: string) => `fmt(${value})` }))
 
@@ -35,8 +35,10 @@ let cancel: ReturnType<typeof mutation>
 let stageRollback: ReturnType<typeof mutation>
 let deleteRollback: ReturnType<typeof mutation>
 
+const refetch = vi.fn()
+
 function setStatus(data: BackupStatus | undefined, error: unknown = null) {
-  vi.mocked(backupHooks.useBackupStatus).mockReturnValue({ data, error, isLoading: false } as never)
+  vi.mocked(backupHooks.useBackupStatus).mockReturnValue({ data, error, isLoading: false, refetch } as never)
 }
 
 beforeEach(() => {
@@ -137,5 +139,32 @@ describe('BackupSettings - rollback copies', () => {
     const dialog = await screen.findByRole('alertdialog')
     await userEvent.click(within(dialog).getByRole('button', { name: /^delete$/i }))
     expect(deleteRollback.mutate).toHaveBeenCalledWith('20260925T191443770843Z')
+  })
+})
+
+
+describe('BackupSettings - status', () => {
+  it('offers the latest backup again while its link is valid', () => {
+    setStatus({
+      ...EMPTY_STATUS,
+      download: {
+        download_id: 'a'.repeat(32),
+        filename: 'dockmon-backup-2.5.1-20260925T194300Z.dmbak',
+        size: 1655976,
+        created_at: '2026-09-25T19:43:00Z',
+        expires_at: '2026-09-25T19:58:00Z',
+      },
+    })
+    render(<BackupSettings />)
+    const link = screen.getByRole('link', { name: /dockmon-backup-2.5.1-20260925T194300Z.dmbak/ })
+    expect(link).toHaveAttribute('href', `/api/v2/backup/downloads/${'a'.repeat(32)}`)
+  })
+
+  it('shows a status error with a retry instead of loading forever', async () => {
+    setStatus(undefined, new ApiError('Backup operation failed; see the DockMon log', 500))
+    render(<BackupSettings />)
+    expect(screen.getByText(/could not load backup status/i)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /retry/i }))
+    expect(refetch).toHaveBeenCalled()
   })
 })

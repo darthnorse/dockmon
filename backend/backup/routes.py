@@ -5,10 +5,10 @@ hosts and every stored credential, so a tag-scoped admin must not get one.
 """
 
 import asyncio
-import errno
 import logging
 import os
 import shutil
+import time
 import uuid
 from typing import Optional
 from urllib.parse import urlparse
@@ -37,6 +37,7 @@ from backup.errors import (
     BackupNotFoundError,
     BackupSpaceError,
     BackupValidationError,
+    disk_space_errors,
 )
 from backup.oplock import is_busy, operation_lock
 from backup.paths import BackupPaths
@@ -59,6 +60,7 @@ router = APIRouter(prefix="/api/v2/backup", tags=["backup"])
 BACKUP_KDF = DEFAULT_KDF
 MAX_PASSPHRASE_LENGTH = 1024
 UPLOAD_ID_PATTERN = r"^[0-9a-f]{32}$"
+UPLOAD_TTL_SECONDS = 3600
 
 
 def get_backup_paths() -> BackupPaths:
@@ -227,8 +229,13 @@ async def download_backup(download_id: str, paths: BackupPaths = Depends(get_bac
 async def _receive_upload(request: Request, paths: BackupPaths, declared: Optional[int]) -> dict:
     incoming = paths.incoming_dir
     incoming.mkdir(mode=0o700, parents=True, exist_ok=True)
+    cutoff = time.time() - UPLOAD_TTL_SECONDS
     for stale in incoming.iterdir():
-        stale.unlink(missing_ok=True)
+        try:
+            if stale.stat().st_mtime < cutoff:
+                stale.unlink(missing_ok=True)
+        except FileNotFoundError:
+            continue
     if declared is not None and shutil.disk_usage(incoming).free < declared + FREE_SPACE_MARGIN:
         raise BackupSpaceError("Not enough free disk space for this upload")
 
@@ -237,7 +244,7 @@ async def _receive_upload(request: Request, paths: BackupPaths, declared: Option
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     size = 0
     try:
-        with os.fdopen(fd, "wb") as f:
+        with disk_space_errors("Ran out of disk space while receiving the upload"), os.fdopen(fd, "wb") as f:
             async for chunk in request.stream():
                 size += len(chunk)
                 if size > MAX_ARCHIVE_BYTES:
@@ -245,11 +252,6 @@ async def _receive_upload(request: Request, paths: BackupPaths, declared: Option
                 await asyncio.to_thread(f.write, chunk)
             await asyncio.to_thread(f.flush)
             await asyncio.to_thread(os.fsync, f.fileno())
-    except OSError as e:
-        target.unlink(missing_ok=True)
-        if e.errno == errno.ENOSPC:
-            raise BackupSpaceError("Ran out of disk space while receiving the upload") from e
-        raise
     except BaseException:
         target.unlink(missing_ok=True)
         raise

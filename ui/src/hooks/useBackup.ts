@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { ApiError, apiClient } from '@/lib/api/client'
 import { getBasePath } from '@/lib/utils/basePath'
+import { getErrorMessage } from '@/lib/utils/errors'
 import type { BackupDownload, BackupManifestSummary, BackupStatus, StageBackupRequest } from '@/types/backup'
 
 const BACKUP_STATUS_KEY = ['backup-status']
@@ -33,10 +34,6 @@ function startDownload(download: BackupDownload): void {
   document.body.removeChild(link)
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : 'Unexpected error'
-}
-
 export function useCreateBackup() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -45,9 +42,9 @@ export function useCreateBackup() {
     onSuccess: (download) => {
       startDownload(download)
       toast.success(`Backup ready: ${download.filename}`)
-      void queryClient.invalidateQueries({ queryKey: BACKUP_STATUS_KEY })
     },
-    onError: (error) => toast.error(`Backup failed: ${errorMessage(error)}`),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: BACKUP_STATUS_KEY }),
+    onError: (error) => toast.error(`Backup failed: ${getErrorMessage(error, 'Unexpected error')}`),
   })
 }
 
@@ -64,9 +61,9 @@ export function useStageBackup() {
     },
     onSuccess: () => {
       toast.success('Backup validated and staged')
-      void queryClient.invalidateQueries({ queryKey: BACKUP_STATUS_KEY })
     },
-    onError: (error) => toast.error(`Restore not staged: ${errorMessage(error)}`),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: BACKUP_STATUS_KEY }),
+    onError: (error) => toast.error(`Restore not staged: ${getErrorMessage(error, 'Unexpected error')}`),
   })
 }
 
@@ -76,9 +73,9 @@ export function useCancelStagedRestore() {
     mutationFn: () => apiClient.delete<{ cancelled: boolean }>('/v2/backup/restore/pending'),
     onSuccess: () => {
       toast.success('Staged restore cancelled')
-      void queryClient.invalidateQueries({ queryKey: BACKUP_STATUS_KEY })
     },
-    onError: (error) => toast.error(`Could not cancel: ${errorMessage(error)}`),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: BACKUP_STATUS_KEY }),
+    onError: (error) => toast.error(`Could not cancel: ${getErrorMessage(error, 'Unexpected error')}`),
   })
 }
 
@@ -91,9 +88,9 @@ export function useStageRollback() {
       }),
     onSuccess: () => {
       toast.success('Rollback copy staged')
-      void queryClient.invalidateQueries({ queryKey: BACKUP_STATUS_KEY })
     },
-    onError: (error) => toast.error(`Could not stage rollback: ${errorMessage(error)}`),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: BACKUP_STATUS_KEY }),
+    onError: (error) => toast.error(`Could not stage rollback: ${getErrorMessage(error, 'Unexpected error')}`),
   })
 }
 
@@ -104,8 +101,8 @@ export function useDeleteRollback() {
       apiClient.delete<Record<string, never>>(`/v2/backup/rollbacks/${encodeURIComponent(rollbackId)}`),
     onSuccess: () => {
       toast.success('Rollback copy deleted')
-      void queryClient.invalidateQueries({ queryKey: BACKUP_STATUS_KEY })
     },
-    onError: (error) => toast.error(`Could not delete rollback copy: ${errorMessage(error)}`),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: BACKUP_STATUS_KEY }),
+    onError: (error) => toast.error(`Could not delete rollback copy: ${getErrorMessage(error, 'Unexpected error')}`),
   })
 }

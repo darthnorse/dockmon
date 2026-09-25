@@ -1,7 +1,7 @@
 """Record a restore applied at startup in the restored database's audit log.
 
 The audit row is keyed by the restore id, so a crash between writing it and
-flagging the marker never produces a second row (or a second event).
+flagging the marker never produces a second row.
 """
 
 import asyncio
@@ -18,7 +18,11 @@ logger = logging.getLogger(__name__)
 
 
 def record_completed_restore(paths: BackupPaths, db) -> Optional[dict]:
-    """Return the marker when this call wrote its audit row, else None."""
+    """Return the marker until it is flagged as logged, else None.
+
+    The audit row is written once per restore id; the event may repeat after a
+    crash between the two, which beats losing it.
+    """
     marker = read_completed_marker(paths)
     if not marker or marker.get("logged") or not isinstance(marker.get("restore_id"), str):
         return None
@@ -57,8 +61,10 @@ def record_completed_restore(paths: BackupPaths, db) -> Optional[dict]:
             )
             session.commit()
             inserted = True
+    if not inserted:
+        logger.info(f"Restore {restore_id} was already in the audit log; announcing it again")
     mark_completed_logged(paths)
-    return marker if inserted else None
+    return marker
 
 
 async def announce_completed_restore(paths: BackupPaths, db, event_logger) -> None:

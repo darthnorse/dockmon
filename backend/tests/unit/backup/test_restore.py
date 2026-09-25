@@ -664,3 +664,9 @@ def test_startup_sweeps_backup_temp_files_left_by_a_crash(target):
 
     assert apply_staged(target, ok_migrate) is ApplyOutcome.NONE
     assert not leftover.exists()
+
+
+def test_pending_manifest_tolerates_a_concurrent_cancel(target, archive_file):
+    stage_archive(target, archive_file, PASSPHRASE)
+    (target.pending_dir / "manifest.json").unlink()
+    assert pending_manifest(target) is None

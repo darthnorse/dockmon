@@ -1,3 +1,7 @@
+import errno
+from contextlib import contextmanager
+
+
 class BackupError(Exception):
     """Base class for backup and restore failures."""
 
@@ -32,3 +36,14 @@ class BackupNotFoundError(BackupError):
 
 class BackupSpaceError(BackupError):
     """Not enough free disk space, checked up front or hit as ENOSPC."""
+
+
+@contextmanager
+def disk_space_errors(message: str):
+    """Report running out of disk as BackupSpaceError instead of a bare OSError."""
+    try:
+        yield
+    except OSError as e:
+        if e.errno == errno.ENOSPC:
+            raise BackupSpaceError(message) from e
+        raise

@@ -8,6 +8,7 @@ early.
 
 import fcntl
 import os
+import time
 from contextlib import contextmanager
 
 from backup.errors import BackupBusyError
@@ -21,14 +22,23 @@ def _open_lock_file(paths: BackupPaths) -> int:
     return os.open(paths.restore_dir / LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o600)
 
 
+LOCK_ATTEMPTS = 5
+LOCK_RETRY_SECONDS = 0.02
+
+
 @contextmanager
-def operation_lock(paths: BackupPaths):
+def operation_lock(paths: BackupPaths, attempts: int = LOCK_ATTEMPTS):
+    """A few quick retries ride out an is_busy() probe that holds the lock for an instant."""
     fd = _open_lock_file(paths)
     try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise BackupBusyError("Another backup or restore operation is running") from None
+        for attempt in range(attempts):
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if attempt == attempts - 1:
+                    raise BackupBusyError("Another backup or restore operation is running") from None
+                time.sleep(LOCK_RETRY_SECONDS)
         yield
     finally:
         os.close(fd)
@@ -36,7 +46,7 @@ def operation_lock(paths: BackupPaths):
 
 def is_busy(paths: BackupPaths) -> bool:
     try:
-        with operation_lock(paths):
+        with operation_lock(paths, attempts=1):
             return False
     except BackupBusyError:
         return True

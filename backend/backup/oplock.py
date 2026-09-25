@@ -6,10 +6,11 @@ thread does the work: cancelling the request that awaits it cannot release it
 early.
 """
 
+import asyncio
 import fcntl
 import os
 import time
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 from backup.errors import BackupBusyError
 from backup.paths import BackupPaths
@@ -50,3 +51,14 @@ def is_busy(paths: BackupPaths) -> bool:
             return False
     except BackupBusyError:
         return True
+
+
+@asynccontextmanager
+async def async_operation_lock(paths: BackupPaths):
+    """operation_lock for coroutines: its retry sleeps run off the event loop."""
+    lock = operation_lock(paths)
+    await asyncio.to_thread(lock.__enter__)
+    try:
+        yield
+    finally:
+        lock.__exit__(None, None, None)

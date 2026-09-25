@@ -1,7 +1,11 @@
+import errno
 import json
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from backup import downloads
+from backup.errors import BackupSpaceError
 from backup.downloads import create_download, current_download, open_download, sweep
 from backup.restore import apply_staged
 from tests.unit.backup.conftest import FAST_KDF, PASSPHRASE
@@ -75,3 +79,13 @@ def test_live_download_survives_startup_and_stays_downloadable(install):
     apply_staged(install, lambda _p: True)
     path, _ = open_download(install, meta["download_id"])
     assert path.exists()
+
+
+def test_failed_metadata_write_leaves_no_orphaned_backup(install, monkeypatch):
+    def full(*_args, **_kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(downloads.os, "replace", full)
+    with pytest.raises(BackupSpaceError):
+        create_download(install, PASSPHRASE, True, FAST_KDF)
+    assert list(install.downloads_dir.iterdir()) == []

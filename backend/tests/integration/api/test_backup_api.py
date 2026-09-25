@@ -4,7 +4,9 @@ download/upload/restore round trip, and the post-restore audit hook."""
 import asyncio
 import hashlib
 import io
+import os
 import secrets
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -14,10 +16,10 @@ from fastapi.testclient import TestClient
 from auth.api_key_auth import get_current_user_or_api_key
 from auth.capabilities import ALL_CAPABILITIES, OPERATOR_CAPABILITIES, READONLY_CAPABILITIES
 from backup import routes as backup_routes
-from backup.completion import record_completed_restore
+from backup.completion import announce_completed_restore
 from backup.crypto import decrypt_stream
 from backup.oplock import operation_lock
-from backup.restore import ApplyOutcome, apply_staged, pending_manifest
+from backup.restore import ApplyOutcome, apply_staged, pending_manifest, read_completed_marker
 from database import ApiKey, AuditLog, CustomGroup, GroupPermission, GroupTagScope, Tag, User, UserGroupMembership
 from main import app, monitor
 from manage_backup import migrate_candidate
@@ -321,6 +323,19 @@ class TestRestore:
         )
         assert response.status_code == 200, response.text
 
+    def test_an_expired_upload_cannot_be_staged(self, client, keys, paths):
+        upload = _upload(client, keys, self._backup_blob(client, keys)).json()
+        stale = paths.incoming_dir / f"{upload['upload_id']}.dmbak"
+        old = time.time() - backup_routes.UPLOAD_TTL_SECONDS - 60
+        os.utime(stale, (old, old))
+        response = client.post(
+            "/api/v2/backup/restore",
+            json={"upload_id": upload["upload_id"], "passphrase": PASSPHRASE},
+            headers=keys.admin,
+        )
+        assert response.status_code == 404
+        assert not stale.exists()
+
     def test_cancel_pending(self, client, keys, paths):
         upload = _upload(client, keys, self._backup_blob(client, keys)).json()
         client.post("/api/v2/backup/restore", json={"upload_id": upload["upload_id"], "passphrase": PASSPHRASE},
@@ -361,23 +376,39 @@ class TestCompletionHook:
 
     def test_records_once_attributed_to_the_initiator(self, client, keys, paths, db_session):
         self._applied(client, keys, paths)
-        first = record_completed_restore(paths, monitor.db)
-        second = record_completed_restore(paths, monitor.db)
+        events = FakeEventLogger()
+        asyncio.run(announce_completed_restore(paths, monitor.db, events))
+        asyncio.run(announce_completed_restore(paths, monitor.db, events))
 
-        assert first is not None and second is None
-        rows = db_session.query(AuditLog).filter(AuditLog.entity_id == first["restore_id"]).all()
+        restore_id = read_completed_marker(paths)["restore_id"]
+        rows = db_session.query(AuditLog).filter(AuditLog.entity_id == restore_id).all()
         assert len(rows) == 1
         assert rows[0].action == "restore"
         assert rows[0].username == "API Key: admin-key"
         assert rows[0].user_id is None
+        assert len(events.titles) == 1
 
-    def test_a_crash_before_flagging_retries_the_event_but_never_duplicates_the_audit_row(self, client, keys, paths, db_session):
+    def test_event_failure_is_retried_without_a_second_audit_row(self, client, keys, paths, db_session):
         self._applied(client, keys, paths)
-        marker = record_completed_restore(paths, monitor.db)
-        assert marker is not None
-        marker_path = paths.data_dir / ".dockmon-restore" / "completed.json"
-        marker_path.write_text(marker_path.read_text().replace('"logged": true', '"logged": false'))
+        failing = FakeEventLogger(fail=True)
+        asyncio.run(announce_completed_restore(paths, monitor.db, failing))
+        assert read_completed_marker(paths)["logged"] is False
 
-        assert record_completed_restore(paths, monitor.db) is not None
-        assert db_session.query(AuditLog).filter(AuditLog.entity_id == marker["restore_id"]).count() == 1
-        assert record_completed_restore(paths, monitor.db) is None
+        events = FakeEventLogger()
+        asyncio.run(announce_completed_restore(paths, monitor.db, events))
+
+        restore_id = read_completed_marker(paths)["restore_id"]
+        assert db_session.query(AuditLog).filter(AuditLog.entity_id == restore_id).count() == 1
+        assert events.titles == ["DockMon was restored from a backup"]
+        assert read_completed_marker(paths)["logged"] is True
+
+
+class FakeEventLogger:
+    def __init__(self, fail: bool = False):
+        self.fail = fail
+        self.titles = []
+
+    def log_system_event(self, title, message, severity, event_type):
+        if self.fail:
+            raise RuntimeError("event queue closed")
+        self.titles.append(title)

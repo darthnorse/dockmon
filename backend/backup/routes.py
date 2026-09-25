@@ -39,7 +39,7 @@ from backup.errors import (
     BackupValidationError,
     disk_space_errors,
 )
-from backup.oplock import is_busy, operation_lock
+from backup.oplock import async_operation_lock, is_busy, operation_lock
 from backup.paths import BackupPaths
 from backup.restore import (
     cancel_staged,
@@ -272,7 +272,7 @@ async def upload_backup(request: Request, paths: BackupPaths = Depends(get_backu
         if declared > MAX_ARCHIVE_BYTES:
             raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Backup file is too large")
     try:
-        with operation_lock(paths):
+        async with async_operation_lock(paths):
             return await _receive_upload(request, paths, declared)
     except BackupError as e:
         raise _to_http(e) from e
@@ -282,6 +282,9 @@ def _stage_upload(paths: BackupPaths, body: StageUploadRequest, initiator: dict)
     archive = paths.incoming_dir / f"{body.upload_id}.dmbak"
     if not archive.is_file():
         raise BackupNotFoundError("No such upload; upload the backup file again")
+    if archive.stat().st_mtime < time.time() - UPLOAD_TTL_SECONDS:
+        archive.unlink(missing_ok=True)
+        raise BackupNotFoundError("The upload has expired; upload the backup file again")
     try:
         return stage_archive(paths, archive, body.passphrase, replace=body.replace, initiator=initiator)
     finally:

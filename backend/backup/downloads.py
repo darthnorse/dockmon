@@ -15,7 +15,7 @@ from typing import List, Optional, Tuple
 
 from backup.archive import create_backup, utc_iso
 from backup.crypto import KdfParams
-from backup.errors import BackupNotFoundError
+from backup.errors import BackupNotFoundError, disk_space_errors
 from backup.fsutil import fsync_dir
 from backup.paths import BackupPaths
 
@@ -93,35 +93,38 @@ def create_download(paths: BackupPaths, passphrase: str, include_stats: bool, kd
     paths.downloads_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     download_id = uuid.uuid4().hex
     partial = paths.downloads_dir / f"{download_id}.partial"
-    fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(fd, "wb") as f:
-            manifest = create_backup(paths, f, passphrase, include_stats=include_stats, kdf=kdf)
-            f.flush()
-            os.fsync(f.fileno())
-        os.rename(partial, _file_path(paths, download_id))
-    except BaseException:
-        partial.unlink(missing_ok=True)
-        raise
-    created = _now()
-    version = _SAFE_VERSION.sub("_", manifest["app_version"])[:32]
-    meta = {
-        "download_id": download_id,
-        "filename": f"dockmon-backup-{version}-{created.strftime('%Y%m%dT%H%M%SZ')}.dmbak",
-        "size": _file_path(paths, download_id).stat().st_size,
-        "created_at": utc_iso(created),
-        "expires_at": utc_iso(created + DOWNLOAD_TTL),
-        "alembic_revision": manifest["alembic_revision"],
-        "stats_history_included": manifest["stats_history_included"],
-    }
+    final = _file_path(paths, download_id)
     meta_path = _meta_path(paths, download_id)
-    tmp = meta_path.with_name(meta_path.name + ".tmp")
-    with open(tmp, "w") as f:
-        json.dump(meta, f)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, meta_path)
-    fsync_dir(paths.downloads_dir)
+    meta_tmp = meta_path.with_name(meta_path.name + ".tmp")
+    try:
+        with disk_space_errors("Ran out of disk space while writing the backup"):
+            fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                manifest = create_backup(paths, f, passphrase, include_stats=include_stats, kdf=kdf)
+                f.flush()
+                os.fsync(f.fileno())
+            os.rename(partial, final)
+            created = _now()
+            version = _SAFE_VERSION.sub("_", manifest["app_version"])[:32]
+            meta = {
+                "download_id": download_id,
+                "filename": f"dockmon-backup-{version}-{created.strftime('%Y%m%dT%H%M%SZ')}.dmbak",
+                "size": final.stat().st_size,
+                "created_at": utc_iso(created),
+                "expires_at": utc_iso(created + DOWNLOAD_TTL),
+                "alembic_revision": manifest["alembic_revision"],
+                "stats_history_included": manifest["stats_history_included"],
+            }
+            with open(meta_tmp, "w") as f:
+                json.dump(meta, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(meta_tmp, meta_path)
+            fsync_dir(paths.downloads_dir)
+    except BaseException:
+        for leftover in (partial, final, meta_tmp, meta_path):
+            leftover.unlink(missing_ok=True)
+        raise
     return meta
 
 

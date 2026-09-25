@@ -1,7 +1,6 @@
 """Record a restore applied at startup in the restored database's audit log.
 
-The audit row is keyed by the restore id, so a crash between writing it and
-flagging the marker never produces a second row.
+The audit row is keyed by the restore id, so retries never produce a second row.
 """
 
 import asyncio
@@ -18,10 +17,11 @@ logger = logging.getLogger(__name__)
 
 
 def record_completed_restore(paths: BackupPaths, db) -> Optional[dict]:
-    """Return the marker until it is flagged as logged, else None.
+    """Ensure the restore's audit row exists; return the marker until it is flagged as logged.
 
-    The audit row is written once per restore id; the event may repeat after a
-    crash between the two, which beats losing it.
+    The audit row is written once per restore id. The marker is only flagged
+    after the event has been emitted, so the event is repeated rather than lost
+    when a start is interrupted in between.
     """
     marker = read_completed_marker(paths)
     if not marker or marker.get("logged") or not isinstance(marker.get("restore_id"), str):
@@ -30,7 +30,6 @@ def record_completed_restore(paths: BackupPaths, db) -> Optional[dict]:
     initiator = marker.get("initiator") if isinstance(marker.get("initiator"), dict) else {}
     backup = marker.get("backup") if isinstance(marker.get("backup"), dict) else {}
 
-    inserted = False
     with db.get_session() as session:
         already = (
             session.query(AuditLog.id)
@@ -60,25 +59,21 @@ def record_completed_restore(paths: BackupPaths, db) -> Optional[dict]:
                 ip_address=initiator.get("ip"),
             )
             session.commit()
-            inserted = True
-    if not inserted:
-        logger.info(f"Restore {restore_id} was already in the audit log; announcing it again")
-    mark_completed_logged(paths)
     return marker
 
 
 async def announce_completed_restore(paths: BackupPaths, db, event_logger) -> None:
     try:
         marker = await asyncio.to_thread(record_completed_restore, paths, db)
+        if marker is None:
+            return
+        backup = marker.get("backup") if isinstance(marker.get("backup"), dict) else {}
+        event_logger.log_system_event(
+            "DockMon was restored from a backup",
+            f"Restored from a backup created {backup.get('created_at')} by DockMon {backup.get('app_version')}",
+            EventSeverity.INFO,
+            EventType.CONFIG_CHANGED,
+        )
+        await asyncio.to_thread(mark_completed_logged, paths)
     except Exception as e:
-        logger.warning(f"Could not record the completed restore: {e}")
-        return
-    if marker is None:
-        return
-    backup = marker.get("backup") if isinstance(marker.get("backup"), dict) else {}
-    event_logger.log_system_event(
-        "DockMon was restored from a backup",
-        f"Restored from a backup created {backup.get('created_at')} by DockMon {backup.get('app_version')}",
-        EventSeverity.INFO,
-        EventType.CONFIG_CHANGED,
-    )
+        logger.warning(f"Could not record the completed restore; retrying on the next start: {e}")

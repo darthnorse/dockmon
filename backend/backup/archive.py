@@ -67,9 +67,10 @@ def create_backup(
     work = Path(tempfile.mkdtemp(dir=paths.backup_tmp_dir))
     try:
         with disk_space_errors("Ran out of disk space while writing the backup"):
-            _check_free_space(paths.db_path, work)
+            stack_files = _collect_stack_files(paths.stacks_dir)
+            _check_free_space(paths.db_path, work, _total_size(stack_files))
             snapshot = work / DB_NAME
-            before = _stack_fingerprint(_collect_stack_files(paths.stacks_dir))
+            before = _stack_fingerprint(stack_files)
             _snapshot_database(paths.db_path, snapshot, include_stats)
             stacks = _read_stacks_consistently(paths.stacks_dir, before)
             key = paths.key_path.read_bytes()
@@ -153,9 +154,19 @@ def _live_database_bytes(db_path: Path) -> int:
     return page_size * (page_count - free_pages)
 
 
-def _check_free_space(db_path: Path, work: Path) -> None:
+def _total_size(files: List[Tuple[str, Path]]) -> int:
+    total = 0
+    for _name, path in files:
+        try:
+            total += path.stat().st_size
+        except FileNotFoundError:
+            continue
+    return total
+
+
+def _check_free_space(db_path: Path, work: Path, stack_bytes: int) -> None:
     # snapshot, compressed tar and encrypted output can all sit on this filesystem at once
-    needed = 3 * _live_database_bytes(db_path) + FREE_SPACE_MARGIN
+    needed = 3 * (_live_database_bytes(db_path) + stack_bytes) + FREE_SPACE_MARGIN
     free = shutil.disk_usage(work).free
     if free < needed:
         raise BackupSpaceError(

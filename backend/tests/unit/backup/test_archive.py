@@ -241,3 +241,13 @@ def test_free_space_check_covers_snapshot_tar_and_encrypted_output(install, monk
     monkeypatch.setattr(archive.shutil, "disk_usage", lambda _p: usage(10 * free, 9 * free, free))
     with pytest.raises(BackupSpaceError):
         _backup(install)
+
+
+def test_free_space_check_counts_stack_files(install, monkeypatch):
+    live = archive._live_database_bytes(install.db_path)
+    (install.stacks_dir / "web" / ".env").write_bytes(b"x" * (1024 * 1024))
+    usage = namedtuple("usage", "total used free")
+    free = 3 * live + archive.FREE_SPACE_MARGIN + 1024
+    monkeypatch.setattr(archive.shutil, "disk_usage", lambda _p: usage(10 * free, 9 * free, free))
+    with pytest.raises(BackupSpaceError):
+        _backup(install)

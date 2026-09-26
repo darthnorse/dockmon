@@ -25,6 +25,7 @@ import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
 import { pluralize } from '@/lib/utils/formatting'
 import { formatDateTime } from '@/lib/utils/timeFormat'
 import type { BackupDownload, BackupManifestSummary, RollbackCopy } from '@/types/backup'
+import { ScheduledBackupsSection } from './ScheduledBackupsSection'
 import { ToggleSwitch } from './ToggleSwitch'
 
 const MIN_PASSPHRASE_LENGTH = 8
@@ -365,6 +366,7 @@ export function BackupSettings() {
       {status.busy && <p className="text-xs text-gray-400">A backup or restore operation is running…</p>}
       {status.download && <LatestDownload download={status.download} />}
       <CreateBackupSection busy={status.busy} />
+      <ScheduledBackupsSection />
       <RestoreSection busy={status.busy} hasPending={status.pending !== null} />
       <RollbackCopiesSection rollbacks={status.rollbacks} />
     </div>

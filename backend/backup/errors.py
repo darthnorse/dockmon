@@ -44,6 +44,6 @@ def disk_space_errors(message: str):
     try:
         yield
     except OSError as e:
-        if e.errno == errno.ENOSPC:
+        if e.errno in (errno.ENOSPC, errno.EDQUOT):
             raise BackupSpaceError(message) from e
         raise

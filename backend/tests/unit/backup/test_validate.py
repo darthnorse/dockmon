@@ -332,3 +332,25 @@ def test_manifest_timestamp_and_version_are_checked(tmp_path, overrides):
     tar_path = _write_tar(tmp_path / "a.tar.gz", _valid_members(manifest_overrides=overrides))
     with pytest.raises(BackupValidationError):
         extract_archive(tar_path, tmp_path / "out")
+
+
+def test_wrong_key_for_the_scheduled_passphrase_is_rejected(good_db, key):
+    conn = sqlite3.connect(good_db)
+    conn.execute(
+        "UPDATE global_settings SET backup_passphrase_encrypted = ?",
+        (Fernet(Fernet.generate_key()).encrypt(b"scheduled").decode(),),
+    )
+    conn.commit()
+    conn.close()
+    with pytest.raises(BackupValidationError, match="key"):
+        check_database(good_db, key, HEAD)
+
+
+def test_backup_from_before_the_scheduled_passphrase_column_is_accepted(tmp_path, older_db_template, key):
+    path = tmp_path / "older.db"
+    shutil.copy2(older_db_template, path)
+    conn = sqlite3.connect(path)
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(global_settings)")}
+    conn.close()
+    assert "backup_passphrase_encrypted" not in columns
+    check_database(path, key, OLDER_REVISION)

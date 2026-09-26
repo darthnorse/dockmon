@@ -13,7 +13,9 @@ import re
 from typing import Optional
 
 from cronsim import CronSim
+from sqlalchemy import and_
 from cronsim.cronsim import CronSimError
+from alerts.evaluation_service import BACKUP_ALERT_SCOPE
 from database import DatabaseManager
 from event_logger import EventLogger, EventSeverity, EventType
 from auth.session_manager import session_manager
@@ -126,9 +128,11 @@ class PeriodicJobsManager:
         # Extract alert data and close session BEFORE Docker API calls
         alerts_to_check = []
         with self.db.get_session() as session:
-            # Get all open/snoozed alerts
+            # The backup alert is cleared only by a successful run; a weekly
+            # schedule that keeps failing sees no update for days.
             open_alerts = session.query(AlertV2).filter(
-                AlertV2.state.in_(['open', 'snoozed'])
+                AlertV2.state.in_(['open', 'snoozed']),
+                ~and_(AlertV2.scope_type == 'system', AlertV2.scope_id == BACKUP_ALERT_SCOPE),
             ).all()
 
             # Extract data we need while session is open

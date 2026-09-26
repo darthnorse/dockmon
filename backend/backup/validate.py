@@ -41,6 +41,7 @@ REQUIRED_TABLES = ("alembic_version", "users", "docker_hosts", "global_settings"
 ENCRYPTED_COLUMNS = (
     ("registry_credentials", "password_encrypted"),
     ("oidc_config", "client_secret_encrypted"),
+    ("global_settings", "backup_passphrase_encrypted"),
 )
 
 _STACK_MEMBER = re.compile(rf"^{STACKS_PREFIX}/([^/]+)/([^/]+)$")
@@ -268,7 +269,7 @@ def check_database(db_path: Path, key: bytes, expected_revision: str) -> None:
             raise BackupValidationError(f"Backup database has {len(violations)} foreign key violations")
 
         for table, column in ENCRYPTED_COLUMNS:
-            if table not in tables:
+            if table not in tables or column not in {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}:
                 continue
             query = f'SELECT "{column}" FROM "{table}" WHERE "{column}" IS NOT NULL'
             for (value,) in conn.execute(query):

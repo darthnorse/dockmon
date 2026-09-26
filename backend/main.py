@@ -77,6 +77,7 @@ from models.request_models import (
 from audit.audit_logger import AuditAction, AuditEntityType, log_audit, log_container_action, log_host_change, log_settings_change, get_client_info
 from backup.completion import announce_completed_restore
 from backup.paths import BackupPaths
+from backup.scheduler import BackupScheduler
 from security.audit import security_audit
 from security.rate_limiting import rate_limiter, rate_limit_auth, rate_limit_hosts, rate_limit_containers, rate_limit_notifications, rate_limit_default
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user, require_capability, check_auth_capability, has_capability_for_user, get_capabilities_for_user, Capabilities, get_visible_host_ids_for_auth, get_visible_host_ids_for_user, filter_visible_hosts, visible_host_models, host_is_visible, require_host_access, require_source_host_access, check_host_access, check_composite_keys_visible, check_host_ids_visible
@@ -272,6 +273,11 @@ async def lifespan(app: FastAPI):
     await alert_evaluation_service.start()
     logger.info("Alert evaluation service started")
 
+    app.state.backup_scheduler = BackupScheduler(
+        BackupPaths.from_environment(), monitor.db, alert_evaluation_service, monitor.event_logger
+    )
+    app.state.backup_scheduler.start()
+
     # Initialize HTTP health checker
     from health_check.http_checker import HttpHealthChecker
     monitor.http_health_checker = HttpHealthChecker(monitor, monitor.db)
@@ -291,6 +297,11 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down DockMon backend...")
     monitor.event_logger.log_system_event("DockMon Backend Shutting Down", "DockMon backend is shutting down", EventSeverity.INFO, LogEventType.SHUTDOWN)
+
+    # First: an in-flight backup must finish before the services it reports to stop.
+    scheduler = getattr(app.state, "backup_scheduler", None)
+    if scheduler:
+        await scheduler.stop()
 
     # Cancel and await background tasks to ensure clean shutdown
     if monitor.monitoring_task:

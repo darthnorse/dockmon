@@ -16,6 +16,9 @@ from fastapi.testclient import TestClient
 from auth.api_key_auth import get_current_user_or_api_key
 from auth.capabilities import ALL_CAPABILITIES, OPERATOR_CAPABILITIES, READONLY_CAPABILITIES
 from backup import routes as backup_routes
+from backup import scheduled as scheduled_module
+from backup.schedule_store import read_schedule
+from backup.scheduler import BackupScheduler
 from backup.completion import announce_completed_restore
 from backup.crypto import decrypt_stream
 from backup.oplock import operation_lock
@@ -390,6 +393,14 @@ class TestCompletionHook:
         assert events.titles == ["DockMon was restored from a backup"]
         assert read_completed_marker(paths)["logged"] is True
 
+    def test_restore_starts_this_installs_schedule_history_clean(self, client, keys, paths, db_session):
+        self._applied(client, keys, paths)
+        asyncio.run(announce_completed_restore(paths, monitor.db, FakeEventLogger()))
+        schedule = read_schedule(monitor.db)
+        restored_at = read_completed_marker(paths)["restored_at"]
+        assert schedule.last_run_at.isoformat().replace("+00:00", "Z").startswith(restored_at[:19])
+        assert schedule.last_status is None and schedule.last_file is None
+
 
 class FakeEventLogger:
     def __init__(self, fail: bool = False):
@@ -400,3 +411,108 @@ class FakeEventLogger:
         if self.fail:
             raise RuntimeError("event queue closed")
         self.titles.append(title)
+
+
+class FakeAlerts:
+    def __init__(self):
+        self.raised = []
+        self.resolved = 0
+
+    async def raise_backup_alert(self, title, message):
+        self.raised.append(message)
+
+    async def resolve_backup_alert(self):
+        self.resolved += 1
+
+
+@pytest.fixture
+def nas(tmp_path, monkeypatch, paths, client):
+    dest = tmp_path / "nas"
+    dest.mkdir()
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(f"22 1 0:21 / / rw - overlay overlay rw\n23 22 0:40 / {dest} rw - nfs4 nas:/b rw\n")
+    monkeypatch.setattr(scheduled_module, "MOUNTINFO", mountinfo)
+    alerts = FakeAlerts()
+    scheduler = BackupScheduler(paths, monitor.db, alerts, FakeEventLogger(), dest=dest, kdf=FAST_KDF)
+    app.dependency_overrides[backup_routes.get_backup_scheduler] = lambda: scheduler
+    backup_routes.clear_destination_cache()
+    yield dest
+    app.dependency_overrides.pop(backup_routes.get_backup_scheduler, None)
+
+
+def _enable(client, keys, **extra):
+    body = {"enabled": True, "passphrase": PASSPHRASE, "schedule": "03:00", "retention": 3, **extra}
+    return client.put("/api/v2/backup/settings", json=body, headers=keys.admin)
+
+
+@pytest.mark.integration
+class TestScheduledBackups:
+    def test_settings_defaults_and_destination(self, client, keys, nas):
+        body = client.get("/api/v2/backup/settings", headers=keys.admin).json()
+        assert body["enabled"] is False and body["schedule"] == "03:00" and body["retention"] == 7
+        assert body["passphrase_set"] is False and body["next_run_at"] is None
+        assert body["destination"]["exists"] and body["destination"]["is_mountpoint"]
+        assert body["timezone"]
+
+    def test_round_trip_never_echoes_the_passphrase(self, client, keys, nas):
+        response = _enable(client, keys)
+        assert response.status_code == 200, response.text
+        body = client.get("/api/v2/backup/settings", headers=keys.admin).json()
+        assert body["enabled"] is True and body["retention"] == 3 and body["passphrase_set"] is True
+        assert body["next_run_at"].endswith("Z")
+        assert PASSPHRASE not in response.text and PASSPHRASE not in str(body)
+
+    @pytest.mark.parametrize(
+        "body",
+        [{"enabled": True}, {"schedule": "* * * * *"}, {"schedule": "nonsense"}, {"retention": 0},
+         {"passphrase": "short"}],
+    )
+    def test_invalid_updates_are_422(self, client, keys, nas, body):
+        assert client.put("/api/v2/backup/settings", json=body, headers=keys.admin).status_code == 422
+
+    def test_scoped_admin_cannot_read_settings(self, client, keys, nas):
+        assert client.get("/api/v2/backup/settings", headers=keys.scoped).status_code == 403
+
+    def test_run_now_lists_downloads_stages_and_deletes(self, client, keys, nas, paths):
+        _enable(client, keys)
+        run = client.post("/api/v2/backup/run", headers=keys.admin)
+        assert run.status_code == 200, run.text
+        assert run.json()["status"] == "ok"
+        name = run.json()["file"]
+
+        files = client.get("/api/v2/backup/files", headers=keys.admin).json()
+        assert [f["name"] for f in files["files"]] == [name]
+        assert client.get("/api/v2/backup/settings", headers=keys.admin).json()["last_file"] == name
+
+        download = client.get(f"/api/v2/backup/files/{name}", headers=keys.admin)
+        assert download.status_code == 200
+        assert download.headers["cache-control"] == "no-store"
+        out = io.BytesIO()
+        decrypt_stream(io.BytesIO(download.content), out, PASSPHRASE)
+
+        staged = client.post(f"/api/v2/backup/files/{name}/stage", json={"passphrase": PASSPHRASE}, headers=keys.admin)
+        assert staged.status_code == 200, staged.text
+        assert pending_manifest(paths) is not None
+
+        assert client.delete(f"/api/v2/backup/files/{name}", headers=keys.admin).status_code == 204
+        assert not (nas / name).exists()
+        assert client.get("/api/v2/backup/settings", headers=keys.admin).json()["last_file"] is None
+
+    @pytest.mark.parametrize("name", ["..%2F..%2Fetc%2Fpasswd", "dockmon-backup-x.dmbak", "notes.txt"])
+    def test_bad_file_names_are_404(self, client, keys, nas, name):
+        assert client.get(f"/api/v2/backup/files/{name}", headers=keys.admin).status_code == 404
+        assert client.delete(f"/api/v2/backup/files/{name}", headers=keys.admin).status_code == 404
+
+    def test_run_now_while_busy_is_409_and_records_nothing(self, client, keys, nas, paths):
+        _enable(client, keys)
+        with operation_lock(paths):
+            assert client.post("/api/v2/backup/run", headers=keys.admin).status_code == 409
+        assert client.get("/api/v2/backup/settings", headers=keys.admin).json()["last_status"] is None
+
+    def test_failed_run_reports_a_public_error(self, client, keys, nas):
+        _enable(client, keys)
+        nas.rmdir()
+        backup_routes.clear_destination_cache()
+        run = client.post("/api/v2/backup/run", headers=keys.admin).json()
+        assert run["status"] == "failed"
+        assert run["error"] == "The backup destination does not exist"

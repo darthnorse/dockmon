@@ -282,3 +282,19 @@ class TestFullyIdenticalTables:
                 assert detail["cols"][col]["notnull"] == 1, f"{col} must be NOT NULL"
             indexes = _index_names(db_path, "group_tag_scopes")
             assert {"idx_group_tag_scopes_group", "idx_group_tag_scopes_tag"} <= indexes
+
+
+BACKUP_SCHEDULE_COLUMNS = (
+    "backup_schedule_enabled", "backup_schedule", "backup_retention", "backup_include_stats",
+    "backup_passphrase_encrypted", "backup_last_run_at", "backup_last_status", "backup_last_error",
+    "backup_last_file",
+)
+
+
+class TestBackupScheduleColumns:
+    def test_definitions_match_between_paths(self, fresh_db, upgraded_db):
+        fresh = _table_detail(fresh_db, "global_settings")["cols"]
+        upgraded = _table_detail(upgraded_db, "global_settings")["cols"]
+        for column in BACKUP_SCHEDULE_COLUMNS:
+            assert column in fresh, column
+            assert fresh[column] == upgraded[column], column

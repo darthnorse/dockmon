@@ -5,11 +5,13 @@ The audit row is keyed by the restore id, so retries never produce a second row.
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from audit.audit_logger import AuditAction, AuditEntityType, log_audit
 from backup.paths import BackupPaths
 from backup.restore import mark_completed_logged, read_completed_marker
+from backup.schedule_store import reset_after_restore
 from database import AuditLog
 from event_logger import EventSeverity, EventType
 
@@ -59,6 +61,9 @@ def record_completed_restore(paths: BackupPaths, db) -> Optional[dict]:
                 ip_address=initiator.get("ip"),
             )
             session.commit()
+    restored_at = marker.get("restored_at")
+    if isinstance(restored_at, str):
+        reset_after_restore(db, datetime.fromisoformat(restored_at.rstrip("Z")).replace(tzinfo=timezone.utc))
     return marker
 
 

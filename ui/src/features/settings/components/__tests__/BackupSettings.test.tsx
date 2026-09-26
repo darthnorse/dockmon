@@ -20,6 +20,7 @@ vi.mock('@/hooks/useBackup', () => ({
   isAllHostsRequired: (error: unknown) => error instanceof ApiError && error.status === 403,
   backupDownloadUrl: (id: string) => `/api/v2/backup/downloads/${id}`,
 }))
+vi.mock('../ScheduledBackupsSection', () => ({ ScheduledBackupsSection: () => null }))
 vi.mock('@/lib/hooks/useUserPreferences', () => ({ useTimeFormat: () => ({ timeFormat: '24h' }) }))
 vi.mock('@/lib/utils/timeFormat', () => ({ formatDateTime: (value: string) => `fmt(${value})` }))
 

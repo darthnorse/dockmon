@@ -52,6 +52,9 @@ services:
       # read-only to the container, so it is opt-in. On kernels before 5.12 the :ro flag does not
       # propagate to submounts.
       # - /:/hostfs:ro
+      # Optional: Scheduled backups (Settings > Backup) are written here. Mount a NAS or another disk;
+      # an unmounted /backups is refused, since it would be lost with the container.
+      # - /mnt/nas/dockmon-backups:/backups
     logging:
       driver: "json-file"
       options:

@@ -46,3 +46,56 @@ export interface StageBackupRequest {
   passphrase: string
   replace: boolean
 }
+
+export interface BackupDestination {
+  path: string
+  exists: boolean
+  is_mountpoint: boolean
+  writable: boolean
+  same_filesystem_as_data: boolean
+  free_bytes: number | null
+}
+
+export type ScheduledRunStatus = 'ok' | 'warning' | 'failed'
+
+export interface BackupSchedule {
+  enabled: boolean
+  schedule: string
+  retention: number
+  include_stats: boolean
+  passphrase_set: boolean
+  last_run_at: string | null
+  last_status: ScheduledRunStatus | null
+  last_error: string | null
+  last_file: string | null
+  next_run_at: string | null
+  timezone: string
+  timezone_error: string | null
+  destination: BackupDestination
+}
+
+export interface BackupScheduleUpdate {
+  enabled?: boolean
+  schedule?: string
+  retention?: number
+  include_stats?: boolean
+  passphrase?: string
+  clear_passphrase?: boolean
+}
+
+export interface ScheduledBackupFile {
+  name: string
+  size: number
+  created_at: string
+}
+
+export interface ScheduledBackupFiles {
+  files: ScheduledBackupFile[]
+  other_backups: number
+}
+
+export interface ScheduledRunResult {
+  status: ScheduledRunStatus
+  file: string | null
+  error: string | null
+}

@@ -1,4 +1,5 @@
 import errno
+import threading
 import io
 import os
 from datetime import datetime, timezone
@@ -142,6 +143,7 @@ def test_out_of_space_while_writing_leaves_no_partial(install, dest, monkeypatch
 
 
 def test_publish_falls_back_when_hard_links_are_unsupported(install, dest, monkeypatch):
+    writer_id(install)
     def no_links(*_args, **_kwargs):
         raise OSError(errno.EPERM, "Operation not permitted")
 
@@ -153,6 +155,7 @@ def test_publish_falls_back_when_hard_links_are_unsupported(install, dest, monke
 
 
 def test_directory_fsync_unsupported_on_the_share_is_tolerated(install, dest, monkeypatch):
+    writer_id(install)
     def cifs_fsync(_path):
         raise OSError(errno.EINVAL, "Invalid argument")
 
@@ -219,3 +222,30 @@ def test_public_error_never_leaks_unexpected_exception_text():
         "Another backup or restore operation is running"
     )
     assert "space" in public_error(BackupSpaceError("Ran out of disk space"))
+
+
+def test_space_check_ignores_bind_mount_data_that_is_never_backed_up(install, dest, monkeypatch):
+    big = install.stacks_dir / "web" / "data" / "huge.bin"
+    big.write_bytes(b"x" * (4 * 1024 * 1024))
+    needed = scheduled._needed_bytes(install)
+    assert needed < 4 * 1024 * 1024 + scheduled.FREE_SPACE_MARGIN
+
+
+def test_a_fifo_with_a_backup_name_is_refused_without_hanging(install, dest):
+    fifo = dest / f"dockmon-scheduled-{writer_id(install)}-20260101T000000.000000Z-abcd-2.5.1.dmbak"
+    os.mkfifo(fifo)
+    with pytest.raises(BackupNotFoundError):
+        open_file(dest, writer_id(install), fifo.name)
+    with pytest.raises(BackupNotFoundError):
+        scheduled.scheduled_file_path(dest, writer_id(install), fifo.name)
+
+
+def test_writer_id_is_created_once_even_when_raced(install, monkeypatch):
+    ids = set()
+    threads = [threading.Thread(target=lambda: ids.add(writer_id(install))) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(ids) == 1
+    assert (install.data_dir / ".backup-writer-id").read_text().strip() in ids

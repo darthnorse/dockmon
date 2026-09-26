@@ -27,13 +27,11 @@ from utils.env_files import (
 
 from utils.stack_files import (  # noqa: F401 - re-exported; these lived here before the backup split
     COMPOSE_FILENAMES,
-    MAX_COMPOSE_SCAN_BYTES,
     STACKS_DIR,
     VALID_NAME_PATTERN,
     _discovered_env_filenames,
     _managed_env_filenames,
     find_compose_file,
-    managed_stack_files,
     referenced_env_filenames,
     validate_stack_name,
 )

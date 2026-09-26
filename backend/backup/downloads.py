@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from backup.archive import create_backup, utc_iso
+from backup.archive import create_backup, parse_utc_iso, utc_iso
 from backup.crypto import KdfParams
 from backup.errors import BackupNotFoundError, disk_space_errors
 from backup.fsutil import fsync_dir
@@ -53,7 +53,7 @@ def _delete(paths: BackupPaths, download_id: str) -> None:
 
 def _expired(meta: dict, now: datetime) -> bool:
     try:
-        return datetime.fromisoformat(meta["expires_at"].rstrip("Z")).replace(tzinfo=timezone.utc) <= now
+        return parse_utc_iso(meta["expires_at"]) <= now
     except (KeyError, AttributeError, ValueError):
         return True
 

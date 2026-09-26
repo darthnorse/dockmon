@@ -78,3 +78,24 @@ def test_an_occurrence_exactly_now_counts_as_passed():
     now = datetime(2026, 9, 25, 3, 0, tzinfo=UTC)
     assert previous_occurrence("03:00", now, UTC) == now
     assert next_occurrence("03:00", now, UTC) == now + timedelta(days=1)
+
+
+STOCKHOLM = ZoneInfo("Europe/Stockholm")
+
+
+def test_hourly_schedule_is_valid_in_the_days_before_fall_back(monkeypatch):
+    class Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 23, 12, 0, tzinfo=tz)
+
+    monkeypatch.setattr("backup.schedule.datetime", Frozen)
+    validate_schedule("0 * * * *", STOCKHOLM)
+
+
+def test_next_occurrence_in_the_repeated_hour_is_in_the_future():
+    now = datetime(2026, 10, 25, 1, 10, tzinfo=UTC)
+    nxt = next_occurrence("30 2 * * *", now, STOCKHOLM)
+    assert nxt.astimezone(UTC) > now
+    prev = previous_occurrence("30 2 * * *", now, STOCKHOLM)
+    assert prev.astimezone(UTC) <= now

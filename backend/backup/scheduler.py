@@ -18,7 +18,16 @@ from backup.oplock import operation_lock
 from backup.paths import BackupPaths
 from backup.schedule import InvalidSchedule, next_occurrence, previous_occurrence, resolve_timezone
 from backup.schedule_store import ScheduleSettings, read_schedule, record_run, stored_passphrase
-from backup.scheduled import ScheduledRun, backup_dir, public_error, run_scheduled_backup, sweep_partials, writer_id
+from backup.scheduled import (
+    ScheduledRun,
+    backup_dir,
+    public_error,
+    read_armed_at,
+    run_scheduled_backup,
+    sweep_partials,
+    write_armed_at,
+    writer_id,
+)
 from event_logger import EventSeverity, EventType
 
 logger = logging.getLogger(__name__)
@@ -45,38 +54,40 @@ class BackupScheduler:
         self.dest = dest or backup_dir()
         self.kdf = kdf
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="backup-run")
-        self._armed_at: Optional[datetime] = None
-        self._wake: Optional[asyncio.Event] = None
-        self._stopping: Optional[asyncio.Event] = None
-        self._task: Optional[asyncio.Task] = None
-        self._active: Optional[asyncio.Future] = None
-
-    def start(self) -> None:
+        self._armed_at: Optional[datetime] = read_armed_at(paths)
         self._wake = asyncio.Event()
         self._stopping = asyncio.Event()
+        self._run_lock = asyncio.Lock()
+        self._task: Optional[asyncio.Task] = None
+
+    def start(self) -> None:
         self._task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
-        if self._stopping:
-            self._stopping.set()
+        """Let an in-flight run finish and report (bounded) before the loop is cancelled."""
+        self._stopping.set()
+        if self._run_lock.locked():
+            try:
+                await asyncio.wait_for(self._wait_idle(), STOP_GRACE_SECONDS)
+            except asyncio.TimeoutError:
+                logger.warning("Scheduled backup still running at shutdown; its partial file is removed on the next start")
         if self._task:
             self._task.cancel()
             try:
                 await self._task
             except (asyncio.CancelledError, Exception):
                 pass
-        if self._active and not self._active.done():
-            try:
-                await asyncio.wait_for(asyncio.shield(self._active), STOP_GRACE_SECONDS)
-            except (asyncio.TimeoutError, Exception):
-                logger.warning("Scheduled backup still running at shutdown; its partial file is removed on the next start")
         self._executor.shutdown(wait=False)
 
+    async def _wait_idle(self) -> None:
+        async with self._run_lock:
+            return
+
     def schedule_changed(self, now: Optional[datetime] = None) -> None:
-        """Settings changed: never catch up an occurrence from before the change."""
+        """Settings changed: never catch up an occurrence from before the change, even after a restart."""
         self._armed_at = now or _utcnow()
-        if self._wake:
-            self._wake.set()
+        write_armed_at(self.paths, self._armed_at)
+        self._wake.set()
 
     async def _loop(self) -> None:
         try:
@@ -95,9 +106,8 @@ class BackupScheduler:
             sweep_partials(self.dest, writer_id(self.paths))
 
     async def _in_executor(self, func, *args):
-        future = asyncio.get_running_loop().run_in_executor(self._executor, func, *args)
-        self._active = future
-        return await future
+        # Shielded: cancelling the loop must not orphan the run it is waiting on.
+        return await asyncio.shield(asyncio.get_running_loop().run_in_executor(self._executor, func, *args))
 
     async def _sleep(self, seconds: float) -> None:
         self._wake.clear()
@@ -129,6 +139,8 @@ class BackupScheduler:
         return now - latest <= CATCH_UP_WINDOW
 
     async def run_if_due(self, now: datetime) -> bool:
+        if self._stopping.is_set():
+            return False
         settings = await asyncio.to_thread(read_schedule, self.db)
         if not settings.enabled or not self._is_due(settings, now):
             return False
@@ -136,23 +148,27 @@ class BackupScheduler:
         return True
 
     def _run_locked(self, passphrase: str, settings: ScheduleSettings) -> ScheduledRun:
-        with operation_lock(self.paths, attempts=1):
+        with operation_lock(self.paths):
             return run_scheduled_backup(
                 self.paths, self.dest, passphrase, settings.include_stats, settings.retention, kdf=self.kdf
             )
 
     async def run(self, now: Optional[datetime] = None, retry_busy: bool = False) -> ScheduledRun:
-        """Run one scheduled backup. Without retry_busy, a held lock raises BackupBusyError and nothing is recorded."""
-        now = now or _utcnow()
-        settings = await asyncio.to_thread(read_schedule, self.db)
-        try:
-            passphrase = await asyncio.to_thread(stored_passphrase, self.db)
-        except BackupError as e:
-            result = ScheduledRun(status="failed", error=public_error(e))
-        else:
-            result = await self._run_with_retries(passphrase, settings, retry_busy)
-        await self._report(result, now)
-        return result
+        """Run one scheduled backup. Without retry_busy, a run already in progress or a held
+        operation lock raises BackupBusyError and nothing is recorded."""
+        if not retry_busy and self._run_lock.locked():
+            raise BackupBusyError("A scheduled backup is already running")
+        async with self._run_lock:
+            now = now or _utcnow()
+            settings = await asyncio.to_thread(read_schedule, self.db)
+            try:
+                passphrase = await asyncio.to_thread(stored_passphrase, self.db)
+            except BackupError as e:
+                result = ScheduledRun(status="failed", error=public_error(e))
+            else:
+                result = await self._run_with_retries(passphrase, settings, retry_busy)
+            await self._report(result, now)
+            return result
 
     async def _run_with_retries(self, passphrase: str, settings: ScheduleSettings, retry_busy: bool) -> ScheduledRun:
         attempts = LOCK_RETRY_ATTEMPTS if retry_busy else 1
@@ -164,12 +180,12 @@ class BackupScheduler:
                     raise
                 if attempt < attempts - 1:
                     await self._sleep_unless_stopping(LOCK_RETRY_SECONDS)
+            except Exception as e:
+                logger.error(f"Scheduled backup failed: {e}", exc_info=True)
+                return ScheduledRun(status="failed", error=public_error(e))
         return ScheduledRun(status="failed", error=SKIPPED_BUSY)
 
     async def _sleep_unless_stopping(self, seconds: float) -> None:
-        if self._stopping is None:
-            await asyncio.sleep(seconds)
-            return
         try:
             await asyncio.wait_for(self._stopping.wait(), timeout=seconds)
         except asyncio.TimeoutError:

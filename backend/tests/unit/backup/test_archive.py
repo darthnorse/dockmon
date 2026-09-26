@@ -235,7 +235,7 @@ def test_insufficient_space_is_a_space_error(install, monkeypatch):
 
 
 def test_free_space_check_covers_snapshot_tar_and_encrypted_output(install, monkeypatch):
-    live = archive._live_database_bytes(install.db_path)
+    live = archive.live_database_bytes(install.db_path)
     usage = namedtuple("usage", "total used free")
     free = 2 * live + archive.FREE_SPACE_MARGIN + 1
     monkeypatch.setattr(archive.shutil, "disk_usage", lambda _p: usage(10 * free, 9 * free, free))
@@ -244,7 +244,7 @@ def test_free_space_check_covers_snapshot_tar_and_encrypted_output(install, monk
 
 
 def test_free_space_check_counts_stack_files(install, monkeypatch):
-    live = archive._live_database_bytes(install.db_path)
+    live = archive.live_database_bytes(install.db_path)
     (install.stacks_dir / "web" / ".env").write_bytes(b"x" * (1024 * 1024))
     usage = namedtuple("usage", "total used free")
     free = 3 * live + archive.FREE_SPACE_MARGIN + 1024

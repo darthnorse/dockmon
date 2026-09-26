@@ -1,4 +1,6 @@
 import asyncio
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
@@ -152,3 +154,64 @@ async def test_start_and_stop(harness):
     scheduler.start()
     await asyncio.sleep(0)
     await asyncio.wait_for(scheduler.stop(), timeout=5)
+
+
+async def test_stop_waits_for_an_in_flight_run_and_reports_it(harness, db, monkeypatch):
+    scheduler, alerts, events, _runs, _ = harness
+    started = threading.Event()
+
+    def slow_run(*_args, **_kwargs):
+        started.set()
+        time.sleep(0.3)
+        return ScheduledRun(status="ok", file="slow.dmbak")
+
+    monkeypatch.setattr(scheduler_module, "run_scheduled_backup", slow_run)
+    monkeypatch.setattr(scheduler, "_sweep_partials", lambda: None)
+    record_run(db, ScheduledRun(status="ok"), _at(24, 3))
+    monkeypatch.setattr(scheduler_module, "_utcnow", lambda: _at(25, 3))
+    scheduler.start()
+    await asyncio.to_thread(started.wait, 5)
+
+    await asyncio.wait_for(scheduler.stop(), timeout=5)
+
+    assert read_schedule(db).last_file == "slow.dmbak"
+    alerts.resolve_backup_alert.assert_awaited()
+
+
+async def test_run_now_during_a_run_is_busy_instead_of_queued(harness, monkeypatch):
+    scheduler, _alerts, _events, runs, _ = harness
+    release = threading.Event()
+
+    def blocking_run(*_args, **_kwargs):
+        release.wait(5)
+        return ScheduledRun(status="ok", file="first.dmbak")
+
+    monkeypatch.setattr(scheduler_module, "run_scheduled_backup", blocking_run)
+    first = asyncio.create_task(scheduler.run())
+    await asyncio.sleep(0.05)
+    with pytest.raises(BackupBusyError):
+        await scheduler.run()
+    release.set()
+    assert (await first).file == "first.dmbak"
+
+
+async def test_unexpected_errors_are_recorded_and_alerted(harness, db, monkeypatch):
+    scheduler, alerts, _events, _runs, _ = harness
+
+    def broken(*_args, **_kwargs):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(scheduler, "_run_locked", broken)
+    result = await scheduler.run()
+
+    assert result.status == "failed"
+    assert result.error == "Scheduled backup failed; see the DockMon log"
+    assert read_schedule(db).last_status == "failed"
+    alerts.raise_backup_alert.assert_awaited_once()
+
+
+async def test_arming_survives_a_restart(harness, db, install):
+    scheduler, *_ = harness
+    scheduler.schedule_changed(now=_at(25, 4))
+    restarted = BackupScheduler(install, db, MagicMock(), MagicMock())
+    assert await restarted.run_if_due(_at(25, 5)) is False

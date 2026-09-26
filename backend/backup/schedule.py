@@ -7,7 +7,7 @@ DST changes.
 
 import os
 import re
-from datetime import datetime, timedelta, tzinfo
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Optional, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -54,13 +54,27 @@ def _iterate(schedule: str, start: datetime, reverse: bool = False) -> CronSim:
         raise InvalidSchedule(f"Invalid cron expression: {e}") from None
 
 
+def _utc(moment: datetime) -> datetime:
+    return moment.astimezone(timezone.utc)
+
+
 def next_occurrence(schedule: str, now: datetime, tz: tzinfo) -> datetime:
-    return next(_iterate(schedule, now.astimezone(tz)))
+    """The first occurrence after now. CronSim steps in wall-clock time, so inside a
+    repeated DST hour it can yield an instant that has already passed: skip those."""
+    occurrences = _iterate(schedule, now.astimezone(tz))
+    upcoming = next(occurrences)
+    while _utc(upcoming) <= _utc(now):
+        upcoming = next(occurrences)
+    return upcoming
 
 
 def previous_occurrence(schedule: str, now: datetime, tz: tzinfo) -> datetime:
     """The latest occurrence at or before now (CronSim iterates exclusively of its start)."""
-    return next(_iterate(schedule, now.astimezone(tz) + timedelta(seconds=1), reverse=True))
+    occurrences = _iterate(schedule, now.astimezone(tz) + timedelta(seconds=1), reverse=True)
+    latest = next(occurrences)
+    while _utc(latest) > _utc(now):
+        latest = next(occurrences)
+    return latest
 
 
 def validate_schedule(schedule: str, tz: tzinfo) -> None:
@@ -70,6 +84,6 @@ def validate_schedule(schedule: str, tz: tzinfo) -> None:
     previous = next(occurrences)
     for _ in range(INTERVAL_CHECK_OCCURRENCES):
         current = next(occurrences)
-        if current - previous < MIN_INTERVAL:
+        if _utc(current) - _utc(previous) < MIN_INTERVAL:
             raise InvalidSchedule("Scheduled backups must be at least an hour apart")
         previous = current

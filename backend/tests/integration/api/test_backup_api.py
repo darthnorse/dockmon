@@ -6,6 +6,7 @@ import hashlib
 import io
 import os
 import secrets
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -516,3 +517,23 @@ class TestScheduledBackups:
         run = client.post("/api/v2/backup/run", headers=keys.admin).json()
         assert run["status"] == "failed"
         assert run["error"] == "The backup destination does not exist"
+
+
+@pytest.mark.integration
+class TestDestinationProbeTimeout:
+    def test_a_hung_share_does_not_hang_settings(self, client, keys, nas, monkeypatch):
+        release = threading.Event()
+
+        def hung(*_args, **_kwargs):
+            release.wait(10)
+            return {}
+
+        monkeypatch.setattr(backup_routes, "destination_status", hung)
+        monkeypatch.setattr(backup_routes, "DESTINATION_PROBE_TIMEOUT", 0.2)
+        try:
+            body = client.get("/api/v2/backup/settings", headers=keys.admin).json()
+            assert body["destination"]["responding"] is False
+            again = client.get("/api/v2/backup/settings", headers=keys.admin).json()
+            assert again["destination"]["responding"] is False
+        finally:
+            release.set()

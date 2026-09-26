@@ -26,11 +26,9 @@ import { pluralize } from '@/lib/utils/formatting'
 import { formatDateTime } from '@/lib/utils/timeFormat'
 import type { BackupDownload, BackupManifestSummary, RollbackCopy } from '@/types/backup'
 import { ScheduledBackupsSection } from './ScheduledBackupsSection'
+import { INPUT_CLASS, MIN_PASSPHRASE_LENGTH } from './backupForm'
 import { ToggleSwitch } from './ToggleSwitch'
 
-const MIN_PASSPHRASE_LENGTH = 8
-const INPUT_CLASS =
-  'w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500'
 
 function plural(count: number, noun: string): string {
   return `${count} ${pluralize(count, noun)}`

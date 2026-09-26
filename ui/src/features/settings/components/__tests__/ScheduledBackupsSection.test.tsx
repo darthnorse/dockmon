@@ -38,6 +38,7 @@ const SCHEDULE: BackupSchedule = {
   timezone_error: null,
   destination: {
     path: '/backups',
+    responding: true,
     exists: true,
     is_mountpoint: true,
     writable: true,
@@ -122,6 +123,14 @@ describe('ScheduledBackupsSection - destination', () => {
     setSchedule({ ...SCHEDULE, destination: { ...SCHEDULE.destination, exists: false } })
     render(<ScheduledBackupsSection />)
     expect(screen.getByText(/does not exist/i)).toBeInTheDocument()
+  })
+})
+
+describe('ScheduledBackupsSection - hung share', () => {
+  it('says the destination is not responding', () => {
+    setSchedule({ ...SCHEDULE, destination: { ...SCHEDULE.destination, responding: false } })
+    render(<ScheduledBackupsSection />)
+    expect(screen.getByText(/not responding/i)).toBeInTheDocument()
   })
 })
 

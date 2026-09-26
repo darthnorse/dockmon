@@ -90,6 +90,10 @@ def utc_iso(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
 
 
+def parse_utc_iso(value: str) -> datetime:
+    return datetime.fromisoformat(value.rstrip("Z")).replace(tzinfo=timezone.utc)
+
+
 def utc_now_iso() -> str:
     return utc_iso(datetime.now(timezone.utc))
 
@@ -143,7 +147,7 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _live_database_bytes(db_path: Path) -> int:
+def live_database_bytes(db_path: Path) -> int:
     conn = sqlite3.connect(db_path, timeout=30)
     try:
         page_size = conn.execute("PRAGMA page_size").fetchone()[0]
@@ -152,6 +156,10 @@ def _live_database_bytes(db_path: Path) -> int:
     finally:
         conn.close()
     return page_size * (page_count - free_pages)
+
+
+def managed_stack_bytes(stacks_dir: Path) -> int:
+    return _total_size(_collect_stack_files(stacks_dir))
 
 
 def _total_size(files: List[Tuple[str, Path]]) -> int:
@@ -166,7 +174,7 @@ def _total_size(files: List[Tuple[str, Path]]) -> int:
 
 def _check_free_space(db_path: Path, work: Path, stack_bytes: int) -> None:
     # snapshot, compressed tar and encrypted output can all sit on this filesystem at once
-    needed = 3 * (_live_database_bytes(db_path) + stack_bytes) + FREE_SPACE_MARGIN
+    needed = 3 * (live_database_bytes(db_path) + stack_bytes) + FREE_SPACE_MARGIN
     free = shutil.disk_usage(work).free
     if free < needed:
         raise BackupSpaceError(

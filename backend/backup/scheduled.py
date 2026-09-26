@@ -14,14 +14,13 @@ import os
 import re
 import secrets
 import shutil
-import sqlite3
 import stat
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from backup.archive import FREE_SPACE_MARGIN, create_backup, utc_iso
+from backup.archive import FREE_SPACE_MARGIN, create_backup, live_database_bytes, managed_stack_bytes, parse_utc_iso, utc_iso
 from backup.crypto import DEFAULT_KDF, KdfParams
 from backup.errors import (
     BackupBusyError,
@@ -42,6 +41,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_BACKUP_DIR = "/backups"
 MOUNTINFO = Path("/proc/self/mountinfo")
 WRITER_ID_FILE = ".backup-writer-id"
+ARMED_AT_FILE = ".backup-schedule-armed"
 GENERIC_FAILURE = "Scheduled backup failed; see the DockMon log"
 MIN_RETENTION, MAX_RETENTION = 1, 365
 
@@ -74,23 +74,52 @@ def allow_unmounted() -> bool:
     return os.environ.get("DOCKMON_BACKUP_ALLOW_UNMOUNTED", "").strip().lower() in ("1", "true", "yes")
 
 
+def _read_writer_id(path: Path) -> Optional[str]:
+    try:
+        value = path.read_text().strip()
+    except FileNotFoundError:
+        return None
+    return value if re.fullmatch(r"[0-9a-f]{8}", value) else None
+
+
 def writer_id(paths: BackupPaths) -> str:
     path = paths.data_dir / WRITER_ID_FILE
-    try:
-        existing = path.read_text().strip()
-        if re.fullmatch(r"[0-9a-f]{8}", existing):
-            return existing
-    except FileNotFoundError:
-        pass
-    value = secrets.token_hex(4)
-    tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    existing = _read_writer_id(path)
+    if existing:
+        return existing
+    tmp = path.with_name(f"{path.name}.{secrets.token_hex(4)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as f:
-        f.write(value)
+        f.write(secrets.token_hex(4))
         f.flush()
         os.fsync(f.fileno())
+    try:
+        os.link(tmp, path)
+    except FileExistsError:
+        pass
+    except OSError as e:
+        if e.errno not in _UNSUPPORTED_LINK:
+            raise
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    _fsync_dir_tolerant(path.parent)
+    return _read_writer_id(path)
+
+
+def read_armed_at(paths: BackupPaths) -> Optional[datetime]:
+    """When scheduling was last enabled or changed on this install (kept outside the backup)."""
+    try:
+        return parse_utc_iso((paths.data_dir / ARMED_AT_FILE).read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def write_armed_at(paths: BackupPaths, at: datetime) -> None:
+    path = paths.data_dir / ARMED_AT_FILE
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(utc_iso(at))
     os.replace(tmp, path)
-    return value
 
 
 def public_error(error: BaseException) -> str:
@@ -175,14 +204,7 @@ def _check_destination(dest: Path) -> None:
 
 
 def _needed_bytes(paths: BackupPaths) -> int:
-    conn = sqlite3.connect(paths.db_path, timeout=30)
-    try:
-        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
-        pages = conn.execute("PRAGMA page_count").fetchone()[0] - conn.execute("PRAGMA freelist_count").fetchone()[0]
-    finally:
-        conn.close()
-    stack_bytes = sum(p.stat().st_size for p in paths.stacks_dir.rglob("*") if p.is_file()) if paths.stacks_dir.exists() else 0
-    return page_size * pages + stack_bytes + FREE_SPACE_MARGIN
+    return live_database_bytes(paths.db_path) + managed_stack_bytes(paths.stacks_dir) + FREE_SPACE_MARGIN
 
 
 def _new_name(writer: str) -> str:
@@ -213,17 +235,24 @@ def _publish(partial: Path, final: Path) -> None:
     _fsync_dir_tolerant(final.parent)
 
 
-def _own_files(dest: Path, writer: str) -> List[Tuple[str, Path]]:
+def _own_files(dest: Path, writer: str) -> List[Tuple[str, Path, int]]:
+    """This writer's regular files as (stamp, path, size), newest first; entries that vanish mid-scan are skipped."""
     owned = []
     for entry in os.scandir(dest):
         match = _FILE_NAME.match(entry.name)
-        if match and match.group("writer") == writer and entry.is_file(follow_symlinks=False):
-            owned.append((match.group("stamp"), Path(entry.path)))
+        if not match or match.group("writer") != writer:
+            continue
+        try:
+            info = entry.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISREG(info.st_mode):
+            owned.append((match.group("stamp"), Path(entry.path), info.st_size))
     return sorted(owned, reverse=True)
 
 
 def _prune(dest: Path, writer: str, keep: int, just_written: Path) -> None:
-    others = [path for _stamp, path in _own_files(dest, writer) if path != just_written]
+    others = [path for _stamp, path, _size in _own_files(dest, writer) if path != just_written]
     for path in others[max(keep - 1, 0):]:
         path.unlink()
 
@@ -278,15 +307,15 @@ def sweep_partials(dest: Path, writer: str) -> None:
 def list_files(dest: Path, writer: str) -> dict:
     if not dest.is_dir():
         return {"files": [], "other_backups": 0}
-    files = []
-    for stamp, path in _own_files(dest, writer):
-        created = datetime.strptime(stamp, "%Y%m%dT%H%M%S.%fZ").replace(tzinfo=timezone.utc)
-        files.append({"name": path.name, "size": path.stat().st_size, "created_at": utc_iso(created)})
+    files = [
+        {"name": path.name, "size": size, "created_at": utc_iso(datetime.strptime(stamp, "%Y%m%dT%H%M%S.%fZ").replace(tzinfo=timezone.utc))}
+        for stamp, path, size in _own_files(dest, writer)
+    ]
     other = sum(
         1
         for entry in os.scandir(dest)
         if _OTHER_BACKUP.match(entry.name)
-        and not (_FILE_NAME.match(entry.name) and _FILE_NAME.match(entry.name).group("writer") == writer)
+        and not ((match := _FILE_NAME.match(entry.name)) and match.group("writer") == writer)
     )
     return {"files": files, "other_backups": other}
 
@@ -311,10 +340,13 @@ def scheduled_file_path(dest: Path, writer: str, name: str) -> Path:
 
 
 def open_file(dest: Path, writer: str, name: str) -> Tuple[int, int]:
-    """Open one of this writer's regular files without following symlinks; returns (fd, size)."""
+    """Open one of this writer's regular files without following symlinks; returns (fd, size).
+
+    O_NONBLOCK so a FIFO planted under a backup name cannot block the open.
+    """
     path = _own_file_path(dest, writer, name)
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         raise BackupNotFoundError("No such backup file") from None
     info = os.fstat(fd)

@@ -49,6 +49,7 @@ export interface StageBackupRequest {
 
 export interface BackupDestination {
   path: string
+  responding: boolean
   exists: boolean
   is_mountpoint: boolean
   writable: boolean

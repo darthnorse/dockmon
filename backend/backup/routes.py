@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from datetime import datetime, timezone
 import shutil
 import time
@@ -43,7 +44,7 @@ from backup.errors import (
 )
 from backup.oplock import async_operation_lock, is_busy, operation_lock
 from backup.paths import BackupPaths
-from backup.schedule import InvalidSchedule, next_occurrence, resolve_timezone, validate_schedule
+from backup.schedule import MAX_SCHEDULE_LENGTH, InvalidSchedule, next_occurrence, resolve_timezone, validate_schedule
 from backup.schedule_store import read_schedule, update_schedule
 from backup.scheduled import (
     MAX_RETENTION,
@@ -52,7 +53,6 @@ from backup.scheduled import (
     destination_status,
     list_files,
     open_file,
-    scheduled_file_path,
     writer_id,
 )
 from backup.scheduler import BackupScheduler
@@ -92,9 +92,10 @@ def get_backup_scheduler(request: Request) -> BackupScheduler:
 # Share I/O (a possibly hung NFS/SMB mount) never runs on the default pool that Docker calls use.
 _share_io = ThreadPoolExecutor(max_workers=2, thread_name_prefix="backup-io")
 DESTINATION_CACHE_SECONDS = 30
+DESTINATION_PROBE_TIMEOUT = 5
 FILE_CHUNK = 1024 * 1024
 _destination_cache: dict = {}
-_destination_lock = asyncio.Lock()
+_destination_probes: dict = {}
 
 
 def clear_destination_cache() -> None:
@@ -106,15 +107,24 @@ async def _on_share(func, *args):
 
 
 async def _destination(dest, data_dir) -> dict:
-    """Destination status, cached and single-flight so polling a hung mount costs one thread."""
-    async with _destination_lock:
-        cached = _destination_cache.get(str(dest))
-        now = asyncio.get_running_loop().time()
-        if cached and now - cached[0] < DESTINATION_CACHE_SECONDS:
-            return cached[1]
-        status_ = await _on_share(destination_status, dest, data_dir)
-        _destination_cache[str(dest)] = (now, status_)
-        return status_
+    """Destination status, cached and single-flight: a hung mount costs one thread and
+    a bounded wait, never a request that hangs."""
+    key = str(dest)
+    now = asyncio.get_running_loop().time()
+    cached = _destination_cache.get(key)
+    if cached and now - cached[0] < DESTINATION_CACHE_SECONDS:
+        return cached[1]
+    probe = _destination_probes.get(key)
+    if probe is None or probe.done():
+        probe = asyncio.ensure_future(_on_share(destination_status, dest, data_dir))
+        _destination_probes[key] = probe
+    try:
+        status_ = dict(await asyncio.wait_for(asyncio.shield(probe), DESTINATION_PROBE_TIMEOUT), responding=True)
+    except asyncio.TimeoutError:
+        return {"path": key, "responding": False, "exists": False, "is_mountpoint": False, "writable": False,
+                "same_filesystem_as_data": False, "free_bytes": None}
+    _destination_cache[key] = (now, status_)
+    return status_
 
 
 async def require_unrestricted_hosts(current_user: dict = Depends(get_current_user_or_api_key)) -> dict:
@@ -153,7 +163,7 @@ class StageRollbackRequest(BaseModel):
 
 class ScheduleUpdateRequest(BaseModel):
     enabled: Optional[bool] = None
-    schedule: Optional[str] = Field(None, max_length=100)
+    schedule: Optional[str] = Field(None, max_length=MAX_SCHEDULE_LENGTH)
     retention: Optional[int] = Field(None, ge=MIN_RETENTION, le=MAX_RETENTION)
     include_stats: Optional[bool] = None
     passphrase: Optional[str] = Field(None, min_length=MIN_PASSPHRASE_LENGTH, max_length=MAX_PASSPHRASE_LENGTH)
@@ -556,8 +566,14 @@ async def delete_scheduled_file(
 
 def _stage_scheduled_file(paths: BackupPaths, dest, name: str, body: StageFileRequest, initiator: dict) -> dict:
     with operation_lock(paths):
-        archive = scheduled_file_path(dest, writer_id(paths), name)
-        return stage_archive(paths, archive, body.passphrase, replace=body.replace, initiator=initiator)
+        fd, _size = open_file(dest, writer_id(paths), name)
+        try:
+            # Staging reopens by path: go through the verified descriptor so a
+            # swap on the share after the check cannot substitute another file.
+            return stage_archive(paths, Path(f"/proc/self/fd/{fd}"), body.passphrase, replace=body.replace,
+                                 initiator=initiator)
+        finally:
+            os.close(fd)
 
 
 @router.post("/files/{name}/stage", dependencies=WRITE_GUARDS)

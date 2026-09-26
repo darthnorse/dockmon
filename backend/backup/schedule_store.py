@@ -10,7 +10,7 @@ from typing import Optional
 
 from alerts.evaluation_service import BACKUP_ALERT_SCOPE
 from backup.errors import BackupConflictError, BackupDecryptError
-from backup.scheduled import MAX_RETENTION, MIN_RETENTION, ScheduledRun
+from backup.scheduled import ScheduledRun
 from database import AlertV2, GlobalSettings
 from utils.encryption import decrypt_password, encrypt_password
 
@@ -52,8 +52,8 @@ def read_schedule(db) -> ScheduleSettings:
         row = _row(session)
         return ScheduleSettings(
             enabled=bool(row.backup_schedule_enabled),
-            schedule=row.backup_schedule or "03:00",
-            retention=row.backup_retention or 7,
+            schedule=row.backup_schedule,
+            retention=row.backup_retention,
             include_stats=bool(row.backup_include_stats),
             passphrase_set=bool(row.backup_passphrase_encrypted),
             last_run_at=_aware(row.backup_last_run_at),
@@ -78,8 +78,6 @@ def update_schedule(
     with db.get_session() as session:
         row = _row(session)
         if retention is not None:
-            if not MIN_RETENTION <= retention <= MAX_RETENTION:
-                raise ValueError(f"Retention must be between {MIN_RETENTION} and {MAX_RETENTION}")
             row.backup_retention = retention
         if schedule is not None:
             row.backup_schedule = schedule.strip()

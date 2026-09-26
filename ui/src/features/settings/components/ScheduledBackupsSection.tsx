@@ -21,23 +21,18 @@ import {
   useUpdateBackupSchedule,
 } from '@/hooks/useBackup'
 import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
+import { formatBytes } from '@/lib/utils/formatting'
 import { formatDateTime } from '@/lib/utils/timeFormat'
 import type { BackupDestination, BackupSchedule, BackupScheduleUpdate } from '@/types/backup'
+import { INPUT_CLASS, MIN_PASSPHRASE_LENGTH } from './backupForm'
 import { ToggleSwitch } from './ToggleSwitch'
 
-const MIN_PASSPHRASE_LENGTH = 8
-const INPUT_CLASS =
-  'w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500'
-
-function formatSize(bytes: number): string {
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`
-  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`
-  return `${Math.max(1, Math.round(bytes / 1024))} KB`
-}
 
 function DestinationWarnings({ destination }: { destination: BackupDestination }) {
   const warnings: string[] = []
-  if (!destination.exists) {
+  if (!destination.responding) {
+    warnings.push(`${destination.path} is not responding. Check the NAS or the mount.`)
+  } else if (!destination.exists) {
     warnings.push(`${destination.path} does not exist in the container. Mount a NAS share or another disk there.`)
   } else {
     if (!destination.is_mountpoint) {
@@ -211,7 +206,7 @@ function ScheduledFiles() {
         {data.files.map((file) => (
           <li key={file.name} className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
             <span className="text-gray-300">
-              {formatDateTime(file.created_at, timeFormat)} · {formatSize(file.size)}
+              {formatDateTime(file.created_at, timeFormat)} · {formatBytes(file.size)}
             </span>
             <div className="flex gap-2">
               <Button variant="outline" size="sm" asChild>
@@ -322,7 +317,8 @@ export function ScheduledBackupsSection() {
         <div>
           <h3 className="text-lg font-semibold text-white">Scheduled Backups</h3>
           <p className="mt-1 text-xs text-gray-400">
-            Written to {saved.destination.path}. Failures raise the &quot;Alert System Health&quot; alert, which only
+            Written to {saved.destination.path}
+            {saved.destination.free_bytes !== null && ` (${formatBytes(saved.destination.free_bytes)} free)`}. Failures raise the &quot;Alert System Health&quot; alert, which only
             notifies you once that rule has a notification channel.
           </p>
         </div>
@@ -343,6 +339,7 @@ export function ScheduledBackupsSection() {
           ) : (
             <p>No scheduled backup has run yet.</p>
           )}
+          {saved.last_file && <p>Last file: {saved.last_file}</p>}
           {saved.last_error && <p className="text-red-400">{saved.last_error}</p>}
           {saved.next_run_at && <p>Next run {formatDateTime(saved.next_run_at, timeFormat)}.</p>}
         </div>

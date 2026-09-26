@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from config.paths import CERTS_DIR, DATA_DIR, DATABASE_PATH, DEFAULT_SESSION_SECRET_FILE
-from deployment.stack_storage import STACKS_DIR
+from utils.stack_files import STACKS_DIR
 from utils.encryption import KEY_PATH
 
 RESTORE_DIRNAME = ".dockmon-restore"

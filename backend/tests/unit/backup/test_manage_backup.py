@@ -1,4 +1,8 @@
+import os
 import stat
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -120,3 +124,23 @@ def test_commands_refuse_while_another_operation_runs(install, tmp_path, passphr
         assert _run(install, "create", str(tmp_path / "out.dmbak"), "--passphrase-file", str(passphrase_file)) == 1
         assert "Another backup or restore operation is running" in capsys.readouterr().err
         assert _run(install, "status") == 0
+
+
+def test_apply_staged_does_not_import_the_application(tmp_path):
+    """apply-staged runs before migrations: importing the app would open the
+    not-yet-migrated database through the ORM (and run its startup seeding)."""
+    probe = (
+        "import sys, manage_backup; "
+        "loaded = [m for m in ('auth.shared', 'deployment.routes', 'main') if m in sys.modules]; "
+        "print(','.join(loaded))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=Path(manage_backup.__file__).parent,
+        env={**os.environ, "DATABASE_PATH": str(tmp_path / "absent.db")},
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == ""

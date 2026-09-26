@@ -32,7 +32,7 @@ from backup.archive import (
 )
 from backup.errors import BackupError, BackupSpaceError, BackupValidationError
 from backup.fsutil import IO_BLOCK, write_new_file
-from deployment.stack_storage import COMPOSE_FILENAMES, validate_stack_name
+from utils.stack_files import COMPOSE_FILENAMES, validate_stack_name
 from utils.env_files import is_safe_env_filename
 
 ALEMBIC_DIR = Path(__file__).resolve().parents[1] / "alembic"

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from backup import archive
-from deployment import stack_storage
+from utils import stack_files
 from backup.archive import create_backup
 from backup.crypto import decrypt_stream
 from backup.errors import BackupError, BackupSpaceError
@@ -208,8 +208,8 @@ def test_creation_enforces_the_restore_member_limit(install, monkeypatch):
 
 
 def test_managed_stack_files_does_not_parse_an_oversized_compose(install, monkeypatch):
-    monkeypatch.setattr(stack_storage, "MAX_COMPOSE_SCAN_BYTES", 10)
-    files = stack_storage.managed_stack_files(install.stacks_dir / "web")
+    monkeypatch.setattr(stack_files, "MAX_COMPOSE_SCAN_BYTES", 10)
+    files = stack_files.managed_stack_files(install.stacks_dir / "web")
     assert [p.name for p in files] == ["compose.yaml"]
 
 

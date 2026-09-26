@@ -24,7 +24,7 @@ from backup.crypto import DEFAULT_KDF, MIN_PASSPHRASE_LENGTH, KdfParams, encrypt
 from backup.errors import BackupError, BackupSpaceError, disk_space_errors
 from backup.fsutil import IO_BLOCK
 from backup.paths import BackupPaths
-from deployment.stack_storage import managed_stack_files, validate_stack_name
+from utils.stack_files import managed_stack_files, validate_stack_name
 from utils.version import get_app_version
 
 logger = logging.getLogger(__name__)

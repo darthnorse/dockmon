@@ -46,7 +46,7 @@ from backup.errors import (
 from backup.fsutil import copy_new_file, fsync_dir
 from backup.paths import RESTORE_DIRNAME, BackupPaths
 from backup.validate import check_database, check_member_name, extract_archive
-from deployment.stack_storage import managed_stack_files
+from utils.stack_files import managed_stack_files
 
 logger = logging.getLogger(__name__)
 

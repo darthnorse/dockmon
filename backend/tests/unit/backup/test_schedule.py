@@ -99,3 +99,8 @@ def test_next_occurrence_in_the_repeated_hour_is_in_the_future():
     assert nxt.astimezone(UTC) > now
     prev = previous_occurrence("30 2 * * *", now, STOCKHOLM)
     assert prev.astimezone(UTC) <= now
+
+
+def test_previous_occurrence_keeps_the_dst_fold():
+    now = datetime(2026, 10, 25, 1, 40, tzinfo=UTC)
+    assert previous_occurrence("30 * * * *", now, STOCKHOLM).astimezone(UTC) == datetime(2026, 10, 25, 1, 30, tzinfo=UTC)

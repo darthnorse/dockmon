@@ -159,6 +159,8 @@ class BackupScheduler:
         if not retry_busy and self._run_lock.locked():
             raise BackupBusyError("A scheduled backup is already running")
         async with self._run_lock:
+            if retry_busy and self._stopping.is_set():
+                return ScheduledRun(status="failed", error="Skipped because DockMon is shutting down")
             now = now or _utcnow()
             settings = await asyncio.to_thread(read_schedule, self.db)
             try:

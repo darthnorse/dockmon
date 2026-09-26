@@ -215,3 +215,15 @@ async def test_arming_survives_a_restart(harness, db, install):
     scheduler.schedule_changed(now=_at(25, 4))
     restarted = BackupScheduler(install, db, MagicMock(), MagicMock())
     assert await restarted.run_if_due(_at(25, 5)) is False
+
+
+async def test_a_run_queued_behind_a_manual_run_does_not_start_after_stop(harness, db):
+    scheduler, _alerts, _events, runs, _ = harness
+    record_run(db, ScheduledRun(status="ok"), _at(24, 3))
+    await scheduler._run_lock.acquire()
+    queued = asyncio.create_task(scheduler.run_if_due(_at(25, 3)))
+    await asyncio.sleep(0.05)
+    scheduler._stopping.set()
+    scheduler._run_lock.release()
+    await asyncio.wait_for(queued, timeout=5)
+    assert runs == []

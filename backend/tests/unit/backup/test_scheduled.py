@@ -249,3 +249,10 @@ def test_writer_id_is_created_once_even_when_raced(install, monkeypatch):
         thread.join()
     assert len(ids) == 1
     assert (install.data_dir / ".backup-writer-id").read_text().strip() in ids
+
+
+def test_a_corrupt_writer_id_is_repaired(install):
+    (install.data_dir / ".backup-writer-id").write_text("garbage")
+    value = writer_id(install)
+    assert value and len(value) == 8
+    assert (install.data_dir / ".backup-writer-id").read_text().strip() == value

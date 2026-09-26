@@ -83,28 +83,40 @@ def _read_writer_id(path: Path) -> Optional[str]:
 
 
 def writer_id(paths: BackupPaths) -> str:
+    """This install's writer id, created once; a corrupt file is replaced."""
     path = paths.data_dir / WRITER_ID_FILE
-    existing = _read_writer_id(path)
-    if existing:
-        return existing
-    tmp = path.with_name(f"{path.name}.{secrets.token_hex(4)}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(secrets.token_hex(4))
-        f.flush()
-        os.fsync(f.fileno())
+    for _ in range(3):
+        existing = _read_writer_id(path)
+        if existing:
+            return existing
+        tmp = path.with_name(f"{path.name}.{secrets.token_hex(4)}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(secrets.token_hex(4))
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            if os.path.lexists(path):
+                os.replace(tmp, path)
+            else:
+                _link_or_rename(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
+        _fsync_dir_tolerant(path.parent)
+    raise BackupError("Could not create the backup writer id")
+
+
+def _link_or_rename(tmp: Path, path: Path) -> None:
+    """Create path from tmp unless another process got there first."""
     try:
         os.link(tmp, path)
     except FileExistsError:
-        pass
+        return
     except OSError as e:
         if e.errno not in _UNSUPPORTED_LINK:
             raise
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
-    _fsync_dir_tolerant(path.parent)
-    return _read_writer_id(path)
+        if not os.path.lexists(path):
+            os.replace(tmp, path)
 
 
 def read_armed_at(paths: BackupPaths) -> Optional[datetime]:

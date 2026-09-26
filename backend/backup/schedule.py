@@ -70,7 +70,8 @@ def next_occurrence(schedule: str, now: datetime, tz: tzinfo) -> datetime:
 
 def previous_occurrence(schedule: str, now: datetime, tz: tzinfo) -> datetime:
     """The latest occurrence at or before now (CronSim iterates exclusively of its start)."""
-    occurrences = _iterate(schedule, now.astimezone(tz) + timedelta(seconds=1), reverse=True)
+    # Step on the UTC timeline: local wall-clock arithmetic would drop the DST fold.
+    occurrences = _iterate(schedule, (_utc(now) + timedelta(seconds=1)).astimezone(tz), reverse=True)
     latest = next(occurrences)
     while _utc(latest) > _utc(now):
         latest = next(occurrences)

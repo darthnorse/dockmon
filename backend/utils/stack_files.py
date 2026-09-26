@@ -25,8 +25,6 @@ COMPOSE_FILENAMES = ("compose.yaml", "compose.yml", "docker-compose.yaml", "dock
 # Larger compose files are backed up without scanning them for env_file references
 MAX_COMPOSE_SCAN_BYTES = 16 * 1024 * 1024
 
-# Valid stack name pattern: lowercase alphanumeric, hyphens, underscores
-# Must start with alphanumeric
 VALID_NAME_PATTERN = re.compile(r'^[a-z0-9][a-z0-9_-]*$')
 
 

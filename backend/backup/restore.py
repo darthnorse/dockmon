@@ -151,11 +151,13 @@ def _checkpoint_and_close(db_path: Path) -> None:
         Path(f"{db_path}{suffix}").unlink(missing_ok=True)
 
 
-def _best_effort(action: Callable, *args) -> None:
+def _best_effort(action: Callable, *args) -> bool:
     try:
         action(*args)
+        return True
     except Exception as e:
         logger.warning(f"Restore cleanup step failed, continuing: {e}")
+        return False
 
 
 def _guard_can_stage(paths: BackupPaths, replace: bool) -> None:
@@ -491,8 +493,9 @@ def _rollback(paths: BackupPaths, plan: dict) -> ApplyOutcome:
 
 def _close_out_rollback(paths: BackupPaths) -> None:
     """Live state is fully old; cleanup failures are retried on the next start."""
-    _best_effort(_fail_pending, paths)
-    if not paths.pending_dir.exists():
+    # A step can change the directory and then fail its fsync: only a step that
+    # returned cleanly is durable enough to let the journal go.
+    if _best_effort(_fail_pending, paths) and not paths.pending_dir.exists():
         _best_effort(_remove, paths.journal_path)
     _best_effort(_clean_work_dirs, paths)
 
@@ -502,7 +505,9 @@ def _finish(paths: BackupPaths, plan: dict) -> None:
     until pending is gone, so a leftover pending dir is never applied twice."""
     _best_effort(_remove, paths.certs_dir)
     _best_effort(_remove, paths.session_secret_path)
-    if paths.pending_dir.exists():
+    existing = read_completed_marker(paths)
+    already_recorded = existing is not None and existing.get("restore_id") == plan["rollback_id"]
+    if paths.pending_dir.exists() and not already_recorded:
         marker = {
             "restore_id": plan["rollback_id"],
             "restored_at": utc_now_iso(),
@@ -515,14 +520,14 @@ def _finish(paths: BackupPaths, plan: dict) -> None:
         except Exception as e:
             logger.error(f"Restore applied, but its completion record could not be written ({e}); retrying on the next start")
             return
-    _best_effort(_remove, paths.pending_dir)
+    pending_removed = _best_effort(_remove, paths.pending_dir)
     for root in _roots(paths):
         _best_effort(_remove, root / STAGED_DIRNAME)
         current = _rollback_dir(root, plan["rollback_id"])
         for old in sorted(root.glob(f"{ROLLBACK_PREFIX}*")):
             if old != current:
                 _best_effort(_remove, old)
-    if paths.pending_dir.exists():
+    if not pending_removed or paths.pending_dir.exists():
         logger.error("Restore applied, but its staging area could not be removed; retrying on the next start")
         return
     _best_effort(_remove, paths.journal_path)

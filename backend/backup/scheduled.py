@@ -9,6 +9,7 @@ install never lists, serves or prunes another install's files on a shared share.
 """
 
 import errno
+import fcntl
 import logging
 import os
 import re
@@ -83,40 +84,33 @@ def _read_writer_id(path: Path) -> Optional[str]:
 
 
 def writer_id(paths: BackupPaths) -> str:
-    """This install's writer id, created once; a corrupt file is replaced."""
+    """This install's writer id, created once; a corrupt file is replaced.
+
+    Creation and repair run under an flock shared by every process and thread,
+    so concurrent callers always agree on one id.
+    """
     path = paths.data_dir / WRITER_ID_FILE
-    for _ in range(3):
+    existing = _read_writer_id(path)
+    if existing:
+        return existing
+    lock_fd = os.open(path.with_name(path.name + ".lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
         existing = _read_writer_id(path)
         if existing:
             return existing
-        tmp = path.with_name(f"{path.name}.{secrets.token_hex(4)}.tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        value = secrets.token_hex(4)
+        tmp = path.with_name(path.name + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
-            f.write(secrets.token_hex(4))
+            f.write(value)
             f.flush()
             os.fsync(f.fileno())
-        try:
-            if os.path.lexists(path):
-                os.replace(tmp, path)
-            else:
-                _link_or_rename(tmp, path)
-        finally:
-            tmp.unlink(missing_ok=True)
+        os.replace(tmp, path)
         _fsync_dir_tolerant(path.parent)
-    raise BackupError("Could not create the backup writer id")
-
-
-def _link_or_rename(tmp: Path, path: Path) -> None:
-    """Create path from tmp unless another process got there first."""
-    try:
-        os.link(tmp, path)
-    except FileExistsError:
-        return
-    except OSError as e:
-        if e.errno not in _UNSUPPORTED_LINK:
-            raise
-        if not os.path.lexists(path):
-            os.replace(tmp, path)
+        return value
+    finally:
+        os.close(lock_fd)
 
 
 def read_armed_at(paths: BackupPaths) -> Optional[datetime]:

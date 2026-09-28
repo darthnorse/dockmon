@@ -670,3 +670,62 @@ def test_pending_manifest_tolerates_a_concurrent_cancel(target, archive_file):
     stage_archive(target, archive_file, PASSPHRASE)
     (target.pending_dir / "manifest.json").unlink()
     assert pending_manifest(target) is None
+
+
+def test_a_retried_finish_keeps_the_logged_completion_marker(target, archive_file, monkeypatch):
+    stage_archive(target, archive_file, PASSPHRASE, initiator={"username": "alice"})
+    real_remove = restore._remove
+
+    def pending_stuck(path):
+        if path == target.pending_dir:
+            raise OSError("device busy")
+        real_remove(path)
+
+    monkeypatch.setattr(restore, "_remove", pending_stuck)
+    apply_staged(target, ok_migrate)
+    restore.mark_completed_logged(target)
+    first = read_completed_marker(target)
+    monkeypatch.undo()
+
+    assert apply_staged(target, ok_migrate) is ApplyOutcome.APPLIED
+    marker = read_completed_marker(target)
+    assert marker["logged"] is True
+    assert marker["restored_at"] == first["restored_at"]
+
+
+def _removal_that_is_not_durable(real, match):
+    """Performs the change, then fails the way a failed directory fsync would."""
+    def wrapped(*args):
+        real(*args)
+        if match(*args):
+            raise OSError(5, "Input/output error")
+    return wrapped
+
+
+def test_journal_is_kept_when_removing_pending_after_commit_is_not_durable(target, archive_file, monkeypatch):
+    stage_archive(target, archive_file, PASSPHRASE)
+    monkeypatch.setattr(restore, "_remove", _removal_that_is_not_durable(
+        restore._remove, lambda path: path == target.pending_dir))
+
+    assert apply_staged(target, ok_migrate) is ApplyOutcome.APPLIED
+    assert (_restore_root(target) / "journal.json").exists()
+    monkeypatch.undo()
+
+    assert apply_staged(target, ok_migrate) is ApplyOutcome.APPLIED
+    assert not (_restore_root(target) / "journal.json").exists()
+
+
+def test_journal_is_kept_when_failing_pending_after_rollback_is_not_durable(target, archive_file, monkeypatch):
+    old_key = target.key_path.read_bytes()
+    stage_archive(target, archive_file, PASSPHRASE)
+    monkeypatch.setattr(restore, "_swap", lambda plan: (_ for _ in ()).throw(OSError("I/O error")))
+    monkeypatch.setattr(restore, "_move", _removal_that_is_not_durable(
+        restore._move, lambda src, dst: src == target.pending_dir))
+
+    assert apply_staged(target, ok_migrate) is ApplyOutcome.FAILED
+    assert (_restore_root(target) / "journal.json").exists()
+    monkeypatch.undo()
+
+    assert apply_staged(target, ok_migrate) is ApplyOutcome.FAILED
+    assert not (_restore_root(target) / "journal.json").exists()
+    _assert_old(target, old_key)

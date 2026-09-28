@@ -256,3 +256,27 @@ def test_a_corrupt_writer_id_is_repaired(install):
     value = writer_id(install)
     assert value and len(value) == 8
     assert (install.data_dir / ".backup-writer-id").read_text().strip() == value
+
+
+@pytest.mark.parametrize("links", [True, False], ids=["hard-links", "no-hard-links"])
+def test_concurrent_creation_or_repair_yields_one_writer_id(install, monkeypatch, links):
+    (install.data_dir / ".backup-writer-id").write_text("garbage")
+    if not links:
+        def no_links(*_args, **_kwargs):
+            raise OSError(errno.EPERM, "Operation not permitted")
+
+        monkeypatch.setattr(scheduled.os, "link", no_links)
+    barrier = threading.Barrier(8)
+    ids = []
+
+    def worker():
+        barrier.wait()
+        ids.append(writer_id(install))
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(set(ids)) == 1
+    assert (install.data_dir / ".backup-writer-id").read_text().strip() == ids[0]

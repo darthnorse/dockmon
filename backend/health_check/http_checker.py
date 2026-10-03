@@ -169,12 +169,14 @@ class HttpHealthChecker:
                             'current_status': config.current_status,
                         }
 
-                    # Perform health check
-                    await self._perform_check(config_data)
+                    status_after_check = await self._perform_check(config_data)
 
-                    # Check if we should retry restart even without state change (v2.0.2+)
-                    # This allows multiple restart attempts for truly broken services
-                    if config_data['current_status'] == 'unhealthy' and config_data['auto_restart_on_failure']:
+                    # Retry the restart only while the container stays unhealthy. The status
+                    # read before the check is stale: a container that just recovered would
+                    # otherwise be restarted again, and a fresh failure is already restarted
+                    # by the state-change path in _update_check_state.
+                    still_unhealthy = config_data['current_status'] == 'unhealthy' and status_after_check == 'unhealthy'
+                    if still_unhealthy and config_data['auto_restart_on_failure']:
                         await self._trigger_auto_restart(
                             config_data['host_id'],
                             container_id,
@@ -195,8 +197,8 @@ class HttpHealthChecker:
             # Safely remove task from dict (pop never raises KeyError)
             self.check_tasks.pop(container_id, None)
 
-    async def _perform_check(self, config: dict):
-        """Perform a single HTTP health check"""
+    async def _perform_check(self, config: dict) -> Optional[str]:
+        """Perform a single HTTP health check and return the resulting status"""
         container_id = config['container_id']
         start_time = time.time()
 
@@ -302,8 +304,7 @@ class HttpHealthChecker:
                 # Check status code
                 is_healthy = response.status_code in expected_codes
 
-                # Update state
-                await self._update_check_state(
+                return await self._update_check_state(
                     config,
                     is_healthy=is_healthy,
                     response_time_ms=response_time_ms,
@@ -321,7 +322,7 @@ class HttpHealthChecker:
                 else:
                     error_message = f"Error: {str(e)[:100]}"
 
-                await self._update_check_state(
+                return await self._update_check_state(
                     config,
                     is_healthy=False,
                     response_time_ms=response_time_ms,
@@ -334,8 +335,8 @@ class HttpHealthChecker:
         is_healthy: bool,
         response_time_ms: int,
         error_message: Optional[str]
-    ):
-        """Update health check state in database and emit events on state changes"""
+    ) -> Optional[str]:
+        """Update health check state in database, emit events on state changes, and return the new status"""
         now = datetime.now(timezone.utc)
         container_id = config['container_id']
         old_status = config['current_status']
@@ -347,7 +348,7 @@ class HttpHealthChecker:
             ).first()
 
             if not check:
-                return
+                return None
 
             # Update counters
             if is_healthy:
@@ -421,6 +422,8 @@ class HttpHealthChecker:
             # Auto-restart on failure
             if new_status == 'unhealthy' and event_data['auto_restart_on_failure']:
                 await self._trigger_auto_restart(event_data['host_id'], container_id, event_data)
+
+        return new_status
 
     async def _emit_health_change_event(self, event_data: dict):
         """Emit CONTAINER_HEALTH_CHANGED event"""

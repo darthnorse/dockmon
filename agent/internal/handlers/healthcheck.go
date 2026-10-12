@@ -75,6 +75,7 @@ type HealthCheckHandler struct {
 // newHealthCheckTransport builds a reusable transport with the given TLS policy.
 func newHealthCheckTransport(insecureSkipVerify bool) *http.Transport {
 	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: insecureSkipVerify, // #nosec G402
 		},

@@ -47,23 +47,22 @@ func createTLSOption(caCertPEM, certPEM, keyPEM string) (client.Opt, error) {
 		MinVersion:   tls.VersionTLS12,
 	}
 
-	// Create HTTP client with TLS transport and timeouts
-	// Note: No overall Timeout set because Docker API streaming operations (stats, events)
-	// are long-running connections that should not be killed by a timeout
-	httpClient := &http.Client{
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second, // Connection establishment timeout
-				KeepAlive: 30 * time.Second, // TCP keepalive interval
-			}).DialContext,
-			TLSClientConfig:       tlsConfig,
-			TLSHandshakeTimeout:   10 * time.Second,
-			IdleConnTimeout:       90 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second,
-		},
-	}
+	// No overall client Timeout: Docker API streams (stats, events) are long-lived.
+	return client.WithHTTPClient(&http.Client{Transport: newTLSTransport(tlsConfig)}), nil
+}
 
-	return client.WithHTTPClient(httpClient), nil
+func newTLSTransport(tlsConfig *tls.Config) *http.Transport {
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSClientConfig:       tlsConfig,
+		TLSHandshakeTimeout:   10 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+	}
 }
 
 // CreateLocalClient creates a Docker client for local socket

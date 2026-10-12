@@ -17,6 +17,10 @@
 #   FORCE_UNIQUE_REGISTRATION - Optional. Set to "true" for cloned VMs (shared engine_id) to register as a distinct host. Requires AGENT_NAME.
 #   DATA_PATH            - Optional. Data directory (default: /var/lib/dockmon-agent)
 #   AGENT_STACKS_DIR     - Optional. Stack storage directory (default: $DATA_PATH/stacks)
+#   HTTP_PROXY, HTTPS_PROXY, NO_PROXY (and lowercase forms)
+#                        - Optional. Written to the agent's EnvironmentFile so the agent
+#                          reaches DockMon and GitHub through the proxy. With sudo, pass
+#                          them after sudo: ... | sudo HTTPS_PROXY=... DOCKMON_URL=... bash
 #
 
 set -e
@@ -30,6 +34,24 @@ NC='\033[0m' # No Color
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+# Prints KEY=value lines for the proxy variables set in the installer's environment;
+# systemd services don't inherit the caller's environment. Rejects values that could
+# inject further EnvironmentFile assignments (same rule as AGENT_NAME).
+proxy_env_lines() {
+    local var value
+    for var in HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy; do
+        value="${!var}"
+        [ -n "$value" ] || continue
+        case "$value" in
+            *[[:cntrl:]]*|*'"'*|*'\'*)
+                log_error "${var} contains forbidden characters (newlines, tabs, double quotes, or backslashes)."
+                return 1
+                ;;
+        esac
+        echo "${var}=${value}"
+    done
+}
 
 # Check required variables
 if [ -z "$DOCKMON_URL" ]; then
@@ -225,7 +247,14 @@ FORCE_UNIQUE_REGISTRATION=true"
     esac
 fi
 
-# Write secrets to a root-only EnvironmentFile (contains REGISTRATION_TOKEN).
+PROXY_ENV_LINES="$(proxy_env_lines)" || exit 1
+if [ -n "$PROXY_ENV_LINES" ]; then
+    log_info "Passing proxy settings through to the agent service"
+    ENV_FILE_CONTENT="${ENV_FILE_CONTENT}
+${PROXY_ENV_LINES}"
+fi
+
+# Write secrets to a root-only EnvironmentFile (contains REGISTRATION_TOKEN, proxy credentials).
 # umask 077 closes the brief window where the file would otherwise be
 # world-readable between creation and chmod.
 ENV_DIR="/etc/dockmon-agent"

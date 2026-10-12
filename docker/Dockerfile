@@ -193,7 +193,7 @@ EXPOSE 443 80
 
 # Health check - checks both backend and stats service
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:8080/health && curl -f http://localhost:8081/health || exit 1
+    CMD curl -f --noproxy '*' http://localhost:8080/health && curl -f --noproxy '*' http://localhost:8081/health || exit 1
 
 # Volume for persistent data
 VOLUME ["/app/data"]

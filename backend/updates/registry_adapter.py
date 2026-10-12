@@ -455,7 +455,6 @@ class RegistryAdapter:
             if auth:
                 headers["Authorization"] = self._encode_basic_auth(auth)
 
-            # Fetch token
             async with aiohttp.ClientSession(trust_env=True) as session:
                 async with session.get(
                     realm,

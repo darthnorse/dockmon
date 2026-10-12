@@ -26,7 +26,6 @@ func CreateTLSClient(hostAddress, caCertPEM, certPEM, keyPEM string) (*client.Cl
 	)
 }
 
-// createTLSOption creates a Docker client TLS option from PEM-encoded certificates
 func createTLSOption(caCertPEM, certPEM, keyPEM string) (client.Opt, error) {
 	// Parse CA certificate
 	caCertPool := x509.NewCertPool()

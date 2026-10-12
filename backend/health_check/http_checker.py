@@ -198,7 +198,6 @@ class HttpHealthChecker:
             self.check_tasks.pop(container_id, None)
 
     async def _perform_check(self, config: dict) -> Optional[str]:
-        """Perform a single HTTP health check and return the resulting status"""
         container_id = config['container_id']
         start_time = time.time()
 

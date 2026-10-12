@@ -846,3 +846,13 @@ func TestIngestHandler_DiskClearedWhenLaterSampleOmitsIt(t *testing.T) {
 		t.Errorf("stale disk reading merged into the newer sample: %+v", *stats.HostDisk)
 	}
 }
+
+func TestHostLabel(t *testing.T) {
+	id := "edca5dab-1234-5678-9abc-def012345678"
+	if got := hostLabel("caddy", id); got != "caddy (edca5dab)" {
+		t.Errorf("hostLabel with name=%q, want %q", got, "caddy (edca5dab)")
+	}
+	if got := hostLabel("", id); got != "edca5dab" {
+		t.Errorf("hostLabel without name=%q, want %q", got, "edca5dab")
+	}
+}

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { AlertTriangle, Download, Play, RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -74,7 +74,7 @@ function changedFields(
   return update
 }
 
-function ScheduleForm({ saved }: { saved: BackupSchedule }) {
+function ScheduleForm({ saved, runNow }: { saved: BackupSchedule; runNow: ReactNode }) {
   const update = useUpdateBackupSchedule()
   const [enabled, setEnabled] = useState(saved.enabled)
   const [schedule, setSchedule] = useState(saved.schedule)
@@ -182,9 +182,12 @@ function ScheduleForm({ saved }: { saved: BackupSchedule }) {
         <p className="text-xs text-red-400">The passphrase must be at least {MIN_PASSPHRASE_LENGTH} characters.</p>
       )}
       {passphraseMismatch && <p className="text-xs text-red-400">The passphrases do not match.</p>}
-      <Button onClick={handleSave} disabled={!canSave}>
-        {update.isPending ? 'Saving…' : 'Save schedule'}
-      </Button>
+      <div className="flex flex-wrap gap-2">
+        <Button onClick={handleSave} disabled={!canSave}>
+          {update.isPending ? 'Saving…' : 'Save schedule'}
+        </Button>
+        {runNow}
+      </div>
     </div>
   )
 }
@@ -343,11 +346,16 @@ export function ScheduledBackupsSection() {
           {saved.last_error && <p className="text-red-400">{saved.last_error}</p>}
           {saved.next_run_at && <p>Next run {formatDateTime(saved.next_run_at, timeFormat)}.</p>}
         </div>
-        <ScheduleForm key={`${saved.enabled}-${saved.schedule}-${saved.retention}-${saved.include_stats}`} saved={saved} />
-        <Button variant="outline" onClick={() => run.mutate()} disabled={run.isPending || !saved.passphrase_set}>
-          <Play className="mr-2 h-4 w-4" />
-          {run.isPending ? 'Running…' : 'Run now'}
-        </Button>
+        <ScheduleForm
+          key={`${saved.enabled}-${saved.schedule}-${saved.retention}-${saved.include_stats}`}
+          saved={saved}
+          runNow={
+            <Button variant="outline" onClick={() => run.mutate()} disabled={run.isPending || !saved.passphrase_set}>
+              <Play className="mr-2 h-4 w-4" />
+              {run.isPending ? 'Running…' : 'Run now'}
+            </Button>
+          }
+        />
         <ScheduledFiles />
       </div>
     </div>

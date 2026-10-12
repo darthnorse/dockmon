@@ -414,6 +414,7 @@ class CapabilityTester:
             verify=self.verify_ssl,
             timeout=30.0,
             follow_redirects=True,
+            headers={"Origin": self.base_url},
         )
 
     def _login(self, client: httpx.Client, username: str, password: str) -> bool:

@@ -45,6 +45,10 @@ MAX_LISTED_SCOPES = 10
 MAX_LISTED_ERRORS = 3
 MAX_ALERT_MESSAGE_CHARS = 1000
 
+# Agents open their stats connection seconds after the WebSocket reconnects, so
+# an online host without a sample is only reported once this long has passed.
+HOST_METRICS_GRACE_SECONDS = 60
+
 
 def _summarize(items: List[str], limit: int, joiner: str = ", ") -> str:
     """Join at most `limit` items, noting how many were left out."""
@@ -171,6 +175,8 @@ class AlertEvaluationService:
         # Hosts already reported as unable to serve a host-scope rule, so the
         # warning fires once per host rather than every evaluation cycle.
         self._hosts_missing_metrics_reported: set = set()
+        # host_id -> monotonic time it was first seen online without a usable sample.
+        self._hosts_without_metrics_since: Dict[str, float] = {}
         # (host_id, metric) pairs already warned about: the host reports other
         # metrics but not this one, so the host-level warning above stays quiet.
         self._host_metric_missing_reported: set = set()
@@ -1219,17 +1225,23 @@ class AlertEvaluationService:
         host,
         rules_by_metric: Dict[str, List[AlertRuleV2]],
         reason: str,
+        now: float,
     ):
         """Warn once per host when a host-scope rule has no metrics to evaluate.
 
         Debug-level silence here is why a whole class of hosts could never fire
         a metric alert without anything saying so.
         """
+        # An offline host has an obvious reason to report nothing.
+        if getattr(host, "status", None) != "online":
+            self._hosts_without_metrics_since.pop(host.id, None)
+            return
+
         if host.id in self._hosts_missing_metrics_reported:
             return
 
-        # An offline host has an obvious reason to report nothing.
-        if getattr(host, "status", None) != "online":
+        since = self._hosts_without_metrics_since.setdefault(host.id, now)
+        if now - since < HOST_METRICS_GRACE_SECONDS:
             return
 
         host_rules = self._host_scope_metric_rules(rules_by_metric)
@@ -1311,7 +1323,11 @@ class AlertEvaluationService:
             tags=self.db.get_tags_for_subject('host', host.id),
         )
 
-    async def _evaluate_host_metrics(self, rules_by_metric: Dict[str, List[AlertRuleV2]]):
+    async def _evaluate_host_metrics(
+        self, rules_by_metric: Dict[str, List[AlertRuleV2]], now: Optional[float] = None
+    ):
+        if now is None:
+            now = time.monotonic()
         try:
             # Get all host stats from stats service
             stats = await self.stats_client.get_host_stats() or {}
@@ -1326,6 +1342,11 @@ class AlertEvaluationService:
                 "host:", {f"host:{host_id}" for host_id in live_host_ids}
             )
             self._hosts_missing_metrics_reported.intersection_update(live_host_ids)
+            self._hosts_without_metrics_since = {
+                host_id: since
+                for host_id, since in self._hosts_without_metrics_since.items()
+                if host_id in live_host_ids
+            }
             self._host_metric_missing_reported = {
                 key for key in self._host_metric_missing_reported if key[0] in live_host_ids
             }
@@ -1341,7 +1362,7 @@ class AlertEvaluationService:
 
                     if not host_stats:
                         self._report_host_without_metrics(
-                            host, rules_by_metric, "no samples received"
+                            host, rules_by_metric, "no samples received", now
                         )
                         continue
 
@@ -1349,11 +1370,12 @@ class AlertEvaluationService:
                         host_stats, f"host {host.name}", f"host:{host.id}"
                     ):
                         self._report_host_without_metrics(
-                            host, rules_by_metric, "samples are stale"
+                            host, rules_by_metric, "samples are stale", now
                         )
                         continue
 
                     self._hosts_missing_metrics_reported.discard(host.id)
+                    self._hosts_without_metrics_since.pop(host.id, None)
 
                     context = self._host_context(host)
                     self._report_host_missing_metrics(host, host_stats, context, rules_by_metric)

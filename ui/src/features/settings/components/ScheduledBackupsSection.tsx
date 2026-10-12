@@ -210,14 +210,14 @@ function ScheduledFiles() {
             </span>
             <div className="flex gap-2">
               <Button variant="outline" size="sm" asChild>
-                <a href={scheduledFileUrl(file.name)} download={file.name} aria-label="Download backup file">
+                <a href={scheduledFileUrl(file.name)} download={file.name} aria-label="Download backup file" title="Download">
                   <Download className="h-4 w-4" />
                 </a>
               </Button>
-              <Button variant="outline" size="sm" onClick={() => setToStage(file.name)} aria-label="Restore from this file">
+              <Button variant="outline" size="sm" onClick={() => setToStage(file.name)} aria-label="Restore from this file" title="Restore from this backup">
                 <RotateCcw className="h-4 w-4" />
               </Button>
-              <Button variant="outline" size="sm" onClick={() => setToDelete(file.name)} aria-label="Delete backup file">
+              <Button variant="outline" size="sm" onClick={() => setToDelete(file.name)} aria-label="Delete backup file" title="Delete">
                 <Trash2 className="h-4 w-4" />
               </Button>
             </div>
@@ -322,7 +322,7 @@ export function ScheduledBackupsSection() {
             notifies you once that rule has a notification channel.
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => void refetch()} aria-label="Refresh scheduled backups">
+        <Button variant="outline" size="sm" onClick={() => void refetch()} aria-label="Refresh scheduled backups" title="Refresh">
           <RefreshCw className="h-4 w-4" />
         </Button>
       </div>

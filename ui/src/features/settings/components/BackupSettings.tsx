@@ -24,7 +24,7 @@ import {
 import { useTimeFormat } from '@/lib/hooks/useUserPreferences'
 import { pluralize } from '@/lib/utils/formatting'
 import { formatDateTime } from '@/lib/utils/timeFormat'
-import type { BackupDownload, BackupManifestSummary, RollbackCopy } from '@/types/backup'
+import type { BackupDownload, BackupManifestSummary, BackupStatus, LastRestore, RollbackCopy } from '@/types/backup'
 import { ScheduledBackupsSection } from './ScheduledBackupsSection'
 import { INPUT_CLASS, MIN_PASSPHRASE_LENGTH } from './backupForm'
 import { ToggleSwitch } from './ToggleSwitch'
@@ -43,7 +43,20 @@ function SectionHeader({ title, description }: { title: string; description: str
   )
 }
 
-function CreateBackupSection({ busy }: { busy: boolean }) {
+function LatestDownload({ download }: { download: BackupDownload }) {
+  const { timeFormat } = useTimeFormat()
+  return (
+    <p className="text-xs text-gray-400">
+      Latest:{' '}
+      <a href={backupDownloadUrl(download.download_id)} download={download.filename} className="text-blue-400 underline">
+        {download.filename}
+      </a>{' '}
+      (link valid until {formatDateTime(download.expires_at, timeFormat)})
+    </p>
+  )
+}
+
+function CreateBackupSection({ busy, download }: { busy: boolean; download: BackupDownload | null }) {
   const createBackup = useCreateBackup()
   const [passphrase, setPassphrase] = useState('')
   const [repeat, setRepeat] = useState('')
@@ -121,6 +134,7 @@ function CreateBackupSection({ busy }: { busy: boolean }) {
           <Download className="mr-2 h-4 w-4" />
           {createBackup.isPending ? 'Creating backup…' : 'Download backup'}
         </Button>
+        {download && <LatestDownload download={download} />}
       </div>
     </div>
   )
@@ -151,7 +165,84 @@ function StagedRestoreBanner({ pending }: { pending: BackupManifestSummary }) {
   )
 }
 
-function RestoreSection({ busy, hasPending }: { busy: boolean; hasPending: boolean }) {
+function LastRestoreCard({ lastRestore, rollbacks }: { lastRestore: LastRestore | null; rollbacks: RollbackCopy[] }) {
+  const stageRollback = useStageRollback()
+  const deleteRollback = useDeleteRollback()
+  const { timeFormat } = useTimeFormat()
+  const [toDelete, setToDelete] = useState<string | null>(null)
+
+  if (!lastRestore?.restored_at && rollbacks.length === 0) return null
+
+  return (
+    <div className="space-y-3 rounded-md border border-gray-800 p-4 text-sm">
+      {lastRestore?.restored_at && (
+        <p className="text-gray-300">
+          Last restore: {formatDateTime(lastRestore.restored_at, timeFormat)}
+          {lastRestore.backup?.created_at &&
+            `, from a backup made ${formatDateTime(lastRestore.backup.created_at, timeFormat)}`}
+          {lastRestore.initiated_by && ` (by ${lastRestore.initiated_by})`}.
+        </p>
+      )}
+      {rollbacks.map((rollback) => (
+        <div key={rollback.id} className="flex flex-wrap items-center justify-between gap-3">
+          <p className="max-w-xl text-xs text-gray-400">
+            The state before the restore
+            {rollback.created_at && ` (saved ${formatDateTime(rollback.created_at, timeFormat)})`} is kept on this machine,
+            unencrypted. Delete it once you are happy with the restore.
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => stageRollback.mutate(rollback.id)}
+              disabled={stageRollback.isPending}
+            >
+              <RotateCcw className="mr-1 h-4 w-4" />
+              Undo this restore
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setToDelete(rollback.id)}
+              disabled={deleteRollback.isPending}
+              aria-label="Delete rollback copy"
+            >
+              <Trash2 className="mr-1 h-4 w-4" />
+              Delete copy
+            </Button>
+          </div>
+        </div>
+      ))}
+
+      <AlertDialog open={toDelete !== null} onOpenChange={(open) => !open && setToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete rollback copy?</AlertDialogTitle>
+            <AlertDialogDescription>
+              You will no longer be able to undo that restore. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (toDelete) deleteRollback.mutate(toDelete)
+                setToDelete(null)
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  )
+}
+
+function RestoreSection({ status }: { status: BackupStatus }) {
+  const { busy } = status
+  const hasPending = status.pending !== null
   const stage = useStageBackup()
   const [file, setFile] = useState<File | null>(null)
   const [passphrase, setPassphrase] = useState('')
@@ -211,6 +302,7 @@ function RestoreSection({ busy, hasPending }: { busy: boolean; hasPending: boole
           <Upload className="mr-2 h-4 w-4" />
           {stage.isPending ? 'Uploading and validating…' : 'Validate & stage'}
         </Button>
+        <LastRestoreCard lastRestore={status.last_restore} rollbacks={status.rollbacks} />
       </div>
 
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
@@ -241,93 +333,8 @@ function RestoreSection({ busy, hasPending }: { busy: boolean; hasPending: boole
   )
 }
 
-function RollbackCopiesSection({ rollbacks }: { rollbacks: RollbackCopy[] }) {
-  const stageRollback = useStageRollback()
-  const deleteRollback = useDeleteRollback()
-  const { timeFormat } = useTimeFormat()
-  const [toDelete, setToDelete] = useState<string | null>(null)
-
-  if (rollbacks.length === 0) return null
-
-  return (
-    <div>
-      <SectionHeader
-        title="Rollback Copies"
-        description="The state a restore replaced. It holds the old database and encryption key unencrypted; delete it once the restore is confirmed good."
-      />
-      <ul className="divide-y divide-gray-800 rounded-md border border-gray-800">
-        {rollbacks.map((rollback) => (
-          <li key={rollback.id} className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
-            <span className="text-gray-300">
-              Taken {rollback.created_at ? formatDateTime(rollback.created_at, timeFormat) : rollback.id}
-            </span>
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => stageRollback.mutate(rollback.id)}
-                disabled={stageRollback.isPending}
-                aria-label="Stage rollback copy"
-              >
-                <RotateCcw className="mr-1 h-4 w-4" />
-                Stage
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setToDelete(rollback.id)}
-                disabled={deleteRollback.isPending}
-                aria-label="Delete rollback copy"
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            </div>
-          </li>
-        ))}
-      </ul>
-
-      <AlertDialog open={toDelete !== null} onOpenChange={(open) => !open && setToDelete(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete rollback copy?</AlertDialogTitle>
-            <AlertDialogDescription>
-              You will no longer be able to return to the state before that restore. This cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                if (toDelete) deleteRollback.mutate(toDelete)
-                setToDelete(null)
-              }}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </div>
-  )
-}
-
-function LatestDownload({ download }: { download: BackupDownload }) {
-  const { timeFormat } = useTimeFormat()
-  return (
-    <p className="text-xs text-gray-400">
-      Latest backup:{' '}
-      <a href={backupDownloadUrl(download.download_id)} download={download.filename} className="text-blue-400 underline">
-        {download.filename}
-      </a>{' '}
-      (link valid until {formatDateTime(download.expires_at, timeFormat)})
-    </p>
-  )
-}
-
 export function BackupSettings() {
   const { data: status, error, isLoading, refetch } = useBackupStatus()
-  const { timeFormat } = useTimeFormat()
 
   if (isAllHostsRequired(error)) {
     return (
@@ -350,24 +357,13 @@ export function BackupSettings() {
     return <p className="text-sm text-gray-400">Loading…</p>
   }
 
-  const lastRestore = status.last_restore
   return (
     <div className="space-y-8">
       {status.pending && <StagedRestoreBanner pending={status.pending} />}
-      {lastRestore?.restored_at && (
-        <p className="text-xs text-gray-400">
-          Last restore: {formatDateTime(lastRestore.restored_at, timeFormat)}
-          {lastRestore.backup?.created_at &&
-            `, from a backup made ${formatDateTime(lastRestore.backup.created_at, timeFormat)}`}
-          {lastRestore.initiated_by && ` (by ${lastRestore.initiated_by})`}.
-        </p>
-      )}
       {status.busy && <p className="text-xs text-gray-400">A backup or restore operation is running…</p>}
-      {status.download && <LatestDownload download={status.download} />}
-      <CreateBackupSection busy={status.busy} />
+      <CreateBackupSection busy={status.busy} download={status.download} />
       <ScheduledBackupsSection />
-      <RestoreSection busy={status.busy} hasPending={status.pending !== null} />
-      <RollbackCopiesSection rollbacks={status.rollbacks} />
+      <RestoreSection status={status} />
     </div>
   )
 }

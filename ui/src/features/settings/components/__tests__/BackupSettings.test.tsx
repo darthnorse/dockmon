@@ -1,5 +1,5 @@
 /**
- * BackupSettings - create/download, upload & stage, staged-restore banner, rollback copies.
+ * BackupSettings - create/download, upload & stage, staged-restore banner, last restore and its rollback copy.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -128,7 +128,25 @@ describe('BackupSettings - access', () => {
   })
 })
 
-describe('BackupSettings - rollback copies', () => {
+describe('BackupSettings - last restore', () => {
+  it('shows the last restore and undoes it by staging its rollback copy', async () => {
+    setStatus({
+      ...EMPTY_STATUS,
+      last_restore: { restored_at: '2026-09-25T19:14:43Z', backup: { created_at: '2026-09-25T10:00:00Z' }, initiated_by: 'admin' },
+      rollbacks: [{ id: '20260925T191443770843Z', created_at: '2026-09-25T19:14:43Z', replaced_by_backup_created_at: null }],
+    })
+    render(<BackupSettings />)
+    expect(screen.getByText(/last restore: fmt\(2026-09-25T19:14:43Z\).*\(by admin\)/i)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /undo this restore/i }))
+    expect(stageRollback.mutate).toHaveBeenCalledWith('20260925T191443770843Z')
+  })
+
+  it('shows nothing when there has been no restore', () => {
+    render(<BackupSettings />)
+    expect(screen.queryByText(/last restore/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /undo this restore/i })).not.toBeInTheDocument()
+  })
+
   it('deletes a rollback copy only after confirming', async () => {
     setStatus({
       ...EMPTY_STATUS,

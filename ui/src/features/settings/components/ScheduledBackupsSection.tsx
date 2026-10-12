@@ -329,15 +329,15 @@ export function ScheduledBackupsSection() {
       <div className="space-y-4">
         <DestinationWarnings destination={saved.destination} />
         <div className="text-xs text-gray-400">
-          {saved.last_run_at ? (
+          {saved.last_run_at && saved.last_status ? (
             <p>
               Last run {formatDateTime(saved.last_run_at, timeFormat)}:{' '}
               <span className={saved.last_status === 'failed' ? 'text-red-400' : 'text-gray-300'}>
-                {saved.last_status ?? 'unknown'}
+                {saved.last_status}
               </span>
             </p>
           ) : (
-            <p>No scheduled backup has run yet.</p>
+            <p>No scheduled backup has run {saved.last_run_at ? 'since the last restore' : 'yet'}.</p>
           )}
           {saved.last_file && <p>Last file: {saved.last_file}</p>}
           {saved.last_error && <p className="text-red-400">{saved.last_error}</p>}

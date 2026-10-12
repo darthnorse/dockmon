@@ -107,6 +107,14 @@ describe('ScheduledBackupsSection - settings', () => {
 })
 
 describe('ScheduledBackupsSection - destination', () => {
+  it('does not report a run when only a restore reset the schedule', () => {
+    setSchedule({ ...SCHEDULE, last_status: null, last_file: null, last_error: null })
+    render(<ScheduledBackupsSection />)
+    expect(screen.queryByText(/last run/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/unknown/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/no scheduled backup has run since the last restore/i)).toBeInTheDocument()
+  })
+
   it('warns when /backups is not a mount', () => {
     setSchedule({ ...SCHEDULE, destination: { ...SCHEDULE.destination, is_mountpoint: false } })
     render(<ScheduledBackupsSection />)

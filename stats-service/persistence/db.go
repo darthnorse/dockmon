@@ -152,6 +152,18 @@ func (db *DB) ValidateAgentToken(ctx context.Context, token string) (string, err
 	return hostID, nil
 }
 
+// HostName returns a host's display name, or "" when it is unknown. Used only
+// to make log lines readable, so lookup errors are not reported.
+func (db *DB) HostName(ctx context.Context, hostID string) string {
+	var name sql.NullString
+	if err := db.read.QueryRowContext(ctx,
+		`SELECT name FROM docker_hosts WHERE id = ?`, hostID,
+	).Scan(&name); err != nil {
+		return ""
+	}
+	return name.String
+}
+
 // InvalidateAgentToken evicts a token from the in-memory cache. The Python
 // backend calls this via POST /api/agents/invalidate when an agent is deleted.
 func (db *DB) InvalidateAgentToken(token string) {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -159,11 +160,12 @@ func (h *IngestHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) 
 	h.openSession(hostID)
 	defer h.closeSession(hostID)
 
+	host := hostLabel(h.db.HostName(r.Context(), hostID), hostID)
+
 	// An agent owns this host_id now. Any surviving Docker registration for
 	// it would let the aggregator overwrite authenticated agent samples.
 	if h.hosts != nil && h.hosts.HasHost(hostID) {
-		log.Printf("Agent ingest: evicting stale Docker registration for host %s",
-			truncateID(hostID, 8))
+		log.Printf("Agent ingest: evicting stale Docker registration for host %s", host)
 		h.hosts.RemoveDockerHost(hostID)
 	}
 
@@ -189,15 +191,14 @@ func (h *IngestHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) 
 	}()
 	defer close(watcherDone)
 
-	log.Printf("Agent ingest: connected for host %s", truncateID(hostID, 8))
+	log.Printf("Agent ingest: connected for host %s", host)
 
 	loggedUnknownType := false
 
 	for {
 		var msg agentStatsMsg
 		if err := conn.ReadJSON(&msg); err != nil {
-			log.Printf("Agent ingest: read error for host %s: %v",
-				truncateID(hostID, 8), err)
+			log.Printf("Agent ingest: read error for host %s: %v", host, err)
 			return
 		}
 
@@ -245,10 +246,17 @@ func (h *IngestHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) 
 			if !loggedUnknownType {
 				loggedUnknownType = true
 				log.Printf("Agent ingest: unknown message type %q from host %s",
-					truncateID(msg.Type, 32), truncateID(hostID, 8))
+					truncateID(msg.Type, 32), host)
 			}
 		}
 	}
+}
+
+func hostLabel(name, hostID string) string {
+	if name == "" {
+		return truncateID(hostID, 8)
+	}
+	return fmt.Sprintf("%s (%s)", name, truncateID(hostID, 8))
 }
 
 // extractAgentToken pulls a Bearer token from the Authorization header or

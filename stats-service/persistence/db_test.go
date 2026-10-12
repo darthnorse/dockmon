@@ -453,3 +453,16 @@ func TestLoadGlobalSettings_NoRow(t *testing.T) {
 		t.Errorf("got %+v, want nil (no row)", *s)
 	}
 }
+
+func TestHostName(t *testing.T) {
+	db := openWithSeededAgent(t, "tok", "host-1")
+	if _, err := db.Write().Exec(`UPDATE docker_hosts SET name = 'caddy' WHERE id = 'host-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if got := db.HostName(context.Background(), "host-1"); got != "caddy" {
+		t.Errorf("HostName(host-1)=%q, want caddy", got)
+	}
+	if got := db.HostName(context.Background(), "missing"); got != "" {
+		t.Errorf("HostName(missing)=%q, want empty", got)
+	}
+}

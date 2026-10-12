@@ -140,8 +140,9 @@ function StagedRestoreBanner({ pending }: { pending: BackupManifestSummary }) {
         {pending.stats_history_included ? '' : ', without stats history'}.
       </p>
       <p className="mt-2">
-        Restart DockMon to apply it: <code className="rounded bg-gray-900 px-1.5 py-0.5">docker restart dockmon</code>.
-        Everyone will be signed out.
+        Restart the DockMon container to apply it, usually{' '}
+        <code className="rounded bg-gray-900 px-1.5 py-0.5">docker restart dockmon</code> (use your container&apos;s name if
+        you changed it). Everyone will be signed out.
       </p>
       <Button variant="outline" size="sm" className="mt-3" onClick={() => cancel.mutate()} disabled={cancel.isPending}>
         Cancel staged restore

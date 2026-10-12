@@ -48,7 +48,7 @@ from migrate import run_migrations
 
 BACKUP_KDF = DEFAULT_KDF
 CLI_INITIATOR = {"username": "manage_backup CLI"}
-RESTART_HINT = "Restart the DockMon container to apply it: docker restart dockmon"
+RESTART_HINT = "Restart the DockMon container to apply it (usually: docker restart dockmon)"
 
 
 class CliError(Exception):

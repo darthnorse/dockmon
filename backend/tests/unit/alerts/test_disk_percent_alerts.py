@@ -16,7 +16,7 @@ import pytest
 
 import database as database_module
 from alerts.capabilities import HOST_METRIC_FIELDS, host_metric_capabilities
-from alerts.evaluation_service import AlertEvaluationService
+from alerts.evaluation_service import HOST_METRICS_GRACE_SECONDS, AlertEvaluationService
 from alerts.metrics import (
     PENDING_METRICS_BY_SCOPE,
     PRODUCED_METRICS_BY_SCOPE,
@@ -100,7 +100,7 @@ def _sample(disk_percent=None, **extra):
     return stats
 
 
-async def _evaluate(service):
+async def _evaluate(service, now=None):
     with service.db.get_session() as session:
         rules = session.query(AlertRuleV2).filter(
             AlertRuleV2.enabled == True,  # noqa: E712
@@ -110,7 +110,7 @@ async def _evaluate(service):
         for rule in rules:
             rules_by_metric.setdefault(rule.metric, []).append(rule)
         session.expunge_all()
-    await service._evaluate_host_metrics(rules_by_metric)
+    await service._evaluate_host_metrics(rules_by_metric, now=now)
 
 
 # --- registry ---
@@ -225,7 +225,8 @@ async def test_missing_metrics_remedy_names_hostfs_for_disk_rules(db, caplog):
     service = _service(db, [_host(SILENT_HOST, "no-mounts")], {})
 
     with caplog.at_level(logging.WARNING):
-        await _evaluate(service)
+        await _evaluate(service, now=0)
+        await _evaluate(service, now=HOST_METRICS_GRACE_SECONDS)
 
     records = [r for r in caplog.records if "no-mounts" in r.message]
     assert len(records) == 1

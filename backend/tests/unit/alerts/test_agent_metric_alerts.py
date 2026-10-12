@@ -19,7 +19,11 @@ from alerts.capabilities import (
     host_metric_capabilities,
     parse_stats_timestamp,
 )
-from alerts.evaluation_service import STATS_MAX_AGE_SECONDS, AlertEvaluationService
+from alerts.evaluation_service import (
+    HOST_METRICS_GRACE_SECONDS,
+    STATS_MAX_AGE_SECONDS,
+    AlertEvaluationService,
+)
 from database import AlertRuleV2, DatabaseManager
 
 AGENT_HOST = "7be442c9-24bc-4047-b33a-41bbf51ea2f9"
@@ -83,7 +87,7 @@ def _add_host_rule(db, metric="cpu_percent", threshold=80.0, rule_id="rule-1"):
     return rule_id
 
 
-async def _evaluate(service):
+async def _evaluate(service, now=None):
     with service.db.get_session() as session:
         rules = session.query(AlertRuleV2).filter(
             AlertRuleV2.enabled == True,  # noqa: E712
@@ -93,7 +97,7 @@ async def _evaluate(service):
         for rule in rules:
             rules_by_metric.setdefault(rule.metric, []).append(rule)
         session.expunge_all()
-    await service._evaluate_host_metrics(rules_by_metric)
+    await service._evaluate_host_metrics(rules_by_metric, now=now)
     return rules_by_metric
 
 
@@ -299,13 +303,85 @@ async def test_host_without_stats_logs_warning_once_per_interval(db, caplog):
     )
 
     with caplog.at_level(logging.WARNING):
-        await _evaluate(service)
+        await _evaluate(service, now=0)
+        await _evaluate(service, now=HOST_METRICS_GRACE_SECONDS)
         first = [r for r in caplog.records if "no-proc-mount" in r.message]
-        await _evaluate(service)
+        await _evaluate(service, now=HOST_METRICS_GRACE_SECONDS + 10)
         second = [r for r in caplog.records if "no-proc-mount" in r.message]
 
     assert len(first) == 1, "expected a warning naming the host with no metrics"
     assert len(second) == 1, "warning must be throttled to once per host per interval"
+
+
+# Agents open their stats connection several seconds after the WebSocket
+# reconnects, so right after a restart every connected host has no sample yet.
+async def test_host_without_stats_is_not_reported_within_grace(db, caplog):
+    _add_host_rule(db, metric="cpu_percent", threshold=80.0)
+    service = _service(db, [_host(AGENT_HOST, "slow-starter")])
+
+    with caplog.at_level(logging.WARNING):
+        await _evaluate(service, now=0)
+        await _evaluate(service, now=HOST_METRICS_GRACE_SECONDS - 1)
+        early = [r for r in caplog.records if "slow-starter" in r.message]
+        await _evaluate(service, now=HOST_METRICS_GRACE_SECONDS)
+        late = [r for r in caplog.records if "slow-starter" in r.message]
+
+    assert early == []
+    assert len(late) == 1
+
+
+async def test_stats_arriving_within_grace_never_warn(db, caplog):
+    _add_host_rule(db, metric="cpu_percent", threshold=80.0)
+    service = _service(db, [_host(AGENT_HOST, "systemd-agent")])
+
+    with caplog.at_level(logging.WARNING):
+        await _evaluate(service, now=0)
+        service.stats_client.get_host_stats.return_value = {
+            AGENT_HOST: {"cpu_percent": 10.0, "last_update": _now_iso()}
+        }
+        await _evaluate(service, now=15)
+        await _evaluate(service, now=HOST_METRICS_GRACE_SECONDS + 15)
+
+    assert not [r for r in caplog.records if "systemd-agent" in r.message]
+
+
+async def test_grace_restarts_after_stats_stop(db, caplog):
+    _add_host_rule(db, metric="cpu_percent", threshold=80.0)
+    service = _service(
+        db, [_host(AGENT_HOST, "flaky-agent")],
+        host_stats={AGENT_HOST: {"cpu_percent": 10.0, "last_update": _now_iso()}},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        await _evaluate(service, now=0)
+        service.stats_client.get_host_stats.return_value = {}
+        await _evaluate(service, now=100)
+        await _evaluate(service, now=100 + HOST_METRICS_GRACE_SECONDS - 1)
+        early = [r for r in caplog.records if "flaky-agent" in r.message]
+        await _evaluate(service, now=100 + HOST_METRICS_GRACE_SECONDS)
+        late = [r for r in caplog.records if "flaky-agent" in r.message]
+
+    assert early == []
+    assert len(late) == 1
+
+
+async def test_grace_restarts_when_host_comes_back_online(db, caplog):
+    _add_host_rule(db, metric="cpu_percent", threshold=80.0)
+    host = _host(AGENT_HOST, "rebooted-agent")
+    service = _service(db, [host])
+
+    with caplog.at_level(logging.WARNING):
+        await _evaluate(service, now=0)
+        host.status = "offline"
+        await _evaluate(service, now=30)
+        host.status = "online"
+        await _evaluate(service, now=HOST_METRICS_GRACE_SECONDS + 1)
+        early = [r for r in caplog.records if "rebooted-agent" in r.message]
+        await _evaluate(service, now=HOST_METRICS_GRACE_SECONDS + 1 + HOST_METRICS_GRACE_SECONDS)
+        late = [r for r in caplog.records if "rebooted-agent" in r.message]
+
+    assert early == []
+    assert len(late) == 1
 
 
 # An offline host has an obvious reason to report nothing; warning about it
@@ -327,7 +403,8 @@ async def test_remedy_only_offered_for_agent_hosts(db, caplog):
     service = _service(db, [_host(MTLS_HOST, "docker-box", connection_type="tcp")])
 
     with caplog.at_level(logging.WARNING):
-        await _evaluate(service)
+        await _evaluate(service, now=0)
+        await _evaluate(service, now=HOST_METRICS_GRACE_SECONDS)
 
     records = [r for r in caplog.records if "docker-box" in r.message]
     assert len(records) == 1
@@ -413,7 +490,9 @@ async def test_throttle_entries_are_pruned_for_departed_hosts(db):
 
     service.monitor.hosts = {}
     service._hosts_missing_metrics_reported.add(AGENT_HOST)
+    service._hosts_without_metrics_since[AGENT_HOST] = 0.0
     await _evaluate(service)
 
     assert service._bad_timestamp_reported == set()
     assert service._hosts_missing_metrics_reported == set()
+    assert service._hosts_without_metrics_since == {}

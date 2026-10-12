@@ -9,14 +9,16 @@ import pytest
 SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "install-agent.sh"
 
 
-def _function_source():
-    match = re.search(r"^proxy_env_lines\(\) \{\n.*?^\}\n", SCRIPT.read_text(), re.S | re.M)
-    assert match, "proxy_env_lines() not found in install-agent.sh"
+def _script_part(pattern):
+    match = re.search(pattern, SCRIPT.read_text(), re.S | re.M)
+    assert match, f"{pattern!r} not found in install-agent.sh"
     return match.group(0)
 
 
 def _run(env):
-    harness = 'log_error() { echo "ERR: $1" >&2; }\n' + _function_source() + "proxy_env_lines\n"
+    harness = (_script_part(r"^log_error\(\) .*?\n")
+               + _script_part(r"^proxy_env_lines\(\) \{\n.*?^\}\n")
+               + "proxy_env_lines\n")
     return subprocess.run(["bash", "-c", harness], env={"PATH": "/usr/bin:/bin", **env},
                           capture_output=True, text=True)
 
@@ -57,3 +59,8 @@ def test_injection_characters_are_rejected(value):
     assert result.returncode != 0
     assert "HTTPS_PROXY" in result.stderr
     assert result.stdout == ""
+
+
+def test_proxy_vars_are_validated_before_an_existing_agent_is_stopped():
+    text = SCRIPT.read_text()
+    assert text.index('PROXY_ENV_LINES="$(proxy_env_lines)"') < text.index("systemctl stop dockmon-agent")

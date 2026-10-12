@@ -66,11 +66,7 @@ func (em *EventManager) AddHost(hostID, hostName, hostAddress, tlsCACert, tlsCer
 		strings.HasPrefix(hostAddress, "unix:///run/user/")
 
 	if isLocalSocket {
-		// Local Docker/Podman socket - use FromEnv to auto-detect
-		dockerClient, err = client.NewClientWithOpts(
-			client.FromEnv,
-			client.WithAPIVersionNegotiation(),
-		)
+		dockerClient, err = dockerpkg.CreateLocalClient()
 	} else {
 		dockerClient, err = dockerpkg.CreateRemoteClient(hostAddress, tlsCACert, tlsCert, tlsKey)
 	}

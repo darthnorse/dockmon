@@ -19,8 +19,10 @@
 #   AGENT_STACKS_DIR     - Optional. Stack storage directory (default: $DATA_PATH/stacks)
 #   HTTP_PROXY, HTTPS_PROXY, NO_PROXY (and lowercase forms)
 #                        - Optional. Written to the agent's EnvironmentFile so the agent
-#                          reaches DockMon and GitHub through the proxy. With sudo, pass
-#                          them after sudo: ... | sudo HTTPS_PROXY=... DOCKMON_URL=... bash
+#                          reaches DockMon and GitHub through the proxy. Agent health
+#                          checks use it too: list LAN targets (and DockMon, if local) in
+#                          NO_PROXY. With sudo, pass them after sudo:
+#                          ... | sudo HTTPS_PROXY=... NO_PROXY=... DOCKMON_URL=... bash
 #
 
 set -e
@@ -45,7 +47,7 @@ proxy_env_lines() {
         [ -n "$value" ] || continue
         case "$value" in
             *[[:cntrl:]]*|*'"'*|*'\'*)
-                log_error "${var} contains forbidden characters (newlines, tabs, double quotes, or backslashes)."
+                log_error "${var} contains forbidden characters (newlines, tabs, double quotes, or backslashes)." >&2
                 return 1
                 ;;
         esac
@@ -71,6 +73,9 @@ if [ "$EUID" -ne 0 ]; then
     log_error "This script must be run as root (use sudo)"
     exit 1
 fi
+
+# Validate before anything stops or replaces an existing agent.
+PROXY_ENV_LINES="$(proxy_env_lines)" || exit 1
 
 # Set defaults
 DATA_PATH="${DATA_PATH:-/var/lib/dockmon-agent}"
@@ -247,7 +252,6 @@ FORCE_UNIQUE_REGISTRATION=true"
     esac
 fi
 
-PROXY_ENV_LINES="$(proxy_env_lines)" || exit 1
 if [ -n "$PROXY_ENV_LINES" ]; then
     log_info "Passing proxy settings through to the agent service"
     ENV_FILE_CONTENT="${ENV_FILE_CONTENT}

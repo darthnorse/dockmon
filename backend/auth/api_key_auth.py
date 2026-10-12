@@ -438,6 +438,7 @@ class Capabilities:
     """
     # Admin-only capabilities
     HOSTS_MANAGE = 'hosts.manage'
+    BACKUP_MANAGE = 'backup.manage'
     GROUPS_MANAGE = 'groups.manage'
     STACKS_EDIT = 'stacks.edit'
     STACKS_VIEW_ENV = 'stacks.view_env'

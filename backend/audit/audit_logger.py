@@ -59,6 +59,7 @@ class AuditAction(str, Enum):
     # Settings
     SETTINGS_CHANGE = 'settings_change'
     ROLE_CHANGE = 'role_change'
+    RESTORE = 'restore'
 
 
 class AuditEntityType(str, Enum):
@@ -79,6 +80,7 @@ class AuditEntityType(str, Enum):
     SETTINGS = 'settings'
     ROLE_PERMISSION = 'role_permission'
     OIDC_CONFIG = 'oidc_config'
+    BACKUP = 'backup'
 
 
 def get_client_info(request: Optional[Request]) -> Dict[str, Optional[str]]:

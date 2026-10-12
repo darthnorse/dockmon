@@ -33,6 +33,9 @@ from utils.keys import make_composite_key, parse_composite_key
 
 logger = logging.getLogger(__name__)
 
+ALERT_SERVICE_SCOPE = "alert_service"
+BACKUP_ALERT_SCOPE = "backup"
+
 
 # Bounds on the aggregated failure alert. Notification channels reject
 # oversized bodies (Discord caps at 2000 chars), which would drop the alert
@@ -1978,17 +1981,7 @@ class AlertEvaluationService:
             return
 
         try:
-            system_rule = self.db.get_or_create_system_alert_rule()
-            dedup_key = self._system_alert_dedup_key(system_rule)
-            with self.db.get_session() as session:
-                alert = session.query(AlertV2).filter(
-                    AlertV2.dedup_key == dedup_key,
-                    AlertV2.state != "resolved",
-                ).first()
-                if alert:
-                    session.expunge(alert)
-            if alert:
-                self.engine._resolve_alert(alert, "Evaluation cycles are clean again")
+            if await self._resolve_scoped_system_alert(ALERT_SERVICE_SCOPE, "Evaluation cycles are clean again"):
                 logger.info("Alert evaluation recovered; system alert resolved")
             # Only now is the alert known to be closed. Clearing this in a
             # finally would strand it open after a transient DB error, because
@@ -1996,6 +1989,21 @@ class AlertEvaluationService:
             self._system_alert_open = False
         except Exception as e:
             logger.error(f"Failed to resolve system alert: {e}", exc_info=True)
+
+    async def _resolve_scoped_system_alert(self, scope: str, reason: str) -> bool:
+        """Resolve the open system alert for scope; True when one was closed."""
+        system_rule = self.db.get_or_create_system_alert_rule()
+        dedup_key = self._system_alert_dedup_key(system_rule, scope)
+        with self.db.get_session() as session:
+            alert = session.query(AlertV2).filter(
+                AlertV2.dedup_key == dedup_key,
+                AlertV2.state != "resolved",
+            ).first()
+            if alert:
+                session.expunge(alert)
+        if alert:
+            self.engine._resolve_alert(alert, reason)
+        return alert is not None
 
     def _set_alert_text(self, alert: AlertV2, title: str, message: str) -> AlertV2:
         """Persist a caller-supplied title/message onto an alert row."""
@@ -2009,10 +2017,22 @@ class AlertEvaluationService:
             return alert
 
     @staticmethod
-    def _system_alert_dedup_key(system_rule) -> str:
-        return f"{system_rule.id}|system_error|system:alert_service"
+    def _system_alert_dedup_key(system_rule, scope: str = ALERT_SERVICE_SCOPE) -> str:
+        return f"{system_rule.id}|system_error|system:{scope}"
 
-    async def _create_system_alert(self, title: str, message: str):
+    async def raise_backup_alert(self, title: str, message: str):
+        """Open (or refresh) the scheduled-backup failure alert."""
+        await self._create_system_alert(title, message, scope=BACKUP_ALERT_SCOPE, host_name="Scheduled Backups")
+
+    async def resolve_backup_alert(self):
+        """Close the scheduled-backup failure alert after a successful run."""
+        try:
+            await self._resolve_scoped_system_alert(BACKUP_ALERT_SCOPE, "Scheduled backup succeeded")
+        except Exception as e:
+            logger.error(f"Failed to resolve the backup alert: {e}", exc_info=True)
+
+    async def _create_system_alert(self, title: str, message: str, scope: str = ALERT_SERVICE_SCOPE,
+                                   host_name: str = "Alert System"):
         """
         Create a system alert for internal failures.
 
@@ -2031,12 +2051,12 @@ class AlertEvaluationService:
             # Create evaluation context for system scope
             context = EvaluationContext(
                 scope_type="system",
-                scope_id="alert_service",
+                scope_id=scope,
                 host_id=None,
-                host_name="Alert System"
+                host_name=host_name
             )
 
-            dedup_key = self._system_alert_dedup_key(system_rule)
+            dedup_key = self._system_alert_dedup_key(system_rule, scope)
 
             # Get or create the alert (deduplicates if already exists)
             alert, is_new = self.engine._get_or_create_alert(

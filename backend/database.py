@@ -783,6 +783,17 @@ class GlobalSettings(Base):
     # Backend + frontend only -- NOT pushed to the Go stats-service.
     live_chart_window_seconds = Column(Integer, nullable=False, server_default='600', default=600)  # 60..1800
 
+    # Scheduled backups (migration 047). The passphrase is Fernet-encrypted.
+    backup_schedule_enabled = Column(Boolean, nullable=False, server_default='0', default=False)
+    backup_schedule = Column(Text, nullable=False, server_default='03:00', default='03:00')
+    backup_retention = Column(Integer, nullable=False, server_default='7', default=7)
+    backup_include_stats = Column(Boolean, nullable=False, server_default='1', default=True)
+    backup_passphrase_encrypted = Column(Text, nullable=True)
+    backup_last_run_at = Column(DateTime, nullable=True)
+    backup_last_status = Column(Text, nullable=True)
+    backup_last_error = Column(Text, nullable=True)
+    backup_last_file = Column(Text, nullable=True)
+
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 class ContainerUpdate(Base):

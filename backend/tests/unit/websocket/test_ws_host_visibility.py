@@ -168,6 +168,12 @@ class TestPerTypeRules:
                                                   "host_id": None, "container_id": None}}
         assert WS_HOST_VISIBILITY["new_event"](payload) is DROP
 
+    def test_new_event_backup_is_admin_only(self):
+        """A backup covers every host; its outcome never reaches scoped users."""
+        payload = {"type": "new_event", "event": {"category": "system", "event_type": "backup",
+                                                  "host_id": None, "container_id": None}}
+        assert WS_HOST_VISIBILITY["new_event"](payload) is DROP
+
     def test_new_event_admin_category_naming_a_container_is_not_global(self):
         payload = {"type": "new_event", "event": {"category": "alert", "host_id": None, "container_id": "aaa111111111"}}
         assert WS_HOST_VISIBILITY["new_event"](payload) is DROP

@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 from fastapi import Request
+from config.paths import DEFAULT_SESSION_SECRET_FILE
 from utils.client_ip import get_request_scheme
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ def _load_or_generate_secret() -> str:
     """
     import json
 
-    secret_file = os.getenv('SESSION_SECRET_FILE', '/app/data/.session_secret')
+    secret_file = os.getenv('SESSION_SECRET_FILE', DEFAULT_SESSION_SECRET_FILE)
     rotation_days = int(os.getenv('SESSION_SECRET_ROTATION_DAYS', '90'))
 
     if os.path.exists(secret_file):

@@ -56,6 +56,9 @@ class EventType(str, Enum):
     CHANNEL_CREATED = "channel_created"
     CHANNEL_TESTED = "channel_tested"
 
+    # Scheduled backups (admin-only: see ADMIN_ONLY_EVENT_TYPES)
+    BACKUP = "backup"
+
     # User events
     LOGIN = "login"
     LOGOUT = "logout"

@@ -353,6 +353,7 @@ def seeded_events(db_session, seeded_hosts):
         "rule_created": EventLog(category="alert", event_type="rule_created", title="Alert rule 'High CPU' created"),
         "system_alert_fired": EventLog(category="alert", event_type="rule_triggered",
                                        title="Alert triggered: evaluation failed. Affected: Test Host"),
+        "backup_failed": EventLog(category="system", event_type="backup", title="Scheduled backup failed"),
         "channel_created": EventLog(category="notification", event_type="channel_created", title="Channel created"),
         "user_login": EventLog(category="user", event_type="login", title="admin logged in"),
         "empty_host_composite": EventLog(category="container", event_type="alert", host_id="",

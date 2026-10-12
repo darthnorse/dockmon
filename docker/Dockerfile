@@ -165,6 +165,13 @@ RUN echo '#!/bin/bash' > /startup.sh && \
     echo '  echo "Direct access mode (default) - nginx will listen on HTTPS port 443"' >> /startup.sh && \
     echo 'fi' >> /startup.sh && \
     echo '' >> /startup.sh && \
+    echo '# Apply a staged restore, or finish/roll back an interrupted one, before migrations' >> /startup.sh && \
+    echo 'cd /app' >> /startup.sh && \
+    echo 'if ! python3 backend/manage_backup.py apply-staged; then' >> /startup.sh && \
+    echo '  echo "ERROR: A staged restore could not be applied or rolled back cleanly. Container will not start; see the log above."' >> /startup.sh && \
+    echo '  exit 1' >> /startup.sh && \
+    echo 'fi' >> /startup.sh && \
+    echo '' >> /startup.sh && \
     echo '# Run database migrations' >> /startup.sh && \
     echo 'echo "Running database migrations..."' >> /startup.sh && \
     echo 'cd /app' >> /startup.sh && \

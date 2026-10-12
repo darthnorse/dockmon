@@ -225,6 +225,13 @@ CAPABILITY_INFO: dict[str, dict[str, str]] = {
         'description': 'View tag list',
     },
 
+    # Backup
+    'backup.manage': {
+        'category': 'Settings',
+        'name': 'Backup & Restore',
+        'description': 'Download backups and restore DockMon from one (backups contain every stored credential)',
+    },
+
     # Events
     'events.view': {
         'category': 'Events',

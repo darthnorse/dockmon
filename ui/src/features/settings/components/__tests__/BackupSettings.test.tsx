@@ -1,0 +1,189 @@
+/**
+ * BackupSettings - create/download, upload & stage, staged-restore banner, last restore and its rollback copy.
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { ApiError } from '@/lib/api/client'
+import type { BackupStatus } from '@/types/backup'
+import { BackupSettings } from '../BackupSettings'
+import * as backupHooks from '@/hooks/useBackup'
+
+vi.mock('@/hooks/useBackup', () => ({
+  useBackupStatus: vi.fn(),
+  useCreateBackup: vi.fn(),
+  useStageBackup: vi.fn(),
+  useCancelStagedRestore: vi.fn(),
+  useStageRollback: vi.fn(),
+  useDeleteRollback: vi.fn(),
+  isAllHostsRequired: (error: unknown) => error instanceof ApiError && error.status === 403,
+  backupDownloadUrl: (id: string) => `/api/v2/backup/downloads/${id}`,
+}))
+vi.mock('../ScheduledBackupsSection', () => ({ ScheduledBackupsSection: () => null }))
+vi.mock('@/lib/hooks/useUserPreferences', () => ({ useTimeFormat: () => ({ timeFormat: '24h' }) }))
+vi.mock('@/lib/utils/timeFormat', () => ({ formatDateTime: (value: string) => `fmt(${value})` }))
+
+const EMPTY_STATUS: BackupStatus = { busy: false, pending: null, rollbacks: [], last_restore: null, download: null }
+
+function mutation() {
+  return { mutate: vi.fn(), isPending: false }
+}
+
+let create: ReturnType<typeof mutation>
+let stage: ReturnType<typeof mutation>
+let cancel: ReturnType<typeof mutation>
+let stageRollback: ReturnType<typeof mutation>
+let deleteRollback: ReturnType<typeof mutation>
+
+const refetch = vi.fn()
+
+function setStatus(data: BackupStatus | undefined, error: unknown = null) {
+  vi.mocked(backupHooks.useBackupStatus).mockReturnValue({ data, error, isLoading: false, refetch } as never)
+}
+
+beforeEach(() => {
+  create = mutation()
+  stage = mutation()
+  cancel = mutation()
+  stageRollback = mutation()
+  deleteRollback = mutation()
+  vi.mocked(backupHooks.useCreateBackup).mockReturnValue(create as never)
+  vi.mocked(backupHooks.useStageBackup).mockReturnValue(stage as never)
+  vi.mocked(backupHooks.useCancelStagedRestore).mockReturnValue(cancel as never)
+  vi.mocked(backupHooks.useStageRollback).mockReturnValue(stageRollback as never)
+  vi.mocked(backupHooks.useDeleteRollback).mockReturnValue(deleteRollback as never)
+  setStatus(EMPTY_STATUS)
+})
+
+describe('BackupSettings - create', () => {
+  it('blocks a short passphrase', async () => {
+    render(<BackupSettings />)
+    await userEvent.type(screen.getByLabelText('Backup passphrase'), 'short')
+    await userEvent.type(screen.getByLabelText('Repeat passphrase'), 'short')
+    expect(screen.getByRole('button', { name: /download backup/i })).toBeDisabled()
+    expect(screen.getByText(/at least 8 characters/i)).toBeInTheDocument()
+  })
+
+  it('blocks mismatched passphrases', async () => {
+    render(<BackupSettings />)
+    await userEvent.type(screen.getByLabelText('Backup passphrase'), 'correct horse')
+    await userEvent.type(screen.getByLabelText('Repeat passphrase'), 'correct house')
+    expect(screen.getByRole('button', { name: /download backup/i })).toBeDisabled()
+    expect(screen.getByText(/do not match/i)).toBeInTheDocument()
+  })
+
+  it('creates a backup with stats history by default', async () => {
+    render(<BackupSettings />)
+    await userEvent.type(screen.getByLabelText('Backup passphrase'), 'correct horse')
+    await userEvent.type(screen.getByLabelText('Repeat passphrase'), 'correct horse')
+    await userEvent.click(screen.getByRole('button', { name: /download backup/i }))
+    expect(create.mutate).toHaveBeenCalledWith({ passphrase: 'correct horse', include_stats: true }, expect.anything())
+  })
+})
+
+describe('BackupSettings - restore', () => {
+  it('asks for confirmation before staging', async () => {
+    render(<BackupSettings />)
+    const file = new File(['x'], 'dockmon.dmbak', { type: 'application/octet-stream' })
+    await userEvent.upload(screen.getByLabelText('Backup file'), file)
+    await userEvent.type(screen.getByLabelText('Passphrase of this backup'), 'correct horse')
+    await userEvent.click(screen.getByRole('button', { name: /validate & stage/i }))
+    expect(stage.mutate).not.toHaveBeenCalled()
+
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText(/left as they are/i)).toBeInTheDocument()
+    await userEvent.click(within(dialog).getByRole('button', { name: /stage restore/i }))
+    expect(stage.mutate).toHaveBeenCalledWith(
+      { file, passphrase: 'correct horse', replace: false },
+      expect.anything(),
+    )
+  })
+
+  it('shows a staged restore with restart instructions and cancel', async () => {
+    setStatus({
+      ...EMPTY_STATUS,
+      pending: {
+        created_at: '2026-09-25T10:00:00Z',
+        app_version: '2.5.1',
+        alembic_revision: '046_group_tag_scopes',
+        stats_history_included: true,
+        summary: { hosts: 5, users: 7, alert_rules: 2, stacks: ['homepage', 'keycloak'] },
+      },
+    })
+    render(<BackupSettings />)
+    expect(screen.getByText(/docker restart dockmon/)).toBeInTheDocument()
+    expect(screen.getByText(/5 hosts/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /cancel staged restore/i }))
+    expect(cancel.mutate).toHaveBeenCalled()
+  })
+})
+
+describe('BackupSettings - access', () => {
+  it('explains that backup needs access to all hosts', () => {
+    setStatus(undefined, new ApiError('Backup and restore require access to all hosts', 403))
+    render(<BackupSettings />)
+    expect(screen.getByText(/need access to all hosts/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /download backup/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('BackupSettings - last restore', () => {
+  it('shows the last restore and undoes it by staging its rollback copy', async () => {
+    setStatus({
+      ...EMPTY_STATUS,
+      last_restore: { restored_at: '2026-09-25T19:14:43Z', backup: { created_at: '2026-09-25T10:00:00Z' }, initiated_by: 'admin' },
+      rollbacks: [{ id: '20260925T191443770843Z', created_at: '2026-09-25T19:14:43Z', replaced_by_backup_created_at: null }],
+    })
+    render(<BackupSettings />)
+    expect(screen.getByText(/last restore: fmt\(2026-09-25T19:14:43Z\).*\(by admin\)/i)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /undo this restore/i }))
+    expect(stageRollback.mutate).toHaveBeenCalledWith('20260925T191443770843Z')
+  })
+
+  it('shows nothing when there has been no restore', () => {
+    render(<BackupSettings />)
+    expect(screen.queryByText(/last restore/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /undo this restore/i })).not.toBeInTheDocument()
+  })
+
+  it('deletes a rollback copy only after confirming', async () => {
+    setStatus({
+      ...EMPTY_STATUS,
+      rollbacks: [{ id: '20260925T191443770843Z', created_at: '2026-09-25T19:14:43Z', replaced_by_backup_created_at: null }],
+    })
+    render(<BackupSettings />)
+    await userEvent.click(screen.getByRole('button', { name: /delete rollback copy/i }))
+    expect(deleteRollback.mutate).not.toHaveBeenCalled()
+    const dialog = await screen.findByRole('alertdialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: /^delete$/i }))
+    expect(deleteRollback.mutate).toHaveBeenCalledWith('20260925T191443770843Z')
+  })
+})
+
+
+describe('BackupSettings - status', () => {
+  it('offers the latest backup again while its link is valid', () => {
+    setStatus({
+      ...EMPTY_STATUS,
+      download: {
+        download_id: 'a'.repeat(32),
+        filename: 'dockmon-backup-2.5.1-20260925T194300Z.dmbak',
+        size: 1655976,
+        created_at: '2026-09-25T19:43:00Z',
+        expires_at: '2026-09-25T19:58:00Z',
+      },
+    })
+    render(<BackupSettings />)
+    const link = screen.getByRole('link', { name: /dockmon-backup-2.5.1-20260925T194300Z.dmbak/ })
+    expect(link).toHaveAttribute('href', `/api/v2/backup/downloads/${'a'.repeat(32)}`)
+  })
+
+  it('shows a status error with a retry instead of loading forever', async () => {
+    setStatus(undefined, new ApiError('Backup operation failed; see the DockMon log', 500))
+    render(<BackupSettings />)
+    expect(screen.getByText(/could not load backup status/i)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /retry/i }))
+    expect(refetch).toHaveBeenCalled()
+  })
+})

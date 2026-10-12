@@ -181,7 +181,8 @@ GLOBAL_EVENT_CATEGORIES = frozenset({"system", "alert", "notification", "user"})
 
 # A triggered alert always concerns a scope; host-less, it is the system-scope alert
 # (evaluation-engine failures) whose text names the hosts it failed on: admin-only.
-ADMIN_ONLY_EVENT_TYPES = frozenset({"rule_triggered"})
+# Backup events concern a backup of every host.
+ADMIN_ONLY_EVENT_TYPES = frozenset({"rule_triggered", "backup"})
 
 
 def event_scope(host_id: Optional[str], container_id: Optional[str], category: Optional[str],

@@ -68,7 +68,8 @@ class StatsServiceClient:
             token = await self._load_token()
             timeout = aiohttp.ClientTimeout(total=5)
             headers = {"Authorization": f"Bearer {token}"}
-            self.session = aiohttp.ClientSession(timeout=timeout, headers=headers)
+            # Loopback target: a proxy from HTTP(S)_PROXY could never reach it.
+            self.session = aiohttp.ClientSession(timeout=timeout, headers=headers, trust_env=False)
             return self.session
 
     async def close(self):

@@ -270,7 +270,7 @@ async def _validate_github_url(url: str) -> bool:
         True if URL returns 200, False otherwise
     """
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(trust_env=True) as session:
             async with session.head(
                 url,
                 allow_redirects=True,

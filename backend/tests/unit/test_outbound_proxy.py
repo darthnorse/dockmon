@@ -34,19 +34,12 @@ def _client_session_calls():
                 yield rel, node
 
 
-def test_every_aiohttp_session_sets_trust_env_explicitly():
-    missing = [f"{rel}:{node.lineno}" for rel, node in _client_session_calls()
-               if not any(kw.arg == "trust_env" for kw in node.keywords)]
-    assert missing == [], f"aiohttp.ClientSession without explicit trust_env: {missing}"
-
-
-def test_only_loopback_clients_disable_trust_env():
+def test_aiohttp_sessions_trust_env_except_loopback_clients():
     calls = list(_client_session_calls())
     assert calls, "AST scan found no aiohttp.ClientSession calls"
     for rel, node in calls:
         kw = next((k for k in node.keywords if k.arg == "trust_env"), None)
-        if kw is None:
-            continue
+        assert kw is not None, f"{rel}:{node.lineno} aiohttp.ClientSession without explicit trust_env"
         assert isinstance(kw.value, ast.Constant), f"{rel}:{node.lineno} trust_env must be a literal"
         expected = str(rel) not in DIRECT_ONLY
         assert kw.value.value is expected, (

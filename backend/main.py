@@ -3941,10 +3941,12 @@ async def update_http_health_check(
     # Push config to agent if needed (after commit, outside session)
     if config.check_from == 'agent':
         # Push updated config to agent
-        await push_health_check_config_to_agent(host_id, container_id, db_manager=monitor.db)
+        agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+        await push_health_check_config_to_agent(agent_id, host_id, container_id, db_manager=monitor.db)
     elif old_check_from == 'agent' and config.check_from == 'backend':
         # Switched from agent to backend - remove from agent
-        await remove_health_check_config_from_agent(host_id, container_id)
+        agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+        await remove_health_check_config_from_agent(agent_id, container_id)
 
     return {"success": True}
 
@@ -3986,7 +3988,8 @@ async def delete_http_health_check(
 
     # Remove from agent if it was agent-based
     if was_agent_based:
-        await remove_health_check_config_from_agent(host_id, container_id)
+        agent_id = monitor.operations.agent_manager.get_agent_for_host(host_id)
+        await remove_health_check_config_from_agent(agent_id, container_id)
 
     return {"success": True}
 

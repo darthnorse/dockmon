@@ -11,15 +11,15 @@ Architecture (v2.2.0+):
 """
 
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
-from datetime import datetime
+from unittest.mock import MagicMock, AsyncMock
 
+from agent.connection_manager import agent_connection_manager
 from agent.health_check_sync import (
     _build_config_payload,
     push_health_check_config_to_agent,
     remove_health_check_config_from_agent,
 )
-from database import ContainerHttpHealthCheck
+from database import Agent, ContainerHttpHealthCheck, DockerHostDB
 
 
 class TestBuildConfigPayload:
@@ -77,286 +77,176 @@ class TestBuildConfigPayload:
         assert payload["auth_config_json"] is None
 
 
+AGENT_ID = "agent-1"
+HOST_ID = "host-123"
+
+
+def _agent_config(**overrides):
+    config = MagicMock(spec=ContainerHttpHealthCheck)
+    config.check_from = 'agent'
+    config.enabled = True
+    config.url = "http://localhost:8080/health"
+    config.method = "GET"
+    config.expected_status_codes = "200"
+    config.timeout_seconds = 10
+    config.check_interval_seconds = 30
+    config.follow_redirects = True
+    config.verify_ssl = True
+    config.headers_json = None
+    config.auth_config_json = None
+    for name, value in overrides.items():
+        setattr(config, name, value)
+    return config
+
+
+@pytest.fixture(autouse=True)
+def agent_host(db):
+    """HOST_ID is served by AGENT_ID in a real database; "host-no-agent" has no agent."""
+    with db.get_session() as session:
+        session.add(DockerHostDB(id=HOST_ID, name="agent-box", url="agent://", connection_type="agent"))
+        session.add(DockerHostDB(id="host-no-agent", name="docker-box", url="tcp://10.0.0.5:2376"))
+        session.add(Agent(id=AGENT_ID, host_id=HOST_ID, engine_id="engine-1", version="1.2.0",
+                          proto_version="1", capabilities={}, status="online"))
+        session.commit()
+
+
+@pytest.fixture
+def agent_ws():
+    """A websocket registered on the real connection manager, as a connected agent would be."""
+    ws = MagicMock()
+    ws.send_json = AsyncMock()
+    agent_connection_manager.connections[AGENT_ID] = ws
+    yield ws
+    agent_connection_manager.connections.pop(AGENT_ID, None)
+
+
+def _db_manager_returning(config):
+    session = MagicMock()
+    session.query.return_value.filter.return_value.first.return_value = config
+    db_manager = MagicMock()
+    db_manager.get_session.return_value.__enter__ = MagicMock(return_value=session)
+    db_manager.get_session.return_value.__exit__ = MagicMock(return_value=False)
+    return db_manager, session
+
+
 class TestPushHealthCheckConfigToAgent:
     """Test push_health_check_config_to_agent function"""
 
     @pytest.mark.asyncio
-    async def test_pushes_config_to_connected_agent(self):
-        """Should send health check config to connected agent"""
-        # Setup mock agent
-        mock_agent = MagicMock()
-        mock_agent.websocket = MagicMock()
-        mock_agent.websocket.send_json = AsyncMock()
+    async def test_pushes_config_to_connected_agent(self, agent_ws):
+        result = await push_health_check_config_to_agent(
+            HOST_ID, "abc123def456", config=_agent_config()
+        )
 
-        # Setup mock connection manager
-        with patch('agent.health_check_sync.agent_connection_manager') as mock_cm:
-            mock_cm.get_agent_for_host = AsyncMock(return_value=mock_agent)
-
-            # Create config
-            config = MagicMock(spec=ContainerHttpHealthCheck)
-            config.check_from = 'agent'
-            config.enabled = True
-            config.url = "http://localhost:8080/health"
-            config.method = "GET"
-            config.expected_status_codes = "200"
-            config.timeout_seconds = 10
-            config.check_interval_seconds = 30
-            config.follow_redirects = True
-            config.verify_ssl = True
-            config.headers_json = None
-            config.auth_config_json = None
-
-            # Execute
-            result = await push_health_check_config_to_agent(
-                host_id="host-123",
-                container_id="abc123def456",
-                config=config
-            )
-
-            # Verify
-            assert result is True
-            mock_cm.get_agent_for_host.assert_called_once_with("host-123")
-            mock_agent.websocket.send_json.assert_called_once()
-
-            # Verify message format
-            call_args = mock_agent.websocket.send_json.call_args[0][0]
-            assert call_args["type"] == "health_check_config"
-            assert "payload" in call_args
-            assert call_args["payload"]["container_id"] == "abc123def456"
-            assert call_args["payload"]["host_id"] == "host-123"
+        assert result is True
+        agent_ws.send_json.assert_called_once()
+        message = agent_ws.send_json.call_args[0][0]
+        assert message["type"] == "health_check_config"
+        assert message["payload"]["container_id"] == "abc123def456"
+        assert message["payload"]["host_id"] == HOST_ID
 
     @pytest.mark.asyncio
-    async def test_returns_false_when_no_agent_connected(self):
-        """Should return False if no agent for host"""
-        with patch('agent.health_check_sync.agent_connection_manager') as mock_cm:
-            mock_cm.get_agent_for_host = AsyncMock(return_value=None)
+    async def test_returns_false_when_host_has_no_agent(self):
+        result = await push_health_check_config_to_agent(
+            "host-no-agent", "abc123def456", config=_agent_config()
+        )
 
-            result = await push_health_check_config_to_agent(
-                host_id="host-123",
-                container_id="abc123def456",
-                config=MagicMock(check_from='agent')
-            )
-
-            assert result is False
+        assert result is False
 
     @pytest.mark.asyncio
-    async def test_returns_false_for_backend_health_check(self):
-        """Should return False if check_from is not 'agent'"""
-        mock_agent = MagicMock()
-        mock_agent.websocket = MagicMock()
-        mock_agent.websocket.send_json = AsyncMock()
+    async def test_returns_false_when_agent_not_connected(self):
+        result = await push_health_check_config_to_agent(
+            HOST_ID, "abc123def456", config=_agent_config()
+        )
 
-        with patch('agent.health_check_sync.agent_connection_manager') as mock_cm:
-            mock_cm.get_agent_for_host = AsyncMock(return_value=mock_agent)
-
-            config = MagicMock(spec=ContainerHttpHealthCheck)
-            config.check_from = 'backend'  # Not agent-based
-
-            result = await push_health_check_config_to_agent(
-                host_id="host-123",
-                container_id="abc123def456",
-                config=config
-            )
-
-            assert result is False
-            mock_agent.websocket.send_json.assert_not_called()
+        assert result is False
 
     @pytest.mark.asyncio
-    async def test_queries_config_from_database_if_not_provided(self):
-        """Should query config from DB if not provided"""
-        mock_agent = MagicMock()
-        mock_agent.websocket = MagicMock()
-        mock_agent.websocket.send_json = AsyncMock()
+    async def test_returns_false_for_backend_health_check(self, agent_ws):
+        result = await push_health_check_config_to_agent(
+            HOST_ID, "abc123def456", config=_agent_config(check_from='backend')
+        )
 
-        # Setup mock config from DB
-        mock_config = MagicMock(spec=ContainerHttpHealthCheck)
-        mock_config.check_from = 'agent'
-        mock_config.enabled = True
-        mock_config.url = "http://test/health"
-        mock_config.method = "GET"
-        mock_config.expected_status_codes = "200"
-        mock_config.timeout_seconds = 10
-        mock_config.check_interval_seconds = 30
-        mock_config.follow_redirects = True
-        mock_config.verify_ssl = True
-        mock_config.headers_json = None
-        mock_config.auth_config_json = None
-
-        # Setup mock session
-        mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.first.return_value = mock_config
-
-        mock_db_manager = MagicMock()
-        mock_db_manager.get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
-        mock_db_manager.get_session.return_value.__exit__ = MagicMock(return_value=False)
-
-        with patch('agent.health_check_sync.agent_connection_manager') as mock_cm:
-            mock_cm.get_agent_for_host = AsyncMock(return_value=mock_agent)
-
-            result = await push_health_check_config_to_agent(
-                host_id="host-123",
-                container_id="abc123def456",
-                config=None,
-                db_manager=mock_db_manager
-            )
-
-            assert result is True
-            # Verify DB was queried with composite key
-            mock_session.query.assert_called()
+        assert result is False
+        agent_ws.send_json.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_returns_false_when_config_not_found_in_database(self):
-        """Should return False if config not in DB"""
-        mock_agent = MagicMock()
+    async def test_queries_config_from_database_if_not_provided(self, agent_ws):
+        db_manager, session = _db_manager_returning(_agent_config(url="http://test/health"))
 
-        mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.first.return_value = None
+        result = await push_health_check_config_to_agent(
+            HOST_ID, "abc123def456", db_manager=db_manager
+        )
 
-        mock_db_manager = MagicMock()
-        mock_db_manager.get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
-        mock_db_manager.get_session.return_value.__exit__ = MagicMock(return_value=False)
-
-        with patch('agent.health_check_sync.agent_connection_manager') as mock_cm:
-            mock_cm.get_agent_for_host = AsyncMock(return_value=mock_agent)
-
-            result = await push_health_check_config_to_agent(
-                host_id="host-123",
-                container_id="abc123def456",
-                config=None,
-                db_manager=mock_db_manager
-            )
-
-            assert result is False
+        assert result is True
+        session.query.assert_called()
+        assert agent_ws.send_json.call_args[0][0]["payload"]["url"] == "http://test/health"
 
     @pytest.mark.asyncio
-    async def test_handles_websocket_error_gracefully(self):
-        """Should handle WebSocket errors and return False"""
-        mock_agent = MagicMock()
-        mock_agent.websocket = MagicMock()
-        mock_agent.websocket.send_json = AsyncMock(side_effect=Exception("WebSocket error"))
+    async def test_returns_false_when_config_not_found_in_database(self, agent_ws):
+        db_manager, _ = _db_manager_returning(None)
 
-        with patch('agent.health_check_sync.agent_connection_manager') as mock_cm:
-            mock_cm.get_agent_for_host = AsyncMock(return_value=mock_agent)
+        result = await push_health_check_config_to_agent(
+            HOST_ID, "abc123def456", db_manager=db_manager
+        )
 
-            config = MagicMock(spec=ContainerHttpHealthCheck)
-            config.check_from = 'agent'
-            config.enabled = True
-            config.url = "http://test"
-            config.method = "GET"
-            config.expected_status_codes = "200"
-            config.timeout_seconds = 10
-            config.check_interval_seconds = 30
-            config.follow_redirects = True
-            config.verify_ssl = True
-            config.headers_json = None
-            config.auth_config_json = None
+        assert result is False
+        agent_ws.send_json.assert_not_called()
 
-            result = await push_health_check_config_to_agent(
-                host_id="host-123",
-                container_id="abc123def456",
-                config=config
-            )
+    @pytest.mark.asyncio
+    async def test_handles_websocket_error_gracefully(self, agent_ws):
+        agent_ws.send_json.side_effect = Exception("WebSocket error")
 
-            assert result is False
+        result = await push_health_check_config_to_agent(
+            HOST_ID, "abc123def456", config=_agent_config()
+        )
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_full_payload_reaches_agent(self, agent_ws):
+        config = _agent_config(
+            url="https://my-service.local:8443/api/health",
+            expected_status_codes="200-299",
+            check_interval_seconds=60,
+            verify_ssl=False,
+            headers_json='{"Authorization": "Bearer token123"}',
+        )
+
+        result = await push_health_check_config_to_agent(
+            HOST_ID, "abc123def456", config=config
+        )
+
+        assert result is True
+        payload = agent_ws.send_json.call_args[0][0]["payload"]
+        assert payload["url"] == "https://my-service.local:8443/api/health"
+        assert payload["verify_ssl"] is False
+        assert payload["headers_json"] == '{"Authorization": "Bearer token123"}'
+        assert payload["check_interval_seconds"] == 60
 
 
 class TestRemoveHealthCheckConfigFromAgent:
     """Test remove_health_check_config_from_agent function"""
 
     @pytest.mark.asyncio
-    async def test_sends_remove_message_to_agent(self):
-        """Should send removal message to connected agent"""
-        mock_agent = MagicMock()
-        mock_agent.websocket = MagicMock()
-        mock_agent.websocket.send_json = AsyncMock()
+    async def test_sends_remove_message_to_agent(self, agent_ws):
+        result = await remove_health_check_config_from_agent(HOST_ID, "abc123def456")
 
-        with patch('agent.health_check_sync.agent_connection_manager') as mock_cm:
-            mock_cm.get_agent_for_host = AsyncMock(return_value=mock_agent)
-
-            result = await remove_health_check_config_from_agent(
-                host_id="host-123",
-                container_id="abc123def456"
-            )
-
-            assert result is True
-            mock_agent.websocket.send_json.assert_called_once()
-
-            # Verify message format
-            call_args = mock_agent.websocket.send_json.call_args[0][0]
-            assert call_args["type"] == "health_check_config_remove"
-            assert call_args["payload"]["container_id"] == "abc123def456"
+        assert result is True
+        message = agent_ws.send_json.call_args[0][0]
+        assert message["type"] == "health_check_config_remove"
+        assert message["payload"]["container_id"] == "abc123def456"
 
     @pytest.mark.asyncio
-    async def test_returns_false_when_no_agent_connected(self):
-        """Should return False if no agent for host"""
-        with patch('agent.health_check_sync.agent_connection_manager') as mock_cm:
-            mock_cm.get_agent_for_host = AsyncMock(return_value=None)
-
-            result = await remove_health_check_config_from_agent(
-                host_id="host-123",
-                container_id="abc123def456"
-            )
-
-            assert result is False
+    async def test_returns_false_when_host_has_no_agent(self):
+        assert await remove_health_check_config_from_agent("host-no-agent", "abc123def456") is False
 
     @pytest.mark.asyncio
-    async def test_handles_websocket_error_gracefully(self):
-        """Should handle errors and return False"""
-        mock_agent = MagicMock()
-        mock_agent.websocket = MagicMock()
-        mock_agent.websocket.send_json = AsyncMock(side_effect=Exception("Connection lost"))
-
-        with patch('agent.health_check_sync.agent_connection_manager') as mock_cm:
-            mock_cm.get_agent_for_host = AsyncMock(return_value=mock_agent)
-
-            result = await remove_health_check_config_from_agent(
-                host_id="host-123",
-                container_id="abc123def456"
-            )
-
-            assert result is False
-
-
-class TestHealthCheckSyncIntegration:
-    """Integration-style tests for health check sync flow"""
+    async def test_returns_false_when_agent_not_connected(self):
+        assert await remove_health_check_config_from_agent(HOST_ID, "abc123def456") is False
 
     @pytest.mark.asyncio
-    async def test_full_config_push_flow(self):
-        """Should handle complete config push flow"""
-        mock_agent = MagicMock()
-        mock_agent.websocket = MagicMock()
-        mock_agent.websocket.send_json = AsyncMock()
+    async def test_handles_websocket_error_gracefully(self, agent_ws):
+        agent_ws.send_json.side_effect = Exception("Connection lost")
 
-        with patch('agent.health_check_sync.agent_connection_manager') as mock_cm:
-            mock_cm.get_agent_for_host = AsyncMock(return_value=mock_agent)
-
-            # Create realistic config
-            config = MagicMock(spec=ContainerHttpHealthCheck)
-            config.check_from = 'agent'
-            config.enabled = True
-            config.url = "https://my-service.local:8443/api/health"
-            config.method = "GET"
-            config.expected_status_codes = "200-299"
-            config.timeout_seconds = 15
-            config.check_interval_seconds = 60
-            config.follow_redirects = False
-            config.verify_ssl = False  # Self-signed cert
-            config.headers_json = '{"Authorization": "Bearer token123"}'
-            config.auth_config_json = None
-
-            result = await push_health_check_config_to_agent(
-                host_id="7be442c9-24bc-4047-b33a-41bbf51ea2f9",
-                container_id="abc123def456",
-                config=config
-            )
-
-            assert result is True
-
-            # Verify complete payload
-            call_args = mock_agent.websocket.send_json.call_args[0][0]
-            payload = call_args["payload"]
-
-            assert payload["url"] == "https://my-service.local:8443/api/health"
-            assert payload["verify_ssl"] is False
-            assert payload["headers_json"] == '{"Authorization": "Bearer token123"}'
-            assert payload["check_interval_seconds"] == 60
+        assert await remove_health_check_config_from_agent(HOST_ID, "abc123def456") is False

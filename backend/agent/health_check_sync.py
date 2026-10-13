@@ -7,6 +7,7 @@ import logging
 from typing import Optional
 
 from agent.connection_manager import agent_connection_manager
+from agent.manager import AgentManager
 from database import ContainerHttpHealthCheck, DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,14 @@ def _build_config_payload(config: ContainerHttpHealthCheck, container_id: str, h
     }
 
 
+async def _send_to_host_agent(host_id: str, message: dict) -> bool:
+    agent_id = AgentManager().get_agent_for_host(host_id)
+    if not agent_id:
+        logger.debug(f"No agent registered for host {host_id}")
+        return False
+    return await agent_connection_manager.send_command(agent_id, message)
+
+
 async def push_health_check_config_to_agent(
     host_id: str,
     container_id: str,
@@ -37,7 +46,7 @@ async def push_health_check_config_to_agent(
     db_manager: Optional[DatabaseManager] = None
 ) -> bool:
     """
-    Push a health check config update to the connected agent.
+    Push a health check config update to the host's agent.
 
     Args:
         host_id: Docker host ID (UUID)
@@ -49,13 +58,6 @@ async def push_health_check_config_to_agent(
         bool: True if config was sent to agent, False otherwise
     """
     try:
-        # Get agent connection for this host
-        agent = await agent_connection_manager.get_agent_for_host(host_id)
-        if not agent:
-            logger.debug(f"No agent connected for host {host_id}")
-            return False
-
-        # If config not provided, query from database
         if config is None:
             if db_manager is None:
                 db_manager = DatabaseManager()
@@ -70,32 +72,24 @@ async def push_health_check_config_to_agent(
                     logger.warning(f"No health check config found for {composite_key}")
                     return False
 
-                # Check if this is agent-based
                 if config.check_from != 'agent':
                     logger.debug(f"Health check for {composite_key} is not agent-based")
                     return False
 
-                # Build payload inside session (access ORM attributes)
                 payload = _build_config_payload(config, container_id, host_id)
-
-            # Send update to agent (outside session)
-            await agent.websocket.send_json({
-                "type": "health_check_config",
-                "payload": payload
-            })
         else:
-            # Config was provided directly
             if config.check_from != 'agent':
-                logger.debug(f"Health check is not agent-based")
+                logger.debug("Health check is not agent-based")
                 return False
+            payload = _build_config_payload(config, container_id, host_id)
 
-            await agent.websocket.send_json({
-                "type": "health_check_config",
-                "payload": _build_config_payload(config, container_id, host_id)
-            })
-
-        logger.info(f"Pushed health check config to agent for container {container_id}")
-        return True
+        sent = await _send_to_host_agent(host_id, {
+            "type": "health_check_config",
+            "payload": payload
+        })
+        if sent:
+            logger.info(f"Pushed health check config to agent for container {container_id}")
+        return sent
 
     except Exception as e:
         logger.error(f"Error pushing health check config to agent: {e}", exc_info=True)
@@ -107,7 +101,7 @@ async def remove_health_check_config_from_agent(
     container_id: str
 ) -> bool:
     """
-    Remove a health check config from the connected agent.
+    Remove a health check config from the host's agent.
 
     Args:
         host_id: Docker host ID (UUID)
@@ -117,21 +111,15 @@ async def remove_health_check_config_from_agent(
         bool: True if removal was sent to agent, False otherwise
     """
     try:
-        # Get agent connection for this host
-        agent = await agent_connection_manager.get_agent_for_host(host_id)
-        if not agent:
-            logger.debug(f"No agent connected for host {host_id}")
-            return False
-
-        await agent.websocket.send_json({
+        sent = await _send_to_host_agent(host_id, {
             "type": "health_check_config_remove",
             "payload": {
                 "container_id": container_id
             }
         })
-
-        logger.info(f"Removed health check config from agent for container {container_id}")
-        return True
+        if sent:
+            logger.info(f"Removed health check config from agent for container {container_id}")
+        return sent
 
     except Exception as e:
         logger.error(f"Error removing health check config from agent: {e}", exc_info=True)

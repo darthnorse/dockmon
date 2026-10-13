@@ -175,7 +175,7 @@ class DockMonUpdateChecker:
                 'User-Agent': 'DockMon-Update-Checker'
             }
 
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
                 async with session.get(self.GITHUB_LATEST_URL, headers=headers) as response:
                     if response.status == 404:
                         logger.warning(f"GitHub repository not found: {self.GITHUB_REPO}")
@@ -319,7 +319,7 @@ class DockMonUpdateChecker:
                 'User-Agent': 'DockMon-Update-Checker'
             }
 
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
                 # Fetch first page (100 releases should be enough)
                 async with session.get(
                     f"{self.GITHUB_RELEASES_URL}?per_page=100",
@@ -405,7 +405,7 @@ class DockMonUpdateChecker:
             timeout = aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT)
             headers = {'User-Agent': 'DockMon-Update-Checker'}
 
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
                 async with session.get(url, headers=headers) as response:
                     if response.status != 200:
                         logger.warning(f"Failed to fetch checksums for {tag}: HTTP {response.status}")

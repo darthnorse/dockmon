@@ -376,7 +376,7 @@ class RegistryAdapter:
             manifest_url = self._get_manifest_url(registry, repository, "latest")
 
             # Send HEAD request (lighter than GET, we only need headers)
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(trust_env=True) as session:
                 async with session.head(
                     manifest_url,
                     timeout=aiohttp.ClientTimeout(total=10)
@@ -455,8 +455,7 @@ class RegistryAdapter:
             if auth:
                 headers["Authorization"] = self._encode_basic_auth(auth)
 
-            # Fetch token
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(trust_env=True) as session:
                 async with session.get(
                     realm,
                     params=params,
@@ -605,7 +604,7 @@ class RegistryAdapter:
             headers["Authorization"] = self._encode_basic_auth(auth)
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(trust_env=True) as session:
                 async with session.get(auth_url, headers=headers) as response:
                     if response.status == 200:
                         data = await response.json()
@@ -651,7 +650,7 @@ class RegistryAdapter:
             headers["Authorization"] = self._encode_basic_auth(auth)
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(trust_env=True) as session:
                 async with session.get(auth_url, headers=headers) as response:
                     if response.status == 200:
                         data = await response.json()
@@ -699,7 +698,7 @@ class RegistryAdapter:
             headers["Authorization"] = token
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(trust_env=True) as session:
                 async with session.get(manifest_url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as response:
                     if response.status == 200:
                         # Get digest from Docker-Content-Digest header
@@ -783,7 +782,7 @@ class RegistryAdapter:
             headers["Authorization"] = token
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(trust_env=True) as session:
                 async with session.get(blob_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
                     if response.status == 200:
                         # Config blobs are served as application/octet-stream, but contain JSON
@@ -845,7 +844,7 @@ class RegistryAdapter:
             headers["Authorization"] = token
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(trust_env=True) as session:
                 async with session.get(manifest_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
                     if response.status == 200:
                         platform_manifest = await response.json()

@@ -37,6 +37,15 @@ services:
       #   docker exec dockmon python backend/manage_auth.py disable-local-login)
       # - DOCKMON_FORCE_LOCAL_LOGIN=true
 
+      # Optional: Outbound HTTP proxy (GitHub release checks, registry update checks,
+      # notifications, OIDC). Keep localhost in NO_PROXY and add LAN targets (private
+      # registries, remote Docker hosts, health-check URLs) as hostnames, IPs or
+      # .domain suffixes; CIDR ranges are not honored everywhere. Set the lowercase
+      # forms to the same values. See the wiki page "Outbound Proxy".
+      # - HTTP_PROXY=http://proxy.example.com:3128
+      # - HTTPS_PROXY=http://proxy.example.com:3128
+      # - NO_PROXY=localhost,127.0.0.1,.lan
+
       # HOST_STACKS_DIR is auto-discovered from /proc/self/mountinfo at startup,
       # so relative bind mounts in stacks (e.g., ./data:/app/data) work without
       # configuration. Set this only as an override if auto-discovery picks the
@@ -62,7 +71,7 @@ services:
         max-file: "3"        # Keep 3 log files (30MB total max)
         compress: "true"     # Compress rotated logs
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-f", "--noproxy", "*", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3

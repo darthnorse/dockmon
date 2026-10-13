@@ -2,16 +2,12 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
-	"fmt"
 	"log"
-	"net"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	dockerpkg "github.com/darthnorse/dockmon-shared/docker"
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
@@ -47,46 +43,6 @@ type eventStream struct {
 	active    bool
 }
 
-// createEventTLSOption creates a Docker client TLS option from PEM-encoded certificates
-func createEventTLSOption(caCertPEM, certPEM, keyPEM string) (client.Opt, error) {
-	// Parse CA certificate
-	caCertPool := x509.NewCertPool()
-	if !caCertPool.AppendCertsFromPEM([]byte(caCertPEM)) {
-		return nil, fmt.Errorf("failed to parse CA certificate")
-	}
-
-	// Parse client certificate and key
-	clientCert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse client certificate/key: %v", err)
-	}
-
-	// Create TLS config
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{clientCert},
-		RootCAs:      caCertPool,
-		MinVersion:   tls.VersionTLS12,
-	}
-
-	// Create HTTP client with TLS transport and timeouts
-	// Note: No overall Timeout set because Docker API streaming operations (stats, events)
-	// are long-running connections that should not be killed by a timeout
-	httpClient := &http.Client{
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second, // Connection establishment timeout
-				KeepAlive: 30 * time.Second, // TCP keepalive interval
-			}).DialContext,
-			TLSClientConfig:       tlsConfig,
-			TLSHandshakeTimeout:   10 * time.Second,
-			IdleConnTimeout:       90 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second,
-		},
-	}
-
-	return client.WithHTTPClient(httpClient), nil
-}
-
 // NewEventManager creates a new event manager
 func NewEventManager(broadcaster *EventBroadcaster, cache *EventCache) *EventManager {
 	return &EventManager{
@@ -110,28 +66,9 @@ func (em *EventManager) AddHost(hostID, hostName, hostAddress, tlsCACert, tlsCer
 		strings.HasPrefix(hostAddress, "unix:///run/user/")
 
 	if isLocalSocket {
-		// Local Docker/Podman socket - use FromEnv to auto-detect
-		dockerClient, err = client.NewClientWithOpts(
-			client.FromEnv,
-			client.WithAPIVersionNegotiation(),
-		)
+		dockerClient, err = dockerpkg.CreateLocalClient()
 	} else {
-		// Remote Docker host - check if TLS is needed
-		clientOpts := []client.Opt{
-			client.WithHost(hostAddress),
-			client.WithAPIVersionNegotiation(),
-		}
-
-		// If TLS certificates provided, configure TLS
-		if tlsCACert != "" && tlsCert != "" && tlsKey != "" {
-			tlsOpt, err := createEventTLSOption(tlsCACert, tlsCert, tlsKey)
-			if err != nil {
-				return fmt.Errorf("failed to create TLS config: %v", err)
-			}
-			clientOpts = append(clientOpts, tlsOpt)
-		}
-
-		dockerClient, err = client.NewClientWithOpts(clientOpts...)
+		dockerClient, err = dockerpkg.CreateRemoteClient(hostAddress, tlsCACert, tlsCert, tlsKey)
 	}
 
 	if err != nil {

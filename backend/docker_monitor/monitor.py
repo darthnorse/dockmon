@@ -242,12 +242,12 @@ def parse_container_env(env_list: list) -> dict[str, str]:
     return env_dict
 
 
-def _handle_task_exception(task: asyncio.Task) -> None:
-    """Handle exceptions from fire-and-forget async tasks"""
+def _handle_task_exception(task) -> None:
+    """Log the exception of a fire-and-forget asyncio Task or cross-thread Future."""
+    if task.cancelled():
+        return
     try:
         task.result()
-    except asyncio.CancelledError:
-        pass  # Task was cancelled, this is normal
     except Exception as e:
         logger.error(f"Unhandled exception in background task: {e}", exc_info=True)
 
@@ -550,7 +550,6 @@ class DockerMonitor:
             # During startup, monitor_containers() handles all registrations
             if not skip_db_save:  # New host being added by user
                 try:
-                    import asyncio
                     stats_client = get_stats_client()
 
                     async def register_host():
@@ -569,12 +568,7 @@ class DockerMonitor:
                         except Exception as e:
                             logger.error(f"Failed to register {host.name} with Go services: {e}")
 
-                    # Try to create task if event loop is running
-                    try:
-                        task = asyncio.create_task(register_host())
-                        task.add_done_callback(_handle_task_exception)
-                    except RuntimeError:
-                        # No event loop running - will be registered by monitor_containers()
+                    if not self._run_on_main_loop(register_host()):
                         logger.debug(f"No event loop yet - {host.name} will be registered when monitoring starts")
                 except Exception as e:
                     logger.warning(f"Could not register {host.name} with Go services: {e}")
@@ -1203,7 +1197,6 @@ class DockerMonitor:
             # Re-register host with stats and event services (in case URL changed)
             # Note: add_docker_host() automatically closes old client if it exists
             try:
-                import asyncio
                 stats_client = get_stats_client()
 
                 async def reregister_host():
@@ -1225,9 +1218,8 @@ class DockerMonitor:
                     except Exception as e:
                         logger.error(f"Failed to re-register {host.name} with Go services: {e}")
 
-                # Create task to re-register (fire and forget)
-                task = asyncio.create_task(reregister_host())
-                task.add_done_callback(_handle_task_exception)
+                if not self._run_on_main_loop(reregister_host()):
+                    logger.warning(f"No event loop available to re-register {host.name} with Go services")
             except Exception as e:
                 logger.warning(f"Could not re-register {host.name} with Go services: {e}")
 
@@ -1313,31 +1305,35 @@ class DockerMonitor:
         """Record the application event loop for use from worker threads."""
         self._main_loop = loop
 
-    def _schedule_docker_host_unregistration(self, host_id: str, host_name: str):
-        """Run the Go-service unregistration without blocking the caller.
+    def _run_on_main_loop(self, coro) -> bool:
+        """Run a fire-and-forget coroutine on the application loop.
 
-        Works from both the event loop (agent registration) and a worker thread
-        (update_host runs under asyncio.to_thread). The stats client's session
-        is bound to the main loop, so a worker thread hands the work back to it
-        rather than running it on a loop of its own.
+        Works from both the event loop and a worker thread (add_host and
+        update_host run under asyncio.to_thread). The stats client's session is
+        bound to the main loop, so a worker thread hands the work back to it
+        rather than running it on a loop of its own. Returns False, without
+        running the coroutine, when no loop is available yet.
         """
-        coro = self.unregister_docker_host_services(host_id, host_name)
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             loop = self._main_loop
             if loop is None:
                 coro.close()
-                logger.warning(
-                    f"No event loop available to unregister {host_name} from the stats "
-                    f"service; its Docker registration may linger until restart"
-                )
-                return
-            asyncio.run_coroutine_threadsafe(coro, loop)
-            return
+                return False
+            asyncio.run_coroutine_threadsafe(coro, loop).add_done_callback(_handle_task_exception)
+            return True
 
         task = asyncio.create_task(coro)
         task.add_done_callback(_handle_task_exception)
+        return True
+
+    def _schedule_docker_host_unregistration(self, host_id: str, host_name: str):
+        if not self._run_on_main_loop(self.unregister_docker_host_services(host_id, host_name)):
+            logger.warning(
+                f"No event loop available to unregister {host_name} from the stats "
+                f"service; its Docker registration may linger until restart"
+            )
 
     async def unregister_docker_host_services(self, host_id: str, host_name: str):
         """Drop a host's Docker registration from the Go stats and event services.
@@ -1387,19 +1383,7 @@ class DockerMonitor:
         self._schedule_docker_host_unregistration(host_id, host_name)
 
     def _schedule_host_status_broadcast(self, host_id: str, status: str):
-        """
-        Schedule a host status broadcast to WebSocket clients.
-
-        Uses asyncio to schedule the broadcast since this may be called from sync context.
-        """
-        import asyncio
-        try:
-            # asyncio.get_running_loop raises RuntimeError if no event loop
-            # is running — that's the only thing we use it for here.
-            asyncio.get_running_loop()
-            asyncio.create_task(self._broadcast_host_status(host_id, status))
-        except RuntimeError:
-            # No running loop - skip broadcast (sync context without event loop)
+        if not self._run_on_main_loop(self._broadcast_host_status(host_id, status)):
             logger.debug(f"No event loop for host status broadcast: {host_id} -> {status}")
 
     async def _broadcast_host_status(self, host_id: str, status: str):

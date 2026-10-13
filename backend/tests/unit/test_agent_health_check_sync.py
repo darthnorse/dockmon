@@ -19,7 +19,7 @@ from agent.health_check_sync import (
     push_health_check_config_to_agent,
     remove_health_check_config_from_agent,
 )
-from database import ContainerHttpHealthCheck
+from database import Agent, ContainerHttpHealthCheck, DockerHostDB
 
 
 class TestBuildConfigPayload:
@@ -78,6 +78,7 @@ class TestBuildConfigPayload:
 
 
 AGENT_ID = "agent-1"
+HOST_ID = "host-123"
 
 
 def _agent_config(**overrides):
@@ -96,6 +97,17 @@ def _agent_config(**overrides):
     for name, value in overrides.items():
         setattr(config, name, value)
     return config
+
+
+@pytest.fixture(autouse=True)
+def agent_host(db):
+    """HOST_ID is served by AGENT_ID in a real database; "host-no-agent" has no agent."""
+    with db.get_session() as session:
+        session.add(DockerHostDB(id=HOST_ID, name="agent-box", url="agent://", connection_type="agent"))
+        session.add(DockerHostDB(id="host-no-agent", name="docker-box", url="tcp://10.0.0.5:2376"))
+        session.add(Agent(id=AGENT_ID, host_id=HOST_ID, engine_id="engine-1", version="1.2.0",
+                          proto_version="1", capabilities={}, status="online"))
+        session.commit()
 
 
 @pytest.fixture
@@ -123,7 +135,7 @@ class TestPushHealthCheckConfigToAgent:
     @pytest.mark.asyncio
     async def test_pushes_config_to_connected_agent(self, agent_ws):
         result = await push_health_check_config_to_agent(
-            AGENT_ID, "host-123", "abc123def456", config=_agent_config()
+            HOST_ID, "abc123def456", config=_agent_config()
         )
 
         assert result is True
@@ -131,12 +143,12 @@ class TestPushHealthCheckConfigToAgent:
         message = agent_ws.send_json.call_args[0][0]
         assert message["type"] == "health_check_config"
         assert message["payload"]["container_id"] == "abc123def456"
-        assert message["payload"]["host_id"] == "host-123"
+        assert message["payload"]["host_id"] == HOST_ID
 
     @pytest.mark.asyncio
     async def test_returns_false_when_host_has_no_agent(self):
         result = await push_health_check_config_to_agent(
-            None, "host-123", "abc123def456", config=_agent_config()
+            "host-no-agent", "abc123def456", config=_agent_config()
         )
 
         assert result is False
@@ -144,7 +156,7 @@ class TestPushHealthCheckConfigToAgent:
     @pytest.mark.asyncio
     async def test_returns_false_when_agent_not_connected(self):
         result = await push_health_check_config_to_agent(
-            "agent-offline", "host-123", "abc123def456", config=_agent_config()
+            HOST_ID, "abc123def456", config=_agent_config()
         )
 
         assert result is False
@@ -152,7 +164,7 @@ class TestPushHealthCheckConfigToAgent:
     @pytest.mark.asyncio
     async def test_returns_false_for_backend_health_check(self, agent_ws):
         result = await push_health_check_config_to_agent(
-            AGENT_ID, "host-123", "abc123def456", config=_agent_config(check_from='backend')
+            HOST_ID, "abc123def456", config=_agent_config(check_from='backend')
         )
 
         assert result is False
@@ -163,7 +175,7 @@ class TestPushHealthCheckConfigToAgent:
         db_manager, session = _db_manager_returning(_agent_config(url="http://test/health"))
 
         result = await push_health_check_config_to_agent(
-            AGENT_ID, "host-123", "abc123def456", db_manager=db_manager
+            HOST_ID, "abc123def456", db_manager=db_manager
         )
 
         assert result is True
@@ -175,7 +187,7 @@ class TestPushHealthCheckConfigToAgent:
         db_manager, _ = _db_manager_returning(None)
 
         result = await push_health_check_config_to_agent(
-            AGENT_ID, "host-123", "abc123def456", db_manager=db_manager
+            HOST_ID, "abc123def456", db_manager=db_manager
         )
 
         assert result is False
@@ -186,7 +198,7 @@ class TestPushHealthCheckConfigToAgent:
         agent_ws.send_json.side_effect = Exception("WebSocket error")
 
         result = await push_health_check_config_to_agent(
-            AGENT_ID, "host-123", "abc123def456", config=_agent_config()
+            HOST_ID, "abc123def456", config=_agent_config()
         )
 
         assert result is False
@@ -202,7 +214,7 @@ class TestPushHealthCheckConfigToAgent:
         )
 
         result = await push_health_check_config_to_agent(
-            AGENT_ID, "7be442c9-24bc-4047-b33a-41bbf51ea2f9", "abc123def456", config=config
+            HOST_ID, "abc123def456", config=config
         )
 
         assert result is True
@@ -218,7 +230,7 @@ class TestRemoveHealthCheckConfigFromAgent:
 
     @pytest.mark.asyncio
     async def test_sends_remove_message_to_agent(self, agent_ws):
-        result = await remove_health_check_config_from_agent(AGENT_ID, "abc123def456")
+        result = await remove_health_check_config_from_agent(HOST_ID, "abc123def456")
 
         assert result is True
         message = agent_ws.send_json.call_args[0][0]
@@ -227,14 +239,14 @@ class TestRemoveHealthCheckConfigFromAgent:
 
     @pytest.mark.asyncio
     async def test_returns_false_when_host_has_no_agent(self):
-        assert await remove_health_check_config_from_agent(None, "abc123def456") is False
+        assert await remove_health_check_config_from_agent("host-no-agent", "abc123def456") is False
 
     @pytest.mark.asyncio
     async def test_returns_false_when_agent_not_connected(self):
-        assert await remove_health_check_config_from_agent("agent-offline", "abc123def456") is False
+        assert await remove_health_check_config_from_agent(HOST_ID, "abc123def456") is False
 
     @pytest.mark.asyncio
     async def test_handles_websocket_error_gracefully(self, agent_ws):
         agent_ws.send_json.side_effect = Exception("Connection lost")
 
-        assert await remove_health_check_config_from_agent(AGENT_ID, "abc123def456") is False
+        assert await remove_health_check_config_from_agent(HOST_ID, "abc123def456") is False

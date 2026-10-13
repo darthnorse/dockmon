@@ -90,3 +90,15 @@ async def test_add_before_loop_is_bound_defers_registration(monitor, stats_clien
     await _drain_loop()
 
     stats_client.add_docker_host.assert_not_awaited()
+
+
+async def test_failure_scheduled_from_worker_thread_is_logged(monitor, caplog):
+    monitor.bind_event_loop(asyncio.get_running_loop())
+
+    async def boom():
+        raise RuntimeError("stats service exploded")
+
+    assert await asyncio.to_thread(monitor._run_on_main_loop, boom())
+    await _drain_loop()
+
+    assert "stats service exploded" in caplog.text

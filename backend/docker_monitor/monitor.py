@@ -242,12 +242,12 @@ def parse_container_env(env_list: list) -> dict[str, str]:
     return env_dict
 
 
-def _handle_task_exception(task: asyncio.Task) -> None:
-    """Handle exceptions from fire-and-forget async tasks"""
+def _handle_task_exception(task) -> None:
+    """Log the exception of a fire-and-forget asyncio Task or cross-thread Future."""
+    if task.cancelled():
+        return
     try:
         task.result()
-    except asyncio.CancelledError:
-        pass  # Task was cancelled, this is normal
     except Exception as e:
         logger.error(f"Unhandled exception in background task: {e}", exc_info=True)
 
@@ -1321,7 +1321,7 @@ class DockerMonitor:
             if loop is None:
                 coro.close()
                 return False
-            asyncio.run_coroutine_threadsafe(coro, loop)
+            asyncio.run_coroutine_threadsafe(coro, loop).add_done_callback(_handle_task_exception)
             return True
 
         task = asyncio.create_task(coro)
@@ -1383,19 +1383,7 @@ class DockerMonitor:
         self._schedule_docker_host_unregistration(host_id, host_name)
 
     def _schedule_host_status_broadcast(self, host_id: str, status: str):
-        """
-        Schedule a host status broadcast to WebSocket clients.
-
-        Uses asyncio to schedule the broadcast since this may be called from sync context.
-        """
-        import asyncio
-        try:
-            # asyncio.get_running_loop raises RuntimeError if no event loop
-            # is running — that's the only thing we use it for here.
-            asyncio.get_running_loop()
-            asyncio.create_task(self._broadcast_host_status(host_id, status))
-        except RuntimeError:
-            # No running loop - skip broadcast (sync context without event loop)
+        if not self._run_on_main_loop(self._broadcast_host_status(host_id, status)):
             logger.debug(f"No event loop for host status broadcast: {host_id} -> {status}")
 
     async def _broadcast_host_status(self, host_id: str, status: str):

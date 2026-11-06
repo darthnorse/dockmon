@@ -266,6 +266,7 @@ class UpdateChecker:
 
         # Get current digest from Docker API (the actual digest the container is running)
         current_digest = await self._get_container_image_digest(container)
+        current_digest_from_registry = False
         if not current_digest:
             # Fallback for digest-pinned images (Issue #143)
             # Images pulled by digest (e.g., image@sha256:...) don't have RepoDigests.
@@ -279,6 +280,7 @@ class UpdateChecker:
                     current_result = await self.registry.resolve_tag(current_image, auth=auth)
                     if current_result:
                         current_digest = current_result["digest"]
+                        current_digest_from_registry = True
                         logger.info(f"[{container['name']}] Got current digest from registry: {current_digest[:16]}...")
                 except TransientRegistryError:
                     # Retryable (timeout/429/5xx) - don't fall through to local classification
@@ -408,6 +410,18 @@ class UpdateChecker:
 
         if current_version or latest_version:
             logger.debug(f"Version info: current={current_version}, latest={latest_version}")
+
+        # The fallback above took the current digest from the registry tag, so the digest
+        # comparison compared the latest image with itself. This happens when the running
+        # image's local record is gone, e.g. it was built and pushed on this host and :latest
+        # was re-tagged to a newer build. Compare what the container actually runs instead.
+        if current_digest_from_registry:
+            stale = await self._running_image_differs(
+                container, latest_digest, latest_manifest, platform, current_version, latest_version
+            )
+            if stale is not None:
+                update_available = stale
+                logger.info(f"[{container['name']}] Running image checked against registry: update_available={update_available}")
 
         # Issue #147: Suppress false positive updates (downgrades)
         # Some registries (e.g., Nextcloud) don't maintain floating tags - their "32.0" tag
@@ -676,6 +690,73 @@ class UpdateChecker:
 
         except Exception as e:
             logger.warning(f"[{container_name}] Error getting container image digest: {e}", exc_info=True)
+            return None
+
+    async def _running_image_differs(
+        self,
+        container: Dict,
+        latest_digest: str,
+        latest_manifest: Dict,
+        platform: str,
+        current_version: Optional[str],
+        latest_version: Optional[str],
+    ) -> Optional[bool]:
+        """
+        Decide whether a container without a local image record runs an older image.
+
+        Prefers the container's image ID, which Docker keeps even after the image record
+        is deleted. Depending on the image store, that ID is the index digest (containerd
+        snapshotter), or the config digest (classic store). The platform manifest digest
+        is also accepted. Falls back to comparing OCI version labels.
+
+        Returns:
+            True/False, or None when neither comparison is possible
+        """
+        image_id = await self._get_container_image_id(container)
+        if image_id:
+            latest_ids = {
+                latest_digest,
+                self._extract_platform_digest(latest_manifest, platform),
+                latest_manifest.get("config_digest"),
+            }
+            return image_id not in latest_ids
+
+        if current_version and latest_version:
+            return current_version != latest_version
+
+        return None
+
+    async def _get_container_image_id(self, container: Dict) -> Optional[str]:
+        """
+        Get the ID of the image the container was created from.
+
+        Unlike RepoDigests this is part of the container itself, so it survives the image
+        record being deleted or re-tagged.
+
+        Returns:
+            sha256 image ID or None if not available (e.g. agent-monitored hosts)
+        """
+        image_id = container.get("image_id")
+        if image_id:
+            return image_id
+
+        if not self.monitor:
+            return None
+
+        try:
+            host_id = container.get("host_id")
+            if not host_id:
+                return None
+
+            client = self.monitor.clients.get(host_id)
+            if not client:
+                return None
+
+            dc = await async_docker_call(client.containers.get, container["id"])
+            return dc.attrs.get("Image") or None
+
+        except Exception as e:
+            logger.warning(f"Error getting container image ID: {e}")
             return None
 
     async def _get_container_image_version(self, container: Dict) -> Optional[str]:

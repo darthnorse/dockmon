@@ -182,7 +182,7 @@ class RegistryAdapter:
 
             if digest and manifest:
                 # Fetch config blob to get Labels (for OCI version extraction)
-                config_data = await self._fetch_config_blob(
+                config_data, config_digest = await self._fetch_config_blob(
                     registry, repository, manifest, token, platform
                 )
 
@@ -190,7 +190,10 @@ class RegistryAdapter:
                     "digest": digest,
                     "manifest": {
                         **manifest,
-                        "config": config_data if config_data else manifest.get("config", {})
+                        "config": config_data if config_data else manifest.get("config", {}),
+                        # Image ID under the classic image store; lets callers match a
+                        # container's image ID against the registry (see update_checker)
+                        "config_digest": config_digest,
                     },
                     "registry": registry,
                     "repository": repository,
@@ -748,11 +751,11 @@ class RegistryAdapter:
         manifest: Dict,
         token: Optional[str],
         platform: str = "linux/amd64"
-    ) -> Optional[Dict]:
+    ) -> Tuple[Optional[Dict], Optional[str]]:
         """
         Fetch image config blob to extract Labels (for OCI version detection).
 
-        Returns the config dict with Labels, or None if fetch fails.
+        Returns (config dict with Labels, config digest); (None, None) if the fetch fails.
         """
         # Get config digest from manifest
         config_descriptor = manifest.get("config", {})
@@ -769,7 +772,7 @@ class RegistryAdapter:
                 )
             else:
                 logger.info(f"No config digest in manifest for {repository} (type: {manifest_type})")
-            return None
+            return None, None
 
         # Normalize registry URL
         normalized_registry = self._normalize_registry_url(registry)
@@ -789,17 +792,17 @@ class RegistryAdapter:
                         # Use content_type=None to bypass aiohttp's content-type validation
                         config = await response.json(content_type=None)
                         logger.info(f"Fetched config blob for {repository}")
-                        return config
+                        return config, config_digest
                     else:
                         logger.warning(f"Failed to fetch config blob: {response.status}")
-                        return None
+                        return None, None
 
         except asyncio.TimeoutError:
             logger.warning(f"Timeout fetching config blob for {repository}")
-            return None
+            return None, None
         except Exception as e:
             logger.warning(f"Error fetching config blob: {e}")
-            return None
+            return None, None
 
     async def _fetch_config_from_manifest_list(
         self,
@@ -808,7 +811,7 @@ class RegistryAdapter:
         manifest_list: Dict,
         token: Optional[str],
         platform: str
-    ) -> Optional[Dict]:
+    ) -> Tuple[Optional[Dict], Optional[str]]:
         """
         Fetch config blob from a manifest list by first getting the platform-specific manifest.
 
@@ -820,12 +823,12 @@ class RegistryAdapter:
 
         if not platform_manifest_descriptor:
             logger.warning(f"No manifest found for platform {platform} in {repository}")
-            return None
+            return None, None
 
         platform_digest = platform_manifest_descriptor.get("digest")
         if not platform_digest:
             logger.warning(f"Platform manifest descriptor missing digest for {repository}")
-            return None
+            return None, None
 
         logger.info(f"Found platform-specific manifest for {repository}: {platform_digest[:16]}...")
 
@@ -856,7 +859,7 @@ class RegistryAdapter:
 
                         if not config_digest:
                             logger.warning(f"Platform-specific manifest has no config digest for {repository}")
-                            return None
+                            return None, None
 
                         # Fetch the config blob
                         blob_url = f"{normalized_registry}/v2/{repository}/blobs/{config_digest}"
@@ -868,20 +871,20 @@ class RegistryAdapter:
                             if blob_response.status == 200:
                                 config = await blob_response.json(content_type=None)
                                 logger.info(f"Fetched config blob from platform-specific manifest for {repository}")
-                                return config
+                                return config, config_digest
                             else:
                                 logger.warning(f"Failed to fetch config blob: {blob_response.status}")
-                                return None
+                                return None, None
                     else:
                         logger.warning(f"Failed to fetch platform-specific manifest: {response.status}")
-                        return None
+                        return None, None
 
         except asyncio.TimeoutError:
             logger.warning(f"Timeout fetching platform-specific config for {repository}")
-            return None
+            return None, None
         except Exception as e:
             logger.warning(f"Error fetching platform-specific config: {e}")
-            return None
+            return None, None
 
     def compute_floating_tag(self, image_tag: str, mode: str) -> str:
         """

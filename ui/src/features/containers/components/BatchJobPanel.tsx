@@ -105,7 +105,6 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
           const prevStatus = prev?.status
           const updatedJob = prev ? { ...prev, ...data } : null
 
-          // Invalidate queries and cleanup when job finishes
           // Only trigger on actual state transition from in-progress to finished
           // This prevents premature cleanup when WebSocket 'completed' arrives before initial fetch
           const wasInProgress = prevStatus === 'queued' || prevStatus === 'running'

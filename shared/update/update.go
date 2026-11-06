@@ -489,7 +489,6 @@ func (u *Updater) sendProgress(stage, message string) {
 	}
 }
 
-// failResult creates a failed result.
 func (u *Updater) failResult(containerID string, err error) *UpdateResult {
 	u.sendProgress(StageFailed, err.Error())
 

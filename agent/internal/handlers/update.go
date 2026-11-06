@@ -177,7 +177,6 @@ func (e *UpdateError) Error() string {
 	return e.Message
 }
 
-// sendProgress sends an update progress event to the backend.
 func (h *UpdateHandler) sendProgress(containerID, requestID, stage, message string) {
 	progress := map[string]interface{}{
 		"container_id": safeShortID(containerID),

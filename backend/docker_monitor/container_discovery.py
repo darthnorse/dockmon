@@ -660,7 +660,8 @@ class ContainerDiscovery:
                             env=env,  # From agent v1.0.10+ (cached forever per container ID)
                             repo_digests=repo_digests,  # Image digests for update checking
                             docker_ip=docker_ip,
-                            docker_ips=docker_ips
+                            docker_ips=docker_ips,
+                            network_mode=host_config.get("NetworkMode"),
                         )
 
                         containers.append(container)
@@ -909,7 +910,8 @@ class ContainerDiscovery:
                         labels=labels,
                         tags=tags,
                         docker_ip=docker_ip,
-                        docker_ips=docker_ips
+                        docker_ips=docker_ips,
+                        network_mode=host_config.get('NetworkMode'),
                     )
                     containers.append(container)
                 except Exception as container_error:

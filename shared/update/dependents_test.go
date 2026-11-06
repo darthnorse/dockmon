@@ -2,6 +2,12 @@ package update
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/docker/docker/api/types"
@@ -391,4 +397,43 @@ func findDependentContainersWithClient(
 type dockerClient interface {
 	ContainerList(ctx context.Context, options container.ListOptions) ([]types.Container, error)
 	ContainerInspect(ctx context.Context, containerID string) (types.ContainerJSON, error)
+}
+
+func TestFindDependents_OnlyReportsUninspectableContainersLinkedToTheProvider(t *testing.T) {
+	providerID := strings.Repeat("a", 64)
+	listed := []map[string]interface{}{
+		{"Id": "linked-500", "Names": []string{"/linked"}, "HostConfig": map[string]string{"NetworkMode": "container:" + providerID}},
+		{"Id": "linked-404", "Names": []string{"/removed"}, "HostConfig": map[string]string{"NetworkMode": "container:" + providerID}},
+		{"Id": "unrelated-500", "Names": []string{"/unrelated"}, "HostConfig": map[string]string{"NetworkMode": "bridge"}},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/containers/json"):
+			json.NewEncoder(w).Encode(listed)
+		case strings.Contains(r.URL.Path, "linked-404"):
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, `{"message":"No such container"}`)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+			io.WriteString(w, `{"message":"boom"}`)
+		}
+	}))
+	defer server.Close()
+
+	cli, err := client.NewClientWithOpts(client.WithHost(server.URL), client.WithVersion("1.44"), client.WithHTTPClient(server.Client()))
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	log := logrus.New()
+	log.SetOutput(io.Discard)
+	provider := types.ContainerJSON{ContainerJSONBase: &types.ContainerJSONBase{ID: providerID}}
+
+	_, uninspectable, err := findDependents(context.Background(), cli, log, &provider, "gluetun", providerID[:12])
+
+	if err != nil {
+		t.Fatalf("findDependents: %v", err)
+	}
+	if want := []string{"linked"}; !reflect.DeepEqual(uninspectable, want) {
+		t.Errorf("uninspectable = %v, want %v", uninspectable, want)
+	}
 }

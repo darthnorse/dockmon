@@ -176,18 +176,16 @@ class UpdateEventEmitter:
         failed_dependents: list
     ):
         """
-        Emit warning about failed dependent container recreation.
-
-        Called when container update succeeded but dependent containers
-        (using network_mode: container:X) failed to be recreated.
+        Emit a warning about dependents (network_mode: container:X) left without a
+        working network. Called after a successful update and after a rollback, so the
+        wording must not imply either outcome for the provider.
         """
         try:
             # Broadcast warning to UI
             if self.monitor and hasattr(self.monitor, 'manager'):
                 warning_msg = (
-                    f"Container '{container_name}' updated successfully but "
-                    f"{len(failed_dependents)} dependent container(s) failed to recreate: "
-                    f"{', '.join(failed_dependents)}"
+                    f"{len(failed_dependents)} dependent container(s) of '{container_name}' "
+                    f"need attention: {', '.join(failed_dependents)}"
                 )
                 await self.monitor.manager.broadcast({
                     "type": "container_update_warning",

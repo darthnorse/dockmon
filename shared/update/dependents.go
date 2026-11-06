@@ -22,11 +22,32 @@ func FindDependentContainers(
 	parentName string,
 	parentID string,
 ) ([]DependentContainer, error) {
+	dependents, _, err := findDependents(ctx, cli, log, parentContainer, parentName, parentID)
+	return dependents, err
+}
+
+// findDependents also returns the names of containers it could not inspect, so
+// recovery can report them rather than silently skip a possible dependent.
+func findDependents(
+	ctx context.Context,
+	cli *client.Client,
+	log *logrus.Logger,
+	parentContainer *types.ContainerJSON,
+	parentName string,
+	parentID string,
+) ([]DependentContainer, []string, error) {
 	var dependents []DependentContainer
+	var uninspectable []string
 
 	containers, err := cli.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
-		return nil, fmt.Errorf("failed to list containers: %w", err)
+		return nil, nil, fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	dependsOn := func(networkMode string) bool {
+		return networkMode == fmt.Sprintf("container:%s", parentName) ||
+			networkMode == fmt.Sprintf("container:%s", parentID) ||
+			networkMode == fmt.Sprintf("container:%s", parentContainer.ID)
 	}
 
 	for _, c := range containers {
@@ -39,17 +60,15 @@ func FindDependentContainers(
 		inspect, err := cli.ContainerInspect(ctx, c.ID)
 		if err != nil {
 			log.WithError(err).Warnf("Failed to inspect container %s", truncateID(c.ID))
+			if !client.IsErrNotFound(err) && dependsOn(c.HostConfig.NetworkMode) {
+				uninspectable = append(uninspectable, summaryName(c))
+			}
 			continue
 		}
 
 		networkMode := string(inspect.HostConfig.NetworkMode)
 
-		// Check if this container depends on our parent
-		isDependent := networkMode == fmt.Sprintf("container:%s", parentName) ||
-			networkMode == fmt.Sprintf("container:%s", parentID) ||
-			networkMode == fmt.Sprintf("container:%s", parentContainer.ID)
-
-		if isDependent {
+		if dependsOn(networkMode) {
 			imageName := inspect.Config.Image
 			if imageName == "" && len(inspect.Image) > 0 {
 				imageName = inspect.Image
@@ -68,25 +87,138 @@ func FindDependentContainers(
 		}
 	}
 
-	return dependents, nil
+	return dependents, uninspectable, nil
+}
+
+func summaryName(c types.Container) string {
+	if len(c.Names) > 0 {
+		return strings.TrimPrefix(c.Names[0], "/")
+	}
+	return truncateID(c.ID)
+}
+
+func isDependentRunning(dep DependentContainer) bool {
+	return dep.Container.ContainerJSONBase != nil &&
+		dep.Container.State != nil &&
+		dep.Container.State.Running
+}
+
+func runningDependents(dependents []DependentContainer) []DependentContainer {
+	var running []DependentContainer
+	for _, dep := range dependents {
+		if isDependentRunning(dep) {
+			running = append(running, dep)
+		}
+	}
+	return running
+}
+
+func runningDependentNames(dependents []DependentContainer) []string {
+	var names []string
+	for _, dep := range runningDependents(dependents) {
+		names = append(names, dep.Name)
+	}
+	return names
+}
+
+// RecoverDependents restarts dependents of a provider that was stopped and
+// restored under the same ID. Docker does not reconnect them: they keep running
+// with loopback only until restarted. Returns the names of dependents that were
+// not recovered.
+//
+// captured is the list from before the provider stopped. It is reconciled with a
+// fresh lookup so that dependents created since are included, and those that
+// exited when their network went away are not mistaken for deliberately stopped.
+func RecoverDependents(
+	ctx context.Context,
+	cli *client.Client,
+	log *logrus.Logger,
+	captured []DependentContainer,
+	providerID string,
+	providerName string,
+	stopTimeout int,
+) []string {
+	provider, err := cli.ContainerInspect(ctx, providerID)
+	if err != nil {
+		log.WithError(err).Errorf("Cannot inspect restored provider %s, dependents not recovered", providerName)
+		return runningDependentNames(captured)
+	}
+
+	toRestart, notRecovered := dependentsToRestart(ctx, cli, log, captured, &provider, providerName, providerID)
+
+	if provider.State == nil || !provider.State.Running {
+		for _, dep := range toRestart {
+			log.Warnf("Dependent %s has no network and cannot be restarted while provider %s is stopped", dep.Name, providerName)
+			notRecovered = append(notRecovered, dep.Name)
+		}
+		return notRecovered
+	}
+
+	for _, dep := range toRestart {
+		if err := cli.ContainerRestart(ctx, dep.Container.ID, container.StopOptions{Timeout: &stopTimeout}); err != nil {
+			log.WithError(err).Errorf("Failed to restart dependent %s after rollback", dep.Name)
+			notRecovered = append(notRecovered, dep.Name)
+			continue
+		}
+		log.Infof("Restarted dependent %s after rollback of %s", dep.Name, providerName)
+	}
+	return notRecovered
+}
+
+func dependentsToRestart(
+	ctx context.Context,
+	cli *client.Client,
+	log *logrus.Logger,
+	captured []DependentContainer,
+	provider *types.ContainerJSON,
+	providerName string,
+	providerID string,
+) ([]DependentContainer, []string) {
+	current, uninspectable, err := findDependents(ctx, cli, log, provider, providerName, providerID)
+	if err != nil {
+		log.WithError(err).Warnf("Cannot look up dependents of %s, using the list from before the update", providerName)
+		return runningDependents(captured), nil
+	}
+
+	wasRunning := make(map[string]bool, len(captured))
+	for _, dep := range captured {
+		wasRunning[dep.Container.ID] = isDependentRunning(dep)
+	}
+
+	var toRestart []DependentContainer
+	for _, dep := range current {
+		if isDependentRunning(dep) || wasRunning[dep.Container.ID] {
+			toRestart = append(toRestart, dep)
+		}
+	}
+	return toRestart, uninspectable
 }
 
 // RecreateDependentContainers recreates all dependent containers with updated network_mode.
-// Returns list of container names that failed to recreate.
+// Dependents that were stopped stay stopped, and none can start while the provider
+// is stopped. Returns the names that failed to recreate, plus those left stopped
+// only because the provider is stopped.
 func RecreateDependentContainers(
 	ctx context.Context,
 	cli *client.Client,
 	log *logrus.Logger,
 	dependents []DependentContainer,
 	newParentID string,
+	providerRunning bool,
 	stopTimeout int,
 	isPodman bool,
 ) []string {
 	var failed []string
 
 	for _, dep := range dependents {
-		if err := recreateDependentContainer(ctx, cli, log, dep, newParentID, stopTimeout, isPodman); err != nil {
+		wasRunning := isDependentRunning(dep)
+		if err := recreateDependentContainer(ctx, cli, log, dep, newParentID, wasRunning && providerRunning, stopTimeout, isPodman); err != nil {
 			log.WithError(err).Errorf("Failed to recreate dependent container %s", dep.Name)
+			failed = append(failed, dep.Name)
+			continue
+		}
+		if wasRunning && !providerRunning {
+			log.Warnf("Dependent %s left stopped because its provider is stopped", dep.Name)
 			failed = append(failed, dep.Name)
 		}
 	}
@@ -101,6 +233,7 @@ func recreateDependentContainer(
 	log *logrus.Logger,
 	dep DependentContainer,
 	newParentID string,
+	startAfterCreate bool,
 	stopTimeout int,
 	isPodman bool,
 ) error {
@@ -146,9 +279,7 @@ func recreateDependentContainer(
 		dep.Name,
 	)
 	if err != nil {
-		// Rollback: restore temp container
-		cli.ContainerRename(ctx, dep.Container.ID, dep.Name)
-		cli.ContainerStart(ctx, dep.Container.ID, container.StartOptions{})
+		restoreOldDependent(ctx, cli, dep)
 		return fmt.Errorf("failed to create new container: %w", err)
 	}
 	newDepID := newDepResp.ID
@@ -160,12 +291,16 @@ func recreateDependentContainer(
 		}
 	}
 
+	if !startAfterCreate {
+		cli.ContainerRemove(ctx, dep.Container.ID, container.RemoveOptions{Force: true})
+		log.Infof("Recreated dependent container %s without starting it (new ID: %s)", dep.Name, truncateID(newDepID))
+		return nil
+	}
+
 	// Start new dependent container
 	if err := cli.ContainerStart(ctx, newDepID, container.StartOptions{}); err != nil {
-		// Rollback
 		cli.ContainerRemove(ctx, newDepID, container.RemoveOptions{Force: true})
-		cli.ContainerRename(ctx, dep.Container.ID, dep.Name)
-		cli.ContainerStart(ctx, dep.Container.ID, container.StartOptions{})
+		restoreOldDependent(ctx, cli, dep)
 		return fmt.Errorf("failed to start new container: %w", err)
 	}
 
@@ -173,21 +308,22 @@ func recreateDependentContainer(
 	time.Sleep(3 * time.Second)
 	newInspect, err := cli.ContainerInspect(ctx, newDepID)
 	if err != nil || !newInspect.State.Running {
-		// Rollback
 		stopT := 10
 		cli.ContainerStop(ctx, newDepID, container.StopOptions{Timeout: &stopT})
 		cli.ContainerRemove(ctx, newDepID, container.RemoveOptions{Force: true})
-		cli.ContainerRename(ctx, dep.Container.ID, dep.Name)
-		cli.ContainerStart(ctx, dep.Container.ID, container.StartOptions{})
+		restoreOldDependent(ctx, cli, dep)
 		return fmt.Errorf("new container failed to start properly")
 	}
 
-	// Success - remove old temp container
-	tempContainer, _ := GetContainerByName(ctx, cli, tempName)
-	if tempContainer != "" {
-		cli.ContainerRemove(ctx, tempContainer, container.RemoveOptions{Force: true})
-	}
+	cli.ContainerRemove(ctx, dep.Container.ID, container.RemoveOptions{Force: true})
 
 	log.Infof("Successfully recreated dependent container: %s (new ID: %s)", dep.Name, truncateID(newDepID))
 	return nil
+}
+
+func restoreOldDependent(ctx context.Context, cli *client.Client, dep DependentContainer) {
+	cli.ContainerRename(ctx, dep.Container.ID, dep.Name)
+	if isDependentRunning(dep) {
+		cli.ContainerStart(ctx, dep.Container.ID, container.StartOptions{})
+	}
 }

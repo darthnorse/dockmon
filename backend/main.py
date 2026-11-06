@@ -3318,10 +3318,6 @@ async def create_batch_job(request: BatchJobCreate, http_request: Request, curre
                     **get_client_info(http_request))
 
         return {"job_id": job_id}
-    except ValueError as e:
-        # Validation errors (e.g., dependency conflicts) return 400 Bad Request
-        logger.warning(f"Batch job validation failed: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error creating batch job: {e}")
         raise HTTPException(status_code=500, detail="Failed to create batch job")

@@ -14,6 +14,7 @@ from collections import defaultdict
 from database import DatabaseManager, BatchJob, BatchJobItem, ContainerUpdate
 from websocket.connection import ConnectionManager
 from event_bus import Event, EventType, get_event_bus
+from updates.dependency_analyzer import update_layers
 from updates.update_checker import get_update_checker, LOCAL_IMAGE_STATUS
 from updates.update_executor import get_update_executor
 from utils.keys import make_composite_key
@@ -54,6 +55,7 @@ class BatchJobManager:
             job_id: Unique job identifier
         """
         job_id = f"job_{uuid.uuid4().hex[:12]}"
+        update_order = {}
 
         # Handle image scope differently - no container validation needed
         if scope == 'image':
@@ -81,21 +83,13 @@ class BatchJobManager:
             # Use composite keys {host_id}:{container_id} for multi-host support (cloned VMs)
             container_map = {f"{c.host_id}:{c.short_id}": c for c in all_containers}
 
-            # Check for dependency conflicts if this is an update action
             if action == 'update-containers':
-                logger.info(f"Checking for dependency conflicts in batch update with {len(container_ids)} containers")
-                from updates.dependency_analyzer import DependencyConflictDetector
-                detector = DependencyConflictDetector(self.monitor)
-                logger.info(f"Created DependencyConflictDetector, calling check_batch with container_ids={container_ids}")
-                conflict_error = detector.check_batch(container_ids, container_map)
-                logger.info(f"Dependency check result: {conflict_error}")
-                if conflict_error:
-                    # Dependency conflict detected - fail the entire batch
-                    # Don't create individual items, just fail the job with the error message
-                    logger.error(f"Batch job {job_id} blocked due to dependency conflict: {conflict_error}")
-
-                    # Raise an exception that will be caught by the API endpoint
-                    raise ValueError(conflict_error)
+                selected = [container_map[key] for key in container_ids if key in container_map]
+                update_order = {
+                    f"{container.host_id}:{container.short_id}": position
+                    for position, layer in enumerate(update_layers(selected))
+                    for container in layer
+                }
 
         # Create job record
         with self.db.get_session() as session:
@@ -148,13 +142,18 @@ class BatchJobManager:
             logger.info(f"Created batch job {job_id} with {len(container_ids)} items: {action}")
 
         # Start processing the job in background
-        task = asyncio.create_task(self._process_job(job_id))
+        task = asyncio.create_task(self._process_job(job_id, update_order))
         self.active_jobs[job_id] = task
 
         return job_id
 
-    async def _process_job(self, job_id: str):
-        """Process a batch job in the background"""
+    async def _process_job(self, job_id: str, update_order: Dict[str, int]):
+        """Process a batch job in the background.
+
+        update_order maps composite keys to the layer they run in; unlisted items run in
+        layer 0. Each layer finishes before the next starts, and a failed item doesn't
+        stop later layers.
+        """
         try:
             # Update job status to running
             with self.db.get_session() as session:
@@ -179,18 +178,18 @@ class BatchJobManager:
             await self._emit_batch_job_event(job_id, EventType.BATCH_JOB_STARTED, job.action, job.total_items)
 
             # Process items with rate limiting per host
-            tasks = []
+            layers = defaultdict(list)
             for item_id, container_id, container_name, host_id, status in items_list:
                 if status != 'queued':
                     continue  # Skip already processed items
-                task = asyncio.create_task(
-                    self._process_item(job_id, item_id, container_id, container_name, host_id)
-                )
-                tasks.append(task)
+                position = update_order.get(f"{host_id}:{container_id}", 0)
+                layers[position].append((item_id, container_id, container_name, host_id))
 
-            # Wait for all items to complete
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+            for position in sorted(layers):
+                await asyncio.gather(
+                    *(self._process_item(job_id, *item) for item in layers[position]),
+                    return_exceptions=True,
+                )
 
             # Update final job status and extract all needed values in one session
             final_status = None

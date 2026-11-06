@@ -57,14 +57,14 @@ func (u *Updater) Update(ctx context.Context, req UpdateRequest) *UpdateResult {
 	u.sendProgress(StagePulling, fmt.Sprintf("Pulling image %s", newImage))
 
 	if err := u.pullImageWithProgress(ctx, req); err != nil {
-		return u.failResult(containerID, StagePulling, err)
+		return u.failResult(containerID, err)
 	}
 
 	// Step 2: Inspect container to get configuration
 	u.sendProgress(StageConfiguring, "Reading container configuration")
 	oldContainer, err := u.cli.ContainerInspect(ctx, containerID)
 	if err != nil {
-		return u.failResult(containerID, StageConfiguring, fmt.Errorf("failed to inspect container: %w", err))
+		return u.failResult(containerID, fmt.Errorf("failed to inspect container: %w", err))
 	}
 
 	// Capture original running state to restore after update
@@ -105,14 +105,14 @@ func (u *Updater) Update(ctx context.Context, req UpdateRequest) *UpdateResult {
 	// Step 5: Extract and transform config using struct copy
 	extractedConfig, err := ExtractConfig(ctx, u.cli, u.log, &oldContainer, newImage, oldImageLabels, newImageLabels, oldImageEnv, u.options.IsPodman)
 	if err != nil {
-		return u.failResult(containerID, StageConfiguring, err)
+		return u.failResult(containerID, err)
 	}
 
 	// Step 6: Create backup (stop + rename)
 	u.sendProgress(StageBackup, "Stopping container and creating backup")
 	backupName, err := CreateBackup(ctx, u.cli, u.log, containerID, containerName, req.StopTimeout)
 	if err != nil {
-		return u.failResult(containerID, StageBackup, err)
+		return u.recoverFromBackupFailure(ctx, containerID, containerName, err, wasRunning, dependentContainers, req.StopTimeout)
 	}
 
 	// Step 7: Create new container with original name
@@ -140,8 +140,7 @@ func (u *Updater) Update(ctx context.Context, req UpdateRequest) *UpdateResult {
 		containerName,
 	)
 	if err != nil {
-		_ = RestoreBackup(ctx, u.cli, u.log, backupName, containerName, wasRunning)
-		return u.failResult(containerID, StageCreating, fmt.Errorf("failed to create container: %w", err))
+		return u.rollback(ctx, containerID, fmt.Errorf("failed to create container: %w", err), backupName, containerName, wasRunning, dependentContainers, req.StopTimeout)
 	}
 	newContainerID := newContainerResp.ID
 
@@ -158,8 +157,7 @@ func (u *Updater) Update(ctx context.Context, req UpdateRequest) *UpdateResult {
 				// Primary network failure is critical - rollback
 				u.log.WithError(err).Errorf("Failed to connect primary network %s", networkName)
 				u.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
-				_ = RestoreBackup(ctx, u.cli, u.log, backupName, containerName, wasRunning)
-				return u.failResult(containerID, StageCreating, fmt.Errorf("failed to connect primary network: %w", err))
+				return u.rollback(ctx, containerID, fmt.Errorf("failed to connect primary network: %w", err), backupName, containerName, wasRunning, dependentContainers, req.StopTimeout)
 			}
 		}
 	}
@@ -178,8 +176,7 @@ func (u *Updater) Update(ctx context.Context, req UpdateRequest) *UpdateResult {
 	u.sendProgress(StageStarting, "Starting new container")
 	if err := u.cli.ContainerStart(ctx, newContainerID, container.StartOptions{}); err != nil {
 		u.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
-		_ = RestoreBackup(ctx, u.cli, u.log, backupName, containerName, wasRunning)
-		return u.failResult(containerID, StageStarting, fmt.Errorf("failed to start container: %w", err))
+		return u.rollback(ctx, containerID, fmt.Errorf("failed to start container: %w", err), backupName, containerName, wasRunning, dependentContainers, req.StopTimeout)
 	}
 
 	// Step 9: Health check
@@ -189,8 +186,7 @@ func (u *Updater) Update(ctx context.Context, req UpdateRequest) *UpdateResult {
 		stopTimeout := req.StopTimeout
 		u.cli.ContainerStop(ctx, newContainerID, container.StopOptions{Timeout: &stopTimeout})
 		u.cli.ContainerRemove(ctx, newContainerID, container.RemoveOptions{Force: true})
-		restoreErr := RestoreBackup(ctx, u.cli, u.log, backupName, containerName, wasRunning)
-		return u.failResultRolledBack(containerID, StageHealthCheck, fmt.Errorf("health check failed: %w", err), restoreErr)
+		return u.rollback(ctx, containerID, fmt.Errorf("health check failed: %w", err), backupName, containerName, wasRunning, dependentContainers, req.StopTimeout)
 	}
 
 	// Step 10: Restore original stopped state if container wasn't running before update
@@ -210,7 +206,7 @@ func (u *Updater) Update(ctx context.Context, req UpdateRequest) *UpdateResult {
 		u.sendProgress(StageDependents,
 			fmt.Sprintf("Recreating %d dependent container(s)", len(dependentContainers)))
 
-		failedDeps = RecreateDependentContainers(ctx, u.cli, u.log, dependentContainers, newContainerID, req.StopTimeout, u.options.IsPodman)
+		failedDeps = RecreateDependentContainers(ctx, u.cli, u.log, dependentContainers, newContainerID, u.isRunning(ctx, newContainerID, wasRunning), req.StopTimeout, u.options.IsPodman)
 		if len(failedDeps) > 0 {
 			u.log.Warnf("Failed to recreate dependent containers: %v", failedDeps)
 			// Note: We continue despite failures - main container update succeeded
@@ -493,8 +489,7 @@ func (u *Updater) sendProgress(stage, message string) {
 	}
 }
 
-// failResult creates a failed result.
-func (u *Updater) failResult(containerID, stage string, err error) *UpdateResult {
+func (u *Updater) failResult(containerID string, err error) *UpdateResult {
 	u.sendProgress(StageFailed, err.Error())
 
 	return &UpdateResult{
@@ -507,7 +502,7 @@ func (u *Updater) failResult(containerID, stage string, err error) *UpdateResult
 // failResultRolledBack creates a failed result with rollback indicator.
 // RolledBack is only true when the restore actually succeeded (restoreErr == nil);
 // a failed restore is surfaced in the error message so callers aren't misled.
-func (u *Updater) failResultRolledBack(containerID, stage string, err error, restoreErr error) *UpdateResult {
+func (u *Updater) failResultRolledBack(containerID string, err error, restoreErr error) *UpdateResult {
 	u.sendProgress(StageRollback, err.Error())
 
 	errMsg := err.Error()
@@ -529,4 +524,67 @@ func abs(x int) int {
 		return -x
 	}
 	return x
+}
+
+// rollback restores the provider and recovers its dependents. RolledBack on the
+// result means the provider was restored; dependents are reported separately.
+func (u *Updater) rollback(
+	ctx context.Context,
+	containerID string,
+	cause error,
+	backupName string,
+	containerName string,
+	wasRunning bool,
+	dependents []DependentContainer,
+	stopTimeout int,
+) *UpdateResult {
+	restoreErr := RestoreBackup(ctx, u.cli, u.log, backupName, containerName, wasRunning)
+
+	var notRecovered []string
+	if restoreErr != nil {
+		notRecovered = runningDependentNames(dependents)
+	} else {
+		notRecovered = RecoverDependents(ctx, u.cli, u.log, dependents, containerID, containerName, stopTimeout)
+	}
+	return withDependentsNotRecovered(u.failResultRolledBack(containerID, cause, restoreErr), notRecovered)
+}
+
+// recoverFromBackupFailure handles CreateBackup stopping the provider and then
+// failing to rename it, which would otherwise leave it stopped. CreateBackup also
+// continues past a failed stop, so the provider's actual state decides.
+func (u *Updater) recoverFromBackupFailure(
+	ctx context.Context,
+	containerID string,
+	containerName string,
+	cause error,
+	wasRunning bool,
+	dependents []DependentContainer,
+	stopTimeout int,
+) *UpdateResult {
+	result := u.failResult(containerID, cause)
+	if !wasRunning || u.isRunning(ctx, containerID, true) {
+		return result
+	}
+	if err := u.cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
+		u.log.WithError(err).Errorf("CRITICAL: Failed to restart %s after backup failure", containerName)
+		result.Error = fmt.Sprintf("%s (restart also failed: %v)", result.Error, err)
+	}
+	return withDependentsNotRecovered(result, RecoverDependents(ctx, u.cli, u.log, dependents, containerID, containerName, stopTimeout))
+}
+
+func (u *Updater) isRunning(ctx context.Context, containerID string, fallback bool) bool {
+	inspect, err := u.cli.ContainerInspect(ctx, containerID)
+	if err != nil || inspect.State == nil {
+		u.log.WithError(err).Warnf("Cannot read state of %s", truncateID(containerID))
+		return fallback
+	}
+	return inspect.State.Running
+}
+
+func withDependentsNotRecovered(result *UpdateResult, names []string) *UpdateResult {
+	if len(names) > 0 {
+		result.FailedDependents = names
+		result.Error = fmt.Sprintf("%s (dependents not recovered: %s)", result.Error, strings.Join(names, ", "))
+	}
+	return result
 }

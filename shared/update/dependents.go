@@ -44,6 +44,12 @@ func findDependents(
 		return nil, nil, fmt.Errorf("failed to list containers: %w", err)
 	}
 
+	dependsOn := func(networkMode string) bool {
+		return networkMode == fmt.Sprintf("container:%s", parentName) ||
+			networkMode == fmt.Sprintf("container:%s", parentID) ||
+			networkMode == fmt.Sprintf("container:%s", parentContainer.ID)
+	}
+
 	for _, c := range containers {
 		// Skip self
 		if c.ID == parentContainer.ID {
@@ -54,18 +60,15 @@ func findDependents(
 		inspect, err := cli.ContainerInspect(ctx, c.ID)
 		if err != nil {
 			log.WithError(err).Warnf("Failed to inspect container %s", truncateID(c.ID))
-			uninspectable = append(uninspectable, summaryName(c))
+			if !client.IsErrNotFound(err) && dependsOn(c.HostConfig.NetworkMode) {
+				uninspectable = append(uninspectable, summaryName(c))
+			}
 			continue
 		}
 
 		networkMode := string(inspect.HostConfig.NetworkMode)
 
-		// Check if this container depends on our parent
-		isDependent := networkMode == fmt.Sprintf("container:%s", parentName) ||
-			networkMode == fmt.Sprintf("container:%s", parentID) ||
-			networkMode == fmt.Sprintf("container:%s", parentContainer.ID)
-
-		if isDependent {
+		if dependsOn(networkMode) {
 			imageName := inspect.Config.Image
 			if imageName == "" && len(inspect.Image) > 0 {
 				imageName = inspect.Image
@@ -289,7 +292,7 @@ func recreateDependentContainer(
 	}
 
 	if !startAfterCreate {
-		removeRenamedDependent(ctx, cli, tempName)
+		cli.ContainerRemove(ctx, dep.Container.ID, container.RemoveOptions{Force: true})
 		log.Infof("Recreated dependent container %s without starting it (new ID: %s)", dep.Name, truncateID(newDepID))
 		return nil
 	}
@@ -312,7 +315,7 @@ func recreateDependentContainer(
 		return fmt.Errorf("new container failed to start properly")
 	}
 
-	removeRenamedDependent(ctx, cli, tempName)
+	cli.ContainerRemove(ctx, dep.Container.ID, container.RemoveOptions{Force: true})
 
 	log.Infof("Successfully recreated dependent container: %s (new ID: %s)", dep.Name, truncateID(newDepID))
 	return nil
@@ -322,12 +325,5 @@ func restoreOldDependent(ctx context.Context, cli *client.Client, dep DependentC
 	cli.ContainerRename(ctx, dep.Container.ID, dep.Name)
 	if isDependentRunning(dep) {
 		cli.ContainerStart(ctx, dep.Container.ID, container.StartOptions{})
-	}
-}
-
-func removeRenamedDependent(ctx context.Context, cli *client.Client, tempName string) {
-	tempContainer, _ := GetContainerByName(ctx, cli, tempName)
-	if tempContainer != "" {
-		cli.ContainerRemove(ctx, tempContainer, container.RemoveOptions{Force: true})
 	}
 }

@@ -57,14 +57,14 @@ func (u *Updater) Update(ctx context.Context, req UpdateRequest) *UpdateResult {
 	u.sendProgress(StagePulling, fmt.Sprintf("Pulling image %s", newImage))
 
 	if err := u.pullImageWithProgress(ctx, req); err != nil {
-		return u.failResult(containerID, StagePulling, err)
+		return u.failResult(containerID, err)
 	}
 
 	// Step 2: Inspect container to get configuration
 	u.sendProgress(StageConfiguring, "Reading container configuration")
 	oldContainer, err := u.cli.ContainerInspect(ctx, containerID)
 	if err != nil {
-		return u.failResult(containerID, StageConfiguring, fmt.Errorf("failed to inspect container: %w", err))
+		return u.failResult(containerID, fmt.Errorf("failed to inspect container: %w", err))
 	}
 
 	// Capture original running state to restore after update
@@ -105,7 +105,7 @@ func (u *Updater) Update(ctx context.Context, req UpdateRequest) *UpdateResult {
 	// Step 5: Extract and transform config using struct copy
 	extractedConfig, err := ExtractConfig(ctx, u.cli, u.log, &oldContainer, newImage, oldImageLabels, newImageLabels, oldImageEnv, u.options.IsPodman)
 	if err != nil {
-		return u.failResult(containerID, StageConfiguring, err)
+		return u.failResult(containerID, err)
 	}
 
 	// Step 6: Create backup (stop + rename)
@@ -490,7 +490,7 @@ func (u *Updater) sendProgress(stage, message string) {
 }
 
 // failResult creates a failed result.
-func (u *Updater) failResult(containerID, stage string, err error) *UpdateResult {
+func (u *Updater) failResult(containerID string, err error) *UpdateResult {
 	u.sendProgress(StageFailed, err.Error())
 
 	return &UpdateResult{
@@ -562,12 +562,13 @@ func (u *Updater) recoverFromBackupFailure(
 	dependents []DependentContainer,
 	stopTimeout int,
 ) *UpdateResult {
-	result := u.failResult(containerID, StageBackup, cause)
+	result := u.failResult(containerID, cause)
 	if !wasRunning || u.isRunning(ctx, containerID, true) {
 		return result
 	}
 	if err := u.cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
 		u.log.WithError(err).Errorf("CRITICAL: Failed to restart %s after backup failure", containerName)
+		result.Error = fmt.Sprintf("%s (restart also failed: %v)", result.Error, err)
 	}
 	return withDependentsNotRecovered(result, RecoverDependents(ctx, u.cli, u.log, dependents, containerID, containerName, stopTimeout))
 }

@@ -1003,7 +1003,7 @@ class AgentWebSocketHandler:
             request_id = payload.get("request_id")
             registry = get_pending_updates_registry()
             if request_id:
-                await registry.record_failure_progress(host_id, container_id, request_id, message)
+                await registry.record_failure_progress(host_id, container_id, request_id, stage, message)
             else:
                 await registry.signal_legacy_failure_stage(host_id, container_id, stage, message)
         except Exception as e:

@@ -155,13 +155,14 @@ class PendingUpdatesRegistry:
         host_id: str,
         container_id: str,
         request_id: str,
+        stage: str,
         message: str,
     ) -> None:
-        """Keep the error from a new agent's progress event, in case update_failed is lost."""
+        """Keep what a new agent's progress events established, in case update_failed is lost."""
         async with self._lock:
             pending = self._matching_pending(self._make_key(host_id, container_id), request_id)
             if pending and not pending.completion_event.is_set():
-                pending.error = message
+                self._apply_failure_stage(pending, stage, message)
 
     async def signal_legacy_failure_stage(
         self,
@@ -170,23 +171,29 @@ class PendingUpdatesRegistry:
         stage: str,
         message: str,
     ) -> None:
-        """Infer the outcome of an update from an older agent's progress events.
-
-        These agents send two events per failure: failed+failed, rollback+rollback when
-        the provider was restored, or rollback+failed when restoring it also failed. The
-        second carries the final error, so a first rollback must not wake the waiter.
-        """
+        """Infer the outcome of an update from an older agent's progress events."""
         async with self._lock:
             pending = self._pending.get(self._make_key(host_id, container_id))
             if not pending or pending.completion_event.is_set():
                 return
-            pending.error = message
-            if stage == "rollback" and not pending.rollback_seen:
-                pending.rollback_seen = True
-                return
-            pending.success = False
-            pending.rollback_performed = stage == "rollback"
-            pending.completion_event.set()
+            if self._apply_failure_stage(pending, stage, message):
+                pending.success = False
+                pending.completion_event.set()
+
+    @staticmethod
+    def _apply_failure_stage(pending: PendingUpdate, stage: str, message: str) -> bool:
+        """Record a failure progress event, returning whether it settles the outcome.
+
+        Agents send two per failure: failed+failed, rollback+rollback when the provider was
+        restored, or rollback+failed when restoring it also failed. The second carries the
+        final error, so a first rollback settles nothing.
+        """
+        pending.error = message
+        if stage == "rollback" and not pending.rollback_seen:
+            pending.rollback_seen = True
+            return False
+        pending.rollback_performed = stage == "rollback"
+        return True
 
     async def unregister(self, host_id: str, container_id: str):
         """Remove a pending update from the registry."""

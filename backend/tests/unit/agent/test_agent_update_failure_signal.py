@@ -141,6 +141,28 @@ class TestNewAgentFailureProgress:
         assert pending.error == "boom"
 
 
+class TestLostUpdateFailedKeepsRollbackOutcome:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "stages, rolled_back",
+        [
+            (["rollback", "rollback"], True),
+            (["rollback", "failed"], False),
+            (["rollback"], False),
+            (["failed", "failed"], False),
+        ],
+    )
+    async def test_timeout_reports_what_progress_established(self, handler, registry, stages, rolled_back):
+        pending = await register(registry)
+
+        for stage in stages:
+            await handler._handle_update_progress(progress(stage, request_id="req-1"))
+
+        assert not is_awake(pending)
+        assert await registry.wait_for_completion(pending, timeout=0.01) is False
+        assert pending.rollback_performed is rolled_back
+
+
 class TestOlderAgentInference:
     @pytest.mark.asyncio
     async def test_failed_wakes_on_the_first_event(self, handler, registry):
@@ -313,6 +335,21 @@ class TestAgentExecutor:
         assert result.rollback_performed is True
         assert result.failed_dependents == ["qbittorrent"]
         assert not registry._pending
+
+    @pytest.mark.asyncio
+    async def test_unacknowledged_command_keeps_a_recorded_success(self, registry):
+        async def execute_command(agent_id, command, timeout):
+            await registry.signal_complete(
+                HOST_ID, CONTAINER_ID, "newcontainer", request_id=command["payload"]["request_id"]
+            )
+            return not_acknowledged()
+
+        with patch("updates.agent_executor.update_container_records_after_update") as update_records:
+            result = await run_agent_update(execute_command)
+
+        assert result.success is True
+        assert result.new_container_id == "newcontainer"
+        update_records.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_unacknowledged_command_with_nothing_recorded_is_rejected(self, registry):

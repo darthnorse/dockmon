@@ -669,3 +669,26 @@ func TestLifecycle_BackupRenameFailureRecovers(t *testing.T) {
 		t.Error("dependent should have its network back")
 	}
 }
+
+func TestLifecycle_BackupRenameFailureReportsAFailedRestart(t *testing.T) {
+	env := newLifecycleEnv(t)
+	providerID := env.create(containerSpec{suffix: "provider"})
+	env.exec(providerID, "rm", "/bin/sleep")
+
+	now := time.Now().Unix()
+	for ts := now; ts < now+40; ts++ {
+		env.create(containerSpec{suffix: fmt.Sprintf("provider-dockmon-backup-%d", ts), stopped: true})
+	}
+
+	run := env.update(providerID, lifecycleNewImage)
+
+	if run.result.Success {
+		t.Fatal("expected failure")
+	}
+	if env.inspectByName("provider").State.Running {
+		t.Fatal("the provider should have failed to restart")
+	}
+	if !strings.Contains(run.result.Error, "restart also failed") {
+		t.Errorf("the error must say the provider is now stopped, got: %s", run.result.Error)
+	}
+}

@@ -167,7 +167,10 @@ class AgentUpdateExecutor:
                     timeout=180.0  # 3 minutes for command acknowledgment
                 )
 
-                if result.status != CommandStatus.SUCCESS:
+                # The agent replies independently of the update, so a lost reply can follow
+                # a completion it already reported.
+                completed = pending.completion_event.is_set() and pending.success
+                if result.status != CommandStatus.SUCCESS and not completed:
                     error_msg = f"Agent rejected update command: {result.error}"
                     logger.error(error_msg)
                     return self._failure_from_pending(pending, error_msg)

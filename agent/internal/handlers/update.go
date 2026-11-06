@@ -31,6 +31,7 @@ type UpdateRequest struct {
 	StopTimeout   int           `json:"stop_timeout,omitempty"`   // Default: 30s
 	HealthTimeout int           `json:"health_timeout,omitempty"` // Default: 120s (match Python default)
 	RegistryAuth  *RegistryAuth `json:"registry_auth,omitempty"`  // Optional registry credentials
+	RequestID     string        `json:"request_id,omitempty"`     // Absent from older backends, which don't know update_failed
 }
 
 // RegistryAuth contains credentials for authenticating with a Docker registry.
@@ -93,7 +94,7 @@ func (h *UpdateHandler) UpdateContainer(ctx context.Context, req UpdateRequest) 
 	// Re-detect options with callbacks for this specific update
 	options := update.DetectOptions(ctx, h.dockerClient.RawClient(), h.log)
 	options.OnProgress = func(event update.ProgressEvent) {
-		h.sendProgress(containerID, event.Stage, event.Message)
+		h.sendProgress(containerID, req.RequestID, event.Stage, event.Message)
 	}
 	options.OnPullProgress = func(event update.PullProgressEvent) {
 		h.sendLayerProgress(event)
@@ -106,25 +107,11 @@ func (h *UpdateHandler) UpdateContainer(ctx context.Context, req UpdateRequest) 
 	result := updater.Update(ctx, updateReq)
 
 	if !result.Success {
-		// Send error event
-		if result.RolledBack {
-			h.sendProgress(containerID, update.StageRollback, result.Error)
-		} else {
-			h.sendProgress(containerID, update.StageFailed, result.Error)
-		}
+		h.reportFailure(containerID, req.RequestID, result)
 		return nil, &UpdateError{Message: result.Error}
 	}
 
-	// Send completion event
-	completionPayload := map[string]interface{}{
-		"old_container_id": result.OldContainerID,
-		"new_container_id": result.NewContainerID,
-		"container_name":   result.ContainerName,
-	}
-	if len(result.FailedDependents) > 0 {
-		completionPayload["failed_dependents"] = result.FailedDependents
-	}
-	h.sendEvent("update_complete", completionPayload)
+	h.sendEvent("update_complete", completionPayload(req.RequestID, result))
 
 	h.log.WithFields(logrus.Fields{
 		"old_container": result.OldContainerID,
@@ -140,6 +127,47 @@ func (h *UpdateHandler) UpdateContainer(ctx context.Context, req UpdateRequest) 
 	}, nil
 }
 
+func completionPayload(requestID string, result *update.UpdateResult) map[string]interface{} {
+	payload := map[string]interface{}{
+		"old_container_id": result.OldContainerID,
+		"new_container_id": result.NewContainerID,
+		"container_name":   result.ContainerName,
+	}
+	if len(result.FailedDependents) > 0 {
+		payload["failed_dependents"] = result.FailedDependents
+	}
+	if requestID != "" {
+		payload["request_id"] = requestID
+	}
+	return payload
+}
+
+// reportFailure keeps the progress event for the UI and for backends that infer the
+// outcome from it, and adds an explicit event for backends that sent a request ID.
+func (h *UpdateHandler) reportFailure(containerID, requestID string, result *update.UpdateResult) {
+	stage := update.StageFailed
+	if result.RolledBack {
+		stage = update.StageRollback
+	}
+	h.sendProgress(containerID, requestID, stage, result.Error)
+
+	if requestID == "" {
+		return
+	}
+	payload := map[string]interface{}{
+		"request_id":   requestID,
+		"container_id": safeShortID(containerID),
+		"error":        result.Error,
+		"rolled_back":  result.RolledBack,
+	}
+	if len(result.FailedDependents) > 0 {
+		payload["failed_dependents"] = result.FailedDependents
+	}
+	if err := h.sendEvent("update_failed", payload); err != nil {
+		h.log.WithError(err).Warn("Failed to send update failure")
+	}
+}
+
 // UpdateError is returned when an update fails
 type UpdateError struct {
 	Message string
@@ -150,11 +178,14 @@ func (e *UpdateError) Error() string {
 }
 
 // sendProgress sends an update progress event to the backend.
-func (h *UpdateHandler) sendProgress(containerID, stage, message string) {
+func (h *UpdateHandler) sendProgress(containerID, requestID, stage, message string) {
 	progress := map[string]interface{}{
 		"container_id": safeShortID(containerID),
 		"stage":        stage,
 		"message":      message,
+	}
+	if requestID != "" {
+		progress["request_id"] = requestID
 	}
 
 	if err := h.sendEvent("update_progress", progress); err != nil {

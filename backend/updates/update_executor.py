@@ -357,6 +357,11 @@ class UpdateExecutor:
                 if result.rollback_performed:
                     await self.event_emitter.emit_rollback_completed(host_id, container_id, container_name)
 
+                if result.failed_dependents:
+                    await self.event_emitter.emit_dependents_failed(
+                        host_id, container_id, container_name, result.failed_dependents
+                    )
+
                 return False
 
         except Exception as e:
@@ -510,6 +515,7 @@ class UpdateExecutor:
                     success=False,
                     error_message=result.error or "Update failed",
                     rollback_performed=result.rolled_back,
+                    failed_dependents=result.failed_dependents,
                 )
 
         except UpdateServiceUnavailable as e:

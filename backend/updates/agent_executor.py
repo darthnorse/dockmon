@@ -15,6 +15,7 @@ Key responsibilities:
 import asyncio
 import logging
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Dict, Optional, Callable, Awaitable
 
@@ -27,7 +28,7 @@ from utils.keys import make_composite_key
 from agent.command_executor import CommandStatus
 from updates.types import UpdateContext, UpdateResult, ProgressCallback
 from updates.database_updater import update_container_records_after_update
-from updates.pending_updates import get_pending_updates_registry
+from updates.pending_updates import PendingUpdate, get_pending_updates_registry
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,7 @@ class AgentUpdateExecutor:
 
             # CORRECT command format for agent
             # Agent expects: type="command", command="update_container", payload={...}
+            request_id = uuid.uuid4().hex
             command = {
                 "type": "command",
                 "command": "update_container",
@@ -142,6 +144,7 @@ class AgentUpdateExecutor:
                     "stop_timeout": 30,
                     "health_timeout": 120,
                     "registry_auth": registry_auth,
+                    "request_id": request_id,
                 }
             }
 
@@ -154,6 +157,7 @@ class AgentUpdateExecutor:
                 context.host_id,
                 context.container_id,
                 context.container_name,
+                request_id=request_id,
             )
 
             try:
@@ -166,22 +170,21 @@ class AgentUpdateExecutor:
                 if result.status != CommandStatus.SUCCESS:
                     error_msg = f"Agent rejected update command: {result.error}"
                     logger.error(error_msg)
-                    await registry.unregister(context.host_id, context.container_id)
-                    return UpdateResult.failure_result(error_msg)
+                    return self._failure_from_pending(pending, error_msg)
 
                 logger.info(f"Agent {agent_id} accepted update command, waiting for completion event...")
                 await progress_callback("agent_updating", 20, "Agent is performing update")
 
-                # Wait for update_complete event from agent (via websocket handler)
+                # Wait for update_complete or a reported failure (via websocket handler)
                 update_success = await registry.wait_for_completion(
                     pending,
                     timeout=300.0  # 5 minutes for full update
                 )
 
                 if not update_success:
-                    error_msg = pending.error or "Agent update failed or timed out"
-                    logger.error(f"Agent update failed for {context.container_name}: {error_msg}")
-                    return UpdateResult.failure_result(error_msg)
+                    failure = self._failure_from_pending(pending, "Agent update failed or timed out")
+                    logger.error(f"Agent update failed for {context.container_name}: {failure.error_message}")
+                    return failure
 
                 # Get new container ID from the completion event
                 new_container_id = pending.new_container_id
@@ -220,6 +223,14 @@ class AgentUpdateExecutor:
         except Exception as e:
             logger.error(f"Error executing agent-based update: {e}", exc_info=True)
             return UpdateResult.failure_result(f"Update failed: {str(e)}")
+
+    @staticmethod
+    def _failure_from_pending(pending: PendingUpdate, default_error: str) -> UpdateResult:
+        return UpdateResult.failure_result(
+            pending.error or default_error,
+            rollback_performed=pending.rollback_performed,
+            failed_dependents=pending.failed_dependents,
+        )
 
     async def execute_self_update(
         self,

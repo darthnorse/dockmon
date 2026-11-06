@@ -37,6 +37,7 @@ from database import (
 )
 from event_bus import Event, EventType, get_event_bus
 from event_logger import EventCategory, EventType as LogEventType, EventSeverity, EventContext
+from updates.pending_updates import get_pending_updates_registry
 from utils.keys import make_composite_key
 
 logger = logging.getLogger(__name__)
@@ -446,6 +447,9 @@ class AgentWebSocketHandler:
                 # Container update completed - contains new container ID
                 # Must update database records with new ID
                 await self._handle_update_complete(payload)
+
+            elif event_type == "update_failed":
+                await self._handle_update_failed(payload)
 
             elif event_type == "selfupdate_progress":
                 # Agent self-update progress
@@ -959,6 +963,8 @@ class AgentWebSocketHandler:
         Broadcasts to UI for real-time progress bars during container updates.
         This uses the existing WebSocket infrastructure but with update-specific data.
         """
+        await self._track_failure_progress(payload)
+
         try:
             if not self.monitor or not hasattr(self.monitor, 'manager'):
                 logger.debug(f"WebSocket manager not available for agent {self.agent_id}")
@@ -984,6 +990,37 @@ class AgentWebSocketHandler:
 
         except Exception as e:
             logger.error(f"Error handling update progress: {e}", exc_info=True)
+
+    async def _track_failure_progress(self, payload: dict):
+        """A request_id means the agent also sends update_failed, so nothing is inferred."""
+        stage = payload.get("stage")
+        if stage not in ("failed", "rollback"):
+            return
+        try:
+            container_id = self._truncate_container_id(payload.get("container_id"))
+            host_id = self.host_id or self.agent_id
+            message = payload.get("message") or ""
+            request_id = payload.get("request_id")
+            registry = get_pending_updates_registry()
+            if request_id:
+                await registry.record_failure_progress(host_id, container_id, request_id, message)
+            else:
+                await registry.signal_legacy_failure_stage(host_id, container_id, stage, message)
+        except Exception as e:
+            logger.warning(f"Failed to track update failure progress: {e}")
+
+    async def _handle_update_failed(self, payload: dict):
+        try:
+            await get_pending_updates_registry().signal_failed(
+                host_id=self.host_id or self.agent_id,
+                container_id=self._truncate_container_id(payload.get("container_id")),
+                request_id=payload.get("request_id"),
+                error=payload.get("error") or "Agent update failed",
+                rolled_back=bool(payload.get("rolled_back")),
+                failed_dependents=payload.get("failed_dependents"),
+            )
+        except Exception as e:
+            logger.warning(f"Failed to signal update failure: {e}")
 
     async def _handle_update_layer_progress(self, payload: dict):
         """
@@ -1090,13 +1127,13 @@ class AgentWebSocketHandler:
             # Signal pending update registry that update is complete
             # This unblocks the AgentUpdateExecutor waiting for this event
             try:
-                from updates.pending_updates import get_pending_updates_registry
                 registry = get_pending_updates_registry()
                 await registry.signal_complete(
                     host_id=host_id,
                     old_container_id=old_container_id,
                     new_container_id=new_container_id,
                     success=True,
+                    request_id=payload.get("request_id"),
                 )
             except Exception as e:
                 logger.warning(f"Failed to signal pending update registry: {e}")
@@ -1165,7 +1202,7 @@ class AgentWebSocketHandler:
                         broadcast_data["failed_dependents"] = failed_dependents
                         broadcast_data["warning"] = (
                             f"Container updated but {len(failed_dependents)} dependent container(s) "
-                            f"failed to recreate: {', '.join(failed_dependents)}"
+                            f"need attention: {', '.join(failed_dependents)}"
                         )
 
                     await self.monitor.manager.broadcast({

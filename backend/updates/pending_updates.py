@@ -2,18 +2,18 @@
 Pending Updates Registry
 
 Coordinates between AgentUpdateExecutor and WebSocket handler to wait for
-update_complete events from agents.
+update_complete and failure events from agents.
 
 Architecture:
 1. AgentUpdateExecutor registers a pending update before sending command
-2. WebSocket handler signals completion when update_complete event received
+2. WebSocket handler signals when an agent reports completion or failure
 3. AgentUpdateExecutor awaits the completion signal with timeout
 """
 
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -27,10 +27,14 @@ class PendingUpdate:
     container_name: str
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     completion_event: asyncio.Event = field(default_factory=asyncio.Event)
-    # Result data populated by websocket handler when update_complete received
+    # Result data populated by websocket handler from the agent's update events
     new_container_id: Optional[str] = None
     success: bool = False
     error: Optional[str] = None
+    request_id: Optional[str] = None
+    rollback_seen: bool = False
+    rollback_performed: bool = False
+    failed_dependents: List[str] = field(default_factory=list)
 
 
 class PendingUpdatesRegistry:
@@ -55,7 +59,13 @@ class PendingUpdatesRegistry:
         """Create lookup key from host and container ID."""
         return f"{host_id}:{container_id[:12]}"
 
-    async def register(self, host_id: str, container_id: str, container_name: str) -> PendingUpdate:
+    async def register(
+        self,
+        host_id: str,
+        container_id: str,
+        container_name: str,
+        request_id: Optional[str] = None,
+    ) -> PendingUpdate:
         """
         Register a pending update before sending command to agent.
 
@@ -72,6 +82,7 @@ class PendingUpdatesRegistry:
                 container_id=container_id[:12],
                 host_id=host_id,
                 container_name=container_name,
+                request_id=request_id,
             )
             self._pending[key] = pending
             logger.debug(f"Registered pending update: {key} ({container_name})")
@@ -84,6 +95,7 @@ class PendingUpdatesRegistry:
         new_container_id: str,
         success: bool = True,
         error: Optional[str] = None,
+        request_id: Optional[str] = None,
     ) -> bool:
         """
         Signal that an update has completed.
@@ -94,7 +106,7 @@ class PendingUpdatesRegistry:
         key = self._make_key(host_id, old_container_id)
 
         async with self._lock:
-            pending = self._pending.get(key)
+            pending = self._matching_pending(key, request_id)
             if pending:
                 pending.new_container_id = new_container_id[:12] if new_container_id else None
                 pending.success = success
@@ -105,6 +117,76 @@ class PendingUpdatesRegistry:
             else:
                 logger.debug(f"No pending update found for {key}")
                 return False
+
+    def _matching_pending(self, key: str, request_id: Optional[str]) -> Optional[PendingUpdate]:
+        """Return the pending update unless the event belongs to a different attempt.
+
+        Older agents send no request_id, so their events match on the key alone.
+        """
+        pending = self._pending.get(key)
+        if pending and request_id and pending.request_id != request_id:
+            logger.info(f"Ignoring event for {key} from an earlier update attempt")
+            return None
+        return pending
+
+    async def signal_failed(
+        self,
+        host_id: str,
+        container_id: str,
+        request_id: Optional[str],
+        error: str,
+        rolled_back: bool,
+        failed_dependents: Optional[List[str]] = None,
+    ) -> bool:
+        """Record the outcome stated by an agent's update_failed event and wake the waiter."""
+        async with self._lock:
+            pending = self._matching_pending(self._make_key(host_id, container_id), request_id)
+            if not pending:
+                return False
+            pending.success = False
+            pending.error = error
+            pending.rollback_performed = rolled_back
+            pending.failed_dependents = failed_dependents or []
+            pending.completion_event.set()
+            return True
+
+    async def record_failure_progress(
+        self,
+        host_id: str,
+        container_id: str,
+        request_id: str,
+        message: str,
+    ) -> None:
+        """Keep the error from a new agent's progress event, in case update_failed is lost."""
+        async with self._lock:
+            pending = self._matching_pending(self._make_key(host_id, container_id), request_id)
+            if pending and not pending.completion_event.is_set():
+                pending.error = message
+
+    async def signal_legacy_failure_stage(
+        self,
+        host_id: str,
+        container_id: str,
+        stage: str,
+        message: str,
+    ) -> None:
+        """Infer the outcome of an update from an older agent's progress events.
+
+        These agents send two events per failure: failed+failed, rollback+rollback when
+        the provider was restored, or rollback+failed when restoring it also failed. The
+        second carries the final error, so a first rollback must not wake the waiter.
+        """
+        async with self._lock:
+            pending = self._pending.get(self._make_key(host_id, container_id))
+            if not pending or pending.completion_event.is_set():
+                return
+            pending.error = message
+            if stage == "rollback" and not pending.rollback_seen:
+                pending.rollback_seen = True
+                return
+            pending.success = False
+            pending.rollback_performed = stage == "rollback"
+            pending.completion_event.set()
 
     async def unregister(self, host_id: str, container_id: str):
         """Remove a pending update from the registry."""

@@ -75,8 +75,8 @@ class UpdateResult:
     backup_container_id: Optional[str] = None
     backup_removed: bool = False
 
-    # Failed dependent containers (network_mode: container:X)
-    # If update succeeded but dependent container recreation failed
+    # Dependent containers (network_mode: container:X) left without a working network,
+    # after either a successful update or a rollback
     failed_dependents: Optional[List[str]] = None
 
     @classmethod
@@ -93,12 +93,18 @@ class UpdateResult:
         )
 
     @classmethod
-    def failure_result(cls, error_message: str, rollback_performed: bool = False) -> 'UpdateResult':
+    def failure_result(
+        cls,
+        error_message: str,
+        rollback_performed: bool = False,
+        failed_dependents: Optional[List[str]] = None,
+    ) -> 'UpdateResult':
         """Create a failure result."""
         return cls(
             success=False,
             error_message=error_message,
-            rollback_performed=rollback_performed
+            rollback_performed=rollback_performed,
+            failed_dependents=failed_dependents if failed_dependents else None,
         )
 
 

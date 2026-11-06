@@ -219,3 +219,28 @@ func TestRegistryAuthStructOptionalFields(t *testing.T) {
 		t.Errorf("expected empty password, got %q", auth.Password)
 	}
 }
+
+func TestContainerWithDigestKeepsNetworkMode(t *testing.T) {
+	var listed ContainerWithDigest
+	listJSON := `{"Id":"aaa","HostConfig":{"NetworkMode":"container:bbb"}}`
+	if err := json.Unmarshal([]byte(listJSON), &listed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	sent, err := json.Marshal(listed)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var received struct {
+		HostConfig struct {
+			NetworkMode string `json:"NetworkMode"`
+		} `json:"HostConfig"`
+	}
+	if err := json.Unmarshal(sent, &received); err != nil {
+		t.Fatalf("unmarshal sent payload: %v", err)
+	}
+	if received.HostConfig.NetworkMode != "container:bbb" {
+		t.Errorf("the backend orders updates by this field, got %q in %s", received.HostConfig.NetworkMode, sent)
+	}
+}

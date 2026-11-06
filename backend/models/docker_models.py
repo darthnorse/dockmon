@@ -258,6 +258,8 @@ class Container(BaseModel):
     disk_write: Optional[int] = None
     # Labels from Docker (Phase 3d)
     labels: Optional[dict[str, str]] = None
+    # Internal, for update ordering: excluded to keep the API and live broadcast unchanged.
+    network_mode: Optional[str] = Field(default=None, exclude=True)
     # Derived tags (Phase 3d - computed from labels)
     tags: Optional[list[str]] = None
     # Docker network IP addresses (GitHub Issue #37)

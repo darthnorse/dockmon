@@ -27,6 +27,7 @@ from database import (
 from utils.async_docker import async_docker_call
 from utils.keys import make_composite_key
 from utils.cache import CACHE_REGISTRY
+from updates.dependency_analyzer import update_layers
 from updates.container_validator import ContainerValidator, ValidationResult
 from updates.types import UpdateContext, UpdateResult
 from updates.agent_executor import AgentUpdateExecutor
@@ -175,6 +176,20 @@ class UpdateExecutor:
                     'update_record': update
                 })
 
+        try:
+            live_containers = await self.monitor.get_containers()
+        except Exception as e:
+            logger.error(f"Skipping auto-updates, could not list containers: {e}")
+            stats["skipped"] = len(update_records)
+            return stats
+
+        runnable = self._live_auto_update_containers(update_records, live_containers)
+        stats["skipped"] = len(update_records) - len(runnable)
+        records_by_key = {
+            f"{record['host_id']}:{record['container_id']}": record
+            for record in update_records
+        }
+
         # Execute updates with concurrency limit
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPDATES)
 
@@ -201,10 +216,15 @@ class UpdateExecutor:
                     logger.error(f"Error updating {record['container_id']}: {e}")
                     return {"status": "failed"}
 
-        results = await asyncio.gather(
-            *[update_with_semaphore(record) for record in update_records],
-            return_exceptions=True
-        )
+        results = []
+        for layer in update_layers(runnable):
+            results.extend(await asyncio.gather(
+                *[
+                    update_with_semaphore(records_by_key[f"{c.host_id}:{c.short_id}"])
+                    for c in layer
+                ],
+                return_exceptions=True
+            ))
 
         for result in results:
             if isinstance(result, Exception):
@@ -221,6 +241,34 @@ class UpdateExecutor:
 
         logger.info(f"Auto-update execution complete: {stats}")
         return stats
+
+    @staticmethod
+    def _live_auto_update_containers(update_records: list, live_containers: list) -> list:
+        """Return the live containers matching update_records.
+
+        A row with no live container is stale until the daily cleanup, for example after a
+        provider recreated its dependent. A host returning nothing may just have failed
+        discovery, so that gets a warning rather than looking like stale rows. Plain f-string
+        keys because make_composite_key raises on a malformed row, which here would stop the
+        whole cycle rather than skip that row.
+        """
+        live_by_key = {f"{c.host_id}:{c.short_id}": c for c in live_containers}
+        responding_hosts = {c.host_id for c in live_containers}
+
+        runnable = []
+        silent_hosts = set()
+        for record in update_records:
+            container = live_by_key.get(f"{record['host_id']}:{record['container_id']}")
+            if container is not None:
+                runnable.append(container)
+            elif record['host_id'] in responding_hosts:
+                logger.debug(f"Skipping stale update row for {record['container_id']}")
+            else:
+                silent_hosts.add(record['host_id'])
+
+        for host_id in silent_hosts:
+            logger.warning(f"Skipping auto-updates on host {host_id}: no containers returned")
+        return runnable
 
     async def update_container(
         self,

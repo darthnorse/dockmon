@@ -13,7 +13,7 @@ interface BatchJobStatus {
   id: string
   scope: string
   action: string
-  status: 'queued' | 'running' | 'completed' | 'failed'
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'partial'
   total_items: number
   completed_items: number
   success_items: number
@@ -31,7 +31,7 @@ interface BatchJobItem {
   container_name: string
   host_id: string
   host_name?: string
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'skipped'
+  status: 'queued' | 'running' | 'success' | 'error' | 'skipped'
   message?: string
   started_at?: string
   completed_at?: string
@@ -105,11 +105,11 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
           const prevStatus = prev?.status
           const updatedJob = prev ? { ...prev, ...data } : null
 
-          // Invalidate queries and cleanup when job finishes (completed or failed)
+          // Invalidate queries and cleanup when job finishes
           // Only trigger on actual state transition from in-progress to finished
           // This prevents premature cleanup when WebSocket 'completed' arrives before initial fetch
           const wasInProgress = prevStatus === 'queued' || prevStatus === 'running'
-          const isNowFinished = newStatus === 'completed' || newStatus === 'failed'
+          const isNowFinished = newStatus === 'completed' || newStatus === 'failed' || newStatus === 'partial'
 
           if (wasInProgress && isNowFinished) {
             const action = prev?.action || (data.action as string)
@@ -269,9 +269,17 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
   const statusIcons = {
     queued: <Clock className="h-4 w-4 text-muted-foreground" />,
     running: <Loader2 className="h-4 w-4 text-info animate-spin" />,
-    completed: <CheckCircle className="h-4 w-4 text-success" />,
-    failed: <XCircle className="h-4 w-4 text-destructive" />,
+    success: <CheckCircle className="h-4 w-4 text-success" />,
+    error: <XCircle className="h-4 w-4 text-destructive" />,
     skipped: <Clock className="h-4 w-4 text-warning" />,
+  }
+
+  const progressBarColors: Record<BatchJobStatus['status'], string> = {
+    queued: 'bg-primary',
+    running: 'bg-primary',
+    completed: 'bg-success',
+    partial: 'bg-warning',
+    failed: 'bg-destructive',
   }
 
   return (
@@ -312,13 +320,7 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
           </div>
           <div className="w-full bg-surface-2 rounded-full h-2">
             <div
-              className={`h-2 rounded-full transition-all duration-300 ${
-                job.status === 'failed'
-                  ? 'bg-destructive'
-                  : job.status === 'completed'
-                  ? 'bg-success'
-                  : 'bg-primary'
-              }`}
+              className={`h-2 rounded-full transition-all duration-300 ${progressBarColors[job.status]}`}
               style={{ width: `${progressPercent}%` }}
             />
           </div>
@@ -399,7 +401,7 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
                     </div>
                     {item.message && (
                       <div className={`text-xs mt-1 ${
-                        item.status === 'failed'
+                        item.status === 'error'
                           ? 'text-destructive'
                           : item.status === 'skipped'
                           ? 'text-warning'
@@ -417,7 +419,7 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
       )}
 
       {/* Footer - Status Summary */}
-      {job && job.status === 'completed' && (
+      {job && (job.status === 'completed' || job.status === 'partial') && (
         <div className="px-4 py-3 border-t border-border bg-surface-2">
           <p className="text-xs text-muted-foreground text-center">
             {job.completed_at ? (

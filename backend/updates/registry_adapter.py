@@ -22,6 +22,29 @@ from updates.types import MANIFEST_LIST_TYPES, match_platform_manifest
 
 logger = logging.getLogger(__name__)
 
+DOCKER_HUB_HOSTS = frozenset({
+    "docker.io",
+    "index.docker.io",
+    "registry-1.docker.io",
+    "registry.docker.io",
+    "registry.hub.docker.com",
+})
+
+
+def _canonical_registry_host(registry: str) -> str:
+    host = registry.lower().split("://", 1)[-1].rstrip("/")
+    return host.removesuffix(":443")
+
+
+# Exact matches only: these decide where stored credentials are sent, so a lookalike
+# such as notdocker.io must never be treated as the real registry.
+def _is_docker_hub(registry: str) -> bool:
+    return _canonical_registry_host(registry) in DOCKER_HUB_HOSTS
+
+
+def _is_ghcr(registry: str) -> bool:
+    return _canonical_registry_host(registry) == "ghcr.io"
+
 
 class TransientRegistryError(Exception):
     """A registry request failed for a retryable reason (timeout, network, 429
@@ -221,7 +244,7 @@ class RegistryAdapter:
             registry = f"https://{registry}"
 
         # Docker Hub uses special endpoint
-        if "docker.io" in registry:
+        if _is_docker_hub(registry):
             registry = "https://registry.hub.docker.com"
 
         return registry
@@ -564,12 +587,12 @@ class RegistryAdapter:
 
         # Step 3: Fallback to hardcoded methods for known non-standard registries
         # Docker Hub doesn't properly implement WWW-Authenticate discovery
-        if "docker.io" in registry or "registry.hub.docker.com" in registry:
+        if _is_docker_hub(registry):
             logger.debug(f"Using Docker Hub fallback for {registry}")
             return await self._get_dockerhub_token(repository, auth)
 
         # GHCR fallback (should work with discovery, but keep as safety net)
-        if "ghcr.io" in registry:
+        if _is_ghcr(registry):
             logger.debug(f"Using GHCR fallback for {registry}")
             return await self._get_ghcr_token(repository, auth)
 
@@ -908,7 +931,8 @@ class RegistryAdapter:
         """
         # Ensure tag is present - images without tags cause Docker to store image ID
         # instead of the image reference after container recreation
-        if ":" not in image_tag:
+        # A colon before the last slash is a registry port, not a tag.
+        if image_tag.rfind(":") <= image_tag.rfind("/"):
             image_tag = f"{image_tag}:latest"
 
         if mode == "exact":

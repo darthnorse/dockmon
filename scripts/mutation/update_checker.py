@@ -146,6 +146,21 @@ MUTANTS = [
       'container_id=composite_key.split(":")[1]\n            ).first()\n\n            if record:\n'
       "                return record.floating_tag_mode",
       (STORAGE + "test_stored_tracking_mode_is_read_by_composite_key",)),
+    M("M23", ADAPTER, 'if image_tag.rfind(":") <= image_tag.rfind("/"):', 'if ":" not in image_tag:',
+      (TAGS + "test_floating_tag_table",
+       CONFIG + "test_credentials_stay_on_any_other_registry",
+       DECISION + "test_untagged_registry_with_port_stays_on_its_own_registry")),
+    M("M24", ADAPTER, "return _canonical_registry_host(registry) in DOCKER_HUB_HOSTS",
+      'return "docker.io" in _canonical_registry_host(registry)',
+      (CONFIG + "test_credentials_stay_on_any_other_registry",)),
+    M("M25", ADAPTER, 'return _canonical_registry_host(registry) == "ghcr.io"',
+      'return "ghcr.io" in _canonical_registry_host(registry)',
+      (CONFIG + "test_credentials_stay_on_any_other_registry",)),
+    M("M26", ADAPTER, 'return host.removesuffix(":443")', "return host",
+      (CONFIG + "test_docker_hub_credentials_go_only_to_docker_hub",)),
+    M("M27", ADAPTER, 'host = registry.lower().split("://", 1)[-1].rstrip("/")',
+      'host = registry.split("://", 1)[-1].rstrip("/")',
+      (CONFIG + "test_docker_hub_credentials_go_only_to_docker_hub",)),
 ]
 
 

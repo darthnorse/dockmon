@@ -347,6 +347,19 @@ async def test_credentials_reach_both_registry_calls(credentials_stub):
     ]
 
 
+async def test_untagged_registry_with_port_stays_on_its_own_registry(credentials_stub):
+    credentials = {"username": "robot", "password": "secret"}
+    credentials_stub.return_value = credentials
+    client = FakeClient(repo_digests=repo_digests(CURRENT, repo="registry:5000/app"))
+    route = registry_result(LATEST, registry="registry:5000")
+    checker = make_checker({"registry:5000/app:latest": route}, client=client, record=update_record("latest"))
+
+    result = await run_check(checker, container_dict("registry:5000/app"))
+
+    assert checker.registry.calls == [("registry:5000/app:latest", {"auth": credentials})]
+    assert_subset(result, latest_image="registry:5000/app:latest", update_available=True)
+
+
 async def test_result_contract():
     client = FakeClient(repo_digests=repo_digests(CURRENT))
     route = registry_result(LATEST, labels=version_labels("1.6.0"), registry="ghcr.io")

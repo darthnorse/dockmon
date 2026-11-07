@@ -246,3 +246,29 @@ class TestGetAllRegistryCredentials:
         assert cred_dict["registry_url"] == "registry.example.com"
         assert cred_dict["username"] == "admin"
         assert cred_dict["password"] == "admin_secret"
+
+
+class TestRegistryWithPort:
+    def test_returns_credentials_for_registry_with_port(self, test_db):
+        from database import RegistryCredential
+        from utils.registry_credentials import get_registry_credentials
+
+        test_db.add(RegistryCredential(
+            registry_url="registry.example.com:5000",
+            username="robot",
+            password_encrypted="stored",
+        ))
+        test_db.commit()
+
+        mock_db = Mock()
+
+        @contextmanager
+        def get_session_cm():
+            yield test_db
+
+        mock_db.get_session = get_session_cm
+
+        with patch('utils.registry_credentials.decrypt_password', return_value="secret"):
+            result = get_registry_credentials(mock_db, "registry.example.com:5000/org/app:v1")
+
+        assert result == {"username": "robot", "password": "secret"}

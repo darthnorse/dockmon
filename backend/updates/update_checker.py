@@ -43,7 +43,6 @@ SHA256_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 class RunningImage:
     """What a container is really running. Only image_id survives the image record being deleted."""
     image_id: Optional[str]
-    record_exists: bool = True
     repo_digests: List[str] = field(default_factory=list)
     labels: Dict[str, str] = field(default_factory=dict)
     platform: Optional[str] = None
@@ -68,7 +67,7 @@ def _read_running_image(client, container_id: str) -> RunningImage:
     try:
         attrs = dc.image.attrs
     except NotFound:
-        return RunningImage(image_id=image_id, record_exists=False)
+        return RunningImage(image_id=image_id)
     repo_digests = attrs.get("RepoDigests")
     labels = (attrs.get("Config") or {}).get("Labels")
     return RunningImage(
@@ -325,7 +324,10 @@ class UpdateChecker:
 
         running = await self._inspect_running_image(container)
         stored_evidence = self._get_verified_image(composite_key)
-        platform, platform_verified = self._resolve_platform(container, floating_tag, running, stored_evidence)
+        # Without the image record the platform is unknown, which also rules out reporting stale: the
+        # updater could not read the old image's defaults, and would pin its env and labels on the new container.
+        platform_verified = bool(running and running.platform)
+        platform = running.platform if platform_verified else container.get("platform", "linux/amd64")
 
         # Get current digest from Docker API (the actual digest the container is running)
         current_digest = await self._get_container_image_digest(container, running)
@@ -697,26 +699,6 @@ class UpdateChecker:
         with self.db.get_session() as session:
             record = session.query(ContainerUpdate).filter_by(container_id=composite_key).first()
             return _parse_verified_image(record.verified_image) if record else None
-
-    def _resolve_platform(
-        self,
-        container: Dict,
-        tracked_ref: str,
-        running: Optional[RunningImage],
-        stored_evidence: Optional[Dict[str, str]],
-    ) -> Tuple[str, bool]:
-        """Platform to check against, and whether it is known rather than assumed."""
-        if running and running.platform:
-            return running.platform, True
-        if (
-            running
-            and not running.record_exists
-            and stored_evidence
-            and stored_evidence["ref"] == tracked_ref
-            and stored_evidence["image_id"] == running.image_id
-        ):
-            return stored_evidence["platform"], True
-        return container.get("platform", "linux/amd64"), False
 
     async def _get_container_image_digest(self, container: Dict, running: Optional[RunningImage]) -> Optional[str]:
         """

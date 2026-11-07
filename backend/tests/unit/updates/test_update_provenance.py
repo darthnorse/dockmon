@@ -42,8 +42,8 @@ async def check(checker, image=IMAGE, **container):
     return result
 
 
-async def test_stale_when_registry_moved_after_a_match_and_record_is_gone():
-    client = FakeClient(image_id=STALE_IMAGE_ID, image_missing=True)
+async def test_stale_when_registry_moved_after_a_match():
+    client = FakeClient(image_id=STALE_IMAGE_ID, repo_digests=())
 
     result = await check(make_checker(moved_registry(), client=client, record=stored()))
 
@@ -52,12 +52,14 @@ async def test_stale_when_registry_moved_after_a_match_and_record_is_gone():
     assert result["latest_digest"] == LATEST
 
 
-async def test_stale_when_registry_moved_after_a_match_and_image_has_no_repo_digests():
-    client = FakeClient(image_id=STALE_IMAGE_ID, repo_digests=())
+# The updater needs the old image's defaults, or it pins that image's env and labels on the new container.
+async def test_lost_image_record_is_not_reported_stale_even_with_evidence():
+    client = FakeClient(image_id=STALE_IMAGE_ID, image_missing=True)
 
     result = await check(make_checker(moved_registry(), client=client, record=stored()))
 
-    assert result["update_available"] is True
+    assert result["update_available"] is False
+    assert result["verified_image"] is None
 
 
 @pytest.mark.parametrize("image_id", [LATEST, AMD64_CHILD, LATEST_CONFIG], ids=["index", "platform", "config"])
@@ -294,18 +296,6 @@ async def test_platform_comes_from_the_image(architecture, variant, expected):
     checker.db.get_cached_image_digest.assert_called_once_with(f"{IMAGE}:{expected}")
 
 
-async def test_lost_record_uses_the_platform_in_the_evidence():
-    client = FakeClient(image_id=STALE_IMAGE_ID, image_missing=True)
-    record = stored(platform="linux/arm64")
-    routes = {IMAGE: registry_result(LATEST, manifest=index_manifest(), config_digest=LATEST_CONFIG)}
-    checker = make_checker(routes, client=client, record=record)
-
-    result = await check(checker)
-
-    assert result["platform"] == "linux/arm64"
-    assert result["update_available"] is True
-
-
 async def test_lost_record_without_evidence_is_unverified_whatever_the_row_says():
     client = FakeClient(image_id=STALE_IMAGE_ID, image_missing=True)
     record = update_record()
@@ -335,9 +325,8 @@ async def test_arm64_platform_digest_verifies_on_an_arm64_image():
     assert json.loads(result["verified_image"]) == json.loads(evidence(ARM64_CHILD, platform="linux/arm64"))
 
 
-# Discovery reports "app" rather than "app:latest" once the image record is gone.
 async def test_evidence_written_with_a_tag_still_counts_for_the_untagged_name():
-    client = FakeClient(image_id=STALE_IMAGE_ID, image_missing=True)
+    client = FakeClient(image_id=STALE_IMAGE_ID, repo_digests=())
     routes = {"app:latest": registry_result(LATEST, config_digest=LATEST_CONFIG), "app": registry_result(LATEST)}
 
     result = await check(make_checker(routes, client=client, record=stored()), image="app")

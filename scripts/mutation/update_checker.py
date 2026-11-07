@@ -62,13 +62,13 @@ class Mutant:
 
 M = Mutant
 MUTANTS = [
-    M("M1", CHECKER, "if self._has_digest(container, latest_digest):", "if False:",
+    M("M1", CHECKER, "self._has_digest(container, latest_digest) or bool(", "False or bool(",
       (DECISION + "test_latest_index_digest_in_any_repo_digest_means_no_update",)),
-    M("M1t", CHECKER, "if self._has_digest(container, latest_digest):", "if True:",
+    M("M1t", CHECKER, "self._has_digest(container, latest_digest) or bool(", "True or bool(",
       (DECISION + "test_index_and_child_missing_from_repo_digests_means_update",)),
-    M("M2", CHECKER, "if platform_digest and self._has_digest(container, platform_digest):", "if False:",
+    M("M2", CHECKER, "bool(platform_digest and self._has_digest(container, platform_digest))", "False",
       (DECISION + "test_platform_child_digest_in_repo_digests_means_no_update",)),
-    M("M2t", CHECKER, "if platform_digest and self._has_digest(container, platform_digest):", "if True:",
+    M("M2t", CHECKER, "bool(platform_digest and self._has_digest(container, platform_digest))", "True",
       (DECISION + "test_index_and_child_missing_from_repo_digests_means_update",)),
     M("M3", CHECKER, "update_available = current_digest != latest_digest", "update_available = False",
       (DECISION + "test_different_digests_mean_update",)),
@@ -146,7 +146,7 @@ MUTANTS = [
       "elif current_digest_from_registry and config_digest:",
       (PROVENANCE + "test_local_build_never_matched_is_left_alone",
        PROVENANCE + "test_container_recreated_on_a_new_local_build_is_left_alone",
-       PROVENANCE + "test_evidence_for_another_reference_does_not_count_on_repeated_checks",
+       PROVENANCE + "test_evidence_for_another_reference_does_not_count",
        PROVENANCE + "test_evidence_for_another_platform_does_not_count")),
     M("M33", CHECKER, "elif current_digest_from_registry and config_digest and stored_evidence == evidence:",
       "elif current_digest_from_registry and stored_evidence == evidence:",
@@ -176,8 +176,15 @@ MUTANTS = [
     M("M42", CHECKER, "latest_result = await self.registry.resolve_tag(floating_tag, platform=platform, auth=auth)",
       "latest_result = await self.registry.resolve_tag(floating_tag, auth=auth)",
       (PROVENANCE + "test_platform_comes_from_the_image",)),
-    M("M50", CHECKER, '"ref": with_implicit_latest(image)}', '"ref": image}',
-      (PROVENANCE + "test_evidence_written_with_a_tag_still_counts_for_the_untagged_name",)),
+    M("M50", CHECKER, '"ref": floating_tag}', '"ref": image}',
+      (PROVENANCE + "test_evidence_written_with_a_tag_still_counts_for_the_untagged_name",
+       PROVENANCE + "test_evidence_names_the_tag_that_was_compared")),
+    M("M51", CHECKER, """            if running.image_id in registry_digests:
+                update_available = False
+""", "",
+      (PROVENANCE + "test_image_id_match_clears_an_update_when_only_the_index_changed",)),
+    M("M52", CHECKER, '(attrs.get("Config") or {}).get("Labels")', 'attrs.get("Config", {}).get("Labels")',
+      (PROVENANCE + "test_image_with_null_config_keeps_its_repo_digests",)),
     M("M43", CHECKER, "            and not running.record_exists\n", "",
       (PROVENANCE + "test_non_linux_images_are_never_stale",)),
     M("M44", CHECKER, '''                if update_info.get("verified_image"):

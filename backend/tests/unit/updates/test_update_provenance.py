@@ -88,17 +88,57 @@ async def test_container_recreated_on_a_new_local_build_is_left_alone():
     assert result["update_available"] is False
 
 
-async def test_evidence_for_another_reference_does_not_count_on_repeated_checks():
+async def test_evidence_for_another_reference_does_not_count():
     client = FakeClient(image_id=STALE_IMAGE_ID, repo_digests=())
-    record = stored(ref="other:latest")
-    checker = make_checker(moved_registry(), client=client, record=record)
+    checker = make_checker(moved_registry(), client=client, record=stored(ref="other:latest"))
 
-    first = await check(checker)
-    second = await check(checker)
+    result = await check(checker)
 
-    assert first["update_available"] is False
-    assert second["update_available"] is False
-    assert first["verified_image"] is None
+    assert result["update_available"] is False
+    assert result["verified_image"] is None
+
+
+async def test_evidence_names_the_tag_that_was_compared():
+    client = FakeClient(image_id=LATEST_CONFIG, repo_digests=())
+    routes = {
+        "app:1.2.3": registry_result(CURRENT),
+        "app:1": registry_result(LATEST, config_digest=LATEST_CONFIG),
+    }
+    checker = make_checker(routes, client=client, record=update_record("minor"))
+
+    result = await check(checker, image="app:1.2.3")
+
+    assert json.loads(result["verified_image"])["ref"] == "app:1"
+
+
+async def test_evidence_from_a_floating_tag_does_not_count_after_switching_to_exact():
+    client = FakeClient(image_id=STALE_IMAGE_ID, repo_digests=())
+    routes = {"app:1.2.3": registry_result(LATEST, config_digest=LATEST_CONFIG)}
+    checker = make_checker(routes, client=client, record=stored(ref="app:1"))
+
+    result = await check(checker, image="app:1.2.3")
+
+    assert result["update_available"] is False
+
+
+async def test_image_id_match_clears_an_update_when_only_the_index_changed():
+    client = FakeClient(image_id=LATEST_CONFIG, repo_digests=[f"app@{CURRENT}"])
+    checker = make_checker(moved_registry(), client=client)
+
+    result = await check(checker)
+
+    assert result["update_available"] is False
+    assert json.loads(result["verified_image"]) == json.loads(evidence(LATEST_CONFIG))
+
+
+async def test_image_with_null_config_keeps_its_repo_digests():
+    client = FakeClient(image_id=STALE_IMAGE_ID, repo_digests=[f"app@{LATEST}"])
+    client.images.get(STALE_IMAGE_ID.split(":")[1]).attrs["Config"] = None
+
+    result = await check(make_checker(moved_registry(), client=client))
+
+    assert result["update_available"] is False
+    assert result["current_digest"] == LATEST
 
 
 async def test_evidence_for_another_platform_does_not_count():

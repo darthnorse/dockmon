@@ -3425,6 +3425,7 @@ class DatabaseManager:
                 registry_page_url=prev_update.registry_page_url,
                 registry_page_source=prev_update.registry_page_source,
                 platform=prev_update.platform,
+                verified_image=prev_update.verified_image,
                 latest_image=None,
                 latest_digest=None,
                 update_available=False,

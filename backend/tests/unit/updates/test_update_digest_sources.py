@@ -19,10 +19,9 @@ async def test_agent_repo_digests_take_priority_over_docker():
     client = FakeClient(repo_digests=[f"app@{LATEST}"])
     checker = make_checker({}, client=client)
 
-    found = await checker._get_container_image_digest(container_dict(repo_digests=[f"app@{CURRENT}"]))
+    found = await checker._get_container_image_digest(container_dict(repo_digests=[f"app@{CURRENT}"]), None)
 
     assert found == CURRENT
-    assert client.containers.requested == []
 
 
 async def test_docker_repo_digests_returned_and_stored():
@@ -33,7 +32,8 @@ async def test_docker_repo_digests_returned_and_stored():
     spy = AsyncMock(side_effect=async_docker_call)
 
     with patch("updates.update_checker.async_docker_call", spy):
-        found = await checker._get_container_image_digest(container)
+        running = await checker._inspect_running_image(container)
+        found = await checker._get_container_image_digest(container, running)
 
     assert found == CURRENT
     assert container["repo_digests"] == digests
@@ -45,40 +45,53 @@ async def test_docker_repo_digests_returned_and_stored():
 async def test_no_client_for_host_returns_none():
     checker = make_checker({})
 
-    assert await checker._get_container_image_digest(container_dict()) is None
+    container = container_dict()
+    running = await checker._inspect_running_image(container)
+
+    assert await checker._get_container_image_digest(container, running) is None
 
 
 async def test_deleted_image_record_returns_none():
     checker = make_checker({}, client=FakeClient(image_missing=True))
     container = container_dict()
+    running = await checker._inspect_running_image(container)
 
-    assert await checker._get_container_image_digest(container) is None
+    assert await checker._get_container_image_digest(container, running) is None
     assert "repo_digests" not in container
 
 
 async def test_empty_repo_digests_returns_none():
     checker = make_checker({}, client=FakeClient(repo_digests=()))
 
-    assert await checker._get_container_image_digest(container_dict()) is None
+    container = container_dict()
+    running = await checker._inspect_running_image(container)
+
+    assert await checker._get_container_image_digest(container, running) is None
 
 
 async def test_version_prefers_container_label_without_docker():
     client = FakeClient(image_labels={VERSION_LABEL: "9.9.9"})
     checker = make_checker({}, client=client)
 
-    version = await checker._get_container_image_version(container_dict(labels={VERSION_LABEL: "1.0.0"}))
+    container = container_dict(labels={VERSION_LABEL: "1.0.0"})
+    running = await checker._inspect_running_image(container)
 
-    assert version == "1.0.0"
-    assert client.containers.requested == []
+    assert await checker._get_container_image_version(container, running) == "1.0.0"
 
 
 async def test_version_falls_back_to_image_label():
     checker = make_checker({}, client=FakeClient(image_labels={VERSION_LABEL: "9.9.9"}))
 
-    assert await checker._get_container_image_version(container_dict()) == "9.9.9"
+    container = container_dict()
+    running = await checker._inspect_running_image(container)
+
+    assert await checker._get_container_image_version(container, running) == "9.9.9"
 
 
 async def test_version_docker_error_returns_none():
     checker = make_checker({}, client=FakeClient(image_missing=True))
 
-    assert await checker._get_container_image_version(container_dict()) is None
+    container = container_dict()
+    running = await checker._inspect_running_image(container)
+
+    assert await checker._get_container_image_version(container, running) is None

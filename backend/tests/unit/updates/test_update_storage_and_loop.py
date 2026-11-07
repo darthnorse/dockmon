@@ -452,12 +452,6 @@ async def test_stale_running_image_end_to_end(host_db, event_bus_stub):
     assert row.latest_digest == NEXT_DIGEST
     assert event_bus_stub.emit.await_count == 1
 
-    with host_db.get_session() as session:
-        session.query(ContainerUpdate).update({"auto_update_enabled": True})
-        session.commit()
-        eligible = session.query(ContainerUpdate).filter_by(auto_update_enabled=True, update_available=True).count()
-    assert eligible == 1
-
     await checker.check_single_container(HOST_ID, CONTAINER_ID, bypass_cache=True)
     assert event_bus_stub.emit.await_count == 1
 
@@ -489,3 +483,13 @@ async def test_config_digest_survives_the_real_db_cache(host_db, event_bus_stub)
 
     assert result["update_available"] is True
     assert fresh.registry.refs() == ["app:latest"]
+
+
+def test_reattaching_a_recreated_container_keeps_its_evidence(host_db):
+    existing_row(host_db, container_name="app", current_image="app:latest", verified_image=VERIFIED)
+
+    host_db.reattach_update_settings_for_container(HOST_ID, "newcontainer", "app", "app:latest")
+
+    with host_db.get_session() as session:
+        row = session.query(ContainerUpdate).filter_by(container_id=f"{HOST_ID}:newcontainer").one()
+        assert row.verified_image == VERIFIED

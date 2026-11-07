@@ -98,7 +98,7 @@ async def test_arm64_image_is_checked_against_its_own_platform():
     result = await run_check(checker, container_dict())
 
     assert_subset(result, update_available=False, platform="linux/arm64")
-    assert checker.registry.calls[-1][1]["platform"] == "linux/arm64"
+    assert checker.registry.calls[-1][1].get("platform") == "linux/arm64"
     checker.db.get_cached_image_digest.assert_called_once_with("app:stable:linux/arm64")
 
 

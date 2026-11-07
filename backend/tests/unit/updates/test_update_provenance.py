@@ -251,7 +251,7 @@ async def test_platform_comes_from_the_image(architecture, variant, expected):
     result = await check(checker)
 
     assert result["platform"] == expected
-    assert [kwargs["platform"] for _, kwargs in checker.registry.calls] == [expected, expected]
+    assert [kwargs.get("platform") for _, kwargs in checker.registry.calls] == [expected, expected]
     checker.db.get_cached_image_digest.assert_called_once_with(f"{IMAGE}:{expected}")
 
 

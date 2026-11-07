@@ -10,6 +10,7 @@ from typing import Optional, Dict, List
 
 from database import RegistryCredential
 from utils.encryption import decrypt_password
+from utils.image_ref import is_registry_host
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +40,7 @@ def get_registry_credentials(db, image_name: str) -> Optional[Dict[str, str]]:
         # Check for explicit registry
         if "/" in image_name:
             parts = image_name.split("/", 1)
-            # If first part has dot or colon, it's likely a registry
-            if "." in parts[0] or ":" in parts[0]:
+            if is_registry_host(parts[0]):
                 registry_url = parts[0]
 
         # Normalize (lowercase, strip trailing slash)

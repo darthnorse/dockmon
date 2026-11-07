@@ -7,7 +7,8 @@ Create Date: 2026-11-06
 CHANGES:
 - container_updates: clear the update target on rows whose latest_image was computed
   from an untagged registry-with-port ref in latest mode (registry:5000/app became
-  registry:latest). An update would otherwise pull that image from Docker Hub.
+  registry:latest). An update would otherwise pull that image from Docker Hub. The
+  tracking mode is not checked because it can change after the row was written.
 - image_digest_cache: delete all rows, because lookalike registries cached Docker Hub
   digests under their own keys. Refilled by the next check.
 
@@ -31,8 +32,7 @@ def upgrade():
         op.execute("""
             UPDATE container_updates
             SET update_available = 0, latest_image = NULL, latest_digest = NULL, latest_version = NULL
-            WHERE floating_tag_mode = 'latest'
-              AND instr(current_image, '/') > 0
+            WHERE instr(current_image, '/') > 0
               AND instr(substr(current_image, 1, instr(current_image, '/') - 1), ':') > 0
               AND instr(substr(current_image, instr(current_image, '/')), ':') = 0
               AND latest_image IS NOT NULL

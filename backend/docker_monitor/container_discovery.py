@@ -19,6 +19,7 @@ from models.docker_models import DockerHost, Container, derive_container_tags
 from event_bus import Event, EventType as BusEventType, get_event_bus
 from stats_client import get_stats_client
 from utils.async_docker import async_docker_call, async_client_ping
+from utils.image_ref import with_implicit_latest
 from utils.keys import make_composite_key
 from utils.ip_extraction import extract_container_ips
 from utils.cache import async_ttl_cache
@@ -742,9 +743,7 @@ class ContainerDiscovery:
                     try:
                         container_image = dc.image
                         config_image_name = dc.attrs.get('Config', {}).get('Image', container_image.short_id)
-                        if ":" not in config_image_name:
-                            # Add implicit :latest if tag is missing
-                            config_image_name = f"{config_image_name}:latest"
+                        config_image_name = with_implicit_latest(config_image_name)
 
                         if container_image.tags:
                             if config_image_name in container_image.tags:

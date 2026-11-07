@@ -47,6 +47,7 @@ def migrated_session():
             session.add_all([
                 row("aaaaaaaaaaaa", "registry:5000/app", "registry:latest"),
                 row("bbbbbbbbbbbb", "registry:5000/org/app", "registry:latest"),
+                row("222222222222", "registry:5000/app", "registry:latest", mode="exact"),
                 row("cccccccccccc", "registry:5000/app:1.2.3", "registry:5000/app:latest"),
                 row("dddddddddddd", "registry:5000/app", "registry:5000/app:latest"),
                 row("eeeeeeeeeeee", "nginx:1.25", "nginx:latest"),
@@ -79,7 +80,7 @@ def fetch(session, container):
     return session.query(ContainerUpdate).filter_by(container_id=f"{HOST_ID}:{container}").one()
 
 
-@pytest.mark.parametrize("container", ["aaaaaaaaaaaa", "bbbbbbbbbbbb"])
+@pytest.mark.parametrize("container", ["aaaaaaaaaaaa", "bbbbbbbbbbbb", "222222222222"])
 def test_wrong_registry_target_is_cleared_and_settings_kept(migrated_session, container):
     cleared = fetch(migrated_session, container)
 
@@ -88,7 +89,7 @@ def test_wrong_registry_target_is_cleared_and_settings_kept(migrated_session, co
     assert cleared.latest_digest is None
     assert cleared.latest_version is None
     assert cleared.auto_update_enabled is True
-    assert cleared.floating_tag_mode == "latest"
+    assert cleared.floating_tag_mode in ("latest", "exact")
 
 
 @pytest.mark.parametrize("container", [
@@ -100,13 +101,6 @@ def test_other_rows_are_untouched(migrated_session, container):
     assert untouched.update_available is True
     assert untouched.latest_image is not None
     assert untouched.latest_digest == DIGEST
-
-
-def test_cleared_rows_are_no_longer_eligible_for_auto_update(migrated_session):
-    eligible = migrated_session.query(ContainerUpdate).filter_by(auto_update_enabled=True, update_available=True).all()
-
-    assert "aaaaaaaaaaaa" not in {row.container_id.split(":")[1] for row in eligible}
-    assert "bbbbbbbbbbbb" not in {row.container_id.split(":")[1] for row in eligible}
 
 
 def test_digest_cache_is_emptied(migrated_session):

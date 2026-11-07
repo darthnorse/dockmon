@@ -8,7 +8,7 @@ image *name* only - not the tag (Issue #220) or the registry host.
 """
 
 import pytest
-from utils.image_ref import extract_image_repository
+from utils.image_ref import extract_image_repository, has_tag, is_registry_host, with_implicit_latest
 
 
 class TestStripsTag:
@@ -79,3 +79,28 @@ class TestDefensive:
     def test_does_not_lowercase(self):
         # Callers handle case-folding themselves; helper preserves case
         assert extract_image_repository("ghcr.io/Org/App:Tag") == "Org/App"
+
+
+@pytest.mark.parametrize("image_ref,expected", [
+    ("nginx", "nginx:latest"),
+    ("nginx:1.25", "nginx:1.25"),
+    ("registry:5000/app", "registry:5000/app:latest"),
+    ("localhost:5000/org/app", "localhost:5000/org/app:latest"),
+    ("registry:5000/app:1.2.3", "registry:5000/app:1.2.3"),
+    ("ghcr.io/org/app", "ghcr.io/org/app:latest"),
+    ("app@sha256:abc", "app@sha256:abc"),
+])
+def test_with_implicit_latest(image_ref, expected):
+    assert with_implicit_latest(image_ref) == expected
+    assert has_tag(expected)
+
+
+@pytest.mark.parametrize("segment,expected", [
+    ("ghcr.io", True),
+    ("registry:5000", True),
+    ("localhost", True),
+    ("library", False),
+    ("myorg", False),
+])
+def test_is_registry_host(segment, expected):
+    assert is_registry_host(segment) is expected

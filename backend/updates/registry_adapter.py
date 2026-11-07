@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Tuple
 from urllib.parse import urlparse
 from updates.types import MANIFEST_LIST_TYPES, match_platform_manifest
+from utils.image_ref import is_registry_host, with_implicit_latest
 
 logger = logging.getLogger(__name__)
 
@@ -277,8 +278,7 @@ class RegistryAdapter:
         # Check for explicit registry
         if "/" in image_ref:
             parts = image_ref.split("/", 1)
-            # If first part has dot or colon, it's likely a registry
-            if "." in parts[0] or ":" in parts[0]:
+            if is_registry_host(parts[0]):
                 registry = parts[0]
                 image_ref = parts[1]
 
@@ -289,7 +289,7 @@ class RegistryAdapter:
             repository = image_ref
 
         # Docker Hub uses "library/" prefix for official images
-        if registry == "docker.io" and "/" not in repository:
+        if _is_docker_hub(registry) and "/" not in repository:
             repository = f"library/{repository}"
 
         return registry, repository, tag
@@ -931,18 +931,13 @@ class RegistryAdapter:
         """
         # Ensure tag is present - images without tags cause Docker to store image ID
         # instead of the image reference after container recreation
-        # A colon before the last slash is a registry port, not a tag.
-        if image_tag.rfind(":") <= image_tag.rfind("/"):
-            image_tag = f"{image_tag}:latest"
+        image_tag = with_implicit_latest(image_tag)
 
         if mode == "exact":
             return image_tag
 
         # Split image and tag
-        if ":" in image_tag:
-            image, tag = image_tag.rsplit(":", 1)
-        else:
-            image, tag = image_tag, "latest"
+        image, tag = image_tag.rsplit(":", 1)
 
         if mode == "latest":
             return f"{image}:latest"

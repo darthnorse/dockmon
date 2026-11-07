@@ -279,6 +279,7 @@ async def test_ghcr_credentials_go_only_to_ghcr():
     ("ghcr.io.corp.example/org/app:1", "exact", "ghcr.io.corp.example"),
     ("registry.example.com:5000/org/app:1", "exact", "registry.example.com:5000"),
     ("docker.io:5000/org/app:1", "exact", "docker.io:5000"),
+    ("localhost/app:1", "exact", "localhost"),
     ("registry:5000/app", "latest", "registry:5000"),
 ])
 async def test_credentials_stay_on_any_other_registry(image, mode, host):

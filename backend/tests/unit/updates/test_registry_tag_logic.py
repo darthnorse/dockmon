@@ -46,6 +46,10 @@ def test_floating_tag_mishandled_refs_known_gap(image, mode, expected):
     ("myregistry.com:5000/app", ("myregistry.com:5000", "app", "latest")),
     ("registry:5000/app:1.2", ("registry:5000", "app", "1.2")),
     ("user/app:tag", ("docker.io", "user/app", "tag")),
+    ("localhost/app", ("localhost", "app", "latest")),
+    ("index.docker.io/nginx:1", ("index.docker.io", "library/nginx", "1")),
+    ("DOCKER.IO/nginx:1", ("DOCKER.IO", "library/nginx", "1")),
+    ("docker.io:443/nginx:1", ("docker.io:443", "library/nginx", "1")),
 ])
 def test_parse_image_ref(image, expected):
     assert RegistryAdapter()._parse_image_ref(image) == expected

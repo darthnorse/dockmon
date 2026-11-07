@@ -85,7 +85,7 @@ MUTANTS = [
       (DECISION + "test_versions_fall_back_to_tags",)),
     M("M7", CHECKER, "latest_version = self._extract_version_from_tag(floating_tag)", "latest_version = None",
       (DECISION + "test_versions_fall_back_to_tags",)),
-    M("M8", CHECKER, "current_version = await self._get_container_image_version(container)", "current_version = None",
+    M("M8", CHECKER, "current_version = await self._get_container_image_version(container, running)", "current_version = None",
       (DECISION + "test_current_version_comes_from_container_label",)),
     M("M9", CHECKER, "if not bypass_cache:", "if True:",
       (DECISION + "test_bypass_cache_skips_db_cache",)),

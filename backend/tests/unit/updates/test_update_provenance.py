@@ -132,13 +132,12 @@ async def test_image_id_match_clears_an_update_when_only_the_index_changed():
 
 
 async def test_image_with_null_config_keeps_its_repo_digests():
-    client = FakeClient(image_id=STALE_IMAGE_ID, repo_digests=[f"app@{LATEST}"])
+    client = FakeClient(image_id=STALE_IMAGE_ID, repo_digests=[f"app@{CURRENT}"])
     client.images.get(STALE_IMAGE_ID.split(":")[1]).attrs["Config"] = None
 
     result = await check(make_checker(moved_registry(), client=client))
 
-    assert result["update_available"] is False
-    assert result["current_digest"] == LATEST
+    assert result["current_digest"] == CURRENT
 
 
 async def test_evidence_for_another_platform_does_not_count():

@@ -165,6 +165,8 @@ MUTANTS = [
     M("M28", IMAGE_REF, ' or segment == "localhost"', "",
       (TAGS + "test_parse_image_ref",
        CONFIG + "test_credentials_stay_on_any_other_registry")),
+    M("M31", IMAGE_REF, " or segment.lower() != segment", "",
+      (TAGS + "test_parse_image_ref",)),
     M("M29", CHECKER, 'elif "/" in tag:\n            return None', 'elif "/" in tag:\n            tag = tag.rsplit(":", 1)[-1]',
       (DECISION + "test_registry_port_is_not_read_as_a_version",)),
     M("M30", ADAPTER, 'if _is_docker_hub(registry) and "/" not in repository:', 'if registry == "docker.io" and "/" not in repository:',

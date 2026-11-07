@@ -47,6 +47,7 @@ def test_floating_tag_mishandled_refs_known_gap(image, mode, expected):
     ("registry:5000/app:1.2", ("registry:5000", "app", "1.2")),
     ("user/app:tag", ("docker.io", "user/app", "tag")),
     ("localhost/app", ("localhost", "app", "latest")),
+    ("REGISTRY/app", ("REGISTRY", "app", "latest")),
     ("index.docker.io/nginx:1", ("index.docker.io", "library/nginx", "1")),
     ("DOCKER.IO/nginx:1", ("DOCKER.IO", "library/nginx", "1")),
     ("docker.io:443/nginx:1", ("docker.io:443", "library/nginx", "1")),

@@ -99,6 +99,7 @@ def test_with_implicit_latest(image_ref, expected):
     ("ghcr.io", True),
     ("registry:5000", True),
     ("localhost", True),
+    ("REGISTRY", True),
     ("library", False),
     ("myorg", False),
 ])

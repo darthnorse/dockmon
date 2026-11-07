@@ -304,6 +304,8 @@ func TestGetRegistryFromImage(t *testing.T) {
 		{"registry:5000/org/app:1", "registry:5000"},
 		{"localhost:5000/app", "localhost:5000"},
 		{"localhost/app", "localhost"},
+		{"REGISTRY/app", "registry"},
+		{"GHCR.IO/org/app", "ghcr.io"},
 	}
 	for _, tt := range tests {
 		if got := getRegistryFromImage(tt.image); got != tt.want {

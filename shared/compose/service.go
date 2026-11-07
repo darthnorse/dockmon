@@ -819,12 +819,16 @@ func (s *Service) buildRegistryAuthMap(credentials []RegistryCredential) map[str
 }
 
 // getRegistryFromImage extracts the registry hostname from an image reference.
-// The first path segment is a registry if it has a dot or port or is localhost, as in Docker's
-// own reference parsing; otherwise the image is on Docker Hub.
+// The first path segment is a registry if it has a dot, a port or uppercase letters or is
+// localhost, as in Docker's own reference parsing; otherwise the image is on Docker Hub. The
+// result is lowercase to match stored credential keys.
 func getRegistryFromImage(imageName string) string {
 	parts := strings.SplitN(imageName, "/", 2)
-	if len(parts) > 1 && (strings.ContainsAny(parts[0], ".:") || parts[0] == "localhost") {
-		return parts[0]
+	if len(parts) > 1 {
+		lowered := strings.ToLower(parts[0])
+		if strings.ContainsAny(parts[0], ".:") || parts[0] == "localhost" || lowered != parts[0] {
+			return lowered
+		}
 	}
 	return "docker.io"
 }

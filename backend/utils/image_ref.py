@@ -21,8 +21,11 @@ from typing import Optional
 
 
 def is_registry_host(segment: str) -> bool:
-    """True if a reference's first path segment is a registry, not a Docker Hub namespace."""
-    return "." in segment or ":" in segment or segment == "localhost"
+    """True if a reference's first path segment is a registry, not a Docker Hub namespace.
+
+    Matches Docker's own parsing, including that an uppercase segment is a registry.
+    """
+    return "." in segment or ":" in segment or segment == "localhost" or segment.lower() != segment
 
 
 def has_tag(image_ref: str) -> bool:

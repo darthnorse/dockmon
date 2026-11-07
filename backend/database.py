@@ -815,6 +815,9 @@ class ContainerUpdate(Base):
     update_available = Column(Boolean, default=False, nullable=False)
     # Non-update check outcome: NULL = normal, 'local_image' = built locally (no registry digest)
     check_status = Column(Text, nullable=True)
+    # JSON {image_id, platform, ref}: the image ID last seen matching this reference in the registry.
+    # A later mismatch only means "stale" when the running image is still this one.
+    verified_image = Column(Text, nullable=True)
 
     # Version information (from OCI labels)
     current_version = Column(Text, nullable=True)  # org.opencontainers.image.version from current image
@@ -3422,6 +3425,7 @@ class DatabaseManager:
                 registry_page_url=prev_update.registry_page_url,
                 registry_page_source=prev_update.registry_page_source,
                 platform=prev_update.platform,
+                verified_image=prev_update.verified_image,
                 latest_image=None,
                 latest_digest=None,
                 update_available=False,

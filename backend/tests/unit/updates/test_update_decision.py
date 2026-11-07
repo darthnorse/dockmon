@@ -6,6 +6,7 @@ import pytest
 
 from checker_fakes import (
     AMD64_CHILD,
+    ARM64_CHILD,
     CHANGELOG_CHECKED_AT,
     CHANGELOG_URL,
     CURRENT,
@@ -73,14 +74,12 @@ async def test_index_and_child_missing_from_repo_digests_means_update():
 
 
 async def test_agent_repo_digests_decide_without_docker():
-    client = FakeClient()
-    checker = make_checker({"app:stable": registry_result(LATEST)}, client=client)
+    checker = make_checker({"app:stable": registry_result(LATEST)})
     container = container_dict(repo_digests=repo_digests(CURRENT, LATEST), labels=version_labels("1.0.0"))
 
     result = await run_check(checker, container)
 
-    assert_subset(result, update_available=False, current_digest=CURRENT)
-    assert client.containers.requested == []
+    assert_subset(result, update_available=False, current_digest=CURRENT, platform="linux/amd64")
 
 
 async def test_different_digests_mean_update():
@@ -92,21 +91,20 @@ async def test_different_digests_mean_update():
     assert_subset(result, update_available=True, current_digest=CURRENT, latest_digest=LATEST)
 
 
-# The container's real architecture is never looked up, so arm64 hosts compare against amd64.
-async def test_arm64_host_is_checked_as_amd64_known_gap():
-    client = FakeClient(repo_digests=repo_digests(AMD64_CHILD), architecture="aarch64")
+async def test_arm64_image_is_checked_against_its_own_platform():
+    client = FakeClient(repo_digests=repo_digests(ARM64_CHILD), architecture="arm64", variant="v8")
     checker = make_checker({"app:stable": registry_result(LATEST, manifest=index_manifest())}, client=client)
 
     result = await run_check(checker, container_dict())
 
-    assert_subset(result, update_available=False, platform="linux/amd64")
-    _, kwargs = checker.registry.calls[-1]
-    assert kwargs.get("platform", "linux/amd64") == "linux/amd64"
+    assert_subset(result, update_available=False, platform="linux/arm64")
+    assert checker.registry.calls[-1][1].get("platform") == "linux/arm64"
+    checker.db.get_cached_image_digest.assert_called_once_with("app:stable:linux/arm64")
 
 
-# Without a local image record the fallback compares the registry tag with itself, so a
-# stale running image reads as current.
-async def test_stale_image_without_local_record_reports_no_update_known_gap():
+# With no evidence that this image ever matched the registry, a mismatch cannot be told from a local
+# build, so the fallback still reads an already-stale image as current.
+async def test_stale_image_never_verified_reports_no_update_known_gap():
     client = FakeClient(image_id=STALE_IMAGE_ID, image_missing=True)
     route = registry_result(LATEST, config_digest=LATEST_CONFIG)
     checker = make_checker({"app:latest": route}, client=client)
@@ -342,8 +340,8 @@ async def test_credentials_reach_both_registry_calls(credentials_stub):
 
     credentials_stub.assert_called_once_with(checker.db, "nginx:1.25.3")
     assert checker.registry.calls == [
-        ("nginx:1.25.3", {"auth": credentials}),
-        ("nginx:1", {"auth": credentials}),
+        ("nginx:1.25.3", {"auth": credentials, "platform": "linux/amd64"}),
+        ("nginx:1", {"auth": credentials, "platform": "linux/amd64"}),
     ]
 
 
@@ -356,7 +354,7 @@ async def test_untagged_registry_with_port_stays_on_its_own_registry(credentials
 
     result = await run_check(checker, container_dict("registry:5000/app"))
 
-    assert checker.registry.calls == [("registry:5000/app:latest", {"auth": credentials})]
+    assert checker.registry.calls == [("registry:5000/app:latest", {"auth": credentials, "platform": "linux/amd64"})]
     assert_subset(result, latest_image="registry:5000/app:latest", update_available=True)
 
 

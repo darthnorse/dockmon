@@ -11,11 +11,13 @@ from checker_fakes import (
     CHANGELOG_CHECKED_AT,
     CONTAINER_ID,
     CURRENT,
+    FakeClient,
     FakeRegistry,
     HOST_ID,
     LATEST,
     container_dict,
     digest,
+    evidence,
     make_monitor,
     monitored_container,
     registry_result,
@@ -115,6 +117,42 @@ def test_store_updates_existing_record_and_keeps_tracking_mode(host_db):
     assert row.container_name == "app"
 
 
+VERIFIED = evidence(CURRENT)
+
+
+def test_store_create_sets_verified_image(host_db):
+    UpdateChecker(db=host_db)._store_update_info(container_dict(), update_info(verified_image=VERIFIED))
+
+    assert read_row(host_db).verified_image == VERIFIED
+
+
+def test_store_update_sets_verified_image(host_db):
+    existing_row(host_db)
+
+    UpdateChecker(db=host_db)._store_update_info(container_dict(), update_info(verified_image=VERIFIED))
+
+    assert read_row(host_db).verified_image == VERIFIED
+
+
+def test_store_update_without_new_evidence_keeps_the_stored_one(host_db):
+    existing_row(host_db, verified_image=VERIFIED)
+
+    UpdateChecker(db=host_db)._store_update_info(container_dict(), update_info())
+
+    assert read_row(host_db).verified_image == VERIFIED
+
+
+def test_store_retry_sets_verified_image(host_db):
+    racing_insert = _RacingInsert(host_db)
+    event.listen(Session, "before_flush", racing_insert)
+    try:
+        UpdateChecker(db=host_db)._store_update_info(container_dict(), update_info(verified_image=VERIFIED))
+    finally:
+        event.remove(Session, "before_flush", racing_insert)
+
+    assert read_row(host_db).verified_image == VERIFIED
+
+
 def test_store_uses_short_id_in_composite_key(host_db):
     UpdateChecker(db=host_db)._store_update_info(container_dict(id=FULL_ID), update_info())
 
@@ -200,8 +238,8 @@ def agent_container(container_id=CONTAINER_ID, name="app", image="app:stable", d
                           repo_digests=[f"{image.split(':')[0]}@{digest_value}"])
 
 
-def loop_checker(db, containers, routes):
-    monitor = make_monitor(containers=[monitored_container(c) for c in containers])
+def loop_checker(db, containers, routes, client=None):
+    monitor = make_monitor(client=client, containers=[monitored_container(c) for c in containers])
     checker = UpdateChecker(db=db, monitor=monitor)
     checker.registry = FakeRegistry(routes)
     return checker
@@ -383,4 +421,75 @@ async def test_credentials_row_is_passed_to_the_registry(host_db):
     with patch("utils.registry_credentials.decrypt_password", return_value="secret"):
         await checker._check_container_update(agent_container(image=image))
 
-    assert checker.registry.calls == [(image, {"auth": {"username": "robot", "password": "secret"}})]
+    assert checker.registry.calls == [
+        (image, {"auth": {"username": "robot", "password": "secret"}, "platform": "linux/amd64"})
+    ]
+
+
+NEW_CONFIG = digest("8")
+NEXT_DIGEST = digest("6")
+
+
+async def test_stale_running_image_end_to_end(host_db, event_bus_stub):
+    client = FakeClient(image_id=NEW_CONFIG, repo_digests=())
+    container = container_dict("app:latest")
+    routes = {"app:latest": registry_result(LATEST, config_digest=NEW_CONFIG)}
+    checker = loop_checker(host_db, [container], routes, client=client)
+
+    first = await checker.check_single_container(HOST_ID, CONTAINER_ID, bypass_cache=True)
+
+    assert first["update_available"] is False
+    assert read_row(host_db).verified_image == evidence(NEW_CONFIG)
+    assert event_bus_stub.emit.await_count == 0
+
+    routes["app:latest"] = registry_result(NEXT_DIGEST, config_digest=digest("7"))
+    second = await checker.check_single_container(HOST_ID, CONTAINER_ID, bypass_cache=True)
+
+    assert second["update_available"] is True
+    row = read_row(host_db)
+    assert row.update_available is True
+    assert row.current_digest == NEW_CONFIG
+    assert row.latest_digest == NEXT_DIGEST
+    assert event_bus_stub.emit.await_count == 1
+
+    await checker.check_single_container(HOST_ID, CONTAINER_ID, bypass_cache=True)
+    assert event_bus_stub.emit.await_count == 1
+
+
+async def test_updated_image_with_repo_digests_clears_the_stale_result(host_db, event_bus_stub):
+    existing_row(host_db, current_image="app:latest", floating_tag_mode="exact", update_available=True,
+                 verified_image=evidence(NEW_CONFIG))
+    client = FakeClient(image_id=digest("7"), repo_digests=[f"app@{NEXT_DIGEST}"])
+    routes = {"app:latest": registry_result(NEXT_DIGEST, config_digest=digest("7"))}
+    checker = loop_checker(host_db, [container_dict("app:latest")], routes, client=client)
+
+    result = await checker.check_single_container(HOST_ID, CONTAINER_ID, bypass_cache=True)
+
+    assert result["update_available"] is False
+    assert read_row(host_db).update_available is False
+
+
+async def test_config_digest_survives_the_real_db_cache(host_db, event_bus_stub):
+    client = FakeClient(image_id=NEW_CONFIG, repo_digests=())
+    container = container_dict("app:latest")
+    routes = {"app:latest": registry_result(LATEST, config_digest=NEW_CONFIG)}
+    checker = loop_checker(host_db, [container], routes, client=client)
+    await checker.check_single_container(HOST_ID, CONTAINER_ID, bypass_cache=True)
+    routes["app:latest"] = registry_result(NEXT_DIGEST, config_digest=digest("7"))
+    await checker.check_single_container(HOST_ID, CONTAINER_ID, bypass_cache=True)
+
+    fresh = loop_checker(host_db, [container], {"app:latest": routes["app:latest"]}, client=client)
+    result = await fresh.check_single_container(HOST_ID, CONTAINER_ID)
+
+    assert result["update_available"] is True
+    assert fresh.registry.refs() == ["app:latest"]
+
+
+def test_reattaching_a_recreated_container_keeps_its_evidence(host_db):
+    existing_row(host_db, container_name="app", current_image="app:latest", verified_image=VERIFIED)
+
+    host_db.reattach_update_settings_for_container(HOST_ID, "newcontainer", "app", "app:latest")
+
+    with host_db.get_session() as session:
+        row = session.query(ContainerUpdate).filter_by(container_id=f"{HOST_ID}:newcontainer").one()
+        assert row.verified_image == VERIFIED

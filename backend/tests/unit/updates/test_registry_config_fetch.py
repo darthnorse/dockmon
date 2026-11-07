@@ -309,3 +309,79 @@ async def test_credentials_still_reach_a_token_service_on_another_https_host(htt
 
     assert http.get_request("https://auth.example.com/token").headers["Authorization"].startswith("Basic ")
     assert http.get_request(f"{BASE}/manifests/latest").headers["Authorization"] == "Bearer abc"
+
+
+async def test_config_digest_reported_for_a_single_manifest(http):
+    http.routes.update(single_manifest_routes())
+
+    result = await RegistryAdapter().resolve_tag(IMAGE)
+
+    assert result["manifest"]["config_digest"] == CONFIG
+
+
+@pytest.mark.parametrize("media_type,child_media_type", [
+    (DOCKER_LIST, DOCKER_MANIFEST),
+    (OCI_INDEX, OCI_MANIFEST),
+])
+async def test_config_digest_reported_for_an_index(http, media_type, child_media_type):
+    http.routes.update(index_routes(media_type, child_media_type))
+
+    result = await RegistryAdapter().resolve_tag(IMAGE)
+
+    assert result["manifest"]["config_digest"] == CONFIG
+
+
+BLOB_FAILURES = [FakeResponse(status=404), asyncio.TimeoutError(), RuntimeError("connection reset")]
+BLOB_FAILURE_IDS = ["404", "timeout", "exception"]
+
+
+@pytest.mark.parametrize("blob_outcome", BLOB_FAILURES, ids=BLOB_FAILURE_IDS)
+async def test_config_digest_kept_when_the_single_manifest_blob_fails(http, blob_outcome):
+    http.routes.update(single_manifest_routes())
+    http.routes[("GET", f"{BASE}/blobs/{CONFIG}")] = blob_outcome
+
+    result = await RegistryAdapter().resolve_tag(IMAGE)
+
+    assert result["manifest"]["config_digest"] == CONFIG
+
+
+@pytest.mark.parametrize("blob_outcome", BLOB_FAILURES, ids=BLOB_FAILURE_IDS)
+async def test_config_digest_kept_when_the_index_child_blob_fails(http, blob_outcome):
+    http.routes.update(index_routes(DOCKER_LIST, DOCKER_MANIFEST))
+    http.routes[("GET", f"{BASE}/blobs/{CONFIG}")] = blob_outcome
+
+    result = await RegistryAdapter().resolve_tag(IMAGE)
+
+    assert result["manifest"]["config_digest"] == CONFIG
+
+
+async def test_no_config_digest_when_the_platform_is_missing_from_the_index(http):
+    arm_only = [{"digest": ARM64, "platform": {"os": "linux", "architecture": "arm64"}}]
+    routes = index_routes(DOCKER_LIST, DOCKER_MANIFEST, descriptors=arm_only)
+    http.routes[("GET", f"{BASE}/manifests/latest")] = routes[("GET", f"{BASE}/manifests/latest")]
+
+    result = await RegistryAdapter().resolve_tag(IMAGE)
+
+    assert result["manifest"]["config_digest"] is None
+
+
+async def test_no_config_digest_when_the_child_manifest_fails(http):
+    http.routes.update(index_routes(DOCKER_LIST, DOCKER_MANIFEST))
+    http.routes[("GET", f"{BASE}/manifests/{AMD64}")] = FakeResponse(status=404)
+
+    result = await RegistryAdapter().resolve_tag(IMAGE)
+
+    assert result["manifest"]["config_digest"] is None
+
+
+async def test_config_digest_comes_from_the_requested_platform(http):
+    arm_config = digest("7")
+    http.routes.update(index_routes(DOCKER_LIST, DOCKER_MANIFEST))
+    http.routes[("GET", f"{BASE}/manifests/{ARM64}")] = FakeResponse(
+        body={"schemaVersion": 2, "mediaType": DOCKER_MANIFEST, "config": {"digest": arm_config}}
+    )
+    http.routes[("GET", f"{BASE}/blobs/{arm_config}")] = FakeResponse(body=CONFIG_BLOB, content_type=OCTET_STREAM)
+
+    result = await RegistryAdapter().resolve_tag(IMAGE, platform="linux/arm64")
+
+    assert result["manifest"]["config_digest"] == arm_config

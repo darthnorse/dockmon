@@ -1,5 +1,6 @@
 """Boundary doubles for driving the real UpdateChecker in characterization tests."""
 
+import json
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -112,9 +113,14 @@ class FakeDb:
         yield _Session(self._record)
 
 
-def update_record(mode="exact"):
+def evidence(image_id, ref="app:latest", platform="linux/amd64"):
+    return json.dumps({"image_id": image_id, "platform": platform, "ref": ref}, sort_keys=True)
+
+
+def update_record(mode="exact", verified_image=None):
     return SimpleNamespace(
         floating_tag_mode=mode,
+        verified_image=verified_image,
         changelog_url=None,
         changelog_source=None,
         changelog_checked_at=None,
@@ -122,9 +128,16 @@ def update_record(mode="exact"):
 
 
 class FakeImage:
-    def __init__(self, image_id, repo_digests, labels):
+    def __init__(self, image_id, repo_digests, labels, image_os, architecture, variant):
         self.id = image_id
-        self.attrs = {"RepoDigests": repo_digests, "Config": {"Labels": labels}}
+        self.attrs = {
+            "RepoDigests": repo_digests,
+            "Config": {"Labels": labels},
+            "Os": image_os,
+            "Architecture": architecture,
+        }
+        if variant:
+            self.attrs["Variant"] = variant
 
 
 class _Images:
@@ -161,17 +174,15 @@ class _Containers:
 
 
 class FakeClient:
-    def __init__(self, image_id=LOCAL_IMAGE_ID, repo_digests=(), image_labels=None,
-                 image_missing=False, architecture="x86_64"):
+    def __init__(self, image_id=LOCAL_IMAGE_ID, repo_digests=(), image_labels=None, image_missing=False,
+                 image_os="linux", architecture="amd64", variant=None):
         images = {}
         if not image_missing:
-            images[image_id.split(":")[1]] = FakeImage(image_id, list(repo_digests), image_labels or {})
+            images[image_id.split(":")[1]] = FakeImage(
+                image_id, list(repo_digests), image_labels or {}, image_os, architecture, variant
+            )
         self.images = _Images(images)
         self.containers = _Containers(FakeContainer(self, {"Image": image_id}))
-        self._architecture = architecture
-
-    def info(self):
-        return {"OSType": "linux", "Architecture": self._architecture}
 
 
 def make_monitor(client=None, containers=()):

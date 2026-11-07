@@ -778,7 +778,8 @@ class RegistryAdapter:
         """
         Fetch image config blob to extract Labels (for OCI version detection).
 
-        Returns (config dict with Labels, config digest); (None, None) if the fetch fails.
+        Returns (config dict, config digest). The digest comes from the descriptor, so it is
+        returned even when fetching the blob itself fails.
         """
         # Get config digest from manifest
         config_descriptor = manifest.get("config", {})
@@ -818,14 +819,14 @@ class RegistryAdapter:
                         return config, config_digest
                     else:
                         logger.warning(f"Failed to fetch config blob: {response.status}")
-                        return None, None
+                        return None, config_digest
 
         except asyncio.TimeoutError:
             logger.warning(f"Timeout fetching config blob for {repository}")
-            return None, None
+            return None, config_digest
         except Exception as e:
             logger.warning(f"Error fetching config blob: {e}")
-            return None, None
+            return None, config_digest
 
     async def _fetch_config_from_manifest_list(
         self,
@@ -869,6 +870,7 @@ class RegistryAdapter:
         if token:
             headers["Authorization"] = token
 
+        config_digest = None
         try:
             async with aiohttp.ClientSession(trust_env=True) as session:
                 async with session.get(manifest_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
@@ -897,17 +899,17 @@ class RegistryAdapter:
                                 return config, config_digest
                             else:
                                 logger.warning(f"Failed to fetch config blob: {blob_response.status}")
-                                return None, None
+                                return None, config_digest
                     else:
                         logger.warning(f"Failed to fetch platform-specific manifest: {response.status}")
                         return None, None
 
         except asyncio.TimeoutError:
             logger.warning(f"Timeout fetching platform-specific config for {repository}")
-            return None, None
+            return None, config_digest
         except Exception as e:
             logger.warning(f"Error fetching platform-specific config: {e}")
-            return None, None
+            return None, config_digest
 
     def compute_floating_tag(self, image_tag: str, mode: str) -> str:
         """

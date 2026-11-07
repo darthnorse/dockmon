@@ -10,9 +10,11 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Tuple
 
+from docker.errors import NotFound
 from sqlalchemy.exc import IntegrityError
 from database import DatabaseManager, ContainerUpdate, GlobalSettings, RegistryCredential, UpdatePolicy
 
@@ -29,10 +31,67 @@ from updates.types import MANIFEST_LIST_TYPES, match_platform_manifest
 from utils.keys import make_composite_key
 from utils.encryption import decrypt_password
 from utils.container_id import normalize_container_id
-from utils.image_ref import extract_image_repository, has_tag, is_registry_host
+from utils.image_ref import extract_image_repository, has_tag, is_registry_host, with_implicit_latest
 from utils.async_docker import async_docker_call
 
 logger = logging.getLogger(__name__)
+
+SHA256_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+
+
+@dataclass(frozen=True)
+class RunningImage:
+    """What a container is really running. Only image_id survives the image record being deleted."""
+    image_id: Optional[str]
+    record_exists: bool = True
+    repo_digests: List[str] = field(default_factory=list)
+    labels: Dict[str, str] = field(default_factory=dict)
+    platform: Optional[str] = None
+
+
+def _image_platform(attrs: Dict) -> Optional[str]:
+    """Linux platform of an inspected image, or None if it cannot be trusted for a comparison."""
+    architecture = attrs.get("Architecture")
+    if attrs.get("Os") != "linux" or not isinstance(architecture, str) or not architecture:
+        return None
+    variant = attrs.get("Variant")
+    # Indexes often omit arm64's only common variant, so requesting it would miss them.
+    if not isinstance(variant, str) or not variant or (architecture == "arm64" and variant == "v8"):
+        return f"linux/{architecture}"
+    return f"linux/{architecture}/{variant}"
+
+
+def _read_running_image(client, container_id: str) -> RunningImage:
+    dc = client.containers.get(container_id)
+    image_id = dc.attrs.get("Image")
+    image_id = image_id if isinstance(image_id, str) and image_id else None
+    try:
+        attrs = dc.image.attrs
+    except NotFound:
+        return RunningImage(image_id=image_id, record_exists=False)
+    repo_digests = attrs.get("RepoDigests")
+    labels = attrs.get("Config", {}).get("Labels")
+    return RunningImage(
+        image_id=image_id,
+        repo_digests=repo_digests if isinstance(repo_digests, list) else [],
+        labels=labels if isinstance(labels, dict) else {},
+        platform=_image_platform(attrs),
+    )
+
+
+def _parse_verified_image(raw) -> Optional[Dict[str, str]]:
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    if not all(isinstance(parsed.get(key), str) for key in ("image_id", "platform", "ref")):
+        return None
+    return parsed
+
 
 # Marker for "no resolvable digest + no local RepoDigests": most likely built locally.
 # (Registries 401/403 on missing images, so a private image needing auth looks the same.)
@@ -264,6 +323,10 @@ class UpdateChecker:
         if auth:
             logger.debug(f"Using credentials for {container['name']}")
 
+        running = await self._inspect_running_image(container)
+        stored_evidence = self._get_verified_image(composite_key)
+        platform, platform_verified = self._resolve_platform(container, image, running, stored_evidence)
+
         # Get current digest from Docker API (the actual digest the container is running)
         current_digest = await self._get_container_image_digest(container)
         current_digest_from_registry = False
@@ -277,7 +340,7 @@ class UpdateChecker:
                 # Images without explicit tag default to :latest
                 logger.info(f"[{container['name']}] No local digest available, querying registry for {current_image}")
                 try:
-                    current_result = await self.registry.resolve_tag(current_image, auth=auth)
+                    current_result = await self.registry.resolve_tag(current_image, platform=platform, auth=auth)
                     if current_result:
                         current_digest = current_result["digest"]
                         current_digest_from_registry = True
@@ -301,7 +364,6 @@ class UpdateChecker:
         current_version = await self._get_container_image_version(container)
 
         # Build cache key for this image:tag:platform combination
-        platform = container.get("platform", "linux/amd64")
         cache_key = f"{floating_tag}:{platform}"
 
         # Check database cache first (Issue #62: rate limit mitigation)
@@ -326,14 +388,15 @@ class UpdateChecker:
             latest_manifest_labels = {}
             if cached_result.get("manifest_json"):
                 try:
-                    latest_manifest = json.loads(cached_result["manifest_json"])
-                    latest_manifest_labels = latest_manifest.get("config", {}).get("config", {}).get("Labels", {}) or {}
-                except json.JSONDecodeError:
+                    parsed_manifest = json.loads(cached_result["manifest_json"])
+                    latest_manifest_labels = parsed_manifest.get("config", {}).get("config", {}).get("Labels", {}) or {}
+                    latest_manifest = parsed_manifest
+                except (ValueError, AttributeError):
                     pass
         else:
             # Cache miss - call registry
             try:
-                latest_result = await self.registry.resolve_tag(floating_tag, auth=auth)
+                latest_result = await self.registry.resolve_tag(floating_tag, platform=platform, auth=auth)
             except TransientRegistryError:
                 # Retryable failure - do NOT mark local (would clobber a real pending update)
                 logger.warning(f"[{container['name']}] Transient registry failure resolving {floating_tag} - will retry next check")
@@ -370,6 +433,7 @@ class UpdateChecker:
         # Compare digests - Issue #105: check if latest_digest is in ANY local RepoDigest
         # This handles the case where the same image ID has multiple manifest digests
         # (e.g., after registry re-signing or manifest list updates)
+        platform_digest = self._extract_platform_digest(latest_manifest, platform)
         if self._has_digest(container, latest_digest):
             # Latest digest already present locally (handles multi-digest case)
             update_available = False
@@ -379,7 +443,6 @@ class UpdateChecker:
             # manifest list (index) digest, but Docker may store the platform-specific
             # manifest digest in RepoDigests. Extract the platform digest from the
             # manifest list and check if THAT matches a local RepoDigest.
-            platform_digest = self._extract_platform_digest(latest_manifest, platform)
             if platform_digest and self._has_digest(container, platform_digest):
                 update_available = False
                 logger.debug(f"[{container['name']}] Platform digest {platform_digest[:16]}... found in local RepoDigests - no update needed")
@@ -388,6 +451,25 @@ class UpdateChecker:
                     logger.debug(f"[{container['name']}] Platform digest {platform_digest[:16]}... not in local RepoDigests")
                 # Fall back to simple comparison (handles case where repo_digests not available)
                 update_available = current_digest != latest_digest
+
+        verified_image = None
+        if running and running.image_id and platform_verified:
+            config_digest = latest_manifest.get("config_digest")
+            config_digest = config_digest if isinstance(config_digest, str) and SHA256_DIGEST.fullmatch(config_digest) else None
+            evidence = {"image_id": running.image_id, "platform": platform, "ref": with_implicit_latest(image)}
+            registry_digests = {latest_digest, platform_digest, config_digest}
+            if (
+                running.image_id in registry_digests
+                or self._has_digest(container, latest_digest)
+                or (platform_digest and self._has_digest(container, platform_digest))
+            ):
+                verified_image = json.dumps(evidence, sort_keys=True)
+            elif current_digest_from_registry and config_digest and stored_evidence == evidence:
+                # This ID matched this reference on an earlier check, so the registry has moved on. A
+                # mismatch alone proves nothing: a local build would be replaced by auto-update.
+                update_available = True
+                current_digest = running.image_id
+                logger.info(f"[{container['name']}] Running image {running.image_id[:16]}... no longer matches the registry")
 
         logger.info(f"[{container['name']}] Digest comparison: current={current_digest[:16]}... latest={latest_digest[:16]}... update_available={update_available}")
 
@@ -410,18 +492,6 @@ class UpdateChecker:
 
         if current_version or latest_version:
             logger.debug(f"Version info: current={current_version}, latest={latest_version}")
-
-        # The fallback above took the current digest from the registry tag, so the digest
-        # comparison compared the latest image with itself. This happens when the running
-        # image's local record is gone, e.g. it was built and pushed on this host and :latest
-        # was re-tagged to a newer build. Compare what the container actually runs instead.
-        if current_digest_from_registry:
-            stale = await self._running_image_differs(
-                container, latest_digest, latest_manifest, platform, current_version, latest_version
-            )
-            if stale is not None:
-                update_available = stale
-                logger.info(f"[{container['name']}] Running image checked against registry: update_available={update_available}")
 
         # Issue #147: Suppress false positive updates (downgrades)
         # Some registries (e.g., Nextcloud) don't maintain floating tags - their "32.0" tag
@@ -466,6 +536,7 @@ class UpdateChecker:
             "registry_url": registry_url,
             "platform": platform,
             "floating_tag_mode": tracking_mode,
+            "verified_image": verified_image,
             "current_version": current_version,
             "latest_version": latest_version,
             "changelog_url": changelog_url,
@@ -623,6 +694,46 @@ class UpdateChecker:
         """
         return latest_ver < current_ver
 
+    async def _inspect_running_image(self, container: Dict) -> Optional[RunningImage]:
+        """Read the running image once per check. None when there is no Docker client (agent hosts)."""
+        if "_running_image" in container:
+            return container["_running_image"]
+
+        running = None
+        try:
+            client = self.monitor.clients.get(container.get("host_id")) if self.monitor else None
+            if client:
+                running = await async_docker_call(_read_running_image, client, container["id"])
+        except Exception as e:
+            logger.warning(f"[{container.get('name', 'unknown')}] Error inspecting running image: {e}")
+        container["_running_image"] = running
+        return running
+
+    def _get_verified_image(self, composite_key: str) -> Optional[Dict[str, str]]:
+        with self.db.get_session() as session:
+            record = session.query(ContainerUpdate).filter_by(container_id=composite_key).first()
+            return _parse_verified_image(record.verified_image) if record else None
+
+    def _resolve_platform(
+        self,
+        container: Dict,
+        image: str,
+        running: Optional[RunningImage],
+        stored_evidence: Optional[Dict[str, str]],
+    ) -> Tuple[str, bool]:
+        """Platform to check against, and whether it is known rather than assumed."""
+        if running and running.platform:
+            return running.platform, True
+        if (
+            running
+            and not running.record_exists
+            and stored_evidence
+            and stored_evidence["ref"] == with_implicit_latest(image)
+            and stored_evidence["image_id"] == running.image_id
+        ):
+            return stored_evidence["platform"], True
+        return container.get("platform", "linux/amd64"), False
+
     async def _get_container_image_digest(self, container: Dict) -> Optional[str]:
         """
         Get the actual image digest that the container is running.
@@ -650,37 +761,16 @@ class UpdateChecker:
                     return digest
 
             # PRIORITY 2: Fall back to Docker API query for legacy hosts
-            # (Agent hosts won't have Docker client, so this will fail gracefully)
-            if not self.monitor:
-                logger.debug(f"[{container_name}] No monitor object available")
+            running = await self._inspect_running_image(container)
+            if not running:
+                logger.debug(f"[{container_name}] No Docker access (likely agent host)")
                 return None
 
-            host_id = container.get("host_id")
-            if not host_id:
-                logger.warning(f"[{container_name}] No host_id in container dict")
-                return None
-
-            # Use the monitor's existing Docker client - it manages TLS certs properly
-            client = self.monitor.clients.get(host_id)
-            if not client:
-                # No Docker client for this host - likely an agent-monitored host
-                # This is expected and normal, not a warning
-                logger.debug(f"[{container_name}] No Docker client found for host {host_id} (likely agent host)")
-                return None
-
-            # Get container and extract digest (use async wrapper to prevent event loop blocking)
-            logger.debug(f"[{container_name}] Fetching container with ID: {container['id']}")
-            dc = await async_docker_call(client.containers.get, container["id"])
-            logger.debug(f"[{container_name}] Got container object, fetching image...")
-            image = dc.image
-            api_repo_digests = image.attrs.get("RepoDigests", [])
-            logger.debug(f"[{container_name}] RepoDigests: {api_repo_digests}")
-
-            if api_repo_digests:
+            if running.repo_digests:
                 # Store full list for _has_digest to use (Issue #105)
                 # This enables multi-digest detection for local/mTLS hosts
-                container["repo_digests"] = api_repo_digests
-                digest = self._extract_digest_from_repo_digests(api_repo_digests)
+                container["repo_digests"] = running.repo_digests
+                digest = self._extract_digest_from_repo_digests(running.repo_digests)
                 if digest:
                     logger.debug(f"[{container_name}] Got container image digest from Docker API: {digest[:16]}...")
                     return digest
@@ -690,73 +780,6 @@ class UpdateChecker:
 
         except Exception as e:
             logger.warning(f"[{container_name}] Error getting container image digest: {e}", exc_info=True)
-            return None
-
-    async def _running_image_differs(
-        self,
-        container: Dict,
-        latest_digest: str,
-        latest_manifest: Dict,
-        platform: str,
-        current_version: Optional[str],
-        latest_version: Optional[str],
-    ) -> Optional[bool]:
-        """
-        Decide whether a container without a local image record runs an older image.
-
-        Prefers the container's image ID, which Docker keeps even after the image record
-        is deleted. Depending on the image store, that ID is the index digest (containerd
-        snapshotter), or the config digest (classic store). The platform manifest digest
-        is also accepted. Falls back to comparing OCI version labels.
-
-        Returns:
-            True/False, or None when neither comparison is possible
-        """
-        image_id = await self._get_container_image_id(container)
-        if image_id:
-            latest_ids = {
-                latest_digest,
-                self._extract_platform_digest(latest_manifest, platform),
-                latest_manifest.get("config_digest"),
-            }
-            return image_id not in latest_ids
-
-        if current_version and latest_version:
-            return current_version != latest_version
-
-        return None
-
-    async def _get_container_image_id(self, container: Dict) -> Optional[str]:
-        """
-        Get the ID of the image the container was created from.
-
-        Unlike RepoDigests this is part of the container itself, so it survives the image
-        record being deleted or re-tagged.
-
-        Returns:
-            sha256 image ID or None if not available (e.g. agent-monitored hosts)
-        """
-        image_id = container.get("image_id")
-        if image_id:
-            return image_id
-
-        if not self.monitor:
-            return None
-
-        try:
-            host_id = container.get("host_id")
-            if not host_id:
-                return None
-
-            client = self.monitor.clients.get(host_id)
-            if not client:
-                return None
-
-            dc = await async_docker_call(client.containers.get, container["id"])
-            return dc.attrs.get("Image") or None
-
-        except Exception as e:
-            logger.warning(f"Error getting container image ID: {e}")
             return None
 
     async def _get_container_image_version(self, container: Dict) -> Optional[str]:
@@ -776,25 +799,8 @@ class UpdateChecker:
         if version:
             return version
 
-        if not self.monitor:
-            return None
-
-        try:
-            host_id = container.get("host_id")
-            if not host_id:
-                return None
-
-            client = self.monitor.clients.get(host_id)
-            if not client:
-                return None
-
-            dc = await async_docker_call(client.containers.get, container["id"])
-            image_labels = dc.image.attrs.get("Config", {}).get("Labels", {}) or {}
-            return image_labels.get("org.opencontainers.image.version")
-
-        except Exception as e:
-            logger.warning(f"Error getting container image version: {e}")
-            return None
+        running = await self._inspect_running_image(container)
+        return running.labels.get("org.opencontainers.image.version") if running else None
 
     async def _get_all_containers(self) -> List[Dict]:
         """
@@ -914,6 +920,8 @@ class UpdateChecker:
                 record.latest_image = update_info["latest_image"]
                 record.latest_digest = update_info["latest_digest"]
                 record.update_available = update_info["update_available"]
+                if update_info.get("verified_image"):
+                    record.verified_image = update_info["verified_image"]
                 record.check_status = None  # clear any stale 'local_image' flag
                 record.registry_url = update_info["registry_url"]
                 record.platform = update_info["platform"]
@@ -938,6 +946,7 @@ class UpdateChecker:
                     latest_image=update_info["latest_image"],
                     latest_digest=update_info["latest_digest"],
                     update_available=update_info["update_available"],
+                    verified_image=update_info.get("verified_image"),
                     floating_tag_mode=update_info["floating_tag_mode"],
                     registry_url=update_info["registry_url"],
                     platform=update_info["platform"],
@@ -971,6 +980,8 @@ class UpdateChecker:
                     record.latest_image = update_info["latest_image"]
                     record.latest_digest = update_info["latest_digest"]
                     record.update_available = update_info["update_available"]
+                    if update_info.get("verified_image"):
+                        record.verified_image = update_info["verified_image"]
                     record.check_status = None  # clear any stale 'local_image' flag
                     record.registry_url = update_info["registry_url"]
                     record.platform = update_info["platform"]

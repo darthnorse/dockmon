@@ -26,6 +26,7 @@ ADAPTER = "backend/updates/registry_adapter.py"
 IMAGE_REF = "backend/utils/image_ref.py"
 
 DECISION = "tests/unit/updates/test_update_decision.py::"
+PROVENANCE = "tests/unit/updates/test_update_provenance.py::"
 SOURCES = "tests/unit/updates/test_update_digest_sources.py::"
 EVENTS = "tests/unit/updates/test_update_events.py::"
 CONFIG = "tests/unit/updates/test_registry_config_fetch.py::"
@@ -107,22 +108,22 @@ MUTANTS = [
       "return await self._fetch_config_from_manifest_list(\n"
       "                    registry, repository, manifest, token, platform\n"
       "                )",
-      "return None",
+      "return None, None",
       (CONFIG + "test_index_traverses_to_platform_manifest_and_blob",)),
     M("M15", ADAPTER,
-      "config_data = await self._fetch_config_blob(\n"
+      "config_data, config_digest = await self._fetch_config_blob(\n"
       "                    registry, repository, manifest, token, platform\n"
       "                )",
-      "config_data = None",
+      "config_data, config_digest = None, None",
       (CONFIG + "test_single_manifest_octet_stream_config_blob_yields_labels",)),
     M("M16", ADAPTER, 'if mode == "exact":', "if True:",
       (TAGS + "test_floating_tag_table",
        DECISION + "test_tracking_mode_from_record_selects_floating_tag")),
-    M("M17", CHECKER, "latest_result = await self.registry.resolve_tag(floating_tag, auth=auth)",
-      "latest_result = await self.registry.resolve_tag(floating_tag, auth=None)",
+    M("M17", CHECKER, "latest_result = await self.registry.resolve_tag(floating_tag, platform=platform, auth=auth)",
+      "latest_result = await self.registry.resolve_tag(floating_tag, platform=platform, auth=None)",
       (DECISION + "test_credentials_reach_both_registry_calls",)),
-    M("M17b", CHECKER, "current_result = await self.registry.resolve_tag(current_image, auth=auth)",
-      "current_result = await self.registry.resolve_tag(current_image, auth=None)",
+    M("M17b", CHECKER, "current_result = await self.registry.resolve_tag(current_image, platform=platform, auth=auth)",
+      "current_result = await self.registry.resolve_tag(current_image, platform=platform, auth=None)",
       (DECISION + "test_credentials_reach_both_registry_calls",)),
     M("M18", CHECKER, "if skip_compose and self._is_compose_container(container):", "if False:",
       (STORAGE + "test_loop_skips_compose_containers_when_configured",)),
@@ -141,6 +142,65 @@ MUTANTS = [
     M("M21", CHECKER, 'if update_info["update_available"]:\n                        stats["updates_found"] += 1',
       'if True:\n                        stats["updates_found"] += 1',
       (STORAGE + "test_loop_without_update_stores_and_emits_nothing",)),
+    M("M32", CHECKER, "elif current_digest_from_registry and config_digest and stored_evidence == evidence:",
+      "elif current_digest_from_registry and config_digest:",
+      (PROVENANCE + "test_local_build_never_matched_is_left_alone",
+       PROVENANCE + "test_container_recreated_on_a_new_local_build_is_left_alone",
+       PROVENANCE + "test_evidence_for_another_reference_does_not_count_on_repeated_checks",
+       PROVENANCE + "test_evidence_for_another_platform_does_not_count")),
+    M("M33", CHECKER, "elif current_digest_from_registry and config_digest and stored_evidence == evidence:",
+      "elif current_digest_from_registry and stored_evidence == evidence:",
+      (PROVENANCE + "test_no_usable_config_digest_means_no_stale",)),
+    M("M34", CHECKER, "elif current_digest_from_registry and config_digest and stored_evidence == evidence:",
+      "elif False:",
+      (PROVENANCE + "test_stale_when_registry_moved_after_a_match_and_record_is_gone",
+       STORAGE + "test_stale_running_image_end_to_end")),
+    M("M35", CHECKER, "                current_digest = running.image_id\n", "",
+      (PROVENANCE + "test_stale_when_registry_moved_after_a_match_and_record_is_gone",)),
+    M("M36", CHECKER, "if running and running.image_id and platform_verified:", "if running and running.image_id:",
+      (PROVENANCE + "test_no_evidence_written_without_a_verified_platform",)),
+    M("M37", CHECKER, "registry_digests = {latest_digest, platform_digest, config_digest}",
+      "registry_digests = {platform_digest, config_digest}",
+      (PROVENANCE + "test_any_digest_match_means_current",)),
+    M("M38", CHECKER, "registry_digests = {latest_digest, platform_digest, config_digest}",
+      "registry_digests = {latest_digest, config_digest}",
+      (PROVENANCE + "test_any_digest_match_means_current",)),
+    M("M39", CHECKER, "registry_digests = {latest_digest, platform_digest, config_digest}",
+      "registry_digests = {latest_digest, platform_digest}",
+      (PROVENANCE + "test_any_digest_match_means_current",)),
+    M("M40", CHECKER, "and SHA256_DIGEST.fullmatch(config_digest)", "",
+      (PROVENANCE + "test_no_usable_config_digest_means_no_stale",)),
+    M("M41", CHECKER, "current_result = await self.registry.resolve_tag(current_image, platform=platform, auth=auth)",
+      "current_result = await self.registry.resolve_tag(current_image, auth=auth)",
+      (PROVENANCE + "test_platform_comes_from_the_image",)),
+    M("M42", CHECKER, "latest_result = await self.registry.resolve_tag(floating_tag, platform=platform, auth=auth)",
+      "latest_result = await self.registry.resolve_tag(floating_tag, auth=auth)",
+      (PROVENANCE + "test_platform_comes_from_the_image",)),
+    M("M50", CHECKER, '"ref": with_implicit_latest(image)}', '"ref": image}',
+      (PROVENANCE + "test_evidence_written_with_a_tag_still_counts_for_the_untagged_name",)),
+    M("M43", CHECKER, "            and not running.record_exists\n", "",
+      (PROVENANCE + "test_non_linux_images_are_never_stale",)),
+    M("M44", CHECKER, '''                if update_info.get("verified_image"):
+                    record.verified_image = update_info["verified_image"]
+                record.check_status = None''', "                record.check_status = None",
+      (STORAGE + "test_store_update_sets_verified_image",)),
+    M("M45", CHECKER, '''                    if update_info.get("verified_image"):
+                        record.verified_image = update_info["verified_image"]
+''', "",
+      (STORAGE + "test_store_retry_sets_verified_image",)),
+    M("M46", CHECKER, 'verified_image=update_info.get("verified_image"),', "verified_image=None,",
+      (STORAGE + "test_store_create_sets_verified_image",)),
+    M("M47", ADAPTER, '''logger.warning(f"Failed to fetch config blob: {response.status}")
+                        return None, config_digest''', '''logger.warning(f"Failed to fetch config blob: {response.status}")
+                        return None, None''',
+      (CONFIG + "test_config_digest_kept_when_the_single_manifest_blob_fails",)),
+    M("M48", ADAPTER, '''logger.warning(f"Failed to fetch config blob: {blob_response.status}")
+                                return None, config_digest''', '''logger.warning(f"Failed to fetch config blob: {blob_response.status}")
+                                return None, None''',
+      (CONFIG + "test_config_digest_kept_when_the_index_child_blob_fails",)),
+    M("M49", ADAPTER, '"config_digest": config_digest,', '"config_digest": None,',
+      (CONFIG + "test_config_digest_reported_for_a_single_manifest",
+       CONFIG + "test_config_digest_reported_for_an_index")),
     M("M22", CHECKER,
       "container_id=composite_key\n            ).first()\n\n            if record:\n"
       "                return record.floating_tag_mode",

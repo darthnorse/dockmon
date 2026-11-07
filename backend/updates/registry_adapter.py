@@ -19,8 +19,32 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Tuple
 from urllib.parse import urlparse
 from updates.types import MANIFEST_LIST_TYPES, match_platform_manifest
+from utils.image_ref import is_registry_host, with_implicit_latest
 
 logger = logging.getLogger(__name__)
+
+DOCKER_HUB_HOSTS = frozenset({
+    "docker.io",
+    "index.docker.io",
+    "registry-1.docker.io",
+    "registry.docker.io",
+    "registry.hub.docker.com",
+})
+
+
+def _canonical_registry_host(registry: str) -> str:
+    host = registry.lower().split("://", 1)[-1].rstrip("/")
+    return host.removesuffix(":443")
+
+
+# Exact matches only: these decide where stored credentials are sent, so a lookalike
+# such as notdocker.io must never be treated as the real registry.
+def _is_docker_hub(registry: str) -> bool:
+    return _canonical_registry_host(registry) in DOCKER_HUB_HOSTS
+
+
+def _is_ghcr(registry: str) -> bool:
+    return _canonical_registry_host(registry) == "ghcr.io"
 
 
 class TransientRegistryError(Exception):
@@ -221,7 +245,7 @@ class RegistryAdapter:
             registry = f"https://{registry}"
 
         # Docker Hub uses special endpoint
-        if "docker.io" in registry:
+        if _is_docker_hub(registry):
             registry = "https://registry.hub.docker.com"
 
         return registry
@@ -254,8 +278,7 @@ class RegistryAdapter:
         # Check for explicit registry
         if "/" in image_ref:
             parts = image_ref.split("/", 1)
-            # If first part has dot or colon, it's likely a registry
-            if "." in parts[0] or ":" in parts[0]:
+            if is_registry_host(parts[0]):
                 registry = parts[0]
                 image_ref = parts[1]
 
@@ -266,7 +289,7 @@ class RegistryAdapter:
             repository = image_ref
 
         # Docker Hub uses "library/" prefix for official images
-        if registry == "docker.io" and "/" not in repository:
+        if _is_docker_hub(registry) and "/" not in repository:
             repository = f"library/{repository}"
 
         return registry, repository, tag
@@ -564,12 +587,12 @@ class RegistryAdapter:
 
         # Step 3: Fallback to hardcoded methods for known non-standard registries
         # Docker Hub doesn't properly implement WWW-Authenticate discovery
-        if "docker.io" in registry or "registry.hub.docker.com" in registry:
+        if _is_docker_hub(registry):
             logger.debug(f"Using Docker Hub fallback for {registry}")
             return await self._get_dockerhub_token(repository, auth)
 
         # GHCR fallback (should work with discovery, but keep as safety net)
-        if "ghcr.io" in registry:
+        if _is_ghcr(registry):
             logger.debug(f"Using GHCR fallback for {registry}")
             return await self._get_ghcr_token(repository, auth)
 
@@ -908,17 +931,13 @@ class RegistryAdapter:
         """
         # Ensure tag is present - images without tags cause Docker to store image ID
         # instead of the image reference after container recreation
-        if ":" not in image_tag:
-            image_tag = f"{image_tag}:latest"
+        image_tag = with_implicit_latest(image_tag)
 
         if mode == "exact":
             return image_tag
 
         # Split image and tag
-        if ":" in image_tag:
-            image, tag = image_tag.rsplit(":", 1)
-        else:
-            image, tag = image_tag, "latest"
+        image, tag = image_tag.rsplit(":", 1)
 
         if mode == "latest":
             return f"{image}:latest"

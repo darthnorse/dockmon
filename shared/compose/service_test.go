@@ -288,3 +288,28 @@ func TestRewriteBindMountPaths_TmpfsUnchanged(t *testing.T) {
 		t.Errorf("Source = %q, want empty", project.Services["web"].Volumes[0].Source)
 	}
 }
+
+func TestGetRegistryFromImage(t *testing.T) {
+	tests := []struct {
+		image string
+		want  string
+	}{
+		{"nginx", "docker.io"},
+		{"nginx:1.25", "docker.io"},
+		{"org/app:1", "docker.io"},
+		{"docker.io/library/nginx:1", "docker.io"},
+		{"ghcr.io/org/app:1", "ghcr.io"},
+		{"registry.example.com:5000/app", "registry.example.com:5000"},
+		{"registry:5000/app", "registry:5000"},
+		{"registry:5000/org/app:1", "registry:5000"},
+		{"localhost:5000/app", "localhost:5000"},
+		{"localhost/app", "localhost"},
+		{"REGISTRY/app", "registry"},
+		{"GHCR.IO/org/app", "ghcr.io"},
+	}
+	for _, tt := range tests {
+		if got := getRegistryFromImage(tt.image); got != tt.want {
+			t.Errorf("getRegistryFromImage(%q) = %q, want %q", tt.image, got, tt.want)
+		}
+	}
+}

@@ -3,6 +3,7 @@
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from urllib.parse import urlsplit
 
 import aiohttp
 import pytest
@@ -207,3 +208,104 @@ async def test_adapter_cache_is_keyed_by_ref_and_platform(http):
     await adapter.resolve_tag(IMAGE, platform="linux/arm64")
 
     assert len(http.requests) > requests_after_first
+
+
+CREDENTIALS = {"username": "robot", "password": "secret"}
+HUB_MANIFEST_HOST = "registry.hub.docker.com"
+
+
+class AnyHostHttp(FakeHttp):
+    """A registry that answers on any host and never challenges, so token fallbacks run."""
+
+    def __init__(self):
+        super().__init__({})
+
+    def _request(self, method, url, headers):
+        self.requests.append(SimpleNamespace(method=method, url=url, headers=headers or {}))
+        if method == "HEAD":
+            return _RequestContext(FakeResponse())
+        if "/token" in url:
+            return _RequestContext(FakeResponse(body={"token": "abc"}))
+        if "/blobs/" in url:
+            return _RequestContext(FakeResponse(body=CONFIG_BLOB, content_type=OCTET_STREAM))
+        manifest = {"schemaVersion": 2, "mediaType": DOCKER_MANIFEST, "config": DESCRIPTOR}
+        return _RequestContext(FakeResponse(body=manifest, headers={"Docker-Content-Digest": TAG_DIGEST}))
+
+    def hosts_sent_credentials(self):
+        return {urlsplit(r.url).netloc for r in self.requests if r.headers.get("Authorization")}
+
+    def manifest_hosts(self):
+        return {urlsplit(r.url).netloc for r in self.requests if r.method == "GET" and "/manifests/" in r.url}
+
+
+async def resolve_with_credentials(image, mode):
+    adapter = RegistryAdapter()
+    fake = AnyHostHttp()
+    with patch("updates.registry_adapter.aiohttp.ClientSession", fake.session):
+        result = await adapter.resolve_tag(adapter.compute_floating_tag(image, mode), auth=CREDENTIALS)
+    assert result is not None
+    return fake
+
+
+@pytest.mark.parametrize("image", [
+    "docker.io/library/nginx:1",
+    "index.docker.io/library/nginx:1",
+    "registry-1.docker.io/library/nginx:1",
+    "registry.docker.io/library/nginx:1",
+    "registry.hub.docker.com/library/nginx:1",
+    "DOCKER.IO/library/nginx:1",
+    "docker.io:443/library/nginx:1",
+    "nginx:1",
+])
+async def test_docker_hub_credentials_go_only_to_docker_hub(image):
+    fake = await resolve_with_credentials(image, "exact")
+
+    assert fake.hosts_sent_credentials() == {"auth.docker.io", HUB_MANIFEST_HOST}
+    assert fake.manifest_hosts() == {HUB_MANIFEST_HOST}
+
+
+async def test_ghcr_credentials_go_only_to_ghcr():
+    fake = await resolve_with_credentials("ghcr.io/org/app:1", "exact")
+
+    assert fake.hosts_sent_credentials() == {"ghcr.io"}
+    assert fake.manifest_hosts() == {"ghcr.io"}
+
+
+@pytest.mark.parametrize("image,mode,host", [
+    ("notdocker.io/org/app:1", "exact", "notdocker.io"),
+    ("registry.docker.io.corp.example/org/app:1", "exact", "registry.docker.io.corp.example"),
+    ("registry.hub.docker.com.corp.example/org/app:1", "exact", "registry.hub.docker.com.corp.example"),
+    ("myghcr.io/org/app:1", "exact", "myghcr.io"),
+    ("ghcr.io.corp.example/org/app:1", "exact", "ghcr.io.corp.example"),
+    ("registry.example.com:5000/org/app:1", "exact", "registry.example.com:5000"),
+    ("docker.io:5000/org/app:1", "exact", "docker.io:5000"),
+    ("localhost/app:1", "exact", "localhost"),
+    ("registry:5000/app", "latest", "registry:5000"),
+])
+async def test_credentials_stay_on_any_other_registry(image, mode, host):
+    fake = await resolve_with_credentials(image, mode)
+
+    assert fake.hosts_sent_credentials() == {host}
+    assert fake.manifest_hosts() == {host}
+
+
+@pytest.mark.parametrize("registry", ["docker.io", "https://docker.io", "http://docker.io/", "DOCKER.IO:443"])
+def test_docker_hub_url_normalization_accepts_scheme_case_and_default_port(registry):
+    assert RegistryAdapter()._normalize_registry_url(registry) == f"https://{HUB_MANIFEST_HOST}"
+
+
+async def test_credentials_still_reach_a_token_service_on_another_https_host(http):
+    http.routes.update(single_manifest_routes())
+    http.routes[("HEAD", f"{BASE}/manifests/latest")] = FakeResponse(
+        status=401,
+        headers={"WWW-Authenticate": (
+            'Bearer realm="https://auth.example.com/token",'
+            'service="registry.example.com",scope="repository:org/app:pull"'
+        )},
+    )
+    http.routes[("GET", "https://auth.example.com/token")] = FakeResponse(body={"token": "abc"})
+
+    await RegistryAdapter().resolve_tag(IMAGE, auth=CREDENTIALS)
+
+    assert http.get_request("https://auth.example.com/token").headers["Authorization"].startswith("Basic ")
+    assert http.get_request(f"{BASE}/manifests/latest").headers["Authorization"] == "Bearer abc"

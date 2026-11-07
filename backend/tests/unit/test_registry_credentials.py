@@ -264,3 +264,13 @@ class TestRegistryWithPort:
             result = get_registry_credentials(test_database_manager, "registry.example.com:5000/org/app:v1")
 
         assert result == {"username": "robot", "password": "secret"}
+
+    def test_localhost_image_does_not_get_docker_hub_credentials(self, test_db, test_database_manager):
+        from database import RegistryCredential
+        from utils.registry_credentials import get_registry_credentials
+
+        test_db.add(RegistryCredential(registry_url="docker.io", username="robot", password_encrypted="stored"))
+        test_db.commit()
+
+        with patch('utils.registry_credentials.decrypt_password', return_value="secret"):
+            assert get_registry_credentials(test_database_manager, "localhost/app:1") is None

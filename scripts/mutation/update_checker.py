@@ -23,6 +23,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 CHECKER = "backend/updates/update_checker.py"
 ADAPTER = "backend/updates/registry_adapter.py"
+IMAGE_REF = "backend/utils/image_ref.py"
 
 DECISION = "tests/unit/updates/test_update_decision.py::"
 SOURCES = "tests/unit/updates/test_update_digest_sources.py::"
@@ -146,6 +147,30 @@ MUTANTS = [
       'container_id=composite_key.split(":")[1]\n            ).first()\n\n            if record:\n'
       "                return record.floating_tag_mode",
       (STORAGE + "test_stored_tracking_mode_is_read_by_composite_key",)),
+    M("M23", IMAGE_REF, 'return image_ref.rfind(":") > image_ref.rfind("/")', 'return ":" in image_ref',
+      (TAGS + "test_floating_tag_table",
+       CONFIG + "test_credentials_stay_on_any_other_registry",
+       DECISION + "test_untagged_registry_with_port_stays_on_its_own_registry")),
+    M("M24", ADAPTER, "return _canonical_registry_host(registry) in DOCKER_HUB_HOSTS",
+      'return "docker.io" in _canonical_registry_host(registry)',
+      (CONFIG + "test_credentials_stay_on_any_other_registry",)),
+    M("M25", ADAPTER, 'return _canonical_registry_host(registry) == "ghcr.io"',
+      'return "ghcr.io" in _canonical_registry_host(registry)',
+      (CONFIG + "test_credentials_stay_on_any_other_registry",)),
+    M("M26", ADAPTER, 'return host.removesuffix(":443")', "return host",
+      (CONFIG + "test_docker_hub_credentials_go_only_to_docker_hub",)),
+    M("M27", ADAPTER, 'host = registry.lower().split("://", 1)[-1].rstrip("/")',
+      'host = registry.split("://", 1)[-1].rstrip("/")',
+      (CONFIG + "test_docker_hub_credentials_go_only_to_docker_hub",)),
+    M("M28", IMAGE_REF, ' or segment == "localhost"', "",
+      (TAGS + "test_parse_image_ref",
+       CONFIG + "test_credentials_stay_on_any_other_registry")),
+    M("M31", IMAGE_REF, " or segment.lower() != segment", "",
+      (TAGS + "test_parse_image_ref",)),
+    M("M29", CHECKER, 'elif "/" in tag:\n            return None', 'elif "/" in tag:\n            tag = tag.rsplit(":", 1)[-1]',
+      (DECISION + "test_registry_port_is_not_read_as_a_version",)),
+    M("M30", ADAPTER, 'if _is_docker_hub(registry) and "/" not in repository:', 'if registry == "docker.io" and "/" not in repository:',
+      (TAGS + "test_parse_image_ref",)),
 ]
 
 

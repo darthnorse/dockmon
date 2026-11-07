@@ -29,7 +29,7 @@ from updates.types import MANIFEST_LIST_TYPES, match_platform_manifest
 from utils.keys import make_composite_key
 from utils.encryption import decrypt_password
 from utils.container_id import normalize_container_id
-from utils.image_ref import extract_image_repository
+from utils.image_ref import extract_image_repository, has_tag, is_registry_host
 from utils.async_docker import async_docker_call
 
 logger = logging.getLogger(__name__)
@@ -475,9 +475,7 @@ class UpdateChecker:
         if not image_ref or "@" in image_ref:
             return False
         first_segment = image_ref.split("/", 1)[0]
-        has_explicit_host = "/" in image_ref and (
-            "." in first_segment or ":" in first_segment or first_segment == "localhost"
-        )
+        has_explicit_host = "/" in image_ref and is_registry_host(first_segment)
         return not has_explicit_host
 
     def _extract_digest_from_repo_digests(self, repo_digests: List[str]) -> Optional[str]:
@@ -577,8 +575,10 @@ class UpdateChecker:
             return None
 
         # Extract just the tag portion if full image reference
-        if ":" in tag:
+        if has_tag(tag):
             tag = tag.rsplit(":", 1)[1]
+        elif "/" in tag:
+            return None
 
         # Match semver patterns: 1.25.3, v2.1.0, 32.0.3-fpm-alpine, etc.
         version_match = re.match(r"v?(\d+)(?:\.(\d+))?(?:\.(\d+))?", tag)

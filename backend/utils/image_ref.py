@@ -20,6 +20,23 @@ cannot parse into a repository name.
 from typing import Optional
 
 
+def is_registry_host(segment: str) -> bool:
+    """True if a reference's first path segment is a registry, not a Docker Hub namespace.
+
+    Matches Docker's own parsing, including that an uppercase segment is a registry.
+    """
+    return "." in segment or ":" in segment or segment == "localhost" or segment.lower() != segment
+
+
+def has_tag(image_ref: str) -> bool:
+    """True if the reference has a tag or digest. A colon before the last slash is a registry port."""
+    return image_ref.rfind(":") > image_ref.rfind("/")
+
+
+def with_implicit_latest(image_ref: str) -> str:
+    return image_ref if has_tag(image_ref) else f"{image_ref}:latest"
+
+
 def extract_image_repository(image_ref: Optional[str]) -> str:
     """Extract the repository (image name) from a full image reference.
 
@@ -49,7 +66,7 @@ def extract_image_repository(image_ref: Optional[str]) -> str:
     # Otherwise it's a Docker Hub namespace and part of the repository.
     if "/" in ref:
         head, rest = ref.split("/", 1)
-        if "." in head or ":" in head or head == "localhost":
+        if is_registry_host(head):
             ref = rest
 
     # Drop the tag. The tag separator is a ':' in the final path segment; a ':'

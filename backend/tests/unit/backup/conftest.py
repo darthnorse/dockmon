@@ -17,7 +17,8 @@ from manage_backup import migrate_candidate
 BACKEND_DIR = Path(__file__).parents[3]
 _SCRIPT = ScriptDirectory(str(ALEMBIC_DIR))
 HEAD_REVISION = _SCRIPT.get_current_head()
-OLDER_REVISION = _SCRIPT.get_revision(HEAD_REVISION).down_revision
+# Pinned below 047: tests need a schema without the scheduled-backup columns, whatever head is.
+OLDER_REVISION = "046_group_tag_scopes"
 PASSPHRASE = "correct horse battery staple"
 FAST_KDF = KdfParams(n_log2=10, r=8, p=1)
 

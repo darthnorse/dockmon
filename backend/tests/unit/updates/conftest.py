@@ -20,7 +20,7 @@ def credentials_stub():
 
 
 @pytest.fixture
-def event_bus():
+def event_bus_stub():
     bus = SimpleNamespace(emit=AsyncMock())
     with patch("updates.update_checker.get_event_bus", return_value=bus):
         yield bus

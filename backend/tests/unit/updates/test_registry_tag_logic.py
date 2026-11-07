@@ -7,17 +7,8 @@ from updates.registry_adapter import RegistryAdapter
 DIGEST_REF = "app@sha256:" + "a" * 64
 
 
-@pytest.mark.parametrize("mode,expected", [
-    ("exact", "nginx:1.25.3"),
-    ("patch", "nginx:1.25"),
-    ("minor", "nginx:1"),
-    ("latest", "nginx:latest"),
-])
-def test_tracking_modes_for_semver_tag(mode, expected):
-    assert RegistryAdapter().compute_floating_tag("nginx:1.25.3", mode) == expected
-
-
 @pytest.mark.parametrize("image,exact,patch,minor,latest", [
+    ("nginx:1.25.3", "nginx:1.25.3", "nginx:1.25", "nginx:1", "nginx:latest"),
     ("nginx:1.25.3-alpine", "nginx:1.25.3-alpine", "nginx:1.25-alpine", "nginx:1-alpine", "nginx:latest"),
     ("nginx:1.25", "nginx:1.25", "nginx:1.25", "nginx:1", "nginx:latest"),
     ("nginx:stable", "nginx:stable", "nginx:stable", "nginx:stable", "nginx:latest"),

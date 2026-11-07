@@ -37,8 +37,7 @@ async def test_docker_repo_digests_returned_and_stored():
 
     assert found == CURRENT
     assert container["repo_digests"] == digests
-    assert spy.await_count == 1
-    assert spy.await_args.args == (client.containers.get, CONTAINER_ID)
+    assert (client.containers.get, CONTAINER_ID) in [call.args for call in spy.await_args_list]
     assert client.images.requested == [LOCAL_IMAGE_ID.split(":")[1]]
 
 

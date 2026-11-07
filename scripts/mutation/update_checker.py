@@ -71,7 +71,7 @@ MUTANTS = [
     M("M3", CHECKER, "update_available = current_digest != latest_digest", "update_available = False",
       (DECISION + "test_different_digests_mean_update",)),
     M("M3t", CHECKER, "update_available = current_digest != latest_digest", "update_available = True",
-      (DECISION + "test_stale_image_without_local_record_reports_no_update_known_gap",)),
+      (DECISION + "test_fresh_image_without_local_record_reports_no_update",)),
     M("M4", CHECKER, 'current_digest = current_result["digest"]', "current_digest = None",
       (DECISION + "test_fallback_uses_registry_digest_of_current_tag",)),
     M("M5", CHECKER, "if current_ver and latest_ver and self._is_downgrade(current_ver, latest_ver):", "if False:",
@@ -115,7 +115,7 @@ MUTANTS = [
       "config_data = None",
       (CONFIG + "test_single_manifest_octet_stream_config_blob_yields_labels",)),
     M("M16", ADAPTER, 'if mode == "exact":', "if True:",
-      (TAGS + "test_tracking_modes_for_semver_tag",
+      (TAGS + "test_floating_tag_table",
        DECISION + "test_tracking_mode_from_record_selects_floating_tag")),
     M("M17", CHECKER, "latest_result = await self.registry.resolve_tag(floating_tag, auth=auth)",
       "latest_result = await self.registry.resolve_tag(floating_tag, auth=None)",
@@ -140,6 +140,12 @@ MUTANTS = [
     M("M21", CHECKER, 'if update_info["update_available"]:\n                        stats["updates_found"] += 1',
       'if True:\n                        stats["updates_found"] += 1',
       (STORAGE + "test_loop_without_update_stores_and_emits_nothing",)),
+    M("M22", CHECKER,
+      "container_id=composite_key\n            ).first()\n\n            if record:\n"
+      "                return record.floating_tag_mode",
+      'container_id=composite_key.split(":")[1]\n            ).first()\n\n            if record:\n'
+      "                return record.floating_tag_mode",
+      (STORAGE + "test_stored_tracking_mode_is_read_by_composite_key",)),
 ]
 
 

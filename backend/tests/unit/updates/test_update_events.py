@@ -14,30 +14,30 @@ UPDATE_INFO = {
 }
 
 
-async def test_first_check_emits_event(event_bus):
+async def test_first_check_emits_event(event_bus_stub):
     await make_checker({})._create_update_event(container_dict(), UPDATE_INFO, previous_digest=None)
 
-    assert event_bus.emit.await_count == 1
+    assert event_bus_stub.emit.await_count == 1
 
 
-async def test_changed_latest_digest_emits_event(event_bus):
+async def test_changed_latest_digest_emits_event(event_bus_stub):
     await make_checker({})._create_update_event(container_dict(), UPDATE_INFO, previous_digest=CURRENT)
 
-    assert event_bus.emit.await_count == 1
+    assert event_bus_stub.emit.await_count == 1
 
 
-async def test_repeated_latest_digest_emits_nothing(event_bus):
+async def test_repeated_latest_digest_emits_nothing(event_bus_stub):
     await make_checker({})._create_update_event(container_dict(), UPDATE_INFO, previous_digest=LATEST)
 
-    assert event_bus.emit.await_count == 0
+    assert event_bus_stub.emit.await_count == 0
 
 
-async def test_event_payload(event_bus):
+async def test_event_payload(event_bus_stub):
     container = container_dict(id=CONTAINER_ID + "0" * 52)
 
     await make_checker({})._create_update_event(container, UPDATE_INFO, previous_digest=None)
 
-    event = event_bus.emit.await_args.args[0]
+    event = event_bus_stub.emit.await_args.args[0]
     assert event.event_type == EventType.UPDATE_AVAILABLE
     assert event.scope_type == "container"
     assert event.scope_id == f"{HOST_ID}:{CONTAINER_ID}"
@@ -47,9 +47,9 @@ async def test_event_payload(event_bus):
     assert event.data == {**UPDATE_INFO, "update_detected": True}
 
 
-async def test_event_bus_failure_is_swallowed(event_bus):
-    event_bus.emit.side_effect = RuntimeError("bus down")
+async def test_event_bus_failure_is_swallowed(event_bus_stub):
+    event_bus_stub.emit.side_effect = RuntimeError("bus down")
 
     await make_checker({})._create_update_event(container_dict(), UPDATE_INFO, previous_digest=None)
 
-    event_bus.emit.assert_awaited_once()
+    event_bus_stub.emit.assert_awaited_once()

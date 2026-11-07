@@ -46,6 +46,7 @@ def index_manifest(amd64=AMD64_CHILD, arm64=ARM64_CHILD, media_type=DOCKER_LIST)
 
 
 def registry_result(result_digest, labels=None, manifest=None, config_digest=None, registry="docker.io"):
+    """config_digest is ignored by production today; image-ID comparison will read it."""
     body = dict(manifest or {"schemaVersion": 2, "mediaType": DOCKER_MANIFEST})
     body["config"] = {"config": {"Labels": labels or {}}}
     if config_digest:
@@ -62,8 +63,7 @@ class FakeRegistry:
 
     def __init__(self, routes):
         self._routes = routes
-        self._adapter = RegistryAdapter()
-        self.compute_floating_tag = self._adapter.compute_floating_tag
+        self.compute_floating_tag = RegistryAdapter().compute_floating_tag
         self.calls = []
         self.unexpected = []
 

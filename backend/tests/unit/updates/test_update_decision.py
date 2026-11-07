@@ -381,7 +381,8 @@ async def test_missing_image_returns_none(image):
     assert checker.registry.calls == []
 
 
-async def test_stale_image_with_older_latest_label_stays_suppressed():
+# Image-ID comparison added to this fallback path must not override downgrade suppression.
+async def test_stale_image_with_older_latest_label_reports_no_update():
     client = FakeClient(image_id=STALE_IMAGE_ID, image_missing=True)
     route = registry_result(LATEST, labels=version_labels("1.0.0"), config_digest=LATEST_CONFIG)
     checker = make_checker({"app:stable": route}, client=client)

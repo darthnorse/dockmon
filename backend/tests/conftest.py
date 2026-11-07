@@ -372,64 +372,6 @@ def test_container_desired_state(test_db: Session, test_host):
     return state
 
 
-@pytest.fixture
-def test_container_update(test_db: Session, test_host):
-    """
-    Create container update record in database.
-
-    Tracks update availability for a container.
-
-    Returns:
-        ContainerUpdate: Update tracking record
-    """
-    from database import ContainerUpdate
-
-    # Composite key format: {host_id}:{container_id}
-    composite_key = f"{test_host.id}:abc123def456"
-
-    update = ContainerUpdate(
-        container_id=composite_key,
-        host_id=test_host.id,
-        container_name='test-nginx-container',  # v2.2.3+: Store name for reattachment
-        current_image='nginx:latest',
-        current_digest='sha256:abc123def456789',  # Required field
-        latest_image='nginx:alpine',
-        latest_digest='sha256:def456abc789012',  # Required field
-        update_available=True,
-        floating_tag_mode='latest',  # For tracking mode tests
-        last_checked_at=datetime.now(timezone.utc),
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc)
-    )
-    test_db.add(update)
-    test_db.commit()
-    test_db.refresh(update)
-
-    return update
-
-
-@pytest.fixture
-def test_container_metadata(test_host):
-    """
-    Create container metadata dict for tests.
-
-    Returns a dict representing container metadata with composite key format.
-    This is NOT stored in database - it's just test data.
-
-    Returns:
-        dict: Container metadata with id (composite key), name, image
-    """
-    composite_key = f"{test_host.id}:abc123def456"
-
-    return {
-        "id": composite_key,
-        "name": "test-container",
-        "image": "nginx:1.25.0",
-        "host_id": test_host.id,
-        "short_id": "abc123def456"
-    }
-
-
 def _create_test_api_key(session: Session, username: str, key_name: str) -> str:
     """
     Create a test API key with full admin permissions.

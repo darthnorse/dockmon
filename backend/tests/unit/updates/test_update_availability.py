@@ -349,4 +349,3 @@ class TestMatchesIgnorePattern:
         container = {"name": "nginx", "image": "nginx:latest"}
 
         assert checker._matches_ignore_pattern(container, []) is False
-

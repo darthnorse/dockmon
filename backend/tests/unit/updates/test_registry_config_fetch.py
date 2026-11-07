@@ -7,22 +7,20 @@ from unittest.mock import MagicMock, patch
 import aiohttp
 import pytest
 
+from checker_fakes import DOCKER_LIST, DOCKER_MANIFEST, OCI_INDEX, VERSION_LABEL, digest
 from updates.registry_adapter import RegistryAdapter
 
 BASE = "https://registry.example.com/v2/org/app"
 IMAGE = "registry.example.com/org/app:latest"
 OCTET_STREAM = "application/octet-stream"
-DOCKER_LIST = "application/vnd.docker.distribution.manifest.list.v2+json"
-OCI_INDEX = "application/vnd.oci.image.index.v1+json"
-DOCKER_MANIFEST = "application/vnd.docker.distribution.manifest.v2+json"
 OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
 
-TAG_DIGEST = "sha256:" + "a" * 64
-AMD64 = "sha256:" + "b" * 64
-ARM64 = "sha256:" + "c" * 64
-ATTESTATION = "sha256:" + "d" * 64
-CONFIG = "sha256:" + "e" * 64
-LABELS = {"org.opencontainers.image.version": "1.2.3"}
+TAG_DIGEST = digest("a")
+AMD64 = digest("b")
+ARM64 = digest("c")
+ATTESTATION = digest("d")
+CONFIG = digest("e")
+LABELS = {VERSION_LABEL: "1.2.3"}
 CONFIG_BLOB = {"config": {"Labels": LABELS}}
 DESCRIPTOR = {"mediaType": "application/vnd.docker.container.image.v1+json", "digest": CONFIG}
 

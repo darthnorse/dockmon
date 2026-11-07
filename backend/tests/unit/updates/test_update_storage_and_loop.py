@@ -23,6 +23,8 @@ from checker_fakes import (
 from database import ContainerUpdate, DockerHostDB, GlobalSettings, RegistryCredential, UpdatePolicy
 from updates.update_checker import UpdateChecker
 
+pytestmark = pytest.mark.usefixtures("changelog_stub", "event_bus_stub")
+
 COMPOSITE_KEY = f"{HOST_ID}:{CONTAINER_ID}"
 FULL_ID = CONTAINER_ID + "0" * 52
 
@@ -71,6 +73,11 @@ def read_row(db):
         row = session.query(ContainerUpdate).filter_by(container_id=COMPOSITE_KEY).first()
         session.expunge(row)
     return row
+
+
+def stored_names(db):
+    with db.get_session() as session:
+        return sorted(row.container_name for row in session.query(ContainerUpdate).all())
 
 
 def test_store_creates_record_with_every_field(host_db):
@@ -178,11 +185,7 @@ def test_previous_digest_read_for_short_and_full_id(host_db, container_id):
 
 def set_skip_compose(db, enabled):
     with db.get_session() as session:
-        settings = session.query(GlobalSettings).first()
-        if settings is None:
-            settings = GlobalSettings()
-            session.add(settings)
-        settings.skip_compose_containers = enabled
+        session.query(GlobalSettings).first().skip_compose_containers = enabled
         session.commit()
 
 
@@ -204,62 +207,59 @@ def loop_checker(db, containers, routes):
     return checker
 
 
-@pytest.fixture
-def call_order():
+def record_call_order(checker):
     """Wraps the store and event steps so tests can assert their order and gating."""
-    def install(checker):
-        order = []
+    order = []
 
-        def wrap(name):
-            real = getattr(checker, name)
+    def wrap(name):
+        real = getattr(checker, name)
 
-            def recording(*args, **kwargs):
-                order.append(name)
-                return real(*args, **kwargs)
-            return recording
+        def recording(*args, **kwargs):
+            order.append(name)
+            return real(*args, **kwargs)
+        return recording
 
-        checker._get_previous_digest = wrap("_get_previous_digest")
-        checker._store_update_info = wrap("_store_update_info")
-        checker._create_update_event = wrap("_create_update_event")
-        return order
-    return install
+    checker._get_previous_digest = wrap("_get_previous_digest")
+    checker._store_update_info = wrap("_store_update_info")
+    checker._create_update_event = wrap("_create_update_event")
+    return order
 
 
-async def test_loop_without_update_stores_and_emits_nothing(host_db, changelog_stub, event_bus, call_order):
+async def test_loop_without_update_stores_and_emits_nothing(host_db, event_bus_stub):
     container = agent_container(digest_value=LATEST)
     checker = loop_checker(host_db, [container], {"app:stable": registry_result(LATEST)})
-    order = call_order(checker)
+    order = record_call_order(checker)
 
     stats = await checker.check_all_containers()
 
     assert order == ["_get_previous_digest", "_store_update_info"]
     assert read_row(host_db).update_available is False
-    assert event_bus.emit.await_count == 0
+    assert event_bus_stub.emit.await_count == 0
     assert stats == {"total": 1, "checked": 1, "updates_found": 0, "errors": 0}
 
 
-async def test_loop_with_update_stores_then_emits(host_db, changelog_stub, event_bus, call_order):
+async def test_loop_with_update_stores_then_emits(host_db, event_bus_stub):
     checker = loop_checker(host_db, [agent_container()], {"app:stable": registry_result(LATEST)})
-    order = call_order(checker)
+    order = record_call_order(checker)
 
     stats = await checker.check_all_containers()
 
     assert order == ["_get_previous_digest", "_store_update_info", "_create_update_event"]
     assert read_row(host_db).update_available is True
-    assert event_bus.emit.await_count == 1
+    assert event_bus_stub.emit.await_count == 1
     assert stats == {"total": 1, "checked": 1, "updates_found": 1, "errors": 0}
 
 
 @pytest.mark.parametrize("stored_latest,expected_events", [(LATEST, 0), (digest("7"), 1)])
 async def test_loop_compares_new_latest_with_the_previously_stored_one(
-    host_db, changelog_stub, event_bus, stored_latest, expected_events
+    host_db, event_bus_stub, stored_latest, expected_events
 ):
     existing_row(host_db, latest_digest=stored_latest)
     checker = loop_checker(host_db, [agent_container()], {"app:stable": registry_result(LATEST)})
 
     await checker.check_all_containers()
 
-    assert event_bus.emit.await_count == expected_events
+    assert event_bus_stub.emit.await_count == expected_events
 
 
 COMPOSE_LABELS = {"com.docker.compose.project": "stack"}
@@ -273,33 +273,29 @@ def skip_scenario_containers():
     ]
 
 
-async def test_loop_skips_compose_containers_when_configured(host_db, changelog_stub, event_bus):
+async def test_loop_skips_compose_containers_when_configured(host_db):
     set_skip_compose(host_db, True)
     add_ignore_policy(host_db, "ignored-app")
     checker = loop_checker(host_db, skip_scenario_containers(), {"app:stable": registry_result(LATEST)})
 
     stats = await checker.check_all_containers()
 
-    with host_db.get_session() as session:
-        stored = [row.container_name for row in session.query(ContainerUpdate).all()]
-    assert stored == ["plain"]
+    assert stored_names(host_db) == ["plain"]
     assert stats == {"total": 3, "checked": 1, "updates_found": 1, "errors": 0}
 
 
-async def test_loop_checks_compose_containers_when_not_configured(host_db, changelog_stub, event_bus):
+async def test_loop_checks_compose_containers_when_not_configured(host_db):
     set_skip_compose(host_db, False)
     add_ignore_policy(host_db, "ignored-app")
     checker = loop_checker(host_db, skip_scenario_containers(), {"app:stable": registry_result(LATEST)})
 
     stats = await checker.check_all_containers()
 
-    with host_db.get_session() as session:
-        stored = sorted(row.container_name for row in session.query(ContainerUpdate).all())
-    assert stored == ["composed", "plain"]
+    assert stored_names(host_db) == ["composed", "plain"]
     assert stats == {"total": 3, "checked": 2, "updates_found": 2, "errors": 0}
 
 
-async def test_loop_continues_after_a_failing_container(host_db, changelog_stub, event_bus):
+async def test_loop_continues_after_a_failing_container(host_db):
     containers = [
         agent_container("aaaaaaaaaaaa", name="broken", image="broken:stable"),
         agent_container("bbbbbbbbbbbb", name="healthy"),
@@ -311,13 +307,11 @@ async def test_loop_continues_after_a_failing_container(host_db, changelog_stub,
 
     stats = await checker.check_all_containers()
 
-    with host_db.get_session() as session:
-        stored = [row.container_name for row in session.query(ContainerUpdate).all()]
-    assert stored == ["healthy"]
+    assert stored_names(host_db) == ["healthy"]
     assert stats == {"total": 2, "checked": 1, "updates_found": 1, "errors": 1}
 
 
-async def test_loop_counts_nothing_for_an_unresolvable_registry_image(host_db, changelog_stub, event_bus):
+async def test_loop_counts_nothing_for_an_unresolvable_registry_image(host_db):
     container = agent_container(image="ghcr.io/org/gone:1.0")
     checker = loop_checker(host_db, [container], {"ghcr.io/org/gone:1.0": None})
 
@@ -326,38 +320,48 @@ async def test_loop_counts_nothing_for_an_unresolvable_registry_image(host_db, c
     assert stats == {"total": 1, "checked": 0, "updates_found": 0, "errors": 0}
 
 
-async def test_single_check_with_update_stores_then_emits(host_db, changelog_stub, event_bus, call_order):
+async def test_single_check_with_update_stores_then_emits(host_db, event_bus_stub):
     checker = loop_checker(host_db, [agent_container()], {"app:stable": registry_result(LATEST)})
-    order = call_order(checker)
+    order = record_call_order(checker)
 
     result = await checker.check_single_container(HOST_ID, CONTAINER_ID)
 
     assert order == ["_get_previous_digest", "_store_update_info", "_create_update_event"]
     assert result["update_available"] is True
     assert read_row(host_db).update_available is True
-    assert event_bus.emit.await_count == 1
+    assert event_bus_stub.emit.await_count == 1
 
 
-async def test_single_check_without_update_stores_and_emits_nothing(host_db, changelog_stub, event_bus, call_order):
+async def test_single_check_without_update_stores_and_emits_nothing(host_db, event_bus_stub):
     container = agent_container(digest_value=LATEST)
     checker = loop_checker(host_db, [container], {"app:stable": registry_result(LATEST)})
-    order = call_order(checker)
+    order = record_call_order(checker)
 
     result = await checker.check_single_container(HOST_ID, CONTAINER_ID)
 
     assert order == ["_get_previous_digest", "_store_update_info"]
     assert result["update_available"] is False
-    assert event_bus.emit.await_count == 0
+    assert event_bus_stub.emit.await_count == 0
 
 
 @pytest.mark.parametrize("bypass_cache,cache_consulted", [(True, False), (False, True)])
-async def test_single_check_forwards_bypass_cache(host_db, changelog_stub, event_bus, bypass_cache, cache_consulted):
+async def test_single_check_forwards_bypass_cache(host_db, bypass_cache, cache_consulted):
     checker = loop_checker(host_db, [agent_container()], {"app:stable": registry_result(LATEST)})
 
     with patch.object(host_db, "get_cached_image_digest", wraps=host_db.get_cached_image_digest) as cache_lookup:
         await checker.check_single_container(HOST_ID, CONTAINER_ID, bypass_cache=bypass_cache)
 
     assert cache_lookup.called is cache_consulted
+
+
+async def test_stored_tracking_mode_is_read_by_composite_key(host_db):
+    existing_row(host_db, floating_tag_mode="minor")
+    checker = loop_checker(host_db, [], {"nginx:1": registry_result(LATEST)})
+
+    result = await checker._check_container_update(agent_container(image="nginx:1.25.3"))
+
+    assert checker.registry.refs() == ["nginx:1"]
+    assert result["floating_tag_mode"] == "minor"
 
 
 @pytest.mark.parametrize("labels,expected", [
@@ -369,7 +373,7 @@ def test_is_compose_container(labels, expected):
     assert UpdateChecker(db=None)._is_compose_container({"labels": labels}) is expected
 
 
-async def test_credentials_row_is_passed_to_the_registry(host_db, changelog_stub):
+async def test_credentials_row_is_passed_to_the_registry(host_db):
     with host_db.get_session() as session:
         session.add(RegistryCredential(registry_url="ghcr.io", username="robot", password_encrypted="stored"))
         session.commit()

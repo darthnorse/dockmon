@@ -84,9 +84,6 @@ import { useHosts } from '@/features/hosts/hooks/useHosts'
 import { HostDetailsModal } from '@/features/hosts/components/HostDetailsModal'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 
-/**
- * Update badge showing if updates are available
- */
 function UpdateBadge({
   onClick,
   hasUpdate,
@@ -1501,7 +1498,6 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
                 <FileText className="h-4 w-4" />
               </Button>
 
-              {/* Update badge - shows if update available */}
               <UpdateBadge
                 hasUpdate={updatesSummary?.containers_with_updates?.includes(makeCompositeKey(container)) ?? false}
                 unverified={allAutoUpdateConfigs?.[makeCompositeKey(container)]?.check_status === 'unverified_image'}

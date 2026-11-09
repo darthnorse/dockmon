@@ -819,7 +819,6 @@ class UpdateChecker:
             return []
 
         try:
-            # Get containers from monitor (async)
             containers = await self.monitor.get_containers()
             return [self._checker_dict(c) for c in containers]
         except Exception as e:

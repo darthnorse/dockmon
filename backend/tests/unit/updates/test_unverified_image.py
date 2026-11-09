@@ -4,6 +4,7 @@ import pytest
 
 from checker_fakes import (
     AMD64_CHILD,
+    ARM64_CHILD,
     CURRENT,
     FakeClient,
     LATEST,
@@ -34,8 +35,8 @@ def routes():
     }
 
 
-async def check(client=None, **container):
-    checker = make_checker(routes(), client=client, record=update_record("minor"))
+async def check(client=None, agent_arch=None, **container):
+    checker = make_checker(routes(), client=client, record=update_record("minor"), agent_arch=agent_arch)
     result = await checker._check_container_update(container_dict(IMAGE, **container))
     assert checker.registry.unexpected == []
     assert result is not None
@@ -82,6 +83,13 @@ async def test_agent_image_matching_its_own_tag_is_trusted(image_id):
 
     assert result["update_available"] is True
     assert result["platform"] == "linux/amd64"
+    assert result["check_status"] is None
+
+
+async def test_arm64_agent_proves_with_its_own_platform_digest():
+    result = await check(image_id=ARM64_CHILD, agent_arch="arm64")
+
+    assert result["platform"] == "linux/arm64"
     assert result["check_status"] is None
 
 

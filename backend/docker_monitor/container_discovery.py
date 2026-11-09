@@ -19,7 +19,7 @@ from models.docker_models import DockerHost, Container, derive_container_tags
 from event_bus import Event, EventType as BusEventType, get_event_bus
 from stats_client import get_stats_client
 from utils.async_docker import async_docker_call, async_client_ping
-from utils.image_ref import SHA256_DIGEST, with_implicit_latest
+from utils.image_ref import sha256_digest_or_none, with_implicit_latest
 from utils.keys import make_composite_key
 from utils.ip_extraction import extract_container_ips
 from utils.cache import async_ttl_cache
@@ -630,8 +630,7 @@ class ContainerDiscovery:
                         # Extract RepoDigests from agent response (v2.2.0+ agents)
                         # Use `or []` pattern to handle both missing keys AND null values
                         repo_digests = dc_data.get("RepoDigests") or []
-                        image_id = dc_data.get("ImageID")
-                        image_id = image_id if isinstance(image_id, str) and SHA256_DIGEST.fullmatch(image_id) else None
+                        image_id = sha256_digest_or_none(dc_data.get("ImageID"))
 
                         # Extract Docker network IPs (GitHub Issue #37)
                         # Use `or {}` pattern to handle both missing keys AND null values

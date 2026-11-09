@@ -23,6 +23,10 @@ from typing import Optional
 SHA256_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 
+def sha256_digest_or_none(value) -> Optional[str]:
+    return value if isinstance(value, str) and SHA256_DIGEST.fullmatch(value) else None
+
+
 def is_registry_host(segment: str) -> bool:
     """True if a reference's first path segment is a registry, not a Docker Hub namespace.
 

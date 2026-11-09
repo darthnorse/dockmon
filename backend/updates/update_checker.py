@@ -16,7 +16,7 @@ from typing import List, Dict, Optional, Tuple
 
 from docker.errors import NotFound
 from sqlalchemy.exc import IntegrityError
-from database import DatabaseManager, ContainerUpdate, GlobalSettings, RegistryCredential, UpdatePolicy
+from database import Agent, DatabaseManager, ContainerUpdate, GlobalSettings, RegistryCredential, UpdatePolicy
 
 # Image cache TTL configuration (in seconds)
 # Can be overridden via environment variables
@@ -31,7 +31,7 @@ from updates.types import MANIFEST_LIST_TYPES, match_platform_manifest
 from utils.keys import make_composite_key
 from utils.encryption import decrypt_password
 from utils.container_id import normalize_container_id
-from utils.image_ref import SHA256_DIGEST, extract_image_repository, has_tag, is_registry_host
+from utils.image_ref import extract_image_repository, has_tag, is_registry_host, sha256_digest_or_none
 from utils.async_docker import async_docker_call
 
 logger = logging.getLogger(__name__)
@@ -92,6 +92,7 @@ def _parse_verified_image(raw) -> Optional[Dict[str, str]]:
 
 # Marker for "no resolvable digest + no local RepoDigests": most likely built locally.
 # (Registries 401/403 on missing images, so a private image needing auth looks the same.)
+DEFAULT_PLATFORM = "linux/amd64"
 LOCAL_IMAGE_STATUS = "local_image"
 # An update found by the no-RepoDigests fallback with no proof the running image came from the
 # registry (it may be a local build with a public name). Shown, but auto-update skips it.
@@ -328,7 +329,12 @@ class UpdateChecker:
         # Without the image record the platform is unknown, which also rules out reporting stale: the
         # updater could not read the old image's defaults, and would pin its env and labels on the new container.
         platform_verified = bool(running and running.platform)
-        platform = running.platform if platform_verified else container.get("platform", "linux/amd64")
+        if platform_verified:
+            platform = running.platform
+        elif running is None:
+            platform = self._agent_platform(container.get("host_id"))
+        else:
+            platform = DEFAULT_PLATFORM
 
         # Get current digest from Docker API (the actual digest the container is running)
         current_digest = await self._get_container_image_digest(container, running)
@@ -453,7 +459,7 @@ class UpdateChecker:
         if running and running.image_id and platform_verified:
             config_digest = self._config_digest(latest_manifest)
             evidence = {"image_id": running.image_id, "platform": platform, "ref": floating_tag}
-            registry_digests = {latest_digest, platform_digest, config_digest}
+            registry_digests = self._registry_image_ids(latest_digest, latest_manifest, platform)
             if running.image_id in registry_digests:
                 update_available = False
             if digest_is_local or running.image_id in registry_digests:
@@ -515,7 +521,7 @@ class UpdateChecker:
                 proof_id = container.get("image_id")
             else:
                 proof_id = None
-            if proof_id is None or proof_id not in current_tag_image_ids:
+            if proof_id not in current_tag_image_ids:
                 check_status = UNVERIFIED_IMAGE_STATUS
                 logger.info(f"[{container['name']}] Update not applied automatically: can't confirm the running image came from the registry")
 
@@ -634,8 +640,7 @@ class UpdateChecker:
 
     @staticmethod
     def _config_digest(manifest: Dict) -> Optional[str]:
-        config_digest = manifest.get("config_digest")
-        return config_digest if isinstance(config_digest, str) and SHA256_DIGEST.fullmatch(config_digest) else None
+        return sha256_digest_or_none(manifest.get("config_digest"))
 
     def _registry_image_ids(self, index_digest: str, manifest: Dict, platform: str) -> set:
         """Every ID a pulled copy of this registry image can run under: index, platform manifest or config."""
@@ -723,6 +728,13 @@ class UpdateChecker:
         except Exception as e:
             logger.warning(f"[{container.get('name', 'unknown')}] Error inspecting running image: {e}")
         return None
+
+    def _agent_platform(self, host_id: Optional[str]) -> str:
+        """An agent host's images can't be inspected, so the agent's own architecture stands in."""
+        with self.db.get_session() as session:
+            agent = session.query(Agent).filter_by(host_id=host_id).first()
+            arch = agent.agent_arch if agent else None
+        return f"linux/{arch}" if arch else DEFAULT_PLATFORM
 
     def _get_verified_image(self, composite_key: str) -> Optional[Dict[str, str]]:
         with self.db.get_session() as session:

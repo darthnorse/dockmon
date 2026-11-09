@@ -93,6 +93,20 @@ async def test_arm64_agent_proves_with_its_own_platform_digest():
     assert result["check_status"] is None
 
 
+async def test_agent_image_platform_beats_the_agent_architecture():
+    result = await check(image_id=AMD64_CHILD, image_platform="linux/amd64", agent_arch="arm64")
+
+    assert result["platform"] == "linux/amd64"
+    assert result["check_status"] is None
+
+
+async def test_agent_image_platform_is_used_without_an_agent_record():
+    result = await check(image_id=ARM64_CHILD, image_platform="linux/arm64")
+
+    assert result["platform"] == "linux/arm64"
+    assert result["check_status"] is None
+
+
 @pytest.mark.parametrize("image_id", [LOCAL_IMAGE_ID, None, "3" * 64, "sha256:333"],
                          ids=["other", "missing", "no-algorithm", "short"])
 async def test_agent_image_not_matching_is_marked(image_id):

@@ -19,7 +19,7 @@ from models.docker_models import DockerHost, Container, derive_container_tags
 from event_bus import Event, EventType as BusEventType, get_event_bus
 from stats_client import get_stats_client
 from utils.async_docker import async_docker_call, async_client_ping
-from utils.image_ref import sha256_digest_or_none, with_implicit_latest
+from utils.image_ref import image_platform, sha256_digest_or_none, with_implicit_latest
 from utils.keys import make_composite_key
 from utils.ip_extraction import extract_container_ips
 from utils.cache import async_ttl_cache
@@ -631,6 +631,15 @@ class ContainerDiscovery:
                         # Use `or []` pattern to handle both missing keys AND null values
                         repo_digests = dc_data.get("RepoDigests") or []
                         image_id = sha256_digest_or_none(dc_data.get("ImageID"))
+                        platform = None
+                        if "ImagePlatform" in dc_data:
+                            reported = dc_data.get("ImagePlatform")
+                            platform = image_platform(reported) if isinstance(reported, dict) else None
+                            # Older agents omit the key. A newer one sends null when it can't inspect the image; if
+                            # it is gone the updater would pin its env, so its ID proves nothing (a transient error
+                            # costs one listing).
+                            if platform is None:
+                                image_id = None
 
                         # Extract Docker network IPs (GitHub Issue #37)
                         # Use `or {}` pattern to handle both missing keys AND null values
@@ -665,6 +674,7 @@ class ContainerDiscovery:
                             docker_ips=docker_ips,
                             network_mode=host_config.get("NetworkMode"),
                             image_id=image_id,
+                            image_platform=platform,
                         )
 
                         containers.append(container)

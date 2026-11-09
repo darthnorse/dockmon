@@ -262,6 +262,7 @@ class Container(BaseModel):
     network_mode: Optional[str] = Field(default=None, exclude=True)
     # Agent hosts only, for the update checker; local hosts inspect the image instead.
     image_id: Optional[str] = Field(default=None, exclude=True)
+    image_platform: Optional[str] = Field(default=None, exclude=True)
     # Derived tags (Phase 3d - computed from labels)
     tags: Optional[list[str]] = None
     # Docker network IP addresses (GitHub Issue #37)

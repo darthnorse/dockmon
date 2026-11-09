@@ -31,7 +31,7 @@ from updates.types import MANIFEST_LIST_TYPES, match_platform_manifest
 from utils.keys import make_composite_key
 from utils.encryption import decrypt_password
 from utils.container_id import normalize_container_id
-from utils.image_ref import extract_image_repository, has_tag, is_registry_host, sha256_digest_or_none
+from utils.image_ref import extract_image_repository, has_tag, image_platform, is_registry_host, sha256_digest_or_none
 from utils.async_docker import async_docker_call
 
 logger = logging.getLogger(__name__)
@@ -44,18 +44,6 @@ class RunningImage:
     repo_digests: List[str] = field(default_factory=list)
     labels: Dict[str, str] = field(default_factory=dict)
     platform: Optional[str] = None
-
-
-def _image_platform(attrs: Dict) -> Optional[str]:
-    """Linux platform of an inspected image, or None if it cannot be trusted for a comparison."""
-    architecture = attrs.get("Architecture")
-    if attrs.get("Os") != "linux" or not isinstance(architecture, str) or not architecture:
-        return None
-    variant = attrs.get("Variant")
-    # Indexes often omit arm64's only common variant, so requesting it would miss them.
-    if not isinstance(variant, str) or not variant or (architecture == "arm64" and variant == "v8"):
-        return f"linux/{architecture}"
-    return f"linux/{architecture}/{variant}"
 
 
 def _read_running_image(client, container_id: str) -> RunningImage:
@@ -72,7 +60,7 @@ def _read_running_image(client, container_id: str) -> RunningImage:
         image_id=image_id,
         repo_digests=repo_digests if isinstance(repo_digests, list) else [],
         labels=labels if isinstance(labels, dict) else {},
-        platform=_image_platform(attrs),
+        platform=image_platform(attrs),
     )
 
 
@@ -332,7 +320,7 @@ class UpdateChecker:
         if platform_verified:
             platform = running.platform
         elif running is None:
-            platform = self._agent_platform(container.get("host_id"))
+            platform = container.get("image_platform") or self._agent_platform(container.get("host_id"))
         else:
             platform = DEFAULT_PLATFORM
 
@@ -730,7 +718,7 @@ class UpdateChecker:
         return None
 
     def _agent_platform(self, host_id: Optional[str]) -> str:
-        """An agent host's images can't be inspected, so the agent's own architecture stands in."""
+        """Fallback when the agent didn't report the image's platform: the agent's own architecture."""
         with self.db.get_session() as session:
             agent = session.query(Agent).filter_by(host_id=host_id).first()
             arch = agent.agent_arch if agent else None
@@ -828,7 +816,7 @@ class UpdateChecker:
     @staticmethod
     def _checker_dict(container) -> Dict:
         """dict() drops fields excluded from the API, which the checker still needs."""
-        return {**container.dict(), "image_id": container.image_id}
+        return {**container.dict(), "image_id": container.image_id, "image_platform": container.image_platform}
 
     async def _get_container_async(self, host_id: str, container_id: str) -> Optional[Dict]:
         """

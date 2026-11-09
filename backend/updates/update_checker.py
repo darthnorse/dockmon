@@ -718,7 +718,7 @@ class UpdateChecker:
         return None
 
     def _agent_platform(self, host_id: Optional[str]) -> str:
-        """An agent host's images can't be inspected, so the agent's own architecture stands in."""
+        """Fallback when the agent didn't report the image's platform: the agent's own architecture."""
         with self.db.get_session() as session:
             agent = session.query(Agent).filter_by(host_id=host_id).first()
             arch = agent.agent_arch if agent else None

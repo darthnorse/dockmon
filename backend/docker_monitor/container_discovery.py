@@ -635,8 +635,9 @@ class ContainerDiscovery:
                         if "ImagePlatform" in dc_data:
                             reported = dc_data.get("ImagePlatform")
                             platform = image_platform(reported) if isinstance(reported, dict) else None
-                            # Older agents omit the key. A newer one sends null when the image is gone,
-                            # and the updater would pin that image's env, so its ID proves nothing.
+                            # Older agents omit the key. A newer one sends null when it can't inspect the image; if
+                            # it is gone the updater would pin its env, so its ID proves nothing (a transient error
+                            # costs one listing).
                             if platform is None:
                                 image_id = None
 

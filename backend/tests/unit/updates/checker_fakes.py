@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from docker.errors import ImageNotFound
 
-from database import ContainerUpdate
+from database import Agent, ContainerUpdate
 from updates.registry_adapter import RegistryAdapter
 from updates.update_checker import UpdateChecker
 
@@ -94,23 +94,24 @@ class _Query:
 
 
 class _Session:
-    def __init__(self, record):
-        self._record = record
+    def __init__(self, record, agent):
+        self._rows = {ContainerUpdate: record, Agent: agent}
 
     def query(self, model):
-        assert model is ContainerUpdate, f"unrouted query for {model}"
-        return _Query(self._record)
+        assert model in self._rows, f"unrouted query for {model}"
+        return _Query(self._rows[model])
 
 
 class FakeDb:
-    def __init__(self, record=None, cached=None):
+    def __init__(self, record=None, cached=None, agent_arch=None):
         self._record = record
+        self._agent = SimpleNamespace(agent_arch=agent_arch) if agent_arch else None
         self.get_cached_image_digest = MagicMock(return_value=cached)
         self.cache_image_digest = MagicMock()
 
     @contextmanager
     def get_session(self):
-        yield _Session(self._record)
+        yield _Session(self._record, self._agent)
 
 
 def evidence(image_id, ref="app:latest", platform="linux/amd64"):
@@ -193,8 +194,8 @@ def make_monitor(client=None, containers=()):
     )
 
 
-def make_checker(routes, client=None, record=None, cached=None):
-    checker = UpdateChecker(db=FakeDb(record=record, cached=cached), monitor=make_monitor(client))
+def make_checker(routes, client=None, record=None, cached=None, agent_arch=None):
+    checker = UpdateChecker(db=FakeDb(record=record, cached=cached, agent_arch=agent_arch), monitor=make_monitor(client))
     checker.registry = FakeRegistry(routes)
     return checker
 
@@ -206,10 +207,11 @@ def container_dict(image="app:stable", **overrides):
 
 
 def monitored_container(container):
-    """What monitor.get_containers() yields: an object exposing .dict() and id fields."""
+    """What monitor.get_containers() yields: id fields, and a .dict() that omits the excluded image_id."""
     return SimpleNamespace(
         host_id=container["host_id"],
         id=container["id"],
         short_id=container["id"][:12],
-        dict=lambda: dict(container),
+        image_id=container.get("image_id"),
+        dict=lambda: {key: value for key, value in container.items() if key != "image_id"},
     )

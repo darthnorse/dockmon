@@ -344,6 +344,9 @@ class EventBus:
             current = event.data.get('current_image', '?')
             latest = event.data.get('latest_image', '?')
             message = f"Update available: {current} → {latest}"
+            if event.data.get('auto_update_paused'):
+                title += " (auto-update paused)"
+                message += " - auto-update paused: can't confirm this image came from the registry"
 
         elif event.event_type == EventType.UPDATE_STARTED:
             title = f"Update Started: {event.scope_name}"

@@ -373,6 +373,7 @@ class AgentUpdateExecutor:
                 if db_update:
                     db_update.current_image = update_record.latest_image
                     db_update.update_available = False
+                    db_update.check_status = None
                     db_update.last_updated_at = datetime.now(timezone.utc)
                     session.commit()
 

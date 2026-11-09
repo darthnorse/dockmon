@@ -2816,7 +2816,8 @@ async def get_all_auto_update_configs(current_user: dict = Depends(get_current_u
         {
             "{host_id}:{container_id}": {
                 "auto_update_enabled": bool,
-                "floating_tag_mode": str
+                "floating_tag_mode": str,
+                "check_status": str | None
             }
         }
 
@@ -2830,6 +2831,7 @@ async def get_all_auto_update_configs(current_user: dict = Depends(get_current_u
             record.container_id: {
                 "auto_update_enabled": record.auto_update_enabled,
                 "floating_tag_mode": record.floating_tag_mode,
+                "check_status": record.check_status,
             }
             for record in configs
         }

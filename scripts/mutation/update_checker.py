@@ -24,6 +24,8 @@ REPO = Path(__file__).resolve().parents[2]
 CHECKER = "backend/updates/update_checker.py"
 ADAPTER = "backend/updates/registry_adapter.py"
 IMAGE_REF = "backend/utils/image_ref.py"
+EXECUTOR = "backend/updates/update_executor.py"
+DB_UPDATER = "backend/updates/database_updater.py"
 
 DECISION = "tests/unit/updates/test_update_decision.py::"
 PROVENANCE = "tests/unit/updates/test_update_provenance.py::"
@@ -32,6 +34,9 @@ EVENTS = "tests/unit/updates/test_update_events.py::"
 CONFIG = "tests/unit/updates/test_registry_config_fetch.py::"
 TAGS = "tests/unit/updates/test_registry_tag_logic.py::"
 STORAGE = "tests/unit/updates/test_update_storage_and_loop.py::"
+UNVERIFIED = "tests/unit/updates/test_unverified_image.py::"
+AUTO = "tests/unit/updates/test_auto_update_ordering.py::"
+LIFECYCLE = "tests/unit/updates/test_unverified_image_lifecycle.py::"
 
 DEFAULT_TESTS = ["tests/unit/updates"]
 MUTANT_TIMEOUT_SECONDS = 900
@@ -160,16 +165,7 @@ MUTANTS = [
     M("M36", CHECKER, "if running and running.image_id and platform_verified:", "if running and running.image_id:",
       (PROVENANCE + "test_no_evidence_written_without_a_verified_platform",
        PROVENANCE + "test_lost_image_record_is_not_reported_stale_even_with_evidence")),
-    M("M37", CHECKER, "registry_digests = {latest_digest, platform_digest, config_digest}",
-      "registry_digests = {platform_digest, config_digest}",
-      (PROVENANCE + "test_any_digest_match_means_current",)),
-    M("M38", CHECKER, "registry_digests = {latest_digest, platform_digest, config_digest}",
-      "registry_digests = {latest_digest, config_digest}",
-      (PROVENANCE + "test_any_digest_match_means_current",)),
-    M("M39", CHECKER, "registry_digests = {latest_digest, platform_digest, config_digest}",
-      "registry_digests = {latest_digest, platform_digest}",
-      (PROVENANCE + "test_any_digest_match_means_current",)),
-    M("M40", CHECKER, "and SHA256_DIGEST.fullmatch(config_digest)", "",
+    M("M40", CHECKER, 'return sha256_digest_or_none(manifest.get("config_digest"))', 'return manifest.get("config_digest")',
       (PROVENANCE + "test_no_usable_config_digest_means_no_stale",)),
     M("M41", CHECKER, "current_result = await self.registry.resolve_tag(current_image, platform=platform, auth=auth)",
       "current_result = await self.registry.resolve_tag(current_image, auth=auth)",
@@ -188,7 +184,8 @@ MUTANTS = [
       (PROVENANCE + "test_image_with_null_config_keeps_its_repo_digests",)),
     M("M44", CHECKER, '''                if update_info.get("verified_image"):
                     record.verified_image = update_info["verified_image"]
-                record.check_status = None''', "                record.check_status = None",
+                record.check_status = update_info.get("check_status")''',
+      '                record.check_status = update_info.get("check_status")',
       (STORAGE + "test_store_update_sets_verified_image",)),
     M("M45", CHECKER, '''                    if update_info.get("verified_image"):
                         record.verified_image = update_info["verified_image"]
@@ -207,6 +204,63 @@ MUTANTS = [
     M("M49", ADAPTER, '"config_digest": config_digest,', '"config_digest": None,',
       (CONFIG + "test_config_digest_reported_for_a_single_manifest",
        CONFIG + "test_config_digest_reported_for_an_index")),
+    M("U1", CHECKER, "ids = {index_digest, self._extract_platform_digest(manifest, platform), self._config_digest(manifest)}",
+      "ids = {self._extract_platform_digest(manifest, platform), self._config_digest(manifest)}",
+      (UNVERIFIED + "test_local_image_matching_its_own_tag_is_trusted[index]",
+       UNVERIFIED + "test_agent_image_matching_its_own_tag_is_trusted[index]",
+       PROVENANCE + "test_any_digest_match_means_current")),
+    M("U2", CHECKER, "ids = {index_digest, self._extract_platform_digest(manifest, platform), self._config_digest(manifest)}",
+      "ids = {index_digest, self._config_digest(manifest)}",
+      (UNVERIFIED + "test_local_image_matching_its_own_tag_is_trusted[platform]",
+       UNVERIFIED + "test_agent_image_matching_its_own_tag_is_trusted[platform]",
+       UNVERIFIED + "test_arm64_image_proves_with_its_own_platform_digest",
+       PROVENANCE + "test_any_digest_match_means_current")),
+    M("U3", CHECKER, "ids = {index_digest, self._extract_platform_digest(manifest, platform), self._config_digest(manifest)}",
+      "ids = {index_digest, self._extract_platform_digest(manifest, platform)}",
+      (UNVERIFIED + "test_local_image_matching_its_own_tag_is_trusted[config]",
+       UNVERIFIED + "test_agent_image_matching_its_own_tag_is_trusted[config]",
+       PROVENANCE + "test_any_digest_match_means_current")),
+    M("U19", CHECKER, 'platform = self._agent_platform(container.get("host_id"))', "platform = DEFAULT_PLATFORM",
+      (UNVERIFIED + "test_arm64_agent_proves_with_its_own_platform_digest",)),
+    M("U4", CHECKER, "if current_digest_from_registry and update_available and not stale:", "if False:",
+      (UNVERIFIED + "test_local_build_with_a_public_name_is_marked",
+       DECISION + "test_fallback_uses_registry_digest_of_current_tag")),
+    M("U5", CHECKER, "if current_digest_from_registry and update_available and not stale:",
+      "if current_digest_from_registry and update_available:",
+      (UNVERIFIED + "test_stale_running_image_is_not_marked",)),
+    M("U6", CHECKER, "if current_digest_from_registry and update_available and not stale:",
+      "if current_digest_from_registry and not stale:",
+      (UNVERIFIED + "test_no_update_is_never_marked",
+       UNVERIFIED + "test_suppressed_downgrade_is_not_marked")),
+    M("U7", CHECKER, "if current_digest_from_registry and update_available and not stale:",
+      "if update_available and not stale:",
+      (UNVERIFIED + "test_repo_digests_path_is_not_marked",
+       UNVERIFIED + "test_agent_repo_digests_path_is_not_marked")),
+    M("U8", CHECKER, "            elif running is None:\n                proof_id", "            elif True:\n                proof_id",
+      (UNVERIFIED + "test_lost_image_record_ignores_an_agent_style_image_id",)),
+    M("U9", CHECKER, "                proof_id = running.image_id", "                proof_id = None",
+      (UNVERIFIED + "test_local_image_matching_its_own_tag_is_trusted",)),
+    M("U10", CHECKER, 'proof_id = container.get("image_id")', "proof_id = None",
+      (UNVERIFIED + "test_agent_image_matching_its_own_tag_is_trusted",)),
+    M("U11", CHECKER, 'return {**container.dict(), "image_id": container.image_id}', "return container.dict()",
+      (STORAGE + "test_agent_image_id_reaches_the_check_through_the_sweep",)),
+    M("U12", CHECKER, '\n                record.check_status = update_info.get("check_status")',
+      "\n                record.check_status = None",
+      (STORAGE + "test_store_update_writes_the_mark",)),
+    M("U13", CHECKER, '\n                    record.check_status = update_info.get("check_status")',
+      "\n                    record.check_status = None",
+      (STORAGE + "test_store_retry_writes_the_mark",)),
+    M("U14", CHECKER, 'check_status=update_info.get("check_status"),', "check_status=None,",
+      (STORAGE + "test_store_create_writes_the_mark",)),
+    M("U15", CHECKER, "data['auto_update_paused'] = True", "pass",
+      (EVENTS + "test_marked_update_flags_its_event",
+       STORAGE + "test_marked_update_emits_one_event_saying_auto_update_is_paused")),
+    M("U16", EXECUTOR, "if update.check_status == UNVERIFIED_IMAGE_STATUS:", "if False:",
+      (AUTO + "test_only_unverified_rows_need_no_discovery",)),
+    M("U17", EXECUTOR, "if update_record.check_status == UNVERIFIED_IMAGE_STATUS:", "if False:",
+      (AUTO + "test_row_marked_after_selection_is_skipped",)),
+    M("U18", DB_UPDATER, "                record.check_status = None\n", "",
+      (LIFECYCLE + "test_successful_update_clears_the_mark",)),
     M("M22", CHECKER,
       "container_id=composite_key\n            ).first()\n\n            if record:\n"
       "                return record.floating_tag_mode",

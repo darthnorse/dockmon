@@ -17,7 +17,14 @@ loop and is intentionally total: it never raises, returning "" for input it
 cannot parse into a repository name.
 """
 
+import re
 from typing import Optional
+
+SHA256_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+
+
+def sha256_digest_or_none(value) -> Optional[str]:
+    return value if isinstance(value, str) and SHA256_DIGEST.fullmatch(value) else None
 
 
 def is_registry_host(segment: str) -> bool:

@@ -51,9 +51,18 @@ export interface ContainerAction {
   host_id: string
 }
 
+// 'local_image' = built locally, not tracked in any registry (nothing to check)
+// 'unverified_image' = update shown, but auto-update skips it: the image may be a local build
+export type UpdateCheckStatus = 'local_image' | 'unverified_image'
+
+export interface AutoUpdateConfig {
+  auto_update_enabled: boolean
+  floating_tag_mode: string
+  check_status: UpdateCheckStatus | null
+}
+
 export interface ContainerUpdateStatus {
-  // 'local_image' = built locally, not tracked in any registry (nothing to check)
-  status?: 'local_image' | null
+  status?: UpdateCheckStatus | null
   message?: string
   update_available: boolean
   current_image: string | null

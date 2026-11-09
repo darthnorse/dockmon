@@ -285,6 +285,45 @@ describe('ContainerTable', () => {
     })
   })
 
+  describe('unverified image marker', () => {
+    function mockApi(checkStatus: string | null, autoUpdateEnabled: boolean) {
+      vi.mocked(apiClient.apiClient.get).mockImplementation((url: string) => {
+        if (url === '/updates/summary') {
+          return Promise.resolve({ total_updates: 1, containers_with_updates: ['host-1:container-1'] })
+        }
+        if (url === '/auto-update-configs') {
+          return Promise.resolve({
+            'host-1:container-1': { auto_update_enabled: autoUpdateEnabled, floating_tag_mode: 'minor', check_status: checkStatus },
+          })
+        }
+        if (url === '/health-check-configs' || url === '/deployment-metadata') {
+          return Promise.resolve({})
+        }
+        return Promise.resolve([mockContainers[0]])
+      })
+    }
+
+    it.each([true, false])('says auto-update is paused when marked (auto-update %s)', async (autoUpdateEnabled) => {
+      mockApi('unverified_image', autoUpdateEnabled)
+
+      renderTable()
+
+      expect(await screen.findByText("Auto-update paused: can't confirm this image came from the registry")).toBeInTheDocument()
+      expect(screen.queryByText('Auto-update: Enabled')).not.toBeInTheDocument()
+      expect(screen.getByTitle('Update available (unconfirmed) - click to view')).toBeInTheDocument()
+    })
+
+    it('keeps the normal icons when not marked', async () => {
+      mockApi(null, true)
+
+      renderTable()
+
+      expect(await screen.findByText('Auto-update: Enabled')).toBeInTheDocument()
+      expect(screen.getByTitle('Update available - click to view')).toBeInTheDocument()
+      expect(screen.queryByText(/Auto-update paused/)).not.toBeInTheDocument()
+    })
+  })
+
   describe('table structure', () => {
     it('should render table with proper columns', async () => {
       vi.mocked(apiClient.apiClient.get).mockResolvedValue(mockContainers)

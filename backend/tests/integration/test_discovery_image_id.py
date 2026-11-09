@@ -107,11 +107,11 @@ def checker_for(container):
 async def test_checker_sweep_sees_the_image_id():
     containers = await checker_for(make_container())._get_all_containers()
 
-    assert (containers[0]["image_id"], containers[0]["image_platform"]) == (IMAGE_ID, "linux/arm64")
+    assert (containers[0]["image_id"], containers[0].get("image_platform")) == (IMAGE_ID, "linux/arm64")
 
 
 @pytest.mark.asyncio
 async def test_checker_single_lookup_sees_the_image_id():
     container = await checker_for(make_container())._get_container_async("host", "aaaaaaaaaaaa")
 
-    assert (container["image_id"], container["image_platform"]) == (IMAGE_ID, "linux/arm64")
+    assert (container["image_id"], container.get("image_platform")) == (IMAGE_ID, "linux/arm64")

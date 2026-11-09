@@ -207,11 +207,12 @@ def container_dict(image="app:stable", **overrides):
 
 
 def monitored_container(container):
-    """What monitor.get_containers() yields: id fields, and a .dict() that omits the excluded image_id."""
+    """What monitor.get_containers() yields: id fields, and a .dict() that omits the excluded checker fields."""
     return SimpleNamespace(
         host_id=container["host_id"],
         id=container["id"],
         short_id=container["id"][:12],
         image_id=container.get("image_id"),
-        dict=lambda: {key: value for key, value in container.items() if key != "image_id"},
+        image_platform=container.get("image_platform"),
+        dict=lambda: {key: value for key, value in container.items() if key not in ("image_id", "image_platform")},
     )

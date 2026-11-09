@@ -465,6 +465,21 @@ type ContainerWithDigest struct {
 	RepoDigests []string          `json:"RepoDigests"`
 	StartedAt   string            `json:"StartedAt,omitempty"`
 	Env         map[string]string `json:"Env,omitempty"`
+	// Null when the image could not be inspected; the backend tells that apart from an older agent
+	// that omits the key, and then won't trust the image as coming from a registry.
+	ImagePlatform *ImagePlatform `json:"ImagePlatform"`
+}
+
+// ImagePlatform is the platform a container's image was built for, as its image inspect reports it.
+type ImagePlatform struct {
+	Os           string `json:"Os"`
+	Architecture string `json:"Architecture"`
+	Variant      string `json:"Variant,omitempty"`
+}
+
+type imageInfo struct {
+	digests  []string
+	platform *ImagePlatform
 }
 
 // ListContainers lists all containers with RepoDigests and StartedAt.
@@ -479,8 +494,8 @@ func (c *Client) ListContainers(ctx context.Context) ([]ContainerWithDigest, err
 	// singleflight coalesces concurrent first-miss inspects per image.
 	var imageGroup singleflight.Group
 	var imageCacheMu sync.Mutex
-	imageCache := make(map[string][]string)
-	inspectImage := func(ctx context.Context, imageID string) []string {
+	imageCache := make(map[string]imageInfo)
+	inspectImage := func(ctx context.Context, imageID string) imageInfo {
 		imageCacheMu.Lock()
 		if cached, ok := imageCache[imageID]; ok {
 			imageCacheMu.Unlock()
@@ -489,17 +504,18 @@ func (c *Client) ListContainers(ctx context.Context) ([]ContainerWithDigest, err
 		imageCacheMu.Unlock()
 
 		val, _, _ := imageGroup.Do(imageID, func() (any, error) {
-			var digests []string
+			var result imageInfo
 			if info, _, err := c.cli.ImageInspectWithRaw(ctx, imageID); err == nil {
-				digests = info.RepoDigests
+				result.digests = info.RepoDigests
+				result.platform = &ImagePlatform{Os: info.Os, Architecture: info.Architecture, Variant: info.Variant}
 			}
 			imageCacheMu.Lock()
-			imageCache[imageID] = digests
+			imageCache[imageID] = result
 			imageCacheMu.Unlock()
-			return digests, nil
+			return result, nil
 		})
-		digests, _ := val.([]string)
-		return digests
+		result, _ := val.(imageInfo)
+		return result
 	}
 
 	// errgroup is used as a bounded worker pool only; workers return nil.
@@ -521,9 +537,11 @@ func (c *Client) ListContainers(ctx context.Context) ([]ContainerWithDigest, err
 				RepoDigests: []string{},
 			}
 			if ctr.ImageID != "" {
-				if digests := inspectImage(gctx, ctr.ImageID); digests != nil {
-					enhanced.RepoDigests = digests
+				image := inspectImage(gctx, ctr.ImageID)
+				if image.digests != nil {
+					enhanced.RepoDigests = image.digests
 				}
+				enhanced.ImagePlatform = image.platform
 			}
 			// Read both caches up front — we want to skip the inspect call
 			// only when BOTH startedAt and env are already cached.

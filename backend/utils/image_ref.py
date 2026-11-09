@@ -27,6 +27,18 @@ def sha256_digest_or_none(value) -> Optional[str]:
     return value if isinstance(value, str) and SHA256_DIGEST.fullmatch(value) else None
 
 
+def image_platform(attrs: dict) -> Optional[str]:
+    """Linux platform of an inspected image, or None if it cannot be trusted for a comparison."""
+    architecture = attrs.get("Architecture")
+    if attrs.get("Os") != "linux" or not isinstance(architecture, str) or not architecture:
+        return None
+    variant = attrs.get("Variant")
+    # Indexes often omit arm64's only common variant, so requesting it would miss them.
+    if not isinstance(variant, str) or not variant or (architecture == "arm64" and variant == "v8"):
+        return f"linux/{architecture}"
+    return f"linux/{architecture}/{variant}"
+
+
 def is_registry_host(segment: str) -> bool:
     """True if a reference's first path segment is a registry, not a Docker Hub namespace.
 

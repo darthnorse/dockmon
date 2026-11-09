@@ -26,6 +26,8 @@ ADAPTER = "backend/updates/registry_adapter.py"
 IMAGE_REF = "backend/utils/image_ref.py"
 EXECUTOR = "backend/updates/update_executor.py"
 DB_UPDATER = "backend/updates/database_updater.py"
+DISCOVERY = "backend/docker_monitor/container_discovery.py"
+MODELS = "backend/models/docker_models.py"
 
 DECISION = "tests/unit/updates/test_update_decision.py::"
 PROVENANCE = "tests/unit/updates/test_update_provenance.py::"
@@ -37,8 +39,9 @@ STORAGE = "tests/unit/updates/test_update_storage_and_loop.py::"
 UNVERIFIED = "tests/unit/updates/test_unverified_image.py::"
 AUTO = "tests/unit/updates/test_auto_update_ordering.py::"
 LIFECYCLE = "tests/unit/updates/test_unverified_image_lifecycle.py::"
+DISCOVERY_TESTS = "tests/integration/test_discovery_image_id.py::"
 
-DEFAULT_TESTS = ["tests/unit/updates"]
+DEFAULT_TESTS = ["tests/unit/updates", "tests/integration/test_discovery_image_id.py"]
 MUTANT_TIMEOUT_SECONDS = 900
 
 OUTCOME_PLUGIN = """
@@ -220,7 +223,7 @@ MUTANTS = [
       (UNVERIFIED + "test_local_image_matching_its_own_tag_is_trusted[config]",
        UNVERIFIED + "test_agent_image_matching_its_own_tag_is_trusted[config]",
        PROVENANCE + "test_any_digest_match_means_current")),
-    M("U19", CHECKER, 'platform = self._agent_platform(container.get("host_id"))', "platform = DEFAULT_PLATFORM",
+    M("U19", CHECKER, 'or self._agent_platform(container.get("host_id"))', "or DEFAULT_PLATFORM",
       (UNVERIFIED + "test_arm64_agent_proves_with_its_own_platform_digest",)),
     M("U4", CHECKER, "if current_digest_from_registry and update_available and not stale:", "if False:",
       (UNVERIFIED + "test_local_build_with_a_public_name_is_marked",
@@ -242,8 +245,26 @@ MUTANTS = [
       (UNVERIFIED + "test_local_image_matching_its_own_tag_is_trusted",)),
     M("U10", CHECKER, 'proof_id = container.get("image_id")', "proof_id = None",
       (UNVERIFIED + "test_agent_image_matching_its_own_tag_is_trusted",)),
-    M("U11", CHECKER, 'return {**container.dict(), "image_id": container.image_id}', "return container.dict()",
+    M("U11", CHECKER, '"image_id": container.image_id, ', "",
       (STORAGE + "test_agent_image_id_reaches_the_check_through_the_sweep",)),
+    M("P1", CHECKER, ', "image_platform": container.image_platform}', "}",
+      (DISCOVERY_TESTS + "test_checker_sweep_sees_the_image_id",
+       DISCOVERY_TESTS + "test_checker_single_lookup_sees_the_image_id")),
+    M("P2", CHECKER, 'platform = container.get("image_platform") or self._agent_platform(',
+      "platform = self._agent_platform(",
+      (UNVERIFIED + "test_agent_image_platform_beats_the_agent_architecture",
+       UNVERIFIED + "test_agent_image_platform_is_used_without_an_agent_record")),
+    M("P3", DISCOVERY, 'if "ImagePlatform" in dc_data:', "if True:",
+      (DISCOVERY_TESTS + "test_older_agent_without_the_platform_keeps_the_image_id",)),
+    M("P4", DISCOVERY, """                            if platform is None:
+                                image_id = None""", """                            if False:
+                                image_id = None""",
+      (DISCOVERY_TESTS + "test_lost_or_unusable_image_drops_the_image_id",)),
+    M("P5", DISCOVERY, "image_platform=platform,", "image_platform=None,",
+      (DISCOVERY_TESTS + "test_agent_discovery_reads_the_image_platform",)),
+    M("P6", MODELS, "image_platform: Optional[str] = Field(default=None, exclude=True)",
+      "image_platform: Optional[str] = None",
+      (DISCOVERY_TESTS + "test_checker_fields_stay_out_of_serialized_output[image_platform]",)),
     M("U12", CHECKER, '\n                record.check_status = update_info.get("check_status")',
       "\n                record.check_status = None",
       (STORAGE + "test_store_update_writes_the_mark",)),

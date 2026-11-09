@@ -1,5 +1,6 @@
 """Auto-update runs dependents before providers and skips rows with no live container."""
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -37,7 +38,7 @@ def add_host(db):
     return new_id
 
 
-def add_row(db, host_id, short_id, name, update_available=True, auto_update_enabled=True):
+def add_row(db, host_id, short_id, name, update_available=True, auto_update_enabled=True, check_status=None):
     with db.get_session() as session:
         session.add(ContainerUpdate(
             container_id=f"{host_id}:{short_id}",
@@ -49,6 +50,7 @@ def add_row(db, host_id, short_id, name, update_available=True, auto_update_enab
             latest_digest="sha256:new" if update_available else None,
             update_available=update_available,
             auto_update_enabled=auto_update_enabled,
+            check_status=check_status,
         ))
         session.commit()
 
@@ -159,3 +161,53 @@ async def test_malformed_row_does_not_stop_the_cycle(db, host_id):
     stats = await executor.execute_auto_updates()
 
     assert stats == {"total": 2, "successful": 1, "failed": 0, "skipped": 1}
+
+
+@pytest.mark.asyncio
+async def test_unverified_image_is_skipped_and_logged(db, host_id, caplog):
+    caplog.set_level(logging.INFO, logger="updates.update_executor")
+    add_row(db, host_id, "aaaaaaaaaaaa", "local-build", check_status="unverified_image")
+    add_row(db, host_id, "bbbbbbbbbbbb", "pulled")
+    executor = make_executor(db, [container("local-build", "aaaaaaaaaaaa", host_id),
+                                  container("pulled", "bbbbbbbbbbbb", host_id)])
+
+    stats = await executor.execute_auto_updates()
+
+    assert ("start", "aaaaaaaaaaaa") not in executor.timeline
+    assert ("start", "bbbbbbbbbbbb") in executor.timeline
+    assert stats == {"total": 2, "successful": 1, "failed": 0, "skipped": 1}
+    skips = [r.getMessage() for r in caplog.records if "local-build" in r.getMessage()]
+    assert len(skips) == 1
+    assert "can't confirm" in skips[0]
+
+
+@pytest.mark.asyncio
+async def test_row_marked_after_selection_is_skipped(db, host_id):
+    add_row(db, host_id, "aaaaaaaaaaaa", "app")
+    executor = make_executor(db, [container("app", "aaaaaaaaaaaa", host_id)])
+    discovered = executor.monitor.get_containers.return_value
+
+    async def mark_then_list():
+        with db.get_session() as session:
+            session.query(ContainerUpdate).one().check_status = "unverified_image"
+            session.commit()
+        return discovered
+
+    executor.monitor.get_containers = mark_then_list
+
+    stats = await executor.execute_auto_updates()
+
+    assert executor.timeline == []
+    assert stats == {"total": 1, "successful": 0, "failed": 0, "skipped": 1}
+
+
+@pytest.mark.asyncio
+async def test_only_unverified_rows_still_count_when_discovery_fails(db, host_id):
+    add_row(db, host_id, "aaaaaaaaaaaa", "local-build", check_status="unverified_image")
+    add_row(db, host_id, "bbbbbbbbbbbb", "pulled")
+    executor = make_executor(db, [])
+    executor.monitor.get_containers.side_effect = RuntimeError("boom")
+
+    stats = await executor.execute_auto_updates()
+
+    assert stats == {"total": 2, "successful": 0, "failed": 0, "skipped": 2}

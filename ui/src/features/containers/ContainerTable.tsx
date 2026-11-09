@@ -69,7 +69,7 @@ import { BatchJobPanel } from './components/BatchJobPanel'
 import { ColumnCustomizationPanel } from './components/ColumnCustomizationPanel'
 import { IPAddressCell } from './components/IPAddressCell'
 import { compareIpAddresses } from './utils/ipSort'
-import type { Container } from './types'
+import type { AutoUpdateConfig, Container } from './types'
 import { useAuth } from '@/features/auth/AuthContext'
 import { useSimplifiedWorkflow, useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import { useContainerUpdateStatus, useUpdatesSummary, useAllAutoUpdateConfigs, useAllHealthCheckConfigs } from './hooks/useContainerUpdates'
@@ -89,14 +89,18 @@ import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
  */
 function UpdateBadge({
   onClick,
-  hasUpdate
+  hasUpdate,
+  unverified,
 }: {
   onClick?: () => void
   hasUpdate: boolean
+  unverified: boolean
 }) {
   if (!hasUpdate) {
     return null
   }
+
+  const label = unverified ? 'Update available (unconfirmed) - click to view' : 'Update available - click to view'
 
   return (
     <button
@@ -105,11 +109,11 @@ function UpdateBadge({
         onClick?.()
       }}
       className="relative group p-1 rounded hover:bg-surface-2 transition-colors"
-      title="Update available - click to view"
+      title={label}
     >
       <Package className="h-4 w-4 text-amber-500" />
       <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 px-2 py-1 bg-popover text-popover-foreground text-xs rounded shadow-lg opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 border">
-        Update available - click to view
+        {label}
       </div>
     </button>
   )
@@ -125,7 +129,7 @@ function PolicyIcons({
   healthCheckConfig
 }: {
   container: Container
-  autoUpdateConfig?: { auto_update_enabled: boolean; floating_tag_mode: string } | null | undefined
+  autoUpdateConfig?: AutoUpdateConfig | null | undefined
   healthCheckConfig?: { enabled: boolean; current_status: string; consecutive_failures: number } | null | undefined
 }) {
   const isRunning = container.state === 'running'
@@ -145,6 +149,7 @@ function PolicyIcons({
   )
 
   const autoUpdateEnabled = autoUpdateConfig?.auto_update_enabled ?? fallbackUpdateStatus.data?.auto_update_enabled ?? false
+  const autoUpdatePaused = (autoUpdateConfig?.check_status ?? fallbackUpdateStatus.data?.status) === 'unverified_image'
   const healthCheckEnabled = healthCheckConfig?.enabled ?? fallbackHealthCheck.data?.enabled ?? false
   const healthStatus = healthCheckConfig?.current_status ?? fallbackHealthCheck.data?.current_status ?? 'unknown'
   const consecutiveFailures = healthCheckConfig?.consecutive_failures ?? fallbackHealthCheck.data?.consecutive_failures
@@ -218,8 +223,15 @@ function PolicyIcons({
         )}
       </div>
 
-      {/* Auto-update icon */}
-      {autoUpdateEnabled && (
+      {/* Shown even with auto-update off, so a false badge on a local build is explained */}
+      {autoUpdatePaused ? (
+        <div className="relative group">
+          <AlertTriangle className="h-4 w-4 text-warning" />
+          <div className="invisible group-hover:visible absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-10 px-2 py-1 text-xs bg-surface-1 border border-border rounded shadow-lg whitespace-nowrap">
+            Auto-update paused: can&apos;t confirm this image came from the registry
+          </div>
+        </div>
+      ) : autoUpdateEnabled && (
         <div className="relative group">
           <Package className="h-4 w-4 text-amber-500" />
           {/* Tooltip */}
@@ -1492,6 +1504,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
               {/* Update badge - shows if update available */}
               <UpdateBadge
                 hasUpdate={updatesSummary?.containers_with_updates?.includes(makeCompositeKey(container)) ?? false}
+                unverified={allAutoUpdateConfigs?.[makeCompositeKey(container)]?.check_status === 'unverified_image'}
                 onClick={() => {
                   openModal(makeCompositeKey(container), 'updates')
                 }}

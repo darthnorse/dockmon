@@ -802,3 +802,29 @@ class TestAgentSelfUpdatePayload:
         assert payload["image"] == "ghcr.io/darthnorse/dockmon-agent:2.2.1"
         assert "github.com" in payload["binary_url"]  # Default binary source
         assert payload["version"] == "2.2.1"
+
+
+@pytest.mark.asyncio
+async def test_successful_self_update_clears_the_unverified_mark(
+    agent_executor, agent_update_record, agent_context, mock_command_executor
+):
+    mock_command_executor.execute_command.return_value = CommandResult(
+        status=CommandStatus.SUCCESS, success=True, response={}, error=None
+    )
+    agent_executor._wait_for_agent_reconnection = AsyncMock(return_value=True)
+    agent_executor._get_agent_version = AsyncMock(return_value="2.2.1")
+    stored = ContainerUpdate(container_id="host-123:abc123def456", update_available=True,
+                             check_status="unverified_image")
+    mock_session = MagicMock()
+    mock_session.query.side_effect = lambda model: MagicMock(**{
+        "filter_by.return_value.first.return_value": stored if model is ContainerUpdate else None
+    })
+    agent_executor.db.get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+    agent_executor.db.get_session.return_value.__exit__ = MagicMock(return_value=False)
+
+    result = await agent_executor.execute_self_update(
+        context=agent_context, progress_callback=AsyncMock(), update_record=agent_update_record, agent_id="agent-456",
+    )
+
+    assert result.success is True
+    assert (stored.update_available, stored.check_status) == (False, None)

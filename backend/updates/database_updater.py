@@ -84,6 +84,7 @@ def update_container_records_after_update(
 
                 record.container_id = new_composite_key
                 record.update_available = False
+                record.check_status = None
                 record.current_image = new_image
                 record.current_digest = new_digest
                 record.last_updated_at = now

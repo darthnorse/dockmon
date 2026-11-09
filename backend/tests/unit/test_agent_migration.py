@@ -680,3 +680,49 @@ def test_delayed_migration_carries_host_tags(agent_manager, db_manager, existing
     assert result["success"] is True, result
 
     assert _host_tag_subjects(db_manager, tag_id) == {"agent-host-id"}
+
+
+def _marked_update_row(db_manager):
+    from database import ContainerUpdate
+    with db_manager.get_session() as session:
+        session.add(ContainerUpdate(
+            container_id="existing-host-id:abc123456789", host_id="existing-host-id", container_name="app",
+            current_image="nginx:1.25.3", current_digest="sha256:" + "a" * 64, update_available=True,
+            auto_update_enabled=True, check_status="unverified_image", verified_image='{"image_id": "x"}',
+        ))
+        session.commit()
+
+
+def _update_row(db_manager, host_id):
+    from database import ContainerUpdate
+    with db_manager.get_session() as session:
+        row = session.query(ContainerUpdate).filter_by(container_id=f"{host_id}:abc123456789").one()
+        return row.auto_update_enabled, row.check_status, row.verified_image
+
+
+def test_registration_migration_keeps_the_unverified_mark(agent_manager, registration_token, existing_mtls_host, db_manager):
+    _marked_update_row(db_manager)
+
+    result = agent_manager.register_agent({
+        "token": registration_token, "engine_id": "engine-12345", "hostname": "remote-agent", "version": "1.0.0",
+        "proto_version": "1.0", "capabilities": {}, "os_type": "linux",
+    })
+    assert result["success"] is True
+
+    assert _update_row(db_manager, result["host_id"]) == (True, "unverified_image", '{"image_id": "x"}')
+
+
+def test_delayed_migration_keeps_the_unverified_mark(agent_manager, db_manager, existing_mtls_host):
+    from database import Agent, DockerHostDB
+    _marked_update_row(db_manager)
+    with db_manager.get_session() as session:
+        session.add(DockerHostDB(id="agent-host-id", name="agent-host", url="agent://", connection_type="agent",
+                                 engine_id="engine-12345", is_active=True))
+        session.add(Agent(id="agent-1", host_id="agent-host-id", engine_id="engine-12345", version="1.0.0",
+                          proto_version="1.0", capabilities={}, status="online"))
+        session.commit()
+
+    result = agent_manager.migrate_from_host("agent-1", "existing-host-id")
+    assert result["success"] is True, result
+
+    assert _update_row(db_manager, "agent-host-id") == (True, "unverified_image", '{"image_id": "x"}')

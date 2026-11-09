@@ -813,7 +813,8 @@ class ContainerUpdate(Base):
     latest_image = Column(Text, nullable=True)
     latest_digest = Column(Text, nullable=True)
     update_available = Column(Boolean, default=False, nullable=False)
-    # Non-update check outcome: NULL = normal, 'local_image' = built locally (no registry digest)
+    # NULL = normal, 'local_image' = built locally (no registry digest), 'unverified_image' = update
+    # shown but auto-update skips it (the running image can't be proven to come from the registry)
     check_status = Column(Text, nullable=True)
     # JSON {image_id, platform, ref}: the image ID last seen matching this reference in the registry.
     # A later mismatch only means "stale" when the running image is still this one.

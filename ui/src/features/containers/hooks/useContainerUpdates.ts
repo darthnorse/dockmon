@@ -6,7 +6,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api/client'
-import type { ContainerUpdateStatus } from '../types'
+import type { AutoUpdateConfig, ContainerUpdateStatus } from '../types'
 
 /**
  * Hook to get update status for a container
@@ -68,6 +68,7 @@ export function useCheckContainerUpdate() {
       })
       // Invalidate updates summary so filters update immediately
       void queryClient.invalidateQueries({ queryKey: ['updates-summary'] })
+      void queryClient.invalidateQueries({ queryKey: ['all-auto-update-configs'] })
     },
   })
 }
@@ -94,6 +95,7 @@ export function useCheckAllUpdates() {
       })
       // Invalidate updates summary so filters update immediately
       void queryClient.invalidateQueries({ queryKey: ['updates-summary'] })
+      void queryClient.invalidateQueries({ queryKey: ['all-auto-update-configs'] })
     },
   })
 }
@@ -205,10 +207,7 @@ export function useAllAutoUpdateConfigs() {
   return useQuery({
     queryKey: ['all-auto-update-configs'],
     queryFn: async () => {
-      return await apiClient.get<Record<string, {
-        auto_update_enabled: boolean
-        floating_tag_mode: string
-      }>>('/auto-update-configs')
+      return await apiClient.get<Record<string, AutoUpdateConfig>>('/auto-update-configs')
     },
     staleTime: 30000, // Cache for 30s
     refetchInterval: 60000, // Refresh every minute

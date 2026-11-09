@@ -31,12 +31,10 @@ from updates.types import MANIFEST_LIST_TYPES, match_platform_manifest
 from utils.keys import make_composite_key
 from utils.encryption import decrypt_password
 from utils.container_id import normalize_container_id
-from utils.image_ref import extract_image_repository, has_tag, is_registry_host
+from utils.image_ref import SHA256_DIGEST, extract_image_repository, has_tag, is_registry_host
 from utils.async_docker import async_docker_call
 
 logger = logging.getLogger(__name__)
-
-SHA256_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -95,6 +93,9 @@ def _parse_verified_image(raw) -> Optional[Dict[str, str]]:
 # Marker for "no resolvable digest + no local RepoDigests": most likely built locally.
 # (Registries 401/403 on missing images, so a private image needing auth looks the same.)
 LOCAL_IMAGE_STATUS = "local_image"
+# An update found by the no-RepoDigests fallback with no proof the running image came from the
+# registry (it may be a local build with a public name). Shown, but auto-update skips it.
+UNVERIFIED_IMAGE_STATUS = "unverified_image"
 
 
 class UpdateChecker:
@@ -332,6 +333,7 @@ class UpdateChecker:
         # Get current digest from Docker API (the actual digest the container is running)
         current_digest = await self._get_container_image_digest(container, running)
         current_digest_from_registry = False
+        current_tag_image_ids = set()
         if not current_digest:
             # Fallback for digest-pinned images (Issue #143)
             # Images pulled by digest (e.g., image@sha256:...) don't have RepoDigests.
@@ -346,6 +348,7 @@ class UpdateChecker:
                     if current_result:
                         current_digest = current_result["digest"]
                         current_digest_from_registry = True
+                        current_tag_image_ids = self._registry_image_ids(current_result["digest"], current_result.get("manifest") or {}, platform)
                         logger.info(f"[{container['name']}] Got current digest from registry: {current_digest[:16]}...")
                 except TransientRegistryError:
                     # Retryable (timeout/429/5xx) - don't fall through to local classification
@@ -446,9 +449,9 @@ class UpdateChecker:
             update_available = current_digest != latest_digest
 
         verified_image = None
+        stale = False
         if running and running.image_id and platform_verified:
-            config_digest = latest_manifest.get("config_digest")
-            config_digest = config_digest if isinstance(config_digest, str) and SHA256_DIGEST.fullmatch(config_digest) else None
+            config_digest = self._config_digest(latest_manifest)
             evidence = {"image_id": running.image_id, "platform": platform, "ref": floating_tag}
             registry_digests = {latest_digest, platform_digest, config_digest}
             if running.image_id in registry_digests:
@@ -459,6 +462,7 @@ class UpdateChecker:
                 # This ID matched this reference on an earlier check, so the registry has moved on. A
                 # mismatch alone proves nothing: a local build would be replaced by auto-update.
                 update_available = True
+                stale = True
                 current_digest = running.image_id
                 logger.info(f"[{container['name']}] Running image {running.image_id[:16]}... no longer matches the registry")
 
@@ -502,6 +506,19 @@ class UpdateChecker:
                 update_available = False
                 logger.info(f"[{container['name']}] Suppressing update: {floating_tag} version {latest_ver} is not newer than current {current_ver}")
 
+        check_status = None
+        if current_digest_from_registry and update_available and not stale:
+            # A lost image record makes even a matching ID untrustworthy: the updater would pin the old env.
+            if platform_verified:
+                proof_id = running.image_id
+            elif running is None:
+                proof_id = container.get("image_id")
+            else:
+                proof_id = None
+            if proof_id is None or proof_id not in current_tag_image_ids:
+                check_status = UNVERIFIED_IMAGE_STATUS
+                logger.info(f"[{container['name']}] Update not applied automatically: can't confirm the running image came from the registry")
+
         # Check if user has manually set a changelog URL (v2.0.2+)
         # If manual, skip auto-detection to preserve user's choice
         if existing_record and existing_record.changelog_source == 'manual':
@@ -528,6 +545,7 @@ class UpdateChecker:
             "platform": platform,
             "floating_tag_mode": tracking_mode,
             "verified_image": verified_image,
+            "check_status": check_status,
             "current_version": current_version,
             "latest_version": latest_version,
             "changelog_url": changelog_url,
@@ -613,6 +631,17 @@ class UpdateChecker:
 
         desc = match_platform_manifest(manifest, platform)
         return desc.get("digest") if desc else None
+
+    @staticmethod
+    def _config_digest(manifest: Dict) -> Optional[str]:
+        config_digest = manifest.get("config_digest")
+        return config_digest if isinstance(config_digest, str) and SHA256_DIGEST.fullmatch(config_digest) else None
+
+    def _registry_image_ids(self, index_digest: str, manifest: Dict, platform: str) -> set:
+        """Every ID a pulled copy of this registry image can run under: index, platform manifest or config."""
+        ids = {index_digest, self._extract_platform_digest(manifest, platform), self._config_digest(manifest)}
+        ids.discard(None)
+        return ids
 
     def _extract_version_from_tag(self, image_ref: str) -> Optional[str]:
         """
@@ -780,11 +809,15 @@ class UpdateChecker:
         try:
             # Get containers from monitor (async)
             containers = await self.monitor.get_containers()
-            # Convert to dict format
-            return [c.dict() for c in containers]
+            return [self._checker_dict(c) for c in containers]
         except Exception as e:
             logger.error(f"Error fetching containers: {e}", exc_info=True)
             return []
+
+    @staticmethod
+    def _checker_dict(container) -> Dict:
+        """dict() drops fields excluded from the API, which the checker still needs."""
+        return {**container.dict(), "image_id": container.image_id}
 
     async def _get_container_async(self, host_id: str, container_id: str) -> Optional[Dict]:
         """
@@ -817,7 +850,7 @@ class UpdateChecker:
                 return c_short == search_short or c_short_from_field == search_short or c.id == container_id
 
             container = next((c for c in containers if matches(c)), None)
-            return container.dict() if container else None
+            return self._checker_dict(container) if container else None
         except Exception as e:
             logger.error(f"Error fetching container: {e}")
             return None
@@ -886,7 +919,7 @@ class UpdateChecker:
                 record.update_available = update_info["update_available"]
                 if update_info.get("verified_image"):
                     record.verified_image = update_info["verified_image"]
-                record.check_status = None  # clear any stale 'local_image' flag
+                record.check_status = update_info.get("check_status")
                 record.registry_url = update_info["registry_url"]
                 record.platform = update_info["platform"]
                 record.last_checked_at = datetime.now(timezone.utc)
@@ -911,6 +944,7 @@ class UpdateChecker:
                     latest_digest=update_info["latest_digest"],
                     update_available=update_info["update_available"],
                     verified_image=update_info.get("verified_image"),
+                    check_status=update_info.get("check_status"),
                     floating_tag_mode=update_info["floating_tag_mode"],
                     registry_url=update_info["registry_url"],
                     platform=update_info["platform"],
@@ -946,7 +980,7 @@ class UpdateChecker:
                     record.update_available = update_info["update_available"]
                     if update_info.get("verified_image"):
                         record.verified_image = update_info["verified_image"]
-                    record.check_status = None  # clear any stale 'local_image' flag
+                    record.check_status = update_info.get("check_status")
                     record.registry_url = update_info["registry_url"]
                     record.platform = update_info["platform"]
                     record.last_checked_at = datetime.now(timezone.utc)
@@ -1064,6 +1098,18 @@ class UpdateChecker:
                 event_bus = get_event_bus(self.monitor)
                 # DEFENSIVE: Normalize container ID (agents may send 64-char IDs)
                 container_id = normalize_container_id(container["id"])
+                data = {
+                    'current_image': update_info['current_image'],
+                    'latest_image': update_info['latest_image'],
+                    'current_digest': update_info['current_digest'],
+                    'latest_digest': update_info['latest_digest'],
+                    'current_version': update_info.get('current_version'),
+                    'latest_version': update_info.get('latest_version'),
+                    'changelog_url': update_info.get('changelog_url'),
+                    'update_detected': True,  # For alert engine
+                }
+                if update_info.get("check_status") == UNVERIFIED_IMAGE_STATUS:
+                    data['auto_update_paused'] = True
                 await event_bus.emit(Event(
                     event_type=EventType.UPDATE_AVAILABLE,
                     scope_type='container',
@@ -1071,16 +1117,7 @@ class UpdateChecker:
                     scope_name=container["name"],
                     host_id=container["host_id"],
                     host_name=host_name,
-                    data={
-                        'current_image': update_info['current_image'],
-                        'latest_image': update_info['latest_image'],
-                        'current_digest': update_info['current_digest'],
-                        'latest_digest': update_info['latest_digest'],
-                        'current_version': update_info.get('current_version'),
-                        'latest_version': update_info.get('latest_version'),
-                        'changelog_url': update_info.get('changelog_url'),
-                        'update_detected': True,  # For alert engine
-                    }
+                    data=data,
                 ))
 
                 logger.debug(f"Emitted UPDATE_AVAILABLE event for {container['name']}")

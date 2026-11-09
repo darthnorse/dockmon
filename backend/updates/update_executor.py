@@ -33,6 +33,7 @@ from updates.types import UpdateContext, UpdateResult
 from updates.agent_executor import AgentUpdateExecutor
 from updates.database_updater import update_container_records_after_update
 from updates.event_emitter import UpdateEventEmitter
+from updates.update_checker import UNVERIFIED_IMAGE_STATUS
 from updates.update_client import (
     UpdateClient,
     UpdateServiceUnavailable,
@@ -45,6 +46,11 @@ logger = logging.getLogger(__name__)
 
 # Maximum concurrent updates to prevent resource exhaustion
 MAX_CONCURRENT_UPDATES = 5
+
+
+def _log_unverified_skip(container_name: str) -> None:
+    logger.info(f"Skipping auto-update of {container_name}: "
+                f"can't confirm its image came from the registry, update it manually")
 
 
 class UpdateExecutor:
@@ -146,6 +152,7 @@ class UpdateExecutor:
         Execute auto-updates for all containers that:
         - Have auto_update_enabled = True
         - Have update_available = True
+        - Are not marked unverified_image (counted as skipped)
 
         Returns:
             Dict with counts: {"total": N, "successful": N, "failed": N, "skipped": N}
@@ -169,6 +176,10 @@ class UpdateExecutor:
             # Create list of update records (detach from session)
             update_records = []
             for update in updates:
+                if update.check_status == UNVERIFIED_IMAGE_STATUS:
+                    _log_unverified_skip(update.container_name or update.container_id)
+                    stats["skipped"] += 1
+                    continue
                 host_id, container_id = update.container_id.split(':', 1)
                 update_records.append({
                     'host_id': host_id,
@@ -180,11 +191,11 @@ class UpdateExecutor:
             live_containers = await self.monitor.get_containers()
         except Exception as e:
             logger.error(f"Skipping auto-updates, could not list containers: {e}")
-            stats["skipped"] = len(update_records)
+            stats["skipped"] += len(update_records)
             return stats
 
         runnable = self._live_auto_update_containers(update_records, live_containers)
-        stats["skipped"] = len(update_records) - len(runnable)
+        stats["skipped"] += len(update_records) - len(runnable)
         records_by_key = {
             f"{record['host_id']}:{record['container_id']}": record
             for record in update_records
@@ -204,6 +215,9 @@ class UpdateExecutor:
 
                         if not update_record or not update_record.update_available:
                             logger.debug(f"Skipping {record['container_id']}: update no longer available")
+                            return {"status": "skipped"}
+                        if update_record.check_status == UNVERIFIED_IMAGE_STATUS:
+                            _log_unverified_skip(update_record.container_name or record['container_id'])
                             return {"status": "skipped"}
 
                         result = await self.update_container(

@@ -360,6 +360,7 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
 
   const hasUpdate = updateStatus?.update_available
   const isLocalImage = updateStatus?.status === 'local_image'
+  const isUnverifiedImage = updateStatus?.status === 'unverified_image'
   const lastChecked = updateStatus?.last_checked_at
     ? formatDateTime(updateStatus.last_checked_at, timeFormat)
     : 'Not Checked'
@@ -455,6 +456,19 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
           )}
         </div>
       </div>
+
+      {isUnverifiedImage && (
+        <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-4">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="h-5 w-5 text-yellow-400 flex-shrink-0 mt-0.5" />
+            <p className="text-sm text-yellow-200/90">
+              DockMon can&apos;t confirm the running image came from the registry, so auto-update won&apos;t apply
+              this update. It may be a local build. Update manually if it isn&apos;t, or switch to exact tracking to
+              stop checking it against other tags.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Auto-Update Blocker Warning */}
       {hasBlockers && (
@@ -746,6 +760,11 @@ function ContainerUpdatesTabInternal({ container }: ContainerUpdatesTabProps) {
               <p className="text-sm text-muted-foreground mt-1">
                 Automatically update this container when new versions are available
               </p>
+              {isUnverifiedImage && (
+                <p className="text-sm text-yellow-400 mt-1">
+                  Paused for this update: can&apos;t confirm the image came from the registry
+                </p>
+              )}
             </div>
             <Switch
               id="auto-update"

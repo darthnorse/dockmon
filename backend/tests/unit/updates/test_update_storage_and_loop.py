@@ -493,3 +493,88 @@ def test_reattaching_a_recreated_container_keeps_its_evidence(host_db):
     with host_db.get_session() as session:
         row = session.query(ContainerUpdate).filter_by(container_id=f"{HOST_ID}:newcontainer").one()
         assert row.verified_image == VERIFIED
+
+
+UNVERIFIED = "unverified_image"
+
+
+def test_store_create_writes_the_mark(host_db):
+    UpdateChecker(db=host_db)._store_update_info(container_dict(), update_info(check_status=UNVERIFIED))
+
+    assert read_row(host_db).check_status == UNVERIFIED
+
+
+@pytest.mark.parametrize("before,after", [(None, UNVERIFIED), (UNVERIFIED, None), ("local_image", UNVERIFIED),
+                                          ("local_image", None)])
+def test_store_update_writes_the_mark(host_db, before, after):
+    existing_row(host_db, check_status=before)
+
+    UpdateChecker(db=host_db)._store_update_info(container_dict(), update_info(check_status=after))
+
+    assert read_row(host_db).check_status == after
+
+
+def test_store_retry_writes_the_mark(host_db):
+    racing_insert = _RacingInsert(host_db)
+    event.listen(Session, "before_flush", racing_insert)
+    try:
+        UpdateChecker(db=host_db)._store_update_info(container_dict(), update_info(check_status=UNVERIFIED))
+    finally:
+        event.remove(Session, "before_flush", racing_insert)
+
+    assert read_row(host_db).check_status == UNVERIFIED
+
+
+def test_local_image_marker_replaces_the_mark(host_db):
+    existing_row(host_db, check_status=UNVERIFIED, update_available=True)
+
+    UpdateChecker(db=host_db)._store_local_image_info(container_dict())
+
+    row = read_row(host_db)
+    assert row.check_status == "local_image"
+    assert row.update_available is False
+
+
+MARK_ROUTES = {
+    "nginx:1.25.3": registry_result(CURRENT, config_digest=digest("3")),
+    "nginx:1": registry_result(LATEST, labels={"org.opencontainers.image.version": "1.26.0"}, config_digest=digest("4")),
+}
+
+
+async def test_mark_is_stored_then_cleared_by_a_proven_check(host_db, event_bus_stub):
+    existing_row(host_db, floating_tag_mode="minor")
+    container = container_dict("nginx:1.25.3")
+    local_build = loop_checker(host_db, [container], MARK_ROUTES, client=FakeClient(image_id=digest("1")))
+
+    await local_build.check_all_containers()
+
+    row = read_row(host_db)
+    assert (row.update_available, row.check_status) == (True, UNVERIFIED)
+
+    pulled = loop_checker(host_db, [container], MARK_ROUTES, client=FakeClient(image_id=digest("3")))
+    await pulled.check_single_container(HOST_ID, CONTAINER_ID, bypass_cache=True)
+
+    row = read_row(host_db)
+    assert (row.update_available, row.check_status) == (True, None)
+
+
+async def test_agent_image_id_reaches_the_check_through_the_sweep(host_db, event_bus_stub):
+    existing_row(host_db, floating_tag_mode="minor")
+    container = container_dict("nginx:1.25.3", image_id=digest("3"))
+
+    await loop_checker(host_db, [container], MARK_ROUTES).check_all_containers()
+
+    row = read_row(host_db)
+    assert (row.update_available, row.check_status) == (True, None)
+
+
+async def test_marked_update_emits_one_event_saying_auto_update_is_paused(host_db, event_bus_stub):
+    existing_row(host_db, floating_tag_mode="minor")
+    container = container_dict("nginx:1.25.3")
+    checker = loop_checker(host_db, [container], MARK_ROUTES, client=FakeClient(image_id=digest("1")))
+
+    await checker.check_all_containers()
+    await checker.check_all_containers()
+
+    assert event_bus_stub.emit.await_count == 1
+    assert event_bus_stub.emit.await_args.args[0].data["auto_update_paused"] is True

@@ -3,6 +3,7 @@ package docker
 import (
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 
@@ -220,9 +221,9 @@ func TestRegistryAuthStructOptionalFields(t *testing.T) {
 	}
 }
 
-func TestContainerWithDigestKeepsNetworkMode(t *testing.T) {
+func TestContainerWithDigestKeepsBackendFields(t *testing.T) {
 	var listed ContainerWithDigest
-	listJSON := `{"Id":"aaa","HostConfig":{"NetworkMode":"container:bbb"}}`
+	listJSON := `{"Id":"aaa","ImageID":"sha256:` + strings.Repeat("c", 64) + `","HostConfig":{"NetworkMode":"container:bbb"}}`
 	if err := json.Unmarshal([]byte(listJSON), &listed); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -233,6 +234,7 @@ func TestContainerWithDigestKeepsNetworkMode(t *testing.T) {
 	}
 
 	var received struct {
+		ImageID    string `json:"ImageID"`
 		HostConfig struct {
 			NetworkMode string `json:"NetworkMode"`
 		} `json:"HostConfig"`
@@ -242,5 +244,8 @@ func TestContainerWithDigestKeepsNetworkMode(t *testing.T) {
 	}
 	if received.HostConfig.NetworkMode != "container:bbb" {
 		t.Errorf("the backend orders updates by this field, got %q in %s", received.HostConfig.NetworkMode, sent)
+	}
+	if received.ImageID != "sha256:"+strings.Repeat("c", 64) {
+		t.Errorf("the backend proves fallback updates with this field, got %q in %s", received.ImageID, sent)
 	}
 }

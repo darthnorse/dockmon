@@ -146,7 +146,8 @@ async def test_fallback_uses_registry_digest_of_current_tag():
 
     result = await run_check(checker, container_dict("nginx:1.25.3"))
 
-    assert_subset(result, update_available=True, current_digest=CURRENT, latest_digest=LATEST)
+    assert_subset(result, update_available=True, current_digest=CURRENT, latest_digest=LATEST,
+                  check_status="unverified_image")
 
 
 async def test_digest_ref_skips_registry_fallback():
@@ -391,6 +392,7 @@ async def test_result_contract():
         changelog_url=CHANGELOG_URL,
         changelog_source="auto",
         changelog_checked_at=CHANGELOG_CHECKED_AT,
+        check_status=None,
     )
 
 

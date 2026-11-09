@@ -577,4 +577,4 @@ async def test_marked_update_emits_one_event_saying_auto_update_is_paused(host_d
     await checker.check_all_containers()
 
     assert event_bus_stub.emit.await_count == 1
-    assert event_bus_stub.emit.await_args.args[0].data["auto_update_paused"] is True
+    assert event_bus_stub.emit.await_args.args[0].data.get("auto_update_paused") is True

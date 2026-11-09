@@ -211,3 +211,14 @@ async def test_only_unverified_rows_still_count_when_discovery_fails(db, host_id
     stats = await executor.execute_auto_updates()
 
     assert stats == {"total": 2, "successful": 0, "failed": 0, "skipped": 2}
+
+
+@pytest.mark.asyncio
+async def test_only_unverified_rows_need_no_discovery(db, host_id):
+    add_row(db, host_id, "aaaaaaaaaaaa", "local-build", check_status="unverified_image")
+    executor = make_executor(db, [container("local-build", "aaaaaaaaaaaa", host_id)])
+
+    stats = await executor.execute_auto_updates()
+
+    executor.monitor.get_containers.assert_not_awaited()
+    assert stats == {"total": 1, "successful": 0, "failed": 0, "skipped": 1}

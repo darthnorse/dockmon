@@ -187,6 +187,9 @@ class UpdateExecutor:
                     'update_record': update
                 })
 
+        if not update_records:
+            return stats
+
         try:
             live_containers = await self.monitor.get_containers()
         except Exception as e:

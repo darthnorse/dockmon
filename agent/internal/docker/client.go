@@ -457,9 +457,10 @@ func (c *Client) GetMyContainerID(ctx context.Context) (string, error) {
 	return containerID, nil
 }
 
-// ContainerWithDigest extends types.Container with additional inspect data
-// (Docker's container LIST endpoint omits these — the agent inspects once
-// per first-sight and caches forever, so steady-state cycles pay no extra cost).
+// ContainerWithDigest extends types.Container with inspect data the container
+// LIST endpoint omits. StartedAt and Env come from a container inspect cached
+// per container ID; RepoDigests and ImagePlatform from an image inspect made
+// once per image each listing.
 type ContainerWithDigest struct {
 	types.Container
 	RepoDigests []string          `json:"RepoDigests"`

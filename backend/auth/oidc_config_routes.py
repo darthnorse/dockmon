@@ -557,12 +557,15 @@ async def _validate_client_credentials(
         error_desc = error_data.get('error_description', f'HTTP {response.status_code}')
         return False, f"Invalid client credentials: {error_desc}"
 
+    if error_code in ('unauthorized_client', 'unsupported_grant_type', 'invalid_grant'):
+        return None, (
+            f"Could not validate credentials: provider returned '{error_code}'. "
+            "This client may not support the client_credentials grant type, "
+            "but credentials may still be correct for the authorization code flow."
+        )
+
     reason = f"'{error_code}'" if error_code else f"HTTP {response.status_code}"
-    return None, (
-        f"Could not validate credentials: provider returned {reason}. "
-        "This client may not support the client_credentials grant type, "
-        "but credentials may still be correct for the authorization code flow."
-    )
+    return None, f"Could not validate credentials: provider returned {reason}."
 
 
 @router.post("/discover", response_model=OIDCDiscoveryResponse, dependencies=[Depends(require_capability("oidc.manage"))])

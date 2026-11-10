@@ -64,7 +64,11 @@ class PendingAlertClear:
 
 
 def mark_resolved(alert: AlertV2, reason: str, notify: bool, now: datetime) -> None:
-    """Set an alert's resolved fields in the caller's session; the caller commits."""
+    """Set an alert's resolved fields in the caller's session; the caller commits.
+
+    The EvaluationService's resolve dispatcher sends recovery notifications for resolved
+    alerts whose resolve_notified_at IS NULL, so notify=False pre-stamps it to opt out.
+    """
     alert.state = "resolved"
     alert.resolved_at = now
     alert.resolved_reason = reason
@@ -252,23 +256,11 @@ class AlertEngine:
         self,
         alert: AlertV2,
         reason: str = "Clear condition met",
-        notify: bool = True,
     ) -> AlertV2:
-        """Mark alert as resolved.
-
-        The EvaluationService's resolve dispatcher polls the DB for resolved alerts
-        with resolve_notified_at IS NULL and rule.notify_on_resolve=True. When notify
-        is False (e.g. manual user-initiated resolve via the API), resolve_notified_at
-        is pre-stamped to opt the alert out of recovery dispatch.
-
-        Args:
-            alert: The alert to resolve.
-            reason: Human-readable resolution reason.
-            notify: If False, suppress resolve notification by stamping resolve_notified_at.
-        """
+        """Mark alert as resolved, leaving recovery notification to the resolve dispatcher."""
         with self.db.get_session() as session:
             alert = session.merge(alert)
-            mark_resolved(alert, reason, notify, datetime.now(timezone.utc))
+            mark_resolved(alert, reason, notify=True, now=datetime.now(timezone.utc))
             session.commit()
             session.refresh(alert)
 

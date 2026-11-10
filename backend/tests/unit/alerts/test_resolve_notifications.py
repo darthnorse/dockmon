@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import inspect
 
 import database as database_module
-from alerts.engine import AlertEngine
+from alerts.engine import AlertEngine, mark_resolved
 from alerts.evaluation_service import AlertEvaluationService
 from database import AlertRuleV2, AlertV2, DatabaseManager
 from models.settings_models import AlertRuleV2Create, AlertRuleV2Update
@@ -193,7 +193,7 @@ async def test_send_resolve_v2_skips_during_blackout():
 
 
 def test_engine_resolve_alert_default_leaves_resolve_notified_at_null(db):
-    """_resolve_alert() (notify=True default) does NOT pre-stamp resolve_notified_at,
+    """_resolve_alert() does NOT pre-stamp resolve_notified_at,
     so the dispatcher's DB query will find the alert and decide whether to send."""
     engine = AlertEngine(db)
 
@@ -222,11 +222,9 @@ def test_engine_resolve_alert_default_leaves_resolve_notified_at_null(db):
         assert refreshed.resolve_notified_at is None
 
 
-def test_engine_resolve_alert_silent_stamps_resolve_notified_at(db):
-    """_resolve_alert(notify=False) opts the alert out of recovery dispatch
-    by pre-stamping resolve_notified_at."""
-    engine = AlertEngine(db)
-
+def test_mark_resolved_silent_stamps_resolve_notified_at(db):
+    """mark_resolved(notify=False) (manual resolve API path) opts the alert out of
+    recovery dispatch by pre-stamping resolve_notified_at."""
     with db.get_session() as session:
         rule = AlertRuleV2(
             id="r2", name="Test", scope="container", kind="container_stopped",
@@ -242,9 +240,8 @@ def test_engine_resolve_alert_silent_stamps_resolve_notified_at(db):
         )
         session.add(alert)
         session.commit()
-        session.refresh(alert)
-
-    engine._resolve_alert(alert, "manual", notify=False)
+        mark_resolved(alert, "manual", notify=False, now=datetime.now(timezone.utc))
+        session.commit()
 
     with db.get_session() as session:
         refreshed = session.query(AlertV2).filter(AlertV2.id == "a2").first()
@@ -455,31 +452,3 @@ async def test_drain_dispatches_eligible_alerts_from_db(db):
     assert sent == ["a-eligible"]
 
 
-def test_engine_respects_notify_false_by_stamping_resolve_notified_at(db):
-    """notify=False (manual resolve API path) pre-stamps resolve_notified_at,
-    which the dispatcher's DB query filters on, opting out of recovery dispatch."""
-    engine = AlertEngine(db)
-
-    with db.get_session() as session:
-        rule = AlertRuleV2(
-            id="r-manual", name="Test", scope="container", kind="container_stopped",
-            severity="warning", enabled=True, notify_on_resolve=True,
-        )
-        session.add(rule)
-        alert = AlertV2(
-            id="a-manual", dedup_key="k", scope_type="container", scope_id="h:c",
-            kind="container_stopped", severity="warning", state="open",
-            title="X", message="Y",
-            first_seen=datetime.now(timezone.utc), last_seen=datetime.now(timezone.utc),
-            occurrences=1, rule_id="r-manual",
-            notified_at=datetime.now(timezone.utc),
-        )
-        session.add(alert)
-        session.commit()
-        session.refresh(alert)
-
-    engine._resolve_alert(alert, "Manually resolved by user", notify=False)
-
-    with db.get_session() as session:
-        refreshed = session.query(AlertV2).filter(AlertV2.id == "a-manual").first()
-        assert refreshed.resolve_notified_at is not None

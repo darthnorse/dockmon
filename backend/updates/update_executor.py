@@ -28,7 +28,7 @@ from database import (
 from utils.async_docker import async_docker_call
 from utils.keys import make_composite_key
 from utils.cache import CACHE_REGISTRY
-from updates.dependency_analyzer import recreated_dependents, update_layers
+from updates.dependency_analyzer import network_ref_of, recreated_dependents, update_layers
 from updates.container_validator import ContainerValidator, ValidationResult
 from updates.types import UpdateContext, UpdateResult
 from updates.agent_executor import AgentUpdateExecutor
@@ -50,6 +50,7 @@ logger = logging.getLogger(__name__)
 MAX_CONCURRENT_UPDATES = 5
 
 _TEMP_SUFFIX = re.compile(r"-dockmon-temp-\d+$")
+_DOWN_STATES = ("stopped", "exited", "dead")
 
 
 def _log_unverified_skip(container_name: str) -> None:
@@ -690,11 +691,22 @@ class UpdateExecutor:
 
     async def _find_recreated_dependents(self, host_id: str, container_id: str) -> List[Container]:
         """The containers this update will recreate, from a fresh discovery of the host."""
-        containers = await self._discover_host(host_id)
-        if containers is None:
+        try:
+            if not self._host_may_have_dependents(host_id):
+                return []
+            containers = await self._discover_host(host_id)
+            if containers is None:
+                return []
+            provider = next((c for c in containers if c.short_id == container_id[:12]), None)
+            return recreated_dependents(provider, containers) if provider else []
+        except Exception as e:
+            logger.warning(f"Could not find dependents of {container_id} on host {host_id}: {e}")
             return []
-        provider = next((c for c in containers if c.short_id == container_id[:12]), None)
-        return recreated_dependents(provider, containers) if provider else []
+
+    def _host_may_have_dependents(self, host_id: str) -> bool:
+        """Cheap gate on the monitor's last snapshot, so most updates skip the fresh listing."""
+        last = self.monitor.get_last_containers() if self.monitor else []
+        return any(c.host_id == host_id and network_ref_of(c) is not None for c in last)
 
     async def _alert_on_dependents_left_down(self, host_id: str, dependents: List[Container]):
         """
@@ -709,7 +721,11 @@ class UpdateExecutor:
         if not containers:
             return
         for container in containers:
-            if container.name not in was_running or container.state == "running":
+            # restoreOldDependent ignores a failed rename back, leaving it under its temp name
+            if _TEMP_SUFFIX.sub("", container.name) not in was_running:
+                continue
+            # "restarting" would clear stop alerts; only states the stop rule matches are down
+            if container.state not in _DOWN_STATES:
                 continue
             logger.warning(f"Dependent {container.name} is {container.state} after its provider's update")
             try:

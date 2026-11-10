@@ -75,7 +75,7 @@ def make_record():
     )
 
 
-def make_executor(discoveries):
+def make_executor(discoveries, last=None):
     """Executor whose host discovery returns each list in `discoveries` in turn."""
     with patch("updates.update_executor.UpdateClient"):
         executor = UpdateExecutor(db=MagicMock(), monitor=MagicMock())
@@ -88,6 +88,9 @@ def make_executor(discoveries):
     executor._get_container_info = AsyncMock(return_value={"name": "gluetun"})
     executor._re_evaluate_alerts_after_update = AsyncMock()
     executor.monitor.get_containers = AsyncMock(side_effect=list(discoveries))
+    executor.monitor.get_last_containers.return_value = (
+        [provider(), dependent()] if last is None else last
+    )
     executor.monitor.alert_evaluation_service.handle_container_event = AsyncMock()
     return executor
 
@@ -176,6 +179,22 @@ class TestDependentsMarkedDuringProviderUpdate:
         assert cache.invalidate_key.call_args.args == cached_under
 
     @pytest.mark.asyncio
+    async def test_a_host_without_shared_network_containers_is_not_listed(self):
+        executor = make_executor([], last=[provider(), unrelated()])
+
+        assert await run_update(executor) is True
+        executor.monitor.get_containers.assert_not_awaited()
+        executor.monitor.invalidate_discovery.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_failing_snapshot_does_not_stop_the_update(self):
+        executor = make_executor([])
+        executor.monitor.get_last_containers.side_effect = RuntimeError("monitor not ready")
+
+        assert await run_update(executor) is True
+        executor._execute_agent_update.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_failed_discovery_marks_nothing_and_the_update_still_runs(self):
         executor = make_executor([RuntimeError("host offline"), []])
         assert await run_update(executor) is True
@@ -202,6 +221,31 @@ class TestDependentLeftDownAfterTheUpdate:
         assert call["container_name"] == "qbittorrent"
         assert call["host_id"] == HOST
         assert call["event_data"]["new_state"] == "exited"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("state", ["exited", "dead"])
+    async def test_a_dependent_left_under_its_temp_name_alerts(self, state):
+        stranded = make_container(
+            "qbittorrent-dockmon-temp-1794266276", DEPENDENT_ID, f"container:{PROVIDER_FULL_ID}", state=state
+        )
+        executor = make_executor([[provider(), dependent()], [provider(), stranded]])
+        evaluate = executor.monitor.alert_evaluation_service.handle_container_event
+
+        await run_update(executor)
+
+        evaluate.assert_awaited_once()
+        assert evaluate.await_args.kwargs["container_id"] == DEPENDENT_ID
+        assert evaluate.await_args.kwargs["event_data"]["new_state"] == state
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("state", ["restarting", "paused", "created"])
+    async def test_states_the_stop_rule_does_not_match_send_nothing(self, state):
+        after = [provider(), dependent(NEW_DEPENDENT_ID, state=state)]
+        executor = make_executor([[provider(), dependent()], after])
+
+        await run_update(executor)
+
+        executor.monitor.alert_evaluation_service.handle_container_event.assert_not_awaited()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("before_state, after", [

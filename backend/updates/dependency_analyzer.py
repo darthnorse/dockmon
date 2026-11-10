@@ -47,20 +47,26 @@ def recreated_dependents(provider: Container, containers: List[Container]) -> Li
     The containers the updater recreates when `provider` is updated, matched the way
     shared/update/dependents.go matches them: by name, short ID or full ID, never a prefix.
     """
-    refs = {provider.name, provider.short_id}
     return [
         c for c in containers
         if c.host_id == provider.host_id
         and _key(c) != _key(provider)
-        and _names_provider(c.network_mode, refs, provider.short_id)
+        and _names_provider(network_ref_of(c), provider)
     ]
 
 
-def _names_provider(network_mode: Optional[str], refs: set, short_id: str) -> bool:
-    if not (network_mode or "").startswith("container:"):
+def _names_provider(ref: Optional[str], provider: Container) -> bool:
+    if ref is None:
         return False
-    ref = network_mode[len("container:"):]
-    return ref in refs or (len(ref) == 64 and ref.startswith(short_id))
+    return ref in (provider.name, provider.short_id) or (len(ref) == 64 and ref.startswith(provider.short_id))
+
+
+def network_ref_of(container: Container) -> Optional[str]:
+    """The X of network_mode container:X, or None."""
+    network_mode = container.network_mode or ""
+    if not network_mode.startswith("container:"):
+        return None
+    return network_mode[len("container:"):]
 
 
 def _key(container: Container) -> tuple:
@@ -68,10 +74,9 @@ def _key(container: Container) -> tuple:
 
 
 def _find_provider(container: Container, containers: List[Container]) -> Optional[Container]:
-    network_mode = container.network_mode or ""
-    if not network_mode.startswith("container:"):
+    ref = network_ref_of(container)
+    if ref is None:
         return None
-    ref = network_mode[len("container:"):]
     for candidate in containers:
         if candidate.host_id != container.host_id or _key(candidate) == _key(container):
             continue

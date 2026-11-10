@@ -14,13 +14,13 @@ Note: Alert rule CRUD is handled in main.py at /api/alerts/rules
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Literal, Optional, Any
 from fastapi import APIRouter, HTTPException, Depends, Query, status
-from pydantic import BaseModel, Field, ConfigDict, field_serializer
+from pydantic import BaseModel, Field, ConfigDict, field_serializer, field_validator
 
 from database import DatabaseManager, AlertV2, AlertAnnotation, User, scoped_alert_query
 from alerts.capabilities import HOST_METRIC_FIELDS, host_metric_capabilities
-from alerts.engine import AlertEngine
+from alerts.engine import AlertEngine, mark_resolved
 from stats_client import get_stats_client
 from security.rate_limiting import get_rate_limit_dependency
 from auth.api_key_auth import (  # v2 hybrid auth (cookies + API keys)
@@ -100,6 +100,43 @@ class SnoozeAlertRequest(BaseModel):
     duration_minutes: int = Field(ge=1, le=10080)  # 1 minute to 7 days
 
 
+MAX_BATCH_ALERTS = 500
+
+
+class _BatchRequest(BaseModel):
+    alert_ids: List[str] = Field(min_length=1, max_length=MAX_BATCH_ALERTS)
+
+    @field_validator("alert_ids")
+    @classmethod
+    def _dedupe(cls, ids: List[str]) -> List[str]:
+        return list(dict.fromkeys(ids))
+
+
+class BatchResolveRequest(_BatchRequest):
+    reason: Optional[str] = "Manually resolved"
+
+
+class BatchSnoozeRequest(_BatchRequest):
+    duration_minutes: int = Field(ge=1, le=10080)
+
+
+class BatchSkipped(BaseModel):
+    id: str
+    reason: Literal["already_resolved", "resolved"]
+
+
+class BatchResolveResponse(BaseModel):
+    resolved: List[str]
+    skipped: List[BatchSkipped]
+    not_found: List[str]
+
+
+class BatchSnoozeResponse(BaseModel):
+    snoozed: List[str]
+    skipped: List[BatchSkipped]
+    not_found: List[str]
+
+
 class AddAnnotationRequest(BaseModel):
     """Request to add annotation to alert"""
     text: str = Field(min_length=1, max_length=5000)
@@ -145,6 +182,38 @@ def _require_alert_visible(session, alert_id: str, current_user: dict) -> AlertV
 
 def _scoped_alert_query(session, current_user: dict):
     return scoped_alert_query(session, get_visible_host_ids_for_auth(current_user))
+
+
+def _load_visible_alerts(session, alert_ids: List[str], current_user: dict):
+    """Return (visible alerts in request order, not_found ids); hidden ids count as not found."""
+    visible = get_visible_host_ids_for_auth(current_user)
+    rows = {a.id: a for a in session.query(AlertV2).filter(AlertV2.id.in_(alert_ids))}
+    found, not_found = [], []
+    for alert_id in alert_ids:
+        alert = rows.get(alert_id)
+        if alert is not None and alert_is_visible(alert.scope_type, alert.scope_id, alert.host_id, visible):
+            found.append(alert)
+        else:
+            not_found.append(alert_id)
+    return found, not_found
+
+
+def _audit_resolved(alert_id: str, reason: Optional[str], user_id, display_name) -> None:
+    security_audit.log_event(
+        event_type="alert_resolved",
+        severity="info",
+        user_id=user_id,
+        details={"alert_id": alert_id, "reason": reason, "display_name": display_name},
+    )
+
+
+def _audit_snoozed(alert_id: str, duration_minutes: int, user_id, display_name) -> None:
+    security_audit.log_event(
+        event_type="alert_snoozed",
+        severity="info",
+        user_id=user_id,
+        details={"alert_id": alert_id, "duration_minutes": duration_minutes, "display_name": display_name},
+    )
 
 
 # ==================== Alert Endpoints ====================
@@ -248,6 +317,60 @@ async def list_alerts(
         )
 
 
+# Declared before the /{alert_id}/... routes so "batch" is never captured as an alert id.
+@router.post("/batch/resolve", response_model=BatchResolveResponse, dependencies=[Depends(get_rate_limit_dependency("alerts_write")), Depends(require_capability("alerts.manage"))])
+async def batch_resolve_alerts(
+    request: BatchResolveRequest,
+    db: DatabaseManager = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+) -> BatchResolveResponse:
+    """Resolve many alerts in one transaction; already-resolved alerts are skipped."""
+    user_id, display_name = get_auditable_user_info(current_user)
+    now = datetime.now(timezone.utc)
+    with db.get_session() as session:
+        alerts, not_found = _load_visible_alerts(session, request.alert_ids, current_user)
+        resolved, skipped = [], []
+        for alert in alerts:
+            if alert.state == "resolved":
+                skipped.append(BatchSkipped(id=alert.id, reason="already_resolved"))
+            else:
+                mark_resolved(alert, request.reason, notify=False, now=now)
+                resolved.append(alert.id)
+        session.commit()
+
+    for alert_id in resolved:
+        _audit_resolved(alert_id, request.reason, user_id, display_name)
+    if resolved:
+        logger.info(f"{display_name} resolved {len(resolved)} alerts")
+    return BatchResolveResponse(resolved=resolved, skipped=skipped, not_found=not_found)
+
+
+@router.post("/batch/snooze", response_model=BatchSnoozeResponse, dependencies=[Depends(get_rate_limit_dependency("alerts_write")), Depends(require_capability("alerts.manage"))])
+async def batch_snooze_alerts(
+    request: BatchSnoozeRequest,
+    db: DatabaseManager = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+) -> BatchSnoozeResponse:
+    """Snooze many alerts in one transaction; resolved alerts are skipped."""
+    user_id, display_name = get_auditable_user_info(current_user)
+    until = datetime.now(timezone.utc) + timedelta(minutes=request.duration_minutes)
+    with db.get_session() as session:
+        alerts, not_found = _load_visible_alerts(session, request.alert_ids, current_user)
+        snoozed, skipped = [], []
+        for alert in alerts:
+            if alert.state == "resolved":
+                skipped.append(BatchSkipped(id=alert.id, reason="resolved"))
+            else:
+                alert.state = "snoozed"
+                alert.snoozed_until = until
+                snoozed.append(alert.id)
+        session.commit()
+
+    for alert_id in snoozed:
+        _audit_snoozed(alert_id, request.duration_minutes, user_id, display_name)
+    return BatchSnoozeResponse(snoozed=snoozed, skipped=skipped, not_found=not_found)
+
+
 @router.get("/{alert_id}", response_model=AlertResponse, dependencies=[Depends(get_rate_limit_dependency("alerts")), Depends(require_capability("alerts.view"))])
 async def get_alert(
     alert_id: str,
@@ -279,22 +402,12 @@ async def resolve_alert(
     with db.get_session() as session:
         alert = _require_alert_visible(session, alert_id, current_user)
 
-        if alert.state == "resolved":
-            raise HTTPException(status_code=400, detail="Alert already resolved")
-
-        # Manual resolves are silent: the user who clicked already knows.
-        alert = engine._resolve_alert(alert, request.reason, notify=False)
-
-        security_audit.log_event(
-            event_type="alert_resolved",
-            severity="info",
-            user_id=user_id,
-            details={
-                "alert_id": alert_id,
-                "reason": request.reason,
-                "display_name": display_name,
-            },
-        )
+        # Resolving is a desired-state operation: an already-resolved alert is a no-op, not
+        # an error, so retries of a partially applied bulk action succeed.
+        if alert.state != "resolved":
+            # Manual resolves are silent: the user who clicked already knows.
+            alert = engine._resolve_alert(alert, request.reason, notify=False)
+            _audit_resolved(alert_id, request.reason, user_id, display_name)
 
         labels = json.loads(alert.labels_json) if alert.labels_json else None
         return AlertResponse(
@@ -323,16 +436,7 @@ async def snooze_alert(
         alert.snoozed_until = datetime.now(timezone.utc) + timedelta(minutes=request.duration_minutes)
         session.commit()
 
-        security_audit.log_event(
-            event_type="alert_snoozed",
-            severity="info",
-            user_id=user_id,
-            details={
-                "alert_id": alert_id,
-                "duration_minutes": request.duration_minutes,
-                "display_name": display_name,
-            },
-        )
+        _audit_snoozed(alert_id, request.duration_minutes, user_id, display_name)
 
         labels = json.loads(alert.labels_json) if alert.labels_json else None
         return AlertResponse(

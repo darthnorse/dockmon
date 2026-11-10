@@ -58,6 +58,23 @@ export interface AlertAnnotation {
   text: string
 }
 
+export interface BatchSkipped {
+  id: string
+  reason: 'already_resolved' | 'resolved'
+}
+
+export interface BatchResolveResult {
+  resolved: string[]
+  skipped: BatchSkipped[]
+  not_found: string[]
+}
+
+export interface BatchSnoozeResult {
+  snoozed: string[]
+  skipped: BatchSkipped[]
+  not_found: string[]
+}
+
 export interface AlertStats {
   total: number
   by_state: {

@@ -63,6 +63,15 @@ class PendingAlertClear:
     reason: str
 
 
+def mark_resolved(alert: AlertV2, reason: str, notify: bool, now: datetime) -> None:
+    """Set an alert's resolved fields in the caller's session; the caller commits."""
+    alert.state = "resolved"
+    alert.resolved_at = now
+    alert.resolved_reason = reason
+    if not notify:
+        alert.resolve_notified_at = now
+
+
 class AlertEngine:
     """
     Core alert evaluation engine
@@ -259,13 +268,7 @@ class AlertEngine:
         """
         with self.db.get_session() as session:
             alert = session.merge(alert)
-            alert.state = "resolved"
-            now = datetime.now(timezone.utc)
-            alert.resolved_at = now
-            alert.resolved_reason = reason
-            if not notify:
-                alert.resolve_notified_at = now
-
+            mark_resolved(alert, reason, notify, datetime.now(timezone.utc))
             session.commit()
             session.refresh(alert)
 

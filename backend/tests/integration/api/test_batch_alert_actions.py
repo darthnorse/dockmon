@@ -19,7 +19,6 @@ from alerts.api import (
     batch_snooze_alerts,
     resolve_alert,
 )
-from alerts.engine import AlertEngine
 from database import AlertV2
 
 CALLER = {"auth_type": "api_key", "group_id": 1, "api_key_name": "test"}
@@ -115,7 +114,7 @@ async def test_batch_snooze_mixed(db_session, test_database_manager):
         )
 
     assert result.snoozed == [open_a]
-    assert [(s.id, s.reason) for s in result.skipped] == [(done, "resolved")]
+    assert [(s.id, s.reason) for s in result.skipped] == [(done, "already_resolved")]
     assert result.not_found == [hidden]
     row = _state(db_session, open_a)
     assert row.state == "snoozed"
@@ -129,6 +128,33 @@ def test_batch_request_size_bounds(ids):
         BatchResolveRequest(alert_ids=ids)
     with pytest.raises(ValidationError):
         BatchSnoozeRequest(alert_ids=ids, duration_minutes=5)
+
+
+def test_reason_and_id_lengths_are_bounded():
+    with pytest.raises(ValidationError):
+        BatchResolveRequest(alert_ids=["a"], reason="x" * 501)
+    with pytest.raises(ValidationError):
+        ResolveAlertRequest(reason="x" * 501)
+    with pytest.raises(ValidationError):
+        BatchResolveRequest(alert_ids=["a" * 65])
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_single_resolve_of_open_alert(db_session, test_database_manager):
+    alert_id = _make_alert(db_session)
+    with patch("alerts.api.security_audit") as audit:
+        result = await resolve_alert(
+            alert_id=alert_id,
+            request=ResolveAlertRequest(),
+            db=test_database_manager,
+            current_user=CALLER,
+        )
+    assert result.state == "resolved"
+    row = _state(db_session, alert_id)
+    assert row.state == "resolved"
+    assert row.resolve_notified_at is not None
+    audit.log_event.assert_called_once()
 
 
 def test_batch_request_dedupes_ids():
@@ -156,7 +182,6 @@ async def test_single_resolve_of_resolved_alert_is_idempotent(db_session, test_d
             alert_id=alert_id,
             request=ResolveAlertRequest(),
             db=test_database_manager,
-            engine=AlertEngine(test_database_manager),
             current_user=CALLER,
         )
 
@@ -175,7 +200,6 @@ async def test_single_resolve_of_hidden_alert_still_404(db_session, test_databas
                 alert_id=alert_id,
                 request=ResolveAlertRequest(),
                 db=test_database_manager,
-                engine=AlertEngine(test_database_manager),
-                current_user=CALLER,
+                    current_user=CALLER,
             )
     assert exc.value.status_code == 404

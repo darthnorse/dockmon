@@ -60,7 +60,7 @@ export interface AlertAnnotation {
 
 export interface BatchSkipped {
   id: string
-  reason: 'already_resolved' | 'resolved'
+  reason: 'already_resolved'
 }
 
 export interface BatchResolveResult {

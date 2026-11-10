@@ -222,7 +222,8 @@ export function ContainerModalAlertsTab({ container }: ContainerModalAlertsTabPr
                     <button
                       key={duration.value}
                       onClick={() => handleBulkSnooze(duration.value)}
-                      className="block w-full px-4 py-2 text-left text-sm text-foreground hover:bg-surface-2 whitespace-nowrap"
+                      disabled={bulkActions.isSnoozing}
+                      className="block w-full px-4 py-2 text-left text-sm text-foreground hover:bg-surface-2 whitespace-nowrap disabled:opacity-50"
                     >
                       {duration.label}
                     </button>

@@ -15,6 +15,12 @@ import type {
 import type { EventsResponse } from '@/types/events'
 import { apiClient } from '@/lib/api/client'
 
+function invalidateAlertQueries(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({ queryKey: ['alerts'] })
+  void queryClient.invalidateQueries({ queryKey: ['alert-stats'] })
+  void queryClient.invalidateQueries({ queryKey: ['alert-counts'] })
+}
+
 // Fetch alerts with filters
 export function useAlerts(filters: AlertFilters = {}, options = {}) {
   const queryParams = new URLSearchParams()
@@ -147,11 +153,7 @@ export function useResolveAlert() {
     mutationFn: async ({ alertId, reason }: { alertId: string; reason?: string }) => {
       return await apiClient.post(`/alerts/${alertId}/resolve`, { reason: reason || 'Manually resolved' })
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['alerts'] })
-      void queryClient.invalidateQueries({ queryKey: ['alert-stats'] })
-      void queryClient.invalidateQueries({ queryKey: ['alert-counts'] })
-    },
+    onSuccess: () => invalidateAlertQueries(queryClient),
   })
 }
 
@@ -183,12 +185,6 @@ export function useBatchSnoozeAlerts() {
   })
 }
 
-function invalidateAlertQueries(queryClient: QueryClient) {
-  void queryClient.invalidateQueries({ queryKey: ['alerts'] })
-  void queryClient.invalidateQueries({ queryKey: ['alert-stats'] })
-  void queryClient.invalidateQueries({ queryKey: ['alert-counts'] })
-}
-
 // Snooze alert mutation
 export function useSnoozeAlert() {
   const queryClient = useQueryClient()
@@ -197,11 +193,7 @@ export function useSnoozeAlert() {
     mutationFn: async ({ alertId, durationMinutes }: { alertId: string; durationMinutes: number }) => {
       return await apiClient.post(`/alerts/${alertId}/snooze`, { duration_minutes: durationMinutes })
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['alerts'] })
-      void queryClient.invalidateQueries({ queryKey: ['alert-stats'] })
-      void queryClient.invalidateQueries({ queryKey: ['alert-counts'] })
-    },
+    onSuccess: () => invalidateAlertQueries(queryClient),
   })
 }
 
@@ -213,11 +205,7 @@ export function useUnsnoozeAlert() {
     mutationFn: async (alertId: string) => {
       return await apiClient.post(`/alerts/${alertId}/unsnooze`)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['alerts'] })
-      void queryClient.invalidateQueries({ queryKey: ['alert-stats'] })
-      void queryClient.invalidateQueries({ queryKey: ['alert-counts'] })
-    },
+    onSuccess: () => invalidateAlertQueries(queryClient),
   })
 }
 

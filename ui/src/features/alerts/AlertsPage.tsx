@@ -418,7 +418,8 @@ export function AlertsPage() {
                           <button
                             key={duration.value}
                             onClick={() => handleBulkSnooze(duration.value)}
-                            className="w-full px-4 py-2 text-left text-sm text-gray-300 transition-colors hover:bg-gray-700"
+                            disabled={bulkActions.isSnoozing}
+                            className="w-full px-4 py-2 text-left text-sm text-gray-300 transition-colors hover:bg-gray-700 disabled:opacity-50"
                           >
                             {duration.label}
                           </button>

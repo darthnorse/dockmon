@@ -18,7 +18,7 @@ describe('describeBatchOutcome', () => {
 
   it('uses the snooze verb for snooze results', () => {
     expect(
-      describeBatchOutcome({ snoozed: ['a', 'b'], skipped: [{ id: 'c', reason: 'resolved' }], not_found: [] }),
+      describeBatchOutcome({ snoozed: ['a', 'b'], skipped: [{ id: 'c', reason: 'already_resolved' }], not_found: [] }),
     ).toBe('2 alerts snoozed; 1 already resolved')
   })
 })

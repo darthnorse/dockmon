@@ -14,13 +14,13 @@ Note: Alert rule CRUD is handled in main.py at /api/alerts/rules
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Literal, Optional, Any
+from typing import Annotated, Dict, List, Literal, Optional, Any
 from fastapi import APIRouter, HTTPException, Depends, Query, status
-from pydantic import BaseModel, Field, ConfigDict, field_serializer, field_validator
+from pydantic import BaseModel, Field, ConfigDict, StringConstraints, field_serializer, field_validator
 
 from database import DatabaseManager, AlertV2, AlertAnnotation, User, scoped_alert_query
 from alerts.capabilities import HOST_METRIC_FIELDS, host_metric_capabilities
-from alerts.engine import AlertEngine, mark_resolved
+from alerts.engine import mark_resolved
 from stats_client import get_stats_client
 from security.rate_limiting import get_rate_limit_dependency
 from auth.api_key_auth import (  # v2 hybrid auth (cookies + API keys)
@@ -90,9 +90,12 @@ class AlertListResponse(BaseModel):
     page_size: int
 
 
+MAX_RESOLVE_REASON_LENGTH = 500
+
+
 class ResolveAlertRequest(BaseModel):
     """Request to resolve an alert"""
-    reason: Optional[str] = "Manually resolved"
+    reason: Optional[str] = Field(default="Manually resolved", max_length=MAX_RESOLVE_REASON_LENGTH)
 
 
 class SnoozeAlertRequest(BaseModel):
@@ -104,7 +107,7 @@ MAX_BATCH_ALERTS = 500
 
 
 class _BatchRequest(BaseModel):
-    alert_ids: List[str] = Field(min_length=1, max_length=MAX_BATCH_ALERTS)
+    alert_ids: List[Annotated[str, StringConstraints(max_length=64)]] = Field(min_length=1, max_length=MAX_BATCH_ALERTS)
 
     @field_validator("alert_ids")
     @classmethod
@@ -113,7 +116,7 @@ class _BatchRequest(BaseModel):
 
 
 class BatchResolveRequest(_BatchRequest):
-    reason: Optional[str] = "Manually resolved"
+    reason: Optional[str] = Field(default="Manually resolved", max_length=MAX_RESOLVE_REASON_LENGTH)
 
 
 class BatchSnoozeRequest(_BatchRequest):
@@ -122,7 +125,7 @@ class BatchSnoozeRequest(_BatchRequest):
 
 class BatchSkipped(BaseModel):
     id: str
-    reason: Literal["already_resolved", "resolved"]
+    reason: Literal["already_resolved"]
 
 
 class BatchResolveResponse(BaseModel):
@@ -162,11 +165,6 @@ def get_db() -> DatabaseManager:
     # Import monitor which has the db instance
     from main import monitor
     return monitor.db
-
-
-def get_alert_engine(db: DatabaseManager = Depends(get_db)) -> AlertEngine:
-    """Get alert engine instance"""
-    return AlertEngine(db)
 
 
 def _require_alert_visible(session, alert_id: str, current_user: dict) -> AlertV2:
@@ -359,7 +357,7 @@ async def batch_snooze_alerts(
         snoozed, skipped = [], []
         for alert in alerts:
             if alert.state == "resolved":
-                skipped.append(BatchSkipped(id=alert.id, reason="resolved"))
+                skipped.append(BatchSkipped(id=alert.id, reason="already_resolved"))
             else:
                 alert.state = "snoozed"
                 alert.snoozed_until = until
@@ -394,7 +392,6 @@ async def resolve_alert(
     alert_id: str,
     request: ResolveAlertRequest,
     db: DatabaseManager = Depends(get_db),
-    engine: AlertEngine = Depends(get_alert_engine),
     current_user: dict = Depends(get_current_user)
 ):
     """Manually resolve an alert"""
@@ -406,7 +403,8 @@ async def resolve_alert(
         # an error, so retries of a partially applied bulk action succeed.
         if alert.state != "resolved":
             # Manual resolves are silent: the user who clicked already knows.
-            alert = engine._resolve_alert(alert, request.reason, notify=False)
+            mark_resolved(alert, request.reason, notify=False, now=datetime.now(timezone.utc))
+            session.commit()
             _audit_resolved(alert_id, request.reason, user_id, display_name)
 
         labels = json.loads(alert.labels_json) if alert.labels_json else None

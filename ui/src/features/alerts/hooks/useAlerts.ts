@@ -145,7 +145,6 @@ export function useAlertAnnotations(alertId: string | null) {
   })
 }
 
-// Resolve alert mutation
 export function useResolveAlert() {
   const queryClient = useQueryClient()
 
@@ -185,7 +184,6 @@ export function useBatchSnoozeAlerts() {
   })
 }
 
-// Snooze alert mutation
 export function useSnoozeAlert() {
   const queryClient = useQueryClient()
 
@@ -197,7 +195,6 @@ export function useSnoozeAlert() {
   })
 }
 
-// Unsnooze alert mutation
 export function useUnsnoozeAlert() {
   const queryClient = useQueryClient()
 

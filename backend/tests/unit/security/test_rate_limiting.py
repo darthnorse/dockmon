@@ -112,3 +112,10 @@ def test_dependency_sets_computed_retry_after_header(limiter):
             check(request)
     assert exc.value.status_code == 429
     assert exc.value.headers["Retry-After"] == "10"
+
+
+def test_stats_count_clients_not_buckets(limiter):
+    limiter.is_allowed(IP, "alerts")
+    limiter.is_allowed(IP, "alerts_write")
+    limiter.is_allowed("198.51.100.7", "alerts")
+    assert limiter.get_stats()["active_clients"] == 2

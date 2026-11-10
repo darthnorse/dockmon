@@ -65,7 +65,7 @@ class RateLimiter:
 
         # Get rate limits from environment or use production-friendly defaults
         self.limits = {
-            # endpoint_pattern: (requests_per_minute, burst_limit, violation_threshold)
+            # endpoint_type: (requests_per_minute, burst_limit, violation_threshold)
             "default": (
                 _get_int_env('DOCKMON_RATE_LIMIT_DEFAULT', 120),
                 _get_int_env('DOCKMON_RATE_BURST_DEFAULT', 20),
@@ -97,7 +97,7 @@ class RateLimiter:
                 _get_int_env('DOCKMON_RATE_VIOLATIONS_ALERTS', 8)
             ),
             "alerts_write": (
-                _get_int_env('DOCKMON_RATE_LIMIT_ALERTS_WRITE', 200),  # Write operations (resolve/snooze) - increased for bulk operations
+                _get_int_env('DOCKMON_RATE_LIMIT_ALERTS_WRITE', 200),  # Write operations (resolve/snooze/annotate)
                 _get_int_env('DOCKMON_RATE_BURST_ALERTS_WRITE', 100),
                 _get_int_env('DOCKMON_RATE_VIOLATIONS_ALERTS_WRITE', 5)
             ),
@@ -204,7 +204,7 @@ class RateLimiter:
         """Get rate limiter statistics"""
         with self._lock:
             return {
-                "active_clients": len(self.clients),
+                "active_clients": len({ip for ip, _ in self.clients}),
                 "banned_clients": len(self.banned_clients),
                 "total_violations": sum(data["violations"] for data in self.clients.values())
             }

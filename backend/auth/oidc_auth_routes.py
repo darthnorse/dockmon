@@ -386,6 +386,12 @@ def _verify_id_token(
     expected_nonce: str,
 ) -> dict:
     """Verify an OIDC ID token's JWT signature and validate claims (exp, iss, aud, nonce)."""
+    if id_token.count(".") == 4:
+        raise jwt.InvalidTokenError(
+            "ID token is encrypted (JWE), which DockMon does not support. "
+            "Remove the encryption key from the provider (Authentik: Advanced protocol "
+            "settings > Encryption Key)."
+        )
     try:
         unverified_header = jwt.get_unverified_header(id_token)
     except jwt.DecodeError as e:

@@ -468,3 +468,25 @@ class TestFetchOidcDiscoveryIssuerValidation:
         with patch("auth.oidc_auth_routes.httpx.AsyncClient", return_value=mock_client):
             with pytest.raises(ValueError, match="must use HTTPS"):
                 await _fetch_oidc_discovery("https://provider.example.com")
+
+
+class TestEncryptedIdToken:
+    """Authentik with an Encryption Key set issues JWE ID tokens (five segments)."""
+
+    def test_jwe_token_rejected_with_actionable_message(self, jwks_data):
+        from auth.oidc_auth_routes import _verify_id_token
+
+        def b64(data: bytes) -> str:
+            return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+        header = b64(b'{"alg":"RSA-OAEP-256","enc":"A256CBC-HS512","kid":"enc-key"}')
+        jwe = ".".join([header, b64(b"k" * 256), b64(b"i" * 16), b64(b"c" * 64), b64(b"t" * 32)])
+
+        with pytest.raises(pyjwt.InvalidTokenError, match="encrypted"):
+            _verify_id_token(
+                id_token=jwe,
+                jwks_data=jwks_data,
+                expected_issuer="https://provider.example.com",
+                client_id="my-client-id",
+                expected_nonce="expected-nonce-value",
+            )

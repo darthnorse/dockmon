@@ -551,15 +551,21 @@ async def _validate_client_credentials(
         error_data = {}
 
     error_code = error_data.get('error', '')
-    if error_code in ('unauthorized_client', 'unsupported_grant_type'):
+    # RFC 6749 5.2: only invalid_client is a client-authentication failure. Other codes
+    # (Authentik answers invalid_grant when the grant isn't enabled) say nothing about the secret.
+    if error_code == 'invalid_client' or (response.status_code == 401 and not error_code):
+        error_desc = error_data.get('error_description', f'HTTP {response.status_code}')
+        return False, f"Invalid client credentials: {error_desc}"
+
+    if error_code in ('unauthorized_client', 'unsupported_grant_type', 'invalid_grant'):
         return None, (
             f"Could not validate credentials: provider returned '{error_code}'. "
             "This client may not support the client_credentials grant type, "
             "but credentials may still be correct for the authorization code flow."
         )
 
-    error_desc = error_data.get('error_description', f'HTTP {response.status_code}')
-    return False, f"Invalid client credentials: {error_desc}"
+    reason = f"'{error_code}'" if error_code else f"HTTP {response.status_code}"
+    return None, f"Could not validate credentials: provider returned {reason}."
 
 
 @router.post("/discover", response_model=OIDCDiscoveryResponse, dependencies=[Depends(require_capability("oidc.manage"))])

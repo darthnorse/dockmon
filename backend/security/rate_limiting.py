@@ -201,7 +201,6 @@ class RateLimiter:
             return RateDecision(False, f"Rate limit exceeded. Try again in {retry_after} seconds", retry_after)
 
     def get_stats(self) -> dict:
-        """Get rate limiter statistics"""
         with self._lock:
             return {
                 "active_clients": len({ip for ip, _ in self.clients}),

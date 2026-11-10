@@ -1134,6 +1134,7 @@ class AgentWebSocketHandler:
                     new_container_id=new_container_id,
                     success=True,
                     request_id=payload.get("request_id"),
+                    failed_dependents=failed_dependents,
                 )
             except Exception as e:
                 logger.warning(f"Failed to signal pending update registry: {e}")

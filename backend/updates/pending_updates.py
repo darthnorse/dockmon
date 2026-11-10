@@ -96,6 +96,7 @@ class PendingUpdatesRegistry:
         success: bool = True,
         error: Optional[str] = None,
         request_id: Optional[str] = None,
+        failed_dependents: Optional[List[str]] = None,
     ) -> bool:
         """
         Signal that an update has completed.
@@ -111,6 +112,7 @@ class PendingUpdatesRegistry:
                 pending.new_container_id = new_container_id[:12] if new_container_id else None
                 pending.success = success
                 pending.error = error
+                pending.failed_dependents = failed_dependents or []
                 pending.completion_event.set()
                 logger.info(f"Signaled completion for {key}: success={success}, new_id={new_container_id[:12] if new_container_id else None}")
                 return True

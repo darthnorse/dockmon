@@ -352,6 +352,24 @@ class TestAgentExecutor:
         update_records.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_success_keeps_the_dependents_the_agent_could_not_recreate(self, handler, registry):
+        async def execute_command(agent_id, command, timeout):
+            await handler._handle_update_complete({
+                "request_id": command["payload"]["request_id"],
+                "old_container_id": CONTAINER_ID,
+                "new_container_id": "2d98600a8ce6",
+                "container_name": "gluetun",
+                "failed_dependents": ["qbittorrent"],
+            })
+            return acknowledged()
+
+        with patch("updates.agent_executor.update_container_records_after_update"):
+            result = await run_agent_update(execute_command)
+
+        assert result.success is True
+        assert result.failed_dependents == ["qbittorrent"]
+
+    @pytest.mark.asyncio
     async def test_unacknowledged_command_with_nothing_recorded_is_rejected(self, registry):
         async def execute_command(agent_id, command, timeout):
             return not_acknowledged()

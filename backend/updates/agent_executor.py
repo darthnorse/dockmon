@@ -221,7 +221,7 @@ class AgentUpdateExecutor:
 
             await progress_callback("completed", 100, "Update completed successfully")
 
-            return UpdateResult.success_result(new_container_id)
+            return UpdateResult.success_result(new_container_id, pending.failed_dependents)
 
         except Exception as e:
             logger.error(f"Error executing agent-based update: {e}", exc_info=True)

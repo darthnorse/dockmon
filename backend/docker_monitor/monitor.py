@@ -39,6 +39,7 @@ from docker_monitor.container_discovery import ContainerDiscovery
 from docker_monitor.state_manager import StateManager
 from docker_monitor.operations import ContainerOperations
 from docker_monitor.periodic_jobs import PeriodicJobsManager
+from utils.cache import CACHE_REGISTRY
 from utils.keys import make_composite_key
 from utils.host_ips import get_host_ips_from_fib_trie, filter_docker_network_ips, serialize_host_ips
 
@@ -1403,6 +1404,12 @@ class DockerMonitor:
         else:
             logger.warning(f"Cannot broadcast host status: no manager (host_id={host_id[:8]}..., status={status})")
 
+    def invalidate_discovery(self, host_id: str):
+        """Drop one host's cached discovery; the key must match the call in get_containers."""
+        CACHE_REGISTRY["discover_containers_for_host"].invalidate_key(
+            self.discovery, host_id, self._get_auto_restart_status
+        )
+
     async def get_containers(self, host_id: Optional[str] = None) -> List[Container]:
         """Get containers from one or all hosts"""
         containers = []
@@ -1666,7 +1673,7 @@ class DockerMonitor:
                 try:
                     from updates.update_executor import get_update_executor
                     update_executor = get_update_executor()
-                    is_updating = update_executor.is_container_updating(host_id, container_id)
+                    is_updating = update_executor.is_container_updating(host_id, container_id, container_name)
                     if is_updating:
                         logger.info(f"Skipping auto-restart for {container_name} - container is being updated")
                 except Exception as e:

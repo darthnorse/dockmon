@@ -5,7 +5,8 @@
  */
 
 import { useState } from 'react'
-import { useAlerts, useResolveAlert, useSnoozeAlert } from '@/features/alerts/hooks/useAlerts'
+import { useAlerts } from '@/features/alerts/hooks/useAlerts'
+import { useBulkAlertActions } from '@/features/alerts/hooks/useBulkAlertActions'
 import type { AlertFilters, AlertState, AlertSeverity } from '@/types/alerts'
 import type { Container } from '@/features/containers/types'
 import { AlertTriangle, Bell, CheckCircle2, Clock, ChevronLeft, ChevronRight, AlertCircle, Info, ChevronDown, type LucideIcon } from 'lucide-react'
@@ -54,8 +55,7 @@ export function ContainerModalAlertsTab({ container }: ContainerModalAlertsTabPr
   const { data: alertsData, isLoading } = useAlerts(filters, {
     refetchInterval: 30000, // Refresh every 30 seconds
   })
-  const resolveAlert = useResolveAlert()
-  const snoozeAlert = useSnoozeAlert()
+  const bulkActions = useBulkAlertActions()
 
   const alerts = alertsData?.alerts ?? []
   const totalCount = alertsData?.total ?? 0
@@ -95,19 +95,17 @@ export function ContainerModalAlertsTab({ container }: ContainerModalAlertsTabPr
   }
 
   const handleBulkSnooze = async (minutes: number) => {
-    for (const alertId of selectedAlertIds) {
-      await snoozeAlert.mutateAsync({ alertId, durationMinutes: minutes })
+    if (await bulkActions.snooze([...selectedAlertIds], minutes)) {
+      setSelectedAlertIds(new Set())
+      setShowSnoozeMenu(false)
     }
-    setSelectedAlertIds(new Set())
-    setShowSnoozeMenu(false)
   }
 
   const handleBulkResolve = async () => {
-    for (const alertId of selectedAlertIds) {
-      await resolveAlert.mutateAsync({ alertId, reason: 'Bulk resolved from container modal' })
+    if (await bulkActions.resolve([...selectedAlertIds], 'Bulk resolved from container modal')) {
+      setSelectedAlertIds(new Set())
+      setShowResolveConfirm(false)
     }
-    setSelectedAlertIds(new Set())
-    setShowResolveConfirm(false)
   }
 
   const getSeverityIcon = (severity: AlertSeverity) => {
@@ -224,7 +222,8 @@ export function ContainerModalAlertsTab({ container }: ContainerModalAlertsTabPr
                     <button
                       key={duration.value}
                       onClick={() => handleBulkSnooze(duration.value)}
-                      className="block w-full px-4 py-2 text-left text-sm text-foreground hover:bg-surface-2 whitespace-nowrap"
+                      disabled={bulkActions.isSnoozing}
+                      className="block w-full px-4 py-2 text-left text-sm text-foreground hover:bg-surface-2 whitespace-nowrap disabled:opacity-50"
                     >
                       {duration.label}
                     </button>
@@ -259,9 +258,10 @@ export function ContainerModalAlertsTab({ container }: ContainerModalAlertsTabPr
                     </button>
                     <button
                       onClick={handleBulkResolve}
-                      className="px-4 py-2 rounded-md bg-success text-white hover:bg-success/90 transition-colors"
+                      disabled={bulkActions.isResolving}
+                      className="px-4 py-2 rounded-md bg-success text-white hover:bg-success/90 transition-colors disabled:opacity-50"
                     >
-                      Resolve
+                      {bulkActions.isResolving ? 'Resolving...' : 'Resolve'}
                     </button>
                   </div>
                 </div>

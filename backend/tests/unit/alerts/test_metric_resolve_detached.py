@@ -6,7 +6,7 @@ import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from alerts.engine import AlertEngine, EvaluationContext
+from alerts.engine import AlertEngine, EvaluationContext, mark_resolved
 from database import AlertRuleV2, AlertV2, RuleRuntime
 
 T0 = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
@@ -109,7 +109,8 @@ def test_non_breaching_sample_does_not_reopen_a_resolved_alert(db):
     engine = AlertEngine(db)
     _sustained_breach(engine)
     with db.get_session() as session:
-        engine._resolve_alert(session.query(AlertV2).one(), "manual", notify=False)
+        mark_resolved(session.query(AlertV2).one(), "manual", notify=False, now=datetime.now(timezone.utc))
+        session.commit()
     _expire_cooldown(db)
 
     assert engine.evaluate_metric("cpu_percent", 2.5, _context(), sampled_at=T0 + timedelta(seconds=310)) == []

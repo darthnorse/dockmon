@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from alerts.capabilities import STATS_MAX_AGE_SECONDS
-from alerts.engine import AlertEngine, EvaluationContext
+from alerts.engine import AlertEngine, EvaluationContext, mark_resolved
 from alerts.evaluation_service import AlertEvaluationService
 from database import AlertRuleV2, AlertV2, RuleRuntime
 
@@ -66,7 +66,8 @@ def _expire_cooldown(db):
 
 def _resolve(db, engine):
     with db.get_session() as session:
-        engine._resolve_alert(session.query(AlertV2).one(), "manual", notify=False)
+        mark_resolved(session.query(AlertV2).one(), "manual", notify=False, now=datetime.now(timezone.utc))
+        session.commit()
 
 
 def _sustain(engine, value, start, end, step=10):

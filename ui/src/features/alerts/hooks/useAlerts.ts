@@ -2,10 +2,24 @@
  * React Query hooks for Alert API
  */
 
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { Alert, AlertListResponse, AlertFilters, AlertStats, AlertAnnotation } from '@/types/alerts'
+import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import type {
+  Alert,
+  AlertListResponse,
+  AlertFilters,
+  AlertStats,
+  AlertAnnotation,
+  BatchResolveResult,
+  BatchSnoozeResult,
+} from '@/types/alerts'
 import type { EventsResponse } from '@/types/events'
 import { apiClient } from '@/lib/api/client'
+
+function invalidateAlertQueries(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({ queryKey: ['alerts'] })
+  void queryClient.invalidateQueries({ queryKey: ['alert-stats'] })
+  void queryClient.invalidateQueries({ queryKey: ['alert-counts'] })
+}
 
 // Fetch alerts with filters
 export function useAlerts(filters: AlertFilters = {}, options = {}) {
@@ -139,11 +153,35 @@ export function useResolveAlert() {
     mutationFn: async ({ alertId, reason }: { alertId: string; reason?: string }) => {
       return await apiClient.post(`/alerts/${alertId}/resolve`, { reason: reason || 'Manually resolved' })
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['alerts'] })
-      void queryClient.invalidateQueries({ queryKey: ['alert-stats'] })
-      void queryClient.invalidateQueries({ queryKey: ['alert-counts'] })
+    onSuccess: () => invalidateAlertQueries(queryClient),
+  })
+}
+
+export function useBatchResolveAlerts() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ alertIds, reason }: { alertIds: string[]; reason?: string }) => {
+      return await apiClient.post<BatchResolveResult>('/alerts/batch/resolve', {
+        alert_ids: alertIds,
+        reason: reason || 'Manually resolved',
+      })
     },
+    onSettled: () => invalidateAlertQueries(queryClient),
+  })
+}
+
+export function useBatchSnoozeAlerts() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ alertIds, durationMinutes }: { alertIds: string[]; durationMinutes: number }) => {
+      return await apiClient.post<BatchSnoozeResult>('/alerts/batch/snooze', {
+        alert_ids: alertIds,
+        duration_minutes: durationMinutes,
+      })
+    },
+    onSettled: () => invalidateAlertQueries(queryClient),
   })
 }
 
@@ -155,11 +193,7 @@ export function useSnoozeAlert() {
     mutationFn: async ({ alertId, durationMinutes }: { alertId: string; durationMinutes: number }) => {
       return await apiClient.post(`/alerts/${alertId}/snooze`, { duration_minutes: durationMinutes })
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['alerts'] })
-      void queryClient.invalidateQueries({ queryKey: ['alert-stats'] })
-      void queryClient.invalidateQueries({ queryKey: ['alert-counts'] })
-    },
+    onSuccess: () => invalidateAlertQueries(queryClient),
   })
 }
 
@@ -171,11 +205,7 @@ export function useUnsnoozeAlert() {
     mutationFn: async (alertId: string) => {
       return await apiClient.post(`/alerts/${alertId}/unsnooze`)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['alerts'] })
-      void queryClient.invalidateQueries({ queryKey: ['alert-stats'] })
-      void queryClient.invalidateQueries({ queryKey: ['alert-counts'] })
-    },
+    onSuccess: () => invalidateAlertQueries(queryClient),
   })
 }
 

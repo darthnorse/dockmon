@@ -6,7 +6,8 @@
 
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useAlerts, useAlertStats, useResolveAlert, useSnoozeAlert } from './hooks/useAlerts'
+import { useAlerts, useAlertStats } from './hooks/useAlerts'
+import { useBulkAlertActions } from './hooks/useBulkAlertActions'
 import type { AlertFilters, AlertState, AlertSeverity, AlertScope } from '@/types/alerts'
 import { AlertTriangle, Bell, CheckCircle2, Clock, ChevronLeft, ChevronRight, AlertCircle, Info, ChevronDown, Settings, LucideIcon } from 'lucide-react'
 import { AlertDetailsDrawer } from './components/AlertDetailsDrawer'
@@ -54,8 +55,7 @@ export function AlertsPage() {
     refetchInterval: 30000, // Refresh every 30 seconds
   })
   const { data: stats } = useAlertStats()
-  const resolveAlert = useResolveAlert()
-  const snoozeAlert = useSnoozeAlert()
+  const bulkActions = useBulkAlertActions()
 
   const alerts = alertsData?.alerts ?? []
   const totalCount = alertsData?.total ?? 0
@@ -93,19 +93,17 @@ export function AlertsPage() {
   }
 
   const handleBulkSnooze = async (minutes: number) => {
-    for (const alertId of selectedAlertIds) {
-      await snoozeAlert.mutateAsync({ alertId, durationMinutes: minutes })
+    if (await bulkActions.snooze([...selectedAlertIds], minutes)) {
+      setSelectedAlertIds(new Set())
+      setShowSnoozeMenu(false)
     }
-    setSelectedAlertIds(new Set())
-    setShowSnoozeMenu(false)
   }
 
   const handleBulkResolve = async () => {
-    for (const alertId of selectedAlertIds) {
-      await resolveAlert.mutateAsync({ alertId })
+    if (await bulkActions.resolve([...selectedAlertIds])) {
+      setSelectedAlertIds(new Set())
+      setShowResolveConfirm(false)
     }
-    setSelectedAlertIds(new Set())
-    setShowResolveConfirm(false)
   }
 
   const getSeverityColor = (severity: AlertSeverity) => {
@@ -420,7 +418,8 @@ export function AlertsPage() {
                           <button
                             key={duration.value}
                             onClick={() => handleBulkSnooze(duration.value)}
-                            className="w-full px-4 py-2 text-left text-sm text-gray-300 transition-colors hover:bg-gray-700"
+                            disabled={bulkActions.isSnoozing}
+                            className="w-full px-4 py-2 text-left text-sm text-gray-300 transition-colors hover:bg-gray-700 disabled:opacity-50"
                           >
                             {duration.label}
                           </button>
@@ -476,10 +475,10 @@ export function AlertsPage() {
               </button>
               <button
                 onClick={handleBulkResolve}
-                disabled={!canManage || resolveAlert.isPending}
+                disabled={!canManage || bulkActions.isResolving}
                 className="px-4 py-2 rounded-md bg-green-600 text-white hover:bg-green-700 transition-colors disabled:opacity-50"
               >
-                {resolveAlert.isPending ? 'Resolving...' : 'Resolve Alerts'}
+                {bulkActions.isResolving ? 'Resolving...' : 'Resolve Alerts'}
               </button>
             </div>
           </div>

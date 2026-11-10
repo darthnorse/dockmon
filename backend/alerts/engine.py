@@ -345,7 +345,9 @@ class AlertEngine:
                 if rule.suppress_during_updates and context.scope_type == "container" and rule.kind not in update_related_kinds:
                     # scope_id is composite key (host_id:container_id), extract SHORT ID
                     _, container_id = parse_composite_key(context.scope_id)
-                    is_updating = self._is_container_updating(context.host_id, container_id)
+                    is_updating = self._is_container_updating(
+                        context.host_id, container_id, context.container_name
+                    )
                     if is_updating:
                         logger.info(f"Engine: Rule '{rule.name}' suppressed - container is being updated")
                         continue
@@ -858,13 +860,15 @@ class AlertEngine:
 
         return True
 
-    def _is_container_updating(self, host_id: str, container_id: str) -> bool:
-        """Check if a container is currently being updated"""
+    def _is_container_updating(
+        self, host_id: str, container_id: str, container_name: Optional[str] = None
+    ) -> bool:
+        """Check if a container is being updated, or recreated by its provider's update"""
         try:
             from updates.update_executor import get_update_executor
             update_executor = get_update_executor()
             if update_executor:
-                return update_executor.is_container_updating(host_id, container_id)
+                return update_executor.is_container_updating(host_id, container_id, container_name)
         except Exception as e:
             logger.warning(f"Could not check if container is updating: {e}")
         return False

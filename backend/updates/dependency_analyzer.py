@@ -42,6 +42,27 @@ def update_layers(containers: List[Container]) -> List[List[Container]]:
     return layers
 
 
+def recreated_dependents(provider: Container, containers: List[Container]) -> List[Container]:
+    """
+    The containers the updater recreates when `provider` is updated, matched the way
+    shared/update/dependents.go matches them: by name, short ID or full ID, never a prefix.
+    """
+    refs = {provider.name, provider.short_id}
+    return [
+        c for c in containers
+        if c.host_id == provider.host_id
+        and _key(c) != _key(provider)
+        and _names_provider(c.network_mode, refs, provider.short_id)
+    ]
+
+
+def _names_provider(network_mode: Optional[str], refs: set, short_id: str) -> bool:
+    if not (network_mode or "").startswith("container:"):
+        return False
+    ref = network_mode[len("container:"):]
+    return ref in refs or (len(ref) == 64 and ref.startswith(short_id))
+
+
 def _key(container: Container) -> tuple:
     return container.host_id, container.short_id
 

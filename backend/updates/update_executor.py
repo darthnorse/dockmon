@@ -15,8 +15,9 @@ This module handles:
 
 import asyncio
 import logging
+import re
 import threading
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 import docker
 from database import (
     DatabaseManager,
@@ -27,13 +28,14 @@ from database import (
 from utils.async_docker import async_docker_call
 from utils.keys import make_composite_key
 from utils.cache import CACHE_REGISTRY
-from updates.dependency_analyzer import update_layers
+from updates.dependency_analyzer import recreated_dependents, update_layers
 from updates.container_validator import ContainerValidator, ValidationResult
 from updates.types import UpdateContext, UpdateResult
 from updates.agent_executor import AgentUpdateExecutor
 from updates.database_updater import update_container_records_after_update
 from updates.event_emitter import UpdateEventEmitter
 from updates.update_checker import UNVERIFIED_IMAGE_STATUS
+from models.docker_models import Container
 from updates.update_client import (
     UpdateClient,
     UpdateServiceUnavailable,
@@ -46,6 +48,8 @@ logger = logging.getLogger(__name__)
 
 # Maximum concurrent updates to prevent resource exhaustion
 MAX_CONCURRENT_UPDATES = 5
+
+_TEMP_SUFFIX = re.compile(r"-dockmon-temp-\d+$")
 
 
 def _log_unverified_skip(container_name: str) -> None:
@@ -72,6 +76,8 @@ class UpdateExecutor:
         self.db = db
         self.monitor = monitor
         self.updating_containers = set()  # Track containers being updated
+        # (host_id, name): IDs change during a recreate and the discovery cache can be stale; names don't.
+        self._recreating_dependents = set()
         self._update_lock = threading.Lock()
 
         # Initialize Go update service client
@@ -137,10 +143,15 @@ class UpdateExecutor:
             return image.split(':')[-1] if ':' in image else 'latest'
         return self.agent_executor._extract_version_from_image(image)
 
-    def is_container_updating(self, host_id: str, container_id: str) -> bool:
-        """Check if a container is currently being updated."""
-        composite_key = make_composite_key(host_id, container_id)
-        return composite_key in self.updating_containers
+    def is_container_updating(
+        self, host_id: str, container_id: str, container_name: Optional[str] = None
+    ) -> bool:
+        """True while the container is being updated, or recreated as a dependent of one being updated."""
+        if make_composite_key(host_id, container_id) in self.updating_containers:
+            return True
+        if not container_name:
+            return False
+        return (host_id, _TEMP_SUFFIX.sub("", container_name)) in self._recreating_dependents
 
     def _get_registry_credentials(self, image_name: str) -> Optional[Dict[str, str]]:
         """Get credentials for registry from image name."""
@@ -321,7 +332,14 @@ class UpdateExecutor:
                 return False
             self.updating_containers.add(composite_key)
 
+        dependents: List[Container] = []
+        dependent_keys = set()
         try:
+            dependents = await self._find_recreated_dependents(host_id, container_id)
+            dependent_keys = {(host_id, d.name) for d in dependents}
+            with self._update_lock:
+                self._recreating_dependents |= dependent_keys
+
             # Determine host connection type
             connection_type = 'local'
             with self.db.get_session() as session:
@@ -440,6 +458,9 @@ class UpdateExecutor:
             # Remove from updating set
             with self._update_lock:
                 self.updating_containers.discard(composite_key)
+                self._recreating_dependents -= dependent_keys
+
+            await self._alert_on_dependents_left_down(host_id, dependents)
 
             # Re-evaluate alerts
             await self._re_evaluate_alerts_after_update(host_id, container_id, container_name)
@@ -665,6 +686,57 @@ class UpdateExecutor:
             return client
         except Exception as e:
             logger.error(f"Error getting Docker client for host {host_id}: {e}")
+            return None
+
+    async def _find_recreated_dependents(self, host_id: str, container_id: str) -> List[Container]:
+        """The containers this update will recreate, from a fresh discovery of the host."""
+        containers = await self._discover_host(host_id)
+        if containers is None:
+            return []
+        provider = next((c for c in containers if c.short_id == container_id[:12]), None)
+        return recreated_dependents(provider, containers) if provider else []
+
+    async def _alert_on_dependents_left_down(self, host_id: str, dependents: List[Container]):
+        """
+        A dependent's stop was suppressed as part of the recreate, so one that was running
+        and is now confirmed down gets a fresh stop evaluation under its current ID.
+        """
+        was_running = {d.name for d in dependents if d.state == "running"}
+        evaluator = getattr(self.monitor, "alert_evaluation_service", None) if self.monitor else None
+        if not was_running or not evaluator:
+            return
+        containers = await self._discover_host(host_id)
+        if not containers:
+            return
+        for container in containers:
+            if container.name not in was_running or container.state == "running":
+                continue
+            logger.warning(f"Dependent {container.name} is {container.state} after its provider's update")
+            try:
+                await evaluator.handle_container_event(
+                    event_type="state_change",
+                    container_id=container.short_id,
+                    container_name=container.name,
+                    host_id=host_id,
+                    host_name=container.host_name,
+                    event_data={
+                        "old_state": "running",
+                        "new_state": container.state,
+                        "triggered_by": "dependent_recreate_check",
+                    },
+                )
+            except Exception as e:
+                logger.error(f"Error evaluating alerts for dependent {container.name}: {e}")
+
+    async def _discover_host(self, host_id: str) -> Optional[List[Container]]:
+        """Bypass the discovery cache; None when the host could not be listed."""
+        if not self.monitor:
+            return None
+        try:
+            self.monitor.invalidate_discovery(host_id)
+            return await self.monitor.get_containers(host_id)
+        except Exception as e:
+            logger.warning(f"Could not list containers on host {host_id}: {e}")
             return None
 
     async def _get_container_info(self, host_id: str, container_id: str) -> Optional[Dict]:

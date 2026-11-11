@@ -217,7 +217,6 @@ class AlertEngine:
         with self.db.get_session() as session:
             alert = session.merge(alert)
 
-            # If alert was previously resolved, reopen it
             if alert.state == "resolved":
                 alert.state = "open"
                 alert.resolved_at = None

@@ -67,7 +67,7 @@ async def discover_agent(db, host_config):
     executor.execute_command = AsyncMock(return_value=CommandResult(
         status=CommandStatus.SUCCESS, success=True, response=[agent_container(host_config)], error=None,
     ))
-    with patch("agent.command_executor.get_agent_command_executor", return_value=executor):
+    with patch("docker_monitor.container_discovery.get_agent_command_executor", return_value=executor):
         return await discovery.discover_containers_for_host(host_id, lambda *_: False)
 
 
@@ -106,7 +106,7 @@ async def test_local_discovery_reads_network_mode(db):
         "Mounts": [],
     }
 
-    with patch("utils.async_docker.async_containers_list", AsyncMock(return_value=[dc])):
+    with patch("docker_monitor.container_discovery.async_containers_list", AsyncMock(return_value=[dc])):
         containers = await discovery.discover_containers_for_host(host_id, lambda *_: False)
 
     assert containers[0].network_mode == NETWORK_MODE

@@ -30,7 +30,7 @@ async def discover_agent(db, image_id, image_platform=...):
     executor.execute_command = AsyncMock(return_value=CommandResult(
         status=CommandStatus.SUCCESS, success=True, response=[payload], error=None,
     ))
-    with patch("agent.command_executor.get_agent_command_executor", return_value=executor):
+    with patch("docker_monitor.container_discovery.get_agent_command_executor", return_value=executor):
         return await discovery.discover_containers_for_host(host_id, lambda *_: False)
 
 

@@ -19,6 +19,7 @@ from database import (
     DeploymentMetadata,
     TagAssignment,
 )
+from alerts.engine import resolve_update_available_alerts
 from utils.keys import make_composite_key
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ def update_container_records_after_update(
     - ContainerHttpHealthCheck
     - DeploymentMetadata
     - TagAssignment (with reattachment handling)
+    - open update_available alerts on the old key (resolved)
 
     Args:
         db: DatabaseManager instance
@@ -121,38 +123,23 @@ def update_container_records_after_update(
                 "updated_at": now
             })
 
-            # Update TagAssignment with reattachment handling
-            # Check if tags already exist at new key (from container reattachment)
-            new_tag_count = session.query(TagAssignment).filter(
-                TagAssignment.subject_type == 'container',
-                TagAssignment.subject_id == new_composite_key
-            ).count()
+            resolved = resolve_update_available_alerts(session, old_composite_key, "Container updated")
+            if resolved:
+                logger.info(f"Resolved {resolved} update_available alert(s) for {old_composite_key}")
 
-            if new_tag_count > 0:
-                # Reattachment already migrated tags - delete old ones
-                session.query(TagAssignment).filter(
-                    TagAssignment.subject_type == 'container',
-                    TagAssignment.subject_id == old_composite_key
-                ).delete()
-            else:
-                # Update tags to new composite key
-                session.query(TagAssignment).filter(
-                    TagAssignment.subject_type == 'container',
-                    TagAssignment.subject_id == old_composite_key
-                ).update({
-                    "subject_id": new_composite_key,
-                    "last_seen_at": now
-                })
-
+            # A savepoint, so a concurrent reattachment rolls back only the tag move.
             try:
-                session.commit()
-                logger.debug(f"Database updated: {old_composite_key} -> {new_composite_key}")
+                with session.begin_nested():
+                    _move_tag_assignments(session, old_composite_key, new_composite_key, now)
             except IntegrityError as e:
-                if "tag_assignments" in str(e).lower():
-                    session.rollback()
-                    logger.debug("Tag migration race detected, continuing")
-                else:
+                if "tag_assignments" not in str(e).lower():
                     raise
+                logger.debug("Tag migration race detected; reattachment already moved the tags")
+                with session.begin_nested():
+                    _move_tag_assignments(session, old_composite_key, new_composite_key, now)
+
+            session.commit()
+            logger.debug(f"Database updated: {old_composite_key} -> {new_composite_key}")
 
         # Invalidate image digest cache
         if invalidate_cache and old_image:
@@ -168,3 +155,19 @@ def update_container_records_after_update(
     except Exception as e:
         logger.error(f"Error updating database records: {e}", exc_info=True)
         return False
+
+
+def _move_tag_assignments(session, old_composite_key: str, new_composite_key: str, now: datetime) -> None:
+    query = session.query(TagAssignment).filter(
+        TagAssignment.subject_type == 'container',
+        TagAssignment.subject_id == old_composite_key,
+    )
+    new_tag_count = session.query(TagAssignment).filter(
+        TagAssignment.subject_type == 'container',
+        TagAssignment.subject_id == new_composite_key,
+    ).count()
+    if new_tag_count > 0:
+        # Reattachment already migrated the tags.
+        query.delete()
+    else:
+        query.update({"subject_id": new_composite_key, "last_seen_at": now})

@@ -15,8 +15,9 @@ from typing import Optional
 from cronsim import CronSim
 from sqlalchemy import and_
 from cronsim.cronsim import CronSimError
+from alerts.engine import mark_resolved
 from alerts.evaluation_service import BACKUP_ALERT_SCOPE
-from database import DatabaseManager
+from database import AlertV2, ContainerUpdate, DatabaseManager
 from event_logger import EventLogger, EventSeverity, EventType
 from auth.session_manager import session_manager
 from utils.keys import make_composite_key, parse_composite_key
@@ -115,103 +116,90 @@ class PeriodicJobsManager:
         Auto-resolve alerts for entities that no longer exist or are stale.
 
         Resolves alerts for:
-        1. Deleted containers (entity_gone)
-        2. Offline hosts (entity_gone)
-        3. Stale alerts with no updates in 24h (expired)
+        1. Containers that are gone, or whose host was removed (entity_gone)
+        2. Removed hosts (entity_gone)
+        3. Alerts with no updates in 24h (expired), except an update_available alert whose
+           update is still pending
 
-        Prevents alerts table from filling with orphaned alerts.
+        A host whose containers cannot be listed is skipped, never treated as empty.
         """
-        from database import AlertV2
-
         resolved_count = 0
 
-        # Extract alert data and close session BEFORE Docker API calls
-        alerts_to_check = []
         with self.db.get_session() as session:
             # The backup alert is cleared only by a successful run; a weekly
             # schedule that keeps failing sees no update for days.
-            open_alerts = session.query(AlertV2).filter(
-                AlertV2.state.in_(['open', 'snoozed']),
-                ~and_(AlertV2.scope_type == 'system', AlertV2.scope_id == BACKUP_ALERT_SCOPE),
-            ).all()
-
-            # Extract data we need while session is open
-            for alert in open_alerts:
-                alerts_to_check.append({
+            alerts_to_check = [
+                {
                     'id': alert.id,
                     'scope_type': alert.scope_type,
                     'scope_id': alert.scope_id,
-                    'last_seen': alert.last_seen
-                })
+                    'kind': alert.kind,
+                    'last_seen': alert.last_seen,
+                }
+                for alert in session.query(AlertV2).filter(
+                    AlertV2.state.in_(['open', 'snoozed']),
+                    ~and_(AlertV2.scope_type == 'system', AlertV2.scope_id == BACKUP_ALERT_SCOPE),
+                ).all()
+            ]
+            pending_update_keys = {
+                row.container_id
+                for row in session.query(ContainerUpdate.container_id).filter(ContainerUpdate.update_available.is_(True))
+            }
 
-        # Session is now closed - safe for async Docker API calls
-
-        # Optimization: Batch-fetch all existing containers once per host (prevents N+1 queries)
         existing_containers_by_host = {}
         if self.monitor:
-            for host_id, client in self.monitor.clients.items():
-                try:
-                    containers = await async_containers_list(client, all=True)
-                    # Store SHORT IDs (12 chars) in set for fast lookup
-                    existing_containers_by_host[host_id] = {c.id[:12] for c in containers}
-                    logger.debug(f"Found {len(existing_containers_by_host[host_id])} containers on host {host_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to fetch containers for host {host_id}: {e}")
-                    existing_containers_by_host[host_id] = set()
+            alert_host_ids = {
+                parse_composite_key(a['scope_id'])[0] for a in alerts_to_check if a['scope_type'] == 'container'
+            }
+            host_ids = list(alert_host_ids & set(self.monitor.hosts))
+            listings = await asyncio.gather(*(self.monitor.discovery.list_container_ids(h) for h in host_ids))
+            existing_containers_by_host = dict(zip(host_ids, listings))
 
         alerts_to_resolve = []
 
         for alert_data in alerts_to_check:
-            should_resolve = False
             resolve_reason = None
 
-            # Check if entity still exists
-            if alert_data['scope_type'] == 'container':
-                # Check if container exists on its host (using pre-fetched sets)
-                # Parse composite scope_id to extract host_id and container_id
-                if self.monitor:
-                    alert_host_id, container_short_id = parse_composite_key(alert_data['scope_id'])
-                    container_exists = container_short_id in existing_containers_by_host.get(alert_host_id, set())
-
-                    if not container_exists:
-                        should_resolve = True
+            if self.monitor and alert_data['scope_type'] == 'container':
+                alert_host_id, container_short_id = parse_composite_key(alert_data['scope_id'])
+                if alert_host_id not in self.monitor.hosts:
+                    resolve_reason = 'entity_gone'
+                    logger.info(f"Host {alert_host_id[:8]} of container {container_short_id} no longer exists, auto-resolving alert {alert_data['id']}")
+                else:
+                    existing = existing_containers_by_host.get(alert_host_id)
+                    if existing is not None and container_short_id not in existing:
                         resolve_reason = 'entity_gone'
                         logger.info(f"Container {container_short_id} no longer exists on host {alert_host_id}, auto-resolving alert {alert_data['id']}")
 
-            elif alert_data['scope_type'] == 'host':
-                # Check if host exists and is connected
-                if self.monitor and alert_data['scope_id'] not in self.monitor.hosts:
-                    should_resolve = True
+            elif self.monitor and alert_data['scope_type'] == 'host':
+                if alert_data['scope_id'] not in self.monitor.hosts:
                     resolve_reason = 'entity_gone'
                     logger.info(f"Host {alert_data['scope_id'][:12]} no longer exists, auto-resolving alert {alert_data['id']}")
 
-            # Check for stale alerts (no updates in 24h)
-            if not should_resolve and alert_data['last_seen']:
+            update_still_pending = (
+                alert_data['kind'] == 'update_available' and alert_data['scope_id'] in pending_update_keys
+            )
+            if not resolve_reason and alert_data['last_seen'] and not update_still_pending:
                 last_seen_aware = alert_data['last_seen'] if alert_data['last_seen'].tzinfo else alert_data['last_seen'].replace(tzinfo=timezone.utc)
                 time_since_update = datetime.now(timezone.utc) - last_seen_aware
 
                 if time_since_update > timedelta(hours=24):
-                    should_resolve = True
                     resolve_reason = 'expired'
                     logger.info(f"Alert {alert_data['id']} stale for {time_since_update.total_seconds()/3600:.1f}h, auto-resolving")
 
-            # Store alerts that need resolving
-            if should_resolve:
-                alerts_to_resolve.append({
-                    'id': alert_data['id'],
-                    'reason': resolve_reason
-                })
+            if resolve_reason:
+                alerts_to_resolve.append((alert_data, resolve_reason))
 
-        # Reopen session to update alerts
         if alerts_to_resolve:
+            now = datetime.now(timezone.utc)
             with self.db.get_session() as session:
-                for alert_info in alerts_to_resolve:
-                    alert = session.query(AlertV2).filter(AlertV2.id == alert_info['id']).first()
-                    if alert:
-                        alert.state = 'resolved'
-                        alert.resolved_at = datetime.now(timezone.utc)
-                        alert.resolved_reason = alert_info['reason']
-                        resolved_count += 1
+                for alert_data, reason in alerts_to_resolve:
+                    alert = session.query(AlertV2).filter(AlertV2.id == alert_data['id']).first()
+                    # The listing can be slow; skip an alert someone resolved or refreshed meanwhile.
+                    if not alert or alert.state not in ('open', 'snoozed') or alert.last_seen != alert_data['last_seen']:
+                        continue
+                    mark_resolved(alert, reason, notify=True, now=now)
+                    resolved_count += 1
 
                 session.commit()
                 logger.info(f"Auto-resolved {resolved_count} stale alerts")

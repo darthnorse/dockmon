@@ -76,6 +76,31 @@ def mark_resolved(alert: AlertV2, reason: str, notify: bool, now: datetime) -> N
         alert.resolve_notified_at = now
 
 
+def resolve_update_available_alerts(
+    session, container_key: str, reason: str, require_auto_resolve: bool = False
+) -> int:
+    """Resolve a container's open or snoozed update_available alerts; the caller commits.
+
+    require_auto_resolve=True is for "the condition cleared" (a check found no update) and honours
+    the rule's auto_resolve_on_clear. False is for "the container was replaced" and always resolves.
+    """
+    query = session.query(AlertV2).filter(
+        AlertV2.scope_type == "container",
+        AlertV2.scope_id == container_key,
+        AlertV2.kind == "update_available",
+        AlertV2.state.in_(("open", "snoozed")),
+    )
+    if require_auto_resolve:
+        query = query.join(AlertRuleV2, AlertV2.rule_id == AlertRuleV2.id).filter(
+            AlertRuleV2.auto_resolve_on_clear.is_(True)
+        )
+    alerts = query.all()
+    now = datetime.now(timezone.utc)
+    for alert in alerts:
+        mark_resolved(alert, reason, notify=True, now=now)
+    return len(alerts)
+
+
 class AlertEngine:
     """
     Core alert evaluation engine
@@ -192,12 +217,12 @@ class AlertEngine:
         with self.db.get_session() as session:
             alert = session.merge(alert)
 
-            # If alert was previously resolved, reopen it
             if alert.state == "resolved":
                 alert.state = "open"
                 alert.resolved_at = None
                 alert.resolved_reason = None
                 alert.notified_at = None  # Clear notification timestamp so alert gets re-sent
+                alert.resolve_notified_at = None
                 logger.info(f"Reopened previously resolved alert {alert.id}")
 
             # For update_available alerts, clear notified_at if digest changed (new version available)

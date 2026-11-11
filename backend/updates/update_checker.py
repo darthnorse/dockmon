@@ -26,6 +26,7 @@ CACHE_TTL_FLOATING = int(os.getenv('DOCKMON_CACHE_TTL_FLOATING', 6 * 3600))  # 6
 CACHE_TTL_DEFAULT = int(os.getenv('DOCKMON_CACHE_TTL_DEFAULT', 6 * 3600))  # 6 hours
 from updates.registry_adapter import get_registry_adapter, TransientRegistryError
 from updates.changelog_resolver import resolve_changelog_url
+from alerts.engine import resolve_update_available_alerts
 from event_bus import Event, EventType, get_event_bus
 from updates.types import MANIFEST_LIST_TYPES, match_platform_manifest
 from utils.keys import make_composite_key
@@ -62,6 +63,10 @@ def _read_running_image(client, container_id: str) -> RunningImage:
         labels=labels if isinstance(labels, dict) else {},
         platform=image_platform(attrs),
     )
+
+
+def _resolve_cleared_update_alerts(session, composite_key: str) -> None:
+    resolve_update_available_alerts(session, composite_key, "No update available", require_auto_resolve=True)
 
 
 def _parse_verified_image(raw) -> Optional[Dict[str, str]]:
@@ -956,6 +961,9 @@ class UpdateChecker:
                 )
                 session.add(record)
 
+            if not update_info["update_available"]:
+                _resolve_cleared_update_alerts(session, composite_key)
+
             try:
                 session.commit()
             except IntegrityError:
@@ -992,6 +1000,8 @@ class UpdateChecker:
                     # Update container_name if available (for reattachment)
                     if container.get("name"):
                         record.container_name = container["name"]
+                    if not update_info["update_available"]:
+                        _resolve_cleared_update_alerts(session, composite_key)
                     session.commit()
                 else:
                     # Record vanished between operations - extremely unlikely
@@ -1043,6 +1053,7 @@ class UpdateChecker:
                     last_checked_at=now,
                 )
                 session.add(record)
+            _resolve_cleared_update_alerts(session, composite_key)
 
             try:
                 session.commit()
@@ -1054,6 +1065,7 @@ class UpdateChecker:
                 ).first()
                 if record:
                     apply_marker(record)
+                    _resolve_cleared_update_alerts(session, composite_key)
                     session.commit()
                 else:
                     logger.warning(f"Record vanished during race handling for {composite_key}")

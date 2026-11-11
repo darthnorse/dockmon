@@ -135,7 +135,7 @@ class _MockExecutor:
 def patch_executor():
     executor = _MockExecutor()
     with patch(
-        "agent.command_executor.get_agent_command_executor",
+        "docker_monitor.container_discovery.get_agent_command_executor",
         return_value=executor,
     ):
         yield executor

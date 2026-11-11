@@ -24,6 +24,7 @@ from database import (
     ContainerUpdate,
     Agent,
 )
+from alerts.engine import resolve_update_available_alerts
 from utils.keys import make_composite_key
 from agent.command_executor import CommandStatus
 from updates.types import UpdateContext, UpdateResult, ProgressCallback
@@ -375,7 +376,8 @@ class AgentUpdateExecutor:
                     db_update.update_available = False
                     db_update.check_status = None
                     db_update.last_updated_at = datetime.now(timezone.utc)
-                    session.commit()
+                resolve_update_available_alerts(session, composite_key, "Container updated")
+                session.commit()
 
             await progress_callback("completed", 100, "Agent self-update completed")
 

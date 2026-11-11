@@ -8,17 +8,18 @@ import os
 import time
 import traceback
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import docker
 from docker import DockerClient
 
 from config.paths import CERTS_DIR
-from database import DatabaseManager, DockerHostDB
+from agent.command_executor import get_agent_command_executor
+from database import Agent, DatabaseManager, DockerHostDB
 from models.docker_models import DockerHost, Container, derive_container_tags
 from event_bus import Event, EventType as BusEventType, get_event_bus
 from stats_client import get_stats_client
-from utils.async_docker import async_docker_call, async_client_ping
+from utils.async_docker import async_docker_call, async_client_ping, async_containers_list
 from utils.image_ref import image_platform, sha256_digest_or_none, with_implicit_latest
 from utils.keys import make_composite_key
 from utils.ip_extraction import extract_container_ips
@@ -205,7 +206,6 @@ class ContainerDiscovery:
         # Agent-based hosts use WebSocket connection, not Docker client
         if host.connection_type == "agent":
             from agent.connection_manager import agent_connection_manager
-            from database import Agent
 
             # Check if agent is connected
             with self.db.get_session() as session:
@@ -394,6 +394,48 @@ class ContainerDiscovery:
             logger.debug(f"Host {host.name} still offline (attempt {attempts + 1}). Next retry in {next_attempt_in}s")
             return False
 
+    def _agent_id_for_host(self, host_id: str) -> Optional[str]:
+        with self.db.get_session() as session:
+            agent = session.query(Agent).filter_by(host_id=host_id).first()
+            return agent.id if agent else None
+
+    async def _request_agent_containers(self, agent_id: str):
+        # Legacy command protocol; agents support both legacy and new.
+        return await get_agent_command_executor().execute_command(
+            agent_id, {"type": "command", "command": "list_containers"}, timeout=30.0
+        )
+
+    async def list_container_ids(self, host_id: str) -> Optional[set]:
+        """Short ids of every container on a host, or None when the host could not be listed.
+
+        Unlike discovery, an empty set here means the host really has no containers.
+        """
+        host = self.hosts.get(host_id)
+        if not host:
+            return None
+        try:
+            if host.connection_type == "agent":
+                agent_id = self._agent_id_for_host(host_id)
+                if not agent_id:
+                    return None
+                result = await self._request_agent_containers(agent_id)
+                if not result.success or not isinstance(result.response, list):
+                    logger.warning(f"Could not list containers on {host.name}: {result.error}")
+                    return None
+                ids = [c.get("Id", "") for c in result.response]
+                # A short id would make every real container look gone to the stale-alert sweep.
+                if any(not isinstance(i, str) or len(i) < 12 for i in ids):
+                    return None
+                return {i[:12] for i in ids}
+
+            client = self.clients.get(host_id)
+            if not client:
+                return None
+            return {c.id[:12] for c in await async_containers_list(client, all=True)}
+        except Exception as e:
+            logger.warning(f"Could not list containers on {host.name}: {e}")
+            return None
+
     @async_ttl_cache(ttl_seconds=5)
     async def discover_containers_for_host(self, host_id: str, get_auto_restart_status_fn) -> List[Container]:
         """
@@ -409,8 +451,6 @@ class ContainerDiscovery:
         Returns:
             List of Container objects
         """
-        from utils.async_docker import async_containers_list
-
         containers = []
         host = self.hosts.get(host_id)
         if not host:
@@ -430,33 +470,13 @@ class ContainerDiscovery:
 
         # Agent-based hosts - get container data from agent via WebSocket
         if host.connection_type == "agent":
-            from agent.command_executor import get_agent_command_executor
-            from database import Agent
+            agent_id = self._agent_id_for_host(host_id)
+            if not agent_id:
+                logger.warning(f"No agent record for host {host.name}")
+                return containers
 
-            # Get agent ID
-            with self.db.get_session() as session:
-                agent = session.query(Agent).filter_by(host_id=host_id).first()
-                if not agent:
-                    logger.warning(f"No agent record for host {host.name}")
-                    return containers
-
-                agent_id = agent.id
-
-            # Request container list from agent using command executor
             try:
-                executor = get_agent_command_executor()
-
-                # Use legacy command protocol (agent supports both legacy and new protocol)
-                command = {
-                    "type": "command",
-                    "command": "list_containers"
-                }
-
-                result = await executor.execute_command(
-                    agent_id,
-                    command,
-                    timeout=30.0
-                )
+                result = await self._request_agent_containers(agent_id)
 
                 if not result.success:
                     logger.error(f"Failed to get containers from agent {agent_id[:8]}...: {result.error}")

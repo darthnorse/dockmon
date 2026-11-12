@@ -1358,15 +1358,15 @@ class DockerMonitor:
         or if the host was edited or removed while the calls were in flight.
         """
         host = self.hosts.get(host_id)
-        if host is None:
+        if host is None or host.connection_type == "agent":
+            # Removed or converted to an agent after a registration that may have landed late:
+            # make sure Go forgets it, and keep retrying until it has.
             if host_id in self._stats_pending_hosts:
-                # Removed after a registration that may have landed late: make sure Go forgets it.
-                await self.unregister_docker_host_services(host_id, host_id[:8])
+                if not await self.unregister_docker_host_services(host_id, host.name if host else host_id[:8]):
+                    return False
             self._stats_pending_hosts.discard(host_id)
             return True
-        if host.connection_type == "agent":
-            self._stats_pending_hosts.discard(host_id)
-            return True
+        sent_url = host.url
 
         with self.db.get_session() as session:
             db_host = session.query(DockerHostDB).filter_by(id=host_id).first()
@@ -1386,8 +1386,10 @@ class DockerMonitor:
             self._stats_pending_hosts.add(host_id)
             return False
 
-        # update_host replaces the DockerHost object; a late registration of the old one must be redone.
-        if self.hosts.get(host_id) is not host:
+        # update_host replaces the DockerHost object and add_agent_host converts it in place;
+        # either way a registration of the old state may have landed late and must be redone.
+        current = self.hosts.get(host_id)
+        if current is not host or current.connection_type == "agent" or current.url != sent_url:
             self._stats_pending_hosts.add(host_id)
             return False
         if not (stats_ok and events_ok):
@@ -1428,12 +1430,13 @@ class DockerMonitor:
             for host_id in list(self._stats_pending_hosts):
                 await self.register_host_with_go_services(host_id)
 
-    async def unregister_docker_host_services(self, host_id: str, host_name: str):
+    async def unregister_docker_host_services(self, host_id: str, host_name: str) -> bool:
         """Drop a host's Docker registration from the Go stats and event services.
 
         Used on host removal and on every transition to agent: the aggregator
         writes the host stats cache for registered Docker hosts and ingest
-        writes it for agents, both under the same key.
+        writes it for agents, both under the same key. Returns True only if
+        both services confirmed the removal.
         """
         try:
             stats_client = get_stats_client()
@@ -1443,16 +1446,23 @@ class DockerMonitor:
             )
         except Exception as e:
             logger.warning(f"Could not reach stats service to unregister {host_name}: {e}")
-            return
+            return False
 
+        all_removed = True
         for service, unregister in unregisters:
             try:
-                await unregister(host_id)
-                logger.info(f"Unregistered {host_name} ({host_id[:8]}) from {service}")
+                if await unregister(host_id):
+                    logger.info(f"Unregistered {host_name} ({host_id[:8]}) from {service}")
+                else:
+                    all_removed = False
+                    logger.warning(f"{service} did not confirm unregistering {host_name} ({host_id[:8]})")
             except asyncio.TimeoutError:
+                all_removed = False
                 logger.debug(f"Timeout unregistering {host_name} from {service} (expected during cleanup)")
             except Exception as e:
+                all_removed = False
                 logger.warning(f"Failed to unregister {host_name} from {service}: {e}")
+        return all_removed
 
     def _convert_host_to_agent(self, host_id: str, host_name: str):
         """Repair a host that an agent has taken over from a Docker connection."""

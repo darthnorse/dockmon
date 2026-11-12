@@ -198,6 +198,41 @@ async def test_host_edited_during_registration_is_registered_again(monitor, stat
     assert monitor._stats_pending_hosts == set()
 
 
+async def test_host_converted_to_agent_during_registration_is_unregistered(monitor, stats_client):
+    async def convert_remote_in_place(host_id, *args):
+        if host_id == REMOTE_ID:
+            monitor.hosts[REMOTE_ID].connection_type = "agent"
+            monitor.hosts[REMOTE_ID].url = "agent://"
+        return True
+
+    stats_client.add_docker_host.side_effect = convert_remote_in_place
+    await monitor._reconcile_stats_service()
+    assert monitor._stats_pending_hosts == {REMOTE_ID}
+
+    allow_retry_now(monitor)
+    await monitor._reconcile_stats_service()
+
+    assert registered_ids(stats_client.remove_docker_host) == [REMOTE_ID]
+    assert registered_ids(stats_client.remove_event_host) == [REMOTE_ID]
+    assert monitor._stats_pending_hosts == set()
+
+
+async def test_failed_cleanup_of_a_removed_host_is_retried(monitor, stats_client):
+    monitor.hosts.pop(REMOTE_ID)
+    monitor.mark_stats_registration_stale(REMOTE_ID)
+    await monitor._reconcile_stats_service()
+    stats_client.remove_docker_host.return_value = False
+
+    allow_retry_now(monitor)
+    await monitor._reconcile_stats_service()
+    assert monitor._stats_pending_hosts == {REMOTE_ID}
+
+    stats_client.remove_docker_host.return_value = True
+    allow_retry_now(monitor)
+    await monitor._reconcile_stats_service()
+    assert monitor._stats_pending_hosts == set()
+
+
 async def test_reset_waits_for_an_in_progress_stream_sync(monitor):
     order = []
     monitor.stats_manager.streaming_containers = {"h:c"}

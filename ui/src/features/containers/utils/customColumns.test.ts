@@ -4,6 +4,7 @@ import {
   getColumnLabel,
   extractColumnValue,
   isCustomColumnId,
+  buildCustomColumnDef,
 } from './customColumns'
 
 describe('parseColumnId', () => {
@@ -85,5 +86,15 @@ describe('extractColumnValue', () => {
   })
   it('returns null for builtin IDs (caller resolves builtin columns)', () => {
     expect(extractColumnValue(container, 'name')).toBeNull()
+  })
+})
+
+describe('buildCustomColumnDef', () => {
+  it('lets custom columns be resized', () => {
+    expect(buildCustomColumnDef('label:com.example.tier').enableResizing).toBe(true)
+  })
+
+  it('does not offer resizing for an id too long to save a width for', () => {
+    expect(buildCustomColumnDef(`label:${'x'.repeat(130)}`).enableResizing).toBe(false)
   })
 })

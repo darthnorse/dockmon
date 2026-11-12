@@ -2,9 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ColumnSizingState } from '@tanstack/react-table'
 import { toast } from 'sonner'
 import { useUpdatePreferences, useUserPreferences } from '@/lib/hooks/useUserPreferences'
+import { MAX_RESIZABLE_COLUMN_ID_LENGTH } from '../utils/customColumns'
 
-// Mirror the backend ColumnSizing limits (api/v2/user.py) so one unsavable key can't fail the whole map.
-const MAX_COLUMN_ID_LENGTH = 128
+// Mirrors the backend ColumnSizing entry limit (api/v2/user.py) so one unsavable key can't fail the whole map.
 const MAX_SIZED_COLUMNS = 100
 
 function sameSizing(a: ColumnSizingState, b: ColumnSizingState): boolean {
@@ -74,7 +74,7 @@ export function useColumnSizingPreference(columnIds: readonly string[]) {
       const known = new Set(columnIdsRef.current)
       const pruned = Object.fromEntries(
         Object.entries(sizing)
-          .filter(([id]) => known.has(id) && id.length <= MAX_COLUMN_ID_LENGTH)
+          .filter(([id]) => known.has(id) && id.length <= MAX_RESIZABLE_COLUMN_ID_LENGTH)
           .slice(0, MAX_SIZED_COLUMNS),
       )
       dirtyRef.current = false

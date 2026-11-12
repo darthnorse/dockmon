@@ -1217,7 +1217,6 @@ class DockerMonitor:
                             is_local = host.url.startswith("unix://")
                             stats_ok = await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus, host.total_memory, is_local)
 
-                            # Remove and re-add event monitoring
                             await stats_client.remove_event_host(host.id)
                             events_ok = await stats_client.add_event_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
                             if stats_ok and events_ok:

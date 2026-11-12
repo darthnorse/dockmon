@@ -1,22 +1,3 @@
-/**
- * ContainerInfoTab - Info content for Container Details Modal
- *
- * 2-column layout displaying:
- * LEFT COLUMN:
- * - Overview (Status with restart policy)
- * - WebUI URL
- * - Tags
- * - Image
- * - Ports
- * - Volumes
- *
- * RIGHT COLUMN:
- * - Auto-restart toggle
- * - Desired state selector
- * - Live Stats (CPU, Memory, Network with sparklines)
- * - Environment Variables (key: value pairs)
- */
-
 import { useState, useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '@/features/auth/AuthContext'
@@ -381,7 +362,6 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
               </div>
             )}
 
-            {/* Environment Variables */}
             {canViewEnv && (filteredEnv.length > 0 || inspectError) && (
               <div>
                 <h4 className="text-lg font-medium text-foreground mb-3">Environment Variables</h4>

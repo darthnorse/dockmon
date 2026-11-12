@@ -26,13 +26,21 @@ import { useDndSensors } from '@/features/dashboard/hooks/useDndSensors'
 import { Settings, GripVertical, Eye, EyeOff, RotateCcw, Trash2, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu } from '@/components/ui/dropdown-menu'
-import { isCustomColumnId, getColumnLabel as getCustomColumnLabel } from '../utils/customColumns'
+import { isCustomColumnId } from '../utils/customColumns'
+import { getDisplayColumnLabel } from '../utils/columnLabels'
 import { useUserPreferences, useUpdatePreferences } from '@/lib/hooks/useUserPreferences'
 import { AddCustomColumnDialog } from './AddCustomColumnDialog'
 import { useAuth } from '@/features/auth/AuthContext'
 
+interface ColumnWidthControls {
+  hasCustomWidths: boolean
+  resetWidths: () => void
+  removeWidth: (columnId: string) => void
+}
+
 interface ColumnCustomizationPanelProps<TData> {
   table: Table<TData>
+  columnWidths?: ColumnWidthControls
 }
 
 function SortableColumnItem({
@@ -110,22 +118,7 @@ function SortableColumnItem({
   )
 }
 
-// Maps column IDs to display names
-const COLUMN_LABELS: Record<string, string> = {
-  state: 'Status',
-  name: 'Name',
-  policy: 'Policy',
-  alerts: 'Alerts',
-  host_id: 'Host',
-  ports: 'Ports',
-  created: 'Uptime',
-  cpu: 'CPU %',
-  memory: 'RAM',
-  network: 'Network',
-  actions: 'Actions',
-}
-
-export function ColumnCustomizationPanel<TData>({ table }: ColumnCustomizationPanelProps<TData>) {
+export function ColumnCustomizationPanel<TData>({ table, columnWidths }: ColumnCustomizationPanelProps<TData>) {
   const allColumns = table.getAllLeafColumns().filter(
     (column) => column.id !== 'select'
   )
@@ -178,6 +171,7 @@ export function ColumnCustomizationPanel<TData>({ table }: ColumnCustomizationPa
       container_table_column_order: newOrder,
       container_table_column_visibility: visibility,
     })
+    columnWidths?.removeWidth(columnId)
   }
 
   const handleDragEnd = (event: DragEndEvent) => {
@@ -253,12 +247,7 @@ export function ColumnCustomizationPanel<TData>({ table }: ColumnCustomizationPa
                   {orderedColumns.map((column) => {
                     const canHide = visibleCount > 1 || !column.getIsVisible()
 
-                    const label = isCustomColumnId(column.id)
-                      ? getCustomColumnLabel(column.id)
-                      : (COLUMN_LABELS[column.id] ??
-                          (typeof column.columnDef.header === 'string'
-                            ? column.columnDef.header
-                            : column.id))
+                    const label = getDisplayColumnLabel(column)
 
                     return (
                       <SortableColumnItem
@@ -289,11 +278,24 @@ export function ColumnCustomizationPanel<TData>({ table }: ColumnCustomizationPa
               <Plus className="h-3.5 w-3.5 mr-2" />
               Add custom column…
             </Button>
+            {columnWidths && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={columnWidths.resetWidths}
+                disabled={!columnWidths.hasCustomWidths}
+                className="w-full justify-start text-sm"
+              >
+                <RotateCcw className="h-3.5 w-3.5 mr-2" />
+                Reset column widths
+              </Button>
+            )}
           </div>
 
           <div className="px-3 py-2 border-t border-border bg-muted/30">
             <p className="text-xs text-muted-foreground">
               Drag rows to reorder columns. Click the eye icon to show/hide.
+              {columnWidths && ' Drag a column header edge to resize it.'}
             </p>
           </div>
         </div>

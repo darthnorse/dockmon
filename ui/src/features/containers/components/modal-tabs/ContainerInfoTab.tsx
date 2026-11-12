@@ -32,6 +32,7 @@ import { useContainerTagEditor } from '@/hooks/useContainerTagEditor'
 import { makeCompositeKey } from '@/lib/utils/containerKeys'
 import { formatBytes, formatNetworkRate } from '@/lib/utils/formatting'
 import { sanitizeHref } from '@/lib/utils/urlSanitize'
+import { EnvVarList } from './EnvVarList'
 
 const SYSTEM_ENV_VARS = ['PATH', 'HOME', 'HOSTNAME', 'TERM']
 
@@ -190,7 +191,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="p-6">
-        <div className="grid grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* LEFT COLUMN */}
           <div className="space-y-6">
             {/* Overview */}
@@ -387,16 +388,7 @@ export function ContainerInfoTab({ container }: ContainerInfoTabProps) {
                 {inspectError && filteredEnv.length === 0 ? (
                   <p className="text-sm text-muted-foreground">Failed to load environment variables</p>
                 ) : filteredEnv.length > 0 ? (
-                  <div className="space-y-1.5 max-h-64 overflow-y-auto">
-                    {filteredEnv.map(([key, value]) => (
-                      <div key={key} className="flex justify-between text-sm gap-4">
-                        <span className="text-muted-foreground font-mono flex-shrink-0">
-                          {key}
-                        </span>
-                        <span className="font-mono truncate text-right">{value}</span>
-                      </div>
-                    ))}
-                  </div>
+                  <EnvVarList entries={filteredEnv} />
                 ) : (
                   <p className="text-sm text-muted-foreground">No application environment variables</p>
                 )}

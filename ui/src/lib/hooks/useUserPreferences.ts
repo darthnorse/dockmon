@@ -52,6 +52,7 @@ export interface UserPreferences {
   // Table column customization preferences
   container_table_column_visibility: Record<string, boolean> | null
   container_table_column_order: string[] | null
+  container_table_column_sizing: Record<string, number> | null
 
   // Dashboard preferences (host container sorts are string-based sort keys)
   hostContainerSorts?: Record<string, string>

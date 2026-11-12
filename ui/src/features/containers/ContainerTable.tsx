@@ -60,6 +60,7 @@ import { useAlertCounts, type AlertSeverityCounts } from '@/features/alerts/hook
 import { AlertDetailsDrawer } from '@/features/alerts/components/AlertDetailsDrawer'
 import { ContainerDrawer } from './components/ContainerDrawer'
 import { VirtualizedTable } from './components/VirtualizedTable'
+import { useColumnSizingPreference } from './hooks/useColumnSizingPreference'
 import { BulkActionBar } from './components/BulkActionBar'
 import { BulkActionConfirmModal } from './components/BulkActionConfirmModal'
 import { DeleteConfirmModal } from './components/DeleteConfirmModal'
@@ -907,11 +908,14 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
           </fieldset>
         ),
         size: 50,
+        minSize: 50,
         enableSorting: false,
+        enableResizing: false,
       },
       // 1. Status (icon)
       {
         accessorKey: 'state',
+        enableResizing: false,
         header: ({ column }) => {
           const sortDirection = column.getIsSorted()
           return (
@@ -1386,6 +1390,8 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
       {
         id: 'actions',
         header: 'Actions',
+        // Fixed-width button group would paint over neighbouring cells if shrunk.
+        enableResizing: false,
         cell: ({ row }) => {
           const container = row.original
           const isRunning = container.state === 'running'
@@ -1516,9 +1522,17 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
     [executeAction, isContainerPending, alertCounts, allAutoUpdateConfigs, allHealthCheckConfigs, canOperate, customColumnIds, updatesSummary, simplifiedWorkflow, expandedTagsContainerId, openModal]
   )
 
+  const columnIds = useMemo(
+    () => columns.map((col) => col.id ?? ('accessorKey' in col ? String(col.accessorKey) : '')),
+    [columns],
+  )
+  const { columnSizing, setColumnSizing, commitColumnWidth, resetColumnSizing } = useColumnSizingPreference(columnIds)
+
   const table = useReactTable({
     data: filteredData || [],
     columns,
+    defaultColumn: { minSize: 80, maxSize: 2000 },
+    enableColumnResizing: true,
     // Composite key as row ID so rowSelection keys match the host:container
     // composites the backend expects, and selection survives reordering.
     getRowId: (row) => makeCompositeKey(row),
@@ -1531,6 +1545,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
     onGlobalFilterChange: setGlobalFilter,
     onColumnVisibilityChange: setColumnVisibility,
     onColumnOrderChange: setColumnOrder,
+    onColumnSizingChange: setColumnSizing,
     onRowSelectionChange: setRowSelection,
     globalFilterFn: (row, _columnId, filterValue) => {
       const searchValue = String(filterValue).toLowerCase()
@@ -1592,6 +1607,7 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
       globalFilter,
       columnVisibility,
       columnOrder,
+      columnSizing,
       rowSelection,
     },
   })
@@ -1952,11 +1968,18 @@ export function ContainerTable({ hostId: propHostId, scrollElement }: ContainerT
           </DropdownMenu>
 
           {/* Column Customization */}
-          <ColumnCustomizationPanel table={table} />
+          <ColumnCustomizationPanel
+            table={table}
+            columnWidths={{
+              hasCustomWidths: Object.keys(columnSizing).length > 0,
+              resetWidths: resetColumnSizing,
+              removeWidth: (columnId) => commitColumnWidth(columnId, null),
+            }}
+          />
         </div>
       </div>
 
-      <VirtualizedTable table={table} scrollElement={scrollElement} />
+      <VirtualizedTable table={table} scrollElement={scrollElement} onColumnWidthCommit={commitColumnWidth} />
 
 
       {/* Container Drawer */}

@@ -15,10 +15,13 @@
  */
 
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { flexRender, Column, Table as ReactTable } from '@tanstack/react-table'
+import { flexRender, Column, Header, Table as ReactTable } from '@tanstack/react-table'
 import { useVirtualizer, useWindowVirtualizer, Virtualizer } from '@tanstack/react-virtual'
 
 import type { Container } from '../types'
+import { buildGridTemplate } from '../utils/gridTemplate'
+import { getDisplayColumnLabel } from '../utils/columnLabels'
+import { ColumnResizeHandle } from './ColumnResizeHandle'
 
 function alignClass(column: Column<Container>, fallback = ''): string {
   return column.columnDef.meta?.align === 'center' ? 'text-center' : fallback
@@ -33,18 +36,32 @@ interface VirtualizedTableProps {
    * render no items until it becomes non-null.
    */
   scrollElement?: HTMLElement | null | undefined
+  /** Enables header resize handles; persists a column's width, or resets it when null. */
+  onColumnWidthCommit?: ((columnId: string, width: number | null) => void) | undefined
 }
 
 const ESTIMATED_ROW_HEIGHT_PX = 56
 
-export function VirtualizedTable({ table, scrollElement }: VirtualizedTableProps) {
+export function VirtualizedTable({ table, scrollElement, onColumnWidthCommit }: VirtualizedTableProps) {
   if (scrollElement !== undefined) {
-    return <ElementScrollVirtualizedTable table={table} scrollElement={scrollElement} />
+    return (
+      <ElementScrollVirtualizedTable
+        table={table}
+        scrollElement={scrollElement}
+        onColumnWidthCommit={onColumnWidthCommit}
+      />
+    )
   }
-  return <WindowScrollVirtualizedTable table={table} />
+  return <WindowScrollVirtualizedTable table={table} onColumnWidthCommit={onColumnWidthCommit} />
 }
 
-function WindowScrollVirtualizedTable({ table }: { table: ReactTable<Container> }) {
+function WindowScrollVirtualizedTable({
+  table,
+  onColumnWidthCommit,
+}: {
+  table: ReactTable<Container>
+  onColumnWidthCommit: VirtualizedTableProps['onColumnWidthCommit']
+}) {
   const rows = table.getRowModel().rows
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -91,15 +108,24 @@ function WindowScrollVirtualizedTable({ table }: { table: ReactTable<Container> 
     getItemKey,
   })
 
-  return <VirtualizedTableShell table={table} virtualizer={virtualizer} containerRef={containerRef} />
+  return (
+    <VirtualizedTableShell
+      table={table}
+      virtualizer={virtualizer}
+      containerRef={containerRef}
+      onColumnWidthCommit={onColumnWidthCommit}
+    />
+  )
 }
 
 function ElementScrollVirtualizedTable({
   table,
   scrollElement,
+  onColumnWidthCommit,
 }: {
   table: ReactTable<Container>
   scrollElement: HTMLElement | null
+  onColumnWidthCommit: VirtualizedTableProps['onColumnWidthCommit']
 }) {
   const rows = table.getRowModel().rows
   const containerRef = useRef<HTMLDivElement>(null)
@@ -142,7 +168,37 @@ function ElementScrollVirtualizedTable({
     getItemKey,
   })
 
-  return <VirtualizedTableShell table={table} virtualizer={virtualizer} containerRef={containerRef} />
+  return (
+    <VirtualizedTableShell
+      table={table}
+      virtualizer={virtualizer}
+      containerRef={containerRef}
+      onColumnWidthCommit={onColumnWidthCommit}
+    />
+  )
+}
+
+function HeaderResizeHandle({
+  header,
+  table,
+  onColumnWidthCommit,
+}: {
+  header: Header<Container, unknown>
+  table: ReactTable<Container>
+  onColumnWidthCommit: (columnId: string, width: number | null) => void
+}) {
+  const { column } = header
+  const { minSize = 0, maxSize = Number.MAX_SAFE_INTEGER } = column.columnDef
+  return (
+    <ColumnResizeHandle
+      label={getDisplayColumnLabel(column)}
+      size={column.getSize()}
+      minSize={minSize}
+      maxSize={maxSize}
+      onResize={(width) => table.setColumnSizing((prev) => ({ ...prev, [column.id]: width }))}
+      onCommit={(width) => onColumnWidthCommit(column.id, width)}
+    />
+  )
 }
 
 type TableVirtualizer = Virtualizer<Window, Element> | Virtualizer<HTMLElement, Element>
@@ -151,10 +207,12 @@ function VirtualizedTableShell({
   table,
   virtualizer,
   containerRef,
+  onColumnWidthCommit,
 }: {
   table: ReactTable<Container>
   virtualizer: TableVirtualizer
   containerRef: React.RefObject<HTMLDivElement>
+  onColumnWidthCommit: VirtualizedTableProps['onColumnWidthCommit']
 }) {
   const rows = table.getRowModel().rows
 
@@ -162,12 +220,7 @@ function VirtualizedTableShell({
   // identity-keyed cache via getItemKey on the parent virtualizer.
 
   // min-w-0 on each cell lets long content shrink below intrinsic width.
-  const gridTemplate = table.getVisibleLeafColumns()
-    .map((col) => {
-      const size = col.getSize()
-      return size <= 100 ? `${size}px` : `minmax(${size}px, 1fr)`
-    })
-    .join(' ')
+  const gridTemplate = buildGridTemplate(table.getVisibleLeafColumns(), table.getState().columnSizing)
 
   const rowBaseStyle = useMemo(
     () => ({
@@ -215,11 +268,14 @@ function VirtualizedTableShell({
                 <div
                   key={header.id}
                   role="columnheader"
-                  className={`px-4 py-3 text-sm font-medium min-w-0 ${alignClass(header.column, 'text-left')}`}
+                  className={`relative px-4 py-3 text-sm font-medium min-w-0 ${alignClass(header.column, 'text-left')}`}
                 >
                   {header.isPlaceholder
                     ? null
                     : flexRender(header.column.columnDef.header, header.getContext())}
+                  {onColumnWidthCommit && header.column.getCanResize() && (
+                    <HeaderResizeHandle header={header} table={table} onColumnWidthCommit={onColumnWidthCommit} />
+                  )}
                 </div>
               ))}
             </div>

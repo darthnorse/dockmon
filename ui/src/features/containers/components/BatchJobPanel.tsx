@@ -46,10 +46,6 @@ const isInProgress = (status?: string) => status === 'queued' || status === 'run
 const isFinished = (status?: string) => status === 'completed' || status === 'failed' || status === 'partial'
 const isTransient = (err: unknown) => !(err instanceof ApiError) || GATEWAY_STATUSES.has(err.status)
 
-// A snapshot fetched before live updates that were applied meanwhile must not roll them back.
-const isBehind = (snapshot: BatchJobStatus, current: BatchJobStatus) =>
-  (isFinished(current.status) && !isFinished(snapshot.status)) || snapshot.completed_items < current.completed_items
-
 interface BatchJobPanelProps {
   jobId: string | null
   isVisible: boolean
@@ -74,6 +70,8 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
   const loadGenerationRef = useRef(0)
   const loadInFlightRef = useRef(false)
   const refreshQueuedRef = useRef(false)
+  // Bumped per applied live update; a fetch that started before one must not roll it back.
+  const liveUpdateCountRef = useRef(0)
 
   const commitJob = useCallback((next: BatchJobStatus | null) => {
     jobRef.current = next
@@ -131,6 +129,7 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
   const loadJob = useCallback(async (refresh: boolean): Promise<void> => {
     if (!jobId || !canViewBatch) return
     const generation = ++loadGenerationRef.current
+    const liveUpdatesAtStart = liveUpdateCountRef.current
     loadInFlightRef.current = true
     refreshQueuedRef.current = false
     if (!refresh || !jobRef.current) setLoading(true)
@@ -145,7 +144,7 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
         setReconnecting(false)
         setLoading(false)
         const current = jobRef.current
-        if (!current || !isBehind(data, current)) {
+        if (!current || liveUpdateCountRef.current === liveUpdatesAtStart) {
           commitJob(data)
           if (refresh && !isFinished(current?.status) && isFinished(data.status)) {
             finishJobRef.current(data.action, data.items)
@@ -163,6 +162,10 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
           continue
         }
         loadInFlightRef.current = false
+        if (refreshQueuedRef.current) {
+          void loadJob(true)
+          return
+        }
         setReconnecting(false)
         setLoading(false)
         setError(err instanceof Error ? err.message : 'Failed to fetch job status')
@@ -205,7 +208,6 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
     setError(null)
     const prev = jobRef.current
     if (!prev) {
-      // The job isn't loaded yet: fetch it rather than patch nothing, one request at a time.
       if (loadInFlightRef.current) {
         refreshQueuedRef.current = true
       } else {
@@ -214,6 +216,7 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
       return
     }
 
+    liveUpdateCountRef.current++
     if (message.type === 'batch_job_update') {
       commitJob({ ...prev, ...data } as BatchJobStatus)
       // A job loaded already finished is not finished again.

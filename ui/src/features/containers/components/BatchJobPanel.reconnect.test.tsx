@@ -297,4 +297,46 @@ describe('BatchJobPanel', () => {
     resolveNext({ ...makeJob('running'), id: 'job_next' })
     await flush()
   })
+
+  it('keeps a live item change that does not move the completed count', async () => {
+    let resolveRefresh: (job: unknown) => void = () => {}
+    vi.mocked(apiClient.get).mockResolvedValueOnce({ ...makeJob('running'), items: [{ ...makeJob('running').items[0], status: 'queued' }] })
+    const { rerenderPanel, container } = renderPanel()
+    await flush()
+
+    vi.mocked(apiClient.get).mockImplementationOnce(() => new Promise((resolve) => { resolveRefresh = resolve }))
+    wsStatus = 'disconnected'
+    rerenderPanel()
+    await flush()
+    wsStatus = 'connected'
+    rerenderPanel()
+    await flush()
+
+    await act(async () => {
+      wsHandler?.({ type: 'batch_item_update', data: { job_id: JOB_ID, item_id: 1, status: 'running' } } as WebSocketMessage)
+    })
+    await act(async () => resolveRefresh({ ...makeJob('running'), items: [{ ...makeJob('running').items[0], status: 'queued' }] }))
+    await flush()
+
+    expect(container.querySelector('.animate-spin.text-info')).not.toBeNull()
+  })
+
+  it('still catches up when the load a live message waited on fails', async () => {
+    let rejectFirst: (err: unknown) => void = () => {}
+    vi.mocked(apiClient.get)
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject }))
+      .mockResolvedValueOnce(makeJob('completed', 'success'))
+    renderPanel()
+    await flush()
+
+    await act(async () => {
+      wsHandler?.({ type: 'batch_job_update', data: { job_id: JOB_ID, status: 'completed' } } as WebSocketMessage)
+    })
+    await act(async () => rejectFirst(new ApiError('Internal server error', 500)))
+    await flush()
+
+    expect(apiClient.get).toHaveBeenCalledTimes(2)
+    expect(screen.queryByText('Failed to load batch job')).not.toBeInTheDocument()
+    expect(screen.getByText(/1 success/)).toBeInTheDocument()
+  })
 })

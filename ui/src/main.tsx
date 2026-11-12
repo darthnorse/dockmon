@@ -1,3 +1,5 @@
+// Must stay the first import: it repairs navigator.language before uPlot reads it at module load.
+import './lib/locale/ensureValidLocale'
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { App } from './App'

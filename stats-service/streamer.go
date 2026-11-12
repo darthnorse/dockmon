@@ -173,9 +173,7 @@ func (sm *StreamManager) StartStream(ctx context.Context, containerID, container
 	if !clientExists {
 		sm.streamsMu.Unlock()
 		sm.clientsMu.RUnlock()
-		hostName := sm.getHostName(hostID)
-		log.Printf("Warning: No Docker client for host %s (%s)", hostName, truncateID(hostID, 8))
-		return nil
+		return fmt.Errorf("no Docker client registered for host %s", truncateID(hostID, 8))
 	}
 
 	// Create cancellable context for this stream

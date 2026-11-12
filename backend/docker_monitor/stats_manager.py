@@ -6,7 +6,7 @@ Centralized logic for determining which containers need stats collection
 import asyncio
 import logging
 from collections import defaultdict
-from typing import Dict, Set, List
+from typing import Awaitable, Callable, Dict, List, Set
 from models.docker_models import Container
 from database import GlobalSettings
 from utils.keys import make_composite_key
@@ -179,6 +179,17 @@ class StatsManager:
                         f"Failed to stop stats stream for container {container_id[:12]}, "
                         f"removed from tracking to allow retry on next sync"
                     )
+
+    async def reregister_and_reset(self, register: Callable[[], Awaitable[None]]) -> None:
+        """Re-register hosts with a restarted stats-service, then forget every stream.
+
+        Only for a new stats-service process: it runs no streams, so all of them must
+        be started again. Holding the lock across both steps keeps a concurrent sync
+        from recording a stream between them that the reset would then forget.
+        """
+        async with self._streaming_lock:
+            await register()
+            self.streaming_containers.clear()
 
     async def stop_all_streams(self, stats_client, error_callback) -> None:
         """

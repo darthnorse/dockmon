@@ -115,6 +115,20 @@ class StatsServiceClient:
                 return False
         return False
 
+    async def get_instance_id(self) -> Optional[str]:
+        """Random id stats-service picks at startup; a change means it restarted with empty state."""
+        try:
+            session = await self._get_session()
+            async with session.get(f"{self.base_url}/health") as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                instance_id = data.get("instance_id") if isinstance(data, dict) else None
+                return instance_id if isinstance(instance_id, str) and instance_id else None
+        except Exception as e:
+            logger.debug(f"Could not read stats service instance id: {e}")
+            return None
+
     async def add_docker_host(self, host_id: str, host_name: str, host_address: str, tls_ca: str = None, tls_cert: str = None, tls_key: str = None, num_cpus: int = None, total_memory: int = None, is_local: bool = False) -> bool:
         """Register a Docker host with the stats service"""
         for attempt in range(2):

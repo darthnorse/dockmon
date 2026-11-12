@@ -62,6 +62,9 @@ export function extractColumnValue(
  * frequently long URLs that would otherwise bleed into the next column)
  * and exposes the full value on hover via the title attribute.
  */
+// Longest column id the preferences API accepts as a column-width key.
+export const MAX_RESIZABLE_COLUMN_ID_LENGTH = 128
+
 export function buildCustomColumnDef<T extends ContainerLike>(
   columnId: string,
 ): ColumnDef<T> {
@@ -79,6 +82,7 @@ export function buildCustomColumnDef<T extends ContainerLike>(
       )
     },
     enableSorting: true,
+    enableResizing: columnId.length <= MAX_RESIZABLE_COLUMN_ID_LENGTH,
     meta: { align: 'left' },
   }
 }

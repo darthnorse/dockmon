@@ -12,10 +12,10 @@ SECURITY:
 
 import json
 import logging
-from typing import Optional, Dict, Any, Union
+from typing import Annotated, Optional, Dict, Any, Union
 from collections import deque
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 from auth.api_key_auth import get_current_user_or_api_key as get_current_user
 
@@ -99,6 +99,15 @@ class DashboardPreferences(BaseModel):
     optimizedLoading: bool = Field(default=True)
 
 
+ColumnSizing = Annotated[
+    dict[
+        Annotated[str, StringConstraints(min_length=1, max_length=128)],
+        Annotated[int, Field(strict=True, ge=20, le=2000)],
+    ],
+    Field(max_length=100),
+]
+
+
 class UserPreferences(BaseModel):
     """
     User preferences schema.
@@ -126,6 +135,7 @@ class UserPreferences(BaseModel):
     # Table column customization preferences
     container_table_column_visibility: Optional[Dict[str, bool]] = Field(default=None)  # { column_id: visible }
     container_table_column_order: Optional[list[str]] = Field(default=None)  # ['column_id1', 'column_id2', ...]
+    container_table_column_sizing: Optional[Dict[str, int]] = Field(default=None)  # { column_id: width_px }
 
 
 class PreferencesUpdate(BaseModel):
@@ -151,6 +161,7 @@ class PreferencesUpdate(BaseModel):
     # Table column customization preferences
     container_table_column_visibility: Optional[Dict[str, bool]] = None
     container_table_column_order: Optional[list[str]] = None
+    container_table_column_sizing: Optional[ColumnSizing] = None
 
 
 @router.get("/preferences", response_model=UserPreferences)
@@ -276,7 +287,8 @@ async def get_user_preferences(
             host_table_sort=prefs_data.get("host_table_sort"),
             container_table_sort=prefs_data.get("container_table_sort"),
             container_table_column_visibility=prefs_data.get("container_table_column_visibility"),
-            container_table_column_order=prefs_data.get("container_table_column_order")
+            container_table_column_order=prefs_data.get("container_table_column_order"),
+            container_table_column_sizing=prefs_data.get("container_table_column_sizing"),
         )
 
 
@@ -406,7 +418,8 @@ async def update_user_preferences(
             updates.host_table_sort is not None or
             updates.container_table_sort is not None or
             updates.container_table_column_visibility is not None or
-            updates.container_table_column_order is not None
+            updates.container_table_column_order is not None or
+            updates.container_table_column_sizing is not None
         )
 
         if needs_prefs_update:
@@ -446,6 +459,9 @@ async def update_user_preferences(
 
             if updates.container_table_column_order is not None:
                 existing_prefs["container_table_column_order"] = updates.container_table_column_order
+
+            if updates.container_table_column_sizing is not None:
+                existing_prefs["container_table_column_sizing"] = updates.container_table_column_sizing
 
             # SECURITY FIX: Validate JSON depth before serialization
             try:

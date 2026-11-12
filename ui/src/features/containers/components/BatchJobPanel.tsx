@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { X, CheckCircle, XCircle, Clock, Loader2 } from 'lucide-react'
-import { apiClient } from '@/lib/api/client'
+import { apiClient, ApiError } from '@/lib/api/client'
 import { useWebSocketContext } from '@/lib/websocket/WebSocketProvider'
 import { useQueryClient } from '@tanstack/react-query'
 import { debug } from '@/lib/debug'
@@ -37,6 +37,19 @@ interface BatchJobItem {
   completed_at?: string
 }
 
+// Covers a reverse proxy or DockMon restart (e.g. updating Caddy in this very batch).
+const CONNECTION_RETRY_DELAYS_MS = [1000, 2000, 4000]
+// What a reachable proxy returns while the DockMon backend behind it restarts.
+const GATEWAY_STATUSES = new Set([502, 503, 504])
+
+const isInProgress = (status?: string) => status === 'queued' || status === 'running'
+const isFinished = (status?: string) => status === 'completed' || status === 'failed' || status === 'partial'
+const isTransient = (err: unknown) => !(err instanceof ApiError) || GATEWAY_STATUSES.has(err.status)
+
+// A snapshot fetched before live updates that were applied meanwhile must not roll them back.
+const isBehind = (snapshot: BatchJobStatus, current: BatchJobStatus) =>
+  (isFinished(current.status) && !isFinished(snapshot.status)) || snapshot.completed_items < current.completed_items
+
 interface BatchJobPanelProps {
   jobId: string | null
   isVisible: boolean
@@ -52,144 +65,167 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
   const [job, setJob] = useState<BatchJobStatus | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const { addMessageHandler } = useWebSocketContext()
+  const [reconnecting, setReconnecting] = useState(false)
+  const { addMessageHandler, status: wsStatus } = useWebSocketContext()
   const queryClient = useQueryClient()
   const autoCloseTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  // Source of truth for handlers and async loads; React state only drives rendering.
+  const jobRef = useRef<BatchJobStatus | null>(null)
+  const loadGenerationRef = useRef(0)
+  const loadInFlightRef = useRef(false)
+  const refreshQueuedRef = useRef(false)
 
-  // Fetch initial job status
+  const commitJob = useCallback((next: BatchJobStatus | null) => {
+    jobRef.current = next
+    setJob(next)
+  }, [])
+
+  const finishJob = useCallback((action: string, items: BatchJobItem[] | undefined) => {
+    // Invalidate cache regardless of success/failure (shows current state)
+    void queryClient.invalidateQueries({ queryKey: ['containers'] })
+
+    if (action === 'delete-images' && items && items.length > 0) {
+      const hostIds = new Set(items.map((item) => item.host_id))
+      hostIds.forEach((hostId) => {
+        void queryClient.invalidateQueries({ queryKey: ['host-images', hostId] })
+      })
+    }
+
+    // Force refetch even with staleTime: Infinity
+    if (action === 'set-auto-update' || action === 'check-updates') {
+      if (items && items.length > 0) {
+        items.forEach((item) => {
+          void queryClient.invalidateQueries({
+            queryKey: ['container-update-status', item.host_id, item.container_id],
+            refetchType: 'active'
+          })
+        })
+      } else {
+        void queryClient.invalidateQueries({
+          queryKey: ['container-update-status'],
+          refetchType: 'active'
+        })
+      }
+
+      // Also invalidate updates-summary so filters update immediately
+      void queryClient.invalidateQueries({ queryKey: ['updates-summary'] })
+    }
+
+    debug.log('BatchJobPanel', `Job ${jobId} finished, invalidated queries for action: ${action}`)
+
+    if (autoCloseTimeoutRef.current) {
+      clearTimeout(autoCloseTimeoutRef.current)
+    }
+    autoCloseTimeoutRef.current = setTimeout(() => {
+      onJobComplete()
+    }, 3000)
+  }, [jobId, queryClient, onJobComplete])
+  const finishJobRef = useRef(finishJob)
+  finishJobRef.current = finishJob
+
+  /**
+   * Fetch the job, retrying transient failures (no response, or a gateway error
+   * while DockMon restarts) before surfacing them; other HTTP errors show at once.
+   * `refresh` marks a catch-up fetch, which completes the job if it finished unseen.
+   */
+  const loadJob = useCallback(async (refresh: boolean): Promise<void> => {
+    if (!jobId || !canViewBatch) return
+    const generation = ++loadGenerationRef.current
+    loadInFlightRef.current = true
+    refreshQueuedRef.current = false
+    if (!refresh || !jobRef.current) setLoading(true)
+    setError(null)
+    setReconnecting(false)
+
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const data = await apiClient.get<BatchJobStatus>(`/batch/${jobId}`)
+        if (generation !== loadGenerationRef.current) return
+        loadInFlightRef.current = false
+        setReconnecting(false)
+        setLoading(false)
+        const current = jobRef.current
+        if (!current || !isBehind(data, current)) {
+          commitJob(data)
+          if (refresh && !isFinished(current?.status) && isFinished(data.status)) {
+            finishJobRef.current(data.action, data.items)
+          }
+        }
+        if (refreshQueuedRef.current) void loadJob(true)
+        return
+      } catch (err) {
+        if (generation !== loadGenerationRef.current) return
+        const delay = CONNECTION_RETRY_DELAYS_MS[attempt]
+        if (isTransient(err) && delay !== undefined) {
+          setReconnecting(true)
+          await new Promise((resolve) => setTimeout(resolve, delay))
+          if (generation !== loadGenerationRef.current) return
+          continue
+        }
+        loadInFlightRef.current = false
+        setReconnecting(false)
+        setLoading(false)
+        setError(err instanceof Error ? err.message : 'Failed to fetch job status')
+        return
+      }
+    }
+  }, [jobId, canViewBatch, commitJob])
+
   useEffect(() => {
-    if (!jobId || !canViewBatch) {
-      setJob(null)
+    commitJob(null)
+    setError(null)
+    setReconnecting(false)
+    loadInFlightRef.current = false
+    refreshQueuedRef.current = false
+    if (!jobId || !canViewBatch) return
+    void loadJob(false)
+    const generations = loadGenerationRef
+    return () => {
+      generations.current++
+    }
+  }, [jobId, canViewBatch, loadJob, commitJob])
+
+  // Messages sent while the live connection was down are lost; catch up on reconnect.
+  const prevWsStatusRef = useRef(wsStatus)
+  useEffect(() => {
+    const previous = prevWsStatusRef.current
+    prevWsStatusRef.current = wsStatus
+    if (wsStatus !== 'connected' || previous === 'connected') return
+    const current = jobRef.current
+    if (!current || isInProgress(current.status)) void loadJob(true)
+  }, [wsStatus, loadJob])
+
+  const handleMessage = useCallback((message: WebSocketMessage) => {
+    if (!jobId || !canViewBatch) return
+    if (message.type !== 'batch_job_update' && message.type !== 'batch_item_update') return
+    if (!message.data || typeof message.data !== 'object') return
+    const data = message.data as Record<string, unknown>
+    if (data.job_id !== jobId) return
+
+    setError(null)
+    const prev = jobRef.current
+    if (!prev) {
+      // The job isn't loaded yet: fetch it rather than patch nothing, one request at a time.
+      if (loadInFlightRef.current) {
+        refreshQueuedRef.current = true
+      } else {
+        void loadJob(true)
+      }
       return
     }
 
-    let cancelled = false
-
-    const fetchJob = async () => {
-      setLoading(true)
-      setError(null)
-      try {
-        const data = await apiClient.get<BatchJobStatus>(`/batch/${jobId}`)
-        if (!cancelled) {
-          setJob(data)
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to fetch job status')
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false)
-        }
+    if (message.type === 'batch_job_update') {
+      commitJob({ ...prev, ...data } as BatchJobStatus)
+      // A job loaded already finished is not finished again.
+      if (isInProgress(prev.status) && isFinished(data.status as string)) {
+        finishJob(prev.action, prev.items)
       }
+      return
     }
 
-    void fetchJob()
-
-    return () => {
-      cancelled = true
-    }
-  }, [jobId, canViewBatch])
-
-  // Handle WebSocket messages
-  const handleMessage = useCallback((message: WebSocketMessage) => {
-    if (!jobId || !canViewBatch) return
-
-    // Handle batch job updates
-    if (message.type === 'batch_job_update' && message.data && typeof message.data === 'object') {
-      const data = message.data as Record<string, unknown>
-      if (data.job_id === jobId) {
-        const newStatus = data.status as string
-
-        setJob(prev => {
-          const prevStatus = prev?.status
-          const updatedJob = prev ? { ...prev, ...data } : null
-
-          // Only trigger on actual state transition from in-progress to finished
-          // This prevents premature cleanup when WebSocket 'completed' arrives before initial fetch
-          const wasInProgress = prevStatus === 'queued' || prevStatus === 'running'
-          const isNowFinished = newStatus === 'completed' || newStatus === 'failed' || newStatus === 'partial'
-
-          if (wasInProgress && isNowFinished) {
-            const action = prev?.action || (data.action as string)
-
-            // Invalidate cache regardless of success/failure (shows current state)
-            void queryClient.invalidateQueries({ queryKey: ['containers'] })
-
-            // For delete-images action, invalidate host-images queries
-            if (action === 'delete-images') {
-              const items = (prev?.items || data.items) as BatchJobItem[] | undefined
-              if (items && items.length > 0) {
-                // Get unique host IDs from items
-                const hostIds = new Set(items.map((item: BatchJobItem) => item.host_id))
-                hostIds.forEach((hostId) => {
-                  void queryClient.invalidateQueries({ queryKey: ['host-images', hostId] })
-                })
-              }
-            }
-
-            // For auto-update and check-updates actions, also invalidate update-status queries
-            // Force refetch even with staleTime: Infinity
-            if (action === 'set-auto-update' || action === 'check-updates') {
-              // Get affected containers from job items
-              const items = (prev?.items || data.items) as BatchJobItem[] | undefined
-
-              if (items && items.length > 0) {
-                // Invalidate only the specific containers that were affected
-                items.forEach((item: BatchJobItem) => {
-                  void queryClient.invalidateQueries({
-                    queryKey: ['container-update-status', item.host_id, item.container_id],
-                    refetchType: 'active'
-                  })
-                })
-              } else {
-                // Fallback: invalidate all if we don't have item details
-                void queryClient.invalidateQueries({
-                  queryKey: ['container-update-status'],
-                  refetchType: 'active'
-                })
-              }
-
-              // Also invalidate updates-summary so filters update immediately (fixes #115)
-              void queryClient.invalidateQueries({ queryKey: ['updates-summary'] })
-            }
-
-            debug.log('BatchJobPanel', `Job ${jobId} finished (${newStatus}), invalidated queries for action: ${action}`)
-
-            // Clear any existing timeout before setting new one
-            if (autoCloseTimeoutRef.current) {
-              clearTimeout(autoCloseTimeoutRef.current)
-            }
-
-            // Auto-close panel 3 seconds after completion
-            autoCloseTimeoutRef.current = setTimeout(() => {
-              onJobComplete()
-            }, 3000)
-          }
-
-          return updatedJob
-        })
-      }
-    }
-
-    // Handle individual item updates
-    if (message.type === 'batch_item_update' && message.data && typeof message.data === 'object') {
-      const data = message.data as Record<string, unknown>
-      if (data.job_id === jobId) {
-        setJob(prev => {
-          if (!prev) return null
-
-          const items = prev.items.map(item =>
-            item.id === data.item_id
-              ? { ...item, ...data }
-              : item
-          )
-
-          return { ...prev, items }
-        })
-      }
-    }
-  }, [jobId, canViewBatch, queryClient, onJobComplete])
+    const items = prev.items.map((item) => (item.id === data.item_id ? { ...item, ...data } : item))
+    commitJob({ ...prev, items })
+  }, [jobId, canViewBatch, finishJob, loadJob, commitJob])
 
   // Subscribe to WebSocket messages
   useEffect(() => {
@@ -341,6 +377,13 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
         </div>
       )}
 
+      {reconnecting && (
+        <div className="px-4 py-2 border-b border-border text-xs text-muted-foreground flex items-center gap-2">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          Reconnecting to DockMon…
+        </div>
+      )}
+
       {/* Error State */}
       {error && (
         <div className="px-4 py-3 bg-destructive/10 border-b border-border">
@@ -350,18 +393,7 @@ export function BatchJobPanel({ jobId, isVisible, onClose, onJobComplete, bulkAc
               <p className="text-sm text-destructive font-medium">Failed to load batch job</p>
               <p className="text-xs text-destructive/80 mt-1">{error}</p>
               <button
-                onClick={() => {
-                  setError(null)
-                  setLoading(true)
-                  apiClient.get<BatchJobStatus>(`/batch/${jobId}`)
-                    .then(data => setJob(data))
-                    .catch(err => {
-                      const errorMsg = err instanceof Error ? err.message : 'Failed to fetch job status'
-                      debug.error('BatchJobPanel', 'Batch job retry failed:', err)
-                      setError(errorMsg)
-                    })
-                    .finally(() => setLoading(false))
-                }}
+                onClick={() => void loadJob(true)}
                 className="mt-2 text-xs text-primary hover:text-primary/80 font-medium"
               >
                 Retry

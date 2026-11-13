@@ -47,6 +47,7 @@ def monitor(db, monkeypatch):
     mon.event_logger = MagicMock()
     mon.settings = types.SimpleNamespace(connection_timeout=5)
     mon._validate_host_security = MagicMock(return_value="insecure")
+    mon._stats_pending_hosts = set()
     return mon
 
 
@@ -102,3 +103,28 @@ async def test_failure_scheduled_from_worker_thread_is_logged(monitor, caplog):
     await _drain_loop()
 
     assert "stats service exploded" in caplog.text
+
+
+async def test_rejected_registration_on_add_is_queued_for_retry(monitor, stats_client):
+    monitor.bind_event_loop(asyncio.get_running_loop())
+    stats_client.add_docker_host.return_value = False
+
+    host = await asyncio.to_thread(monitor.add_host, DockerHostConfig(name="remote", url="tcp://10.0.0.9:2375"))
+    await _drain_loop()
+
+    assert monitor._stats_pending_hosts == {host.id}
+
+
+async def test_rejected_reregistration_on_edit_is_queued_for_retry(monitor, db, stats_client):
+    monitor.bind_event_loop(asyncio.get_running_loop())
+    with db.get_session() as session:
+        session.add(DockerHostDB(id=HOST_ID, name="remote", url="tcp://10.0.0.9:2375", connection_type="remote"))
+        session.commit()
+    monitor.hosts[HOST_ID] = DockerHost(id=HOST_ID, name="remote", url="tcp://10.0.0.9:2375", status="online")
+    monitor.clients[HOST_ID] = MagicMock()
+    stats_client.add_event_host.return_value = False
+
+    await asyncio.to_thread(monitor.update_host, HOST_ID, DockerHostConfig(name="remote", url="tcp://10.0.0.10:2375"))
+    await _drain_loop()
+
+    assert monitor._stats_pending_hosts == {HOST_ID}

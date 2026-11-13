@@ -11,7 +11,7 @@ import shutil
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 import docker
 from docker import DockerClient
@@ -54,6 +54,7 @@ logger = logging.getLogger(__name__)
 # State update race condition prevention (Issue #3 fix)
 # Reject polling updates within this window if recent event exists
 STATE_UPDATE_STALE_THRESHOLD = 2.0  # seconds
+STATS_REGISTRATION_RETRY_SECONDS = 30
 
 
 def parse_container_ports(port_bindings: dict) -> list[str]:
@@ -317,6 +318,11 @@ class DockerMonitor:
 
         # Stats collection manager
         self.stats_manager = StatsManager()
+        # stats-service process the socket hosts were last fully registered with.
+        self._stats_instance_id: Optional[str] = None
+        # Socket hosts whose Go-service registration failed or went stale; retried without touching the rest.
+        self._stats_pending_hosts: Set[str] = set()
+        self._stats_retry_at = 0.0
 
         # Stats history buffer for sparklines (Phase 4c)
         self.stats_history = StatsHistoryBuffer()
@@ -559,11 +565,13 @@ class DockerMonitor:
                             # Agent hosts have url="agent://" which is not a valid Docker URL
                             if host.connection_type != "agent":
                                 is_local = host.url.startswith("unix://")
-                                await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus, host.total_memory, is_local)
-                                logger.info(f"Registered {host.name} ({host.id[:8]}) with stats service")
-
-                                await stats_client.add_event_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
-                                logger.info(f"Registered {host.name} ({host.id[:8]}) with event service")
+                                stats_ok = await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus, host.total_memory, is_local)
+                                events_ok = await stats_client.add_event_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
+                                if stats_ok and events_ok:
+                                    logger.info(f"Registered {host.name} ({host.id[:8]}) with stats and event services")
+                                else:
+                                    logger.warning(f"Go services rejected registration of {host.name}; will retry")
+                                    self.mark_stats_registration_stale(host.id)
                             else:
                                 logger.info(f"Skipped stats/event service registration for agent host {host.name} (uses WebSocket)")
                         except Exception as e:
@@ -1207,13 +1215,15 @@ class DockerMonitor:
                         if host.connection_type != "agent":
                             # Re-register with stats service (automatically closes old client)
                             is_local = host.url.startswith("unix://")
-                            await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus, host.total_memory, is_local)
-                            logger.info(f"Re-registered {host.name} ({host.id[:8]}) with stats service")
+                            stats_ok = await stats_client.add_docker_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key, host.num_cpus, host.total_memory, is_local)
 
-                            # Remove and re-add event monitoring
                             await stats_client.remove_event_host(host.id)
-                            await stats_client.add_event_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
-                            logger.info(f"Re-registered {host.name} ({host.id[:8]}) with event service")
+                            events_ok = await stats_client.add_event_host(host.id, host.name, host.url, config.tls_ca, config.tls_cert, config.tls_key)
+                            if stats_ok and events_ok:
+                                logger.info(f"Re-registered {host.name} ({host.id[:8]}) with stats and event services")
+                            else:
+                                logger.warning(f"Go services rejected re-registration of {host.name}; will retry")
+                                self.mark_stats_registration_stale(host.id)
                         else:
                             logger.info(f"Skipped stats/event service re-registration for agent host {host.name} (uses WebSocket)")
                     except Exception as e:
@@ -1336,12 +1346,96 @@ class DockerMonitor:
                 f"service; its Docker registration may linger until restart"
             )
 
-    async def unregister_docker_host_services(self, host_id: str, host_name: str):
+    def mark_stats_registration_stale(self, host_id: str) -> None:
+        """A Go-service registration of this host failed; retry it on a later monitor cycle."""
+        self._stats_pending_hosts.add(host_id)
+
+    async def register_host_with_go_services(self, host_id: str) -> bool:
+        """Register one socket host with the Go stats and event services from its current state.
+
+        Returns False and queues the host for retry if either service rejected it,
+        or if the host was edited or removed while the calls were in flight.
+        """
+        host = self.hosts.get(host_id)
+        if host is None or host.connection_type == "agent":
+            # Removed or converted to an agent after a registration that may have landed late:
+            # make sure Go forgets it, and keep retrying until it has.
+            if host_id in self._stats_pending_hosts:
+                if not await self.unregister_docker_host_services(host_id, host.name if host else host_id[:8]):
+                    return False
+            self._stats_pending_hosts.discard(host_id)
+            return True
+        sent_url = host.url
+
+        with self.db.get_session() as session:
+            db_host = session.query(DockerHostDB).filter_by(id=host_id).first()
+            tls_ca = db_host.tls_ca if db_host else None
+            tls_cert = db_host.tls_cert if db_host else None
+            tls_key = db_host.tls_key if db_host else None
+            num_cpus = db_host.num_cpus if db_host else None
+            total_memory = db_host.total_memory if db_host else None
+
+        stats_client = get_stats_client()
+        is_local = host.url.startswith("unix://")
+        try:
+            stats_ok = await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key, num_cpus, total_memory, is_local)
+            events_ok = await stats_client.add_event_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key)
+        except Exception as e:
+            logger.error(f"Failed to register host {host.name} ({host_id[:8]}) with Go services: {e}")
+            self._stats_pending_hosts.add(host_id)
+            return False
+
+        # update_host replaces the DockerHost object and add_agent_host converts it in place;
+        # either way a registration of the old state may have landed late and must be redone.
+        current = self.hosts.get(host_id)
+        if current is not host or current.connection_type == "agent" or current.url != sent_url:
+            self._stats_pending_hosts.add(host_id)
+            return False
+        if not (stats_ok and events_ok):
+            logger.warning(f"Go services rejected registration of {host.name} ({host_id[:8]}): stats={stats_ok} events={events_ok}")
+            self._stats_pending_hosts.add(host_id)
+            return False
+        self._stats_pending_hosts.discard(host_id)
+        logger.info(f"Registered host {host.name} ({host_id[:8]}) with stats and event services")
+        return True
+
+    async def _reconcile_stats_service(self) -> None:
+        """Keep stats-service's in-memory hosts, event sources and streams in step with DockMon.
+
+        A new stats-service process (supervisor restarted it) knows nothing: every
+        socket host is registered again and stream tracking reset. Otherwise only
+        hosts whose registration failed are retried, at most every
+        STATS_REGISTRATION_RETRY_SECONDS, leaving healthy hosts and streams alone.
+        """
+        instance_id = await get_stats_client().get_instance_id()
+        if instance_id is None:
+            return
+
+        if instance_id != self._stats_instance_id:
+            if self._stats_instance_id is not None:
+                logger.warning(f"stats-service restarted (instance {instance_id[:8]}); re-registering hosts")
+
+            async def register_all() -> None:
+                for host_id in list(self.hosts):
+                    await self.register_host_with_go_services(host_id)
+
+            await self.stats_manager.reregister_and_reset(register_all)
+            self._stats_instance_id = instance_id
+            self._stats_retry_at = time.monotonic() + STATS_REGISTRATION_RETRY_SECONDS
+            return
+
+        if self._stats_pending_hosts and time.monotonic() >= self._stats_retry_at:
+            self._stats_retry_at = time.monotonic() + STATS_REGISTRATION_RETRY_SECONDS
+            for host_id in list(self._stats_pending_hosts):
+                await self.register_host_with_go_services(host_id)
+
+    async def unregister_docker_host_services(self, host_id: str, host_name: str) -> bool:
         """Drop a host's Docker registration from the Go stats and event services.
 
         Used on host removal and on every transition to agent: the aggregator
         writes the host stats cache for registered Docker hosts and ingest
-        writes it for agents, both under the same key.
+        writes it for agents, both under the same key. Returns True only if
+        both services confirmed the removal.
         """
         try:
             stats_client = get_stats_client()
@@ -1351,16 +1445,23 @@ class DockerMonitor:
             )
         except Exception as e:
             logger.warning(f"Could not reach stats service to unregister {host_name}: {e}")
-            return
+            return False
 
+        all_removed = True
         for service, unregister in unregisters:
             try:
-                await unregister(host_id)
-                logger.info(f"Unregistered {host_name} ({host_id[:8]}) from {service}")
+                if await unregister(host_id):
+                    logger.info(f"Unregistered {host_name} ({host_id[:8]}) from {service}")
+                else:
+                    all_removed = False
+                    logger.warning(f"{service} did not confirm unregistering {host_name} ({host_id[:8]})")
             except asyncio.TimeoutError:
+                all_removed = False
                 logger.debug(f"Timeout unregistering {host_name} from {service} (expected during cleanup)")
             except Exception as e:
+                all_removed = False
                 logger.warning(f"Failed to unregister {host_name} from {service}: {e}")
+        return all_removed
 
     def _convert_host_to_agent(self, host_id: str, host_name: str):
         """Repair a host that an agent has taken over from a Docker connection."""
@@ -1736,34 +1837,10 @@ class DockerMonitor:
         # Note: streaming_containers is now managed by self.stats_manager
         stats_client = get_stats_client()
 
-        # Register all hosts with the stats and event services on startup
-        for host_id, host in self.hosts.items():
-            # Skip agent hosts - they send stats via WebSocket, not Docker API
-            # Agent hosts have url="agent://" which is not a valid Docker URL
-            if host.connection_type == "agent":
-                logger.info(f"Skipped stats/event service registration for agent host {host.name} (uses WebSocket)")
-                continue
-
-            try:
-                # Get TLS certificates, num_cpus, and total_memory from database
-                with self.db.get_session() as session:
-                    db_host = session.query(DockerHostDB).filter_by(id=host_id).first()
-                    tls_ca = db_host.tls_ca if db_host else None
-                    tls_cert = db_host.tls_cert if db_host else None
-                    tls_key = db_host.tls_key if db_host else None
-                    num_cpus = db_host.num_cpus if db_host else None
-                    total_memory = db_host.total_memory if db_host else None
-
-                # Register with stats service
-                is_local = host.url.startswith("unix://")
-                await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key, num_cpus, total_memory, is_local)
-                logger.info(f"Registered host {host.name} ({host_id[:8]}) with stats service")
-
-                # Register with event service
-                await stats_client.add_event_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key)
-                logger.info(f"Registered host {host.name} ({host_id[:8]}) with event service")
-            except Exception as e:
-                logger.error(f"Failed to register host {host_id} with services: {e}")
+        try:
+            await self._reconcile_stats_service()
+        except Exception as e:
+            logger.error(f"Failed to register hosts with Go services: {e}")
 
         # Connect to event stream WebSocket
         try:
@@ -1772,7 +1849,13 @@ class DockerMonitor:
         except Exception as e:
             logger.error(f"Failed to connect to event stream: {e}")
 
+        has_viewers = False
         while True:
+            try:
+                await self._reconcile_stats_service()
+            except Exception as e:
+                logger.error(f"Error reconciling stats service registrations: {e}")
+
             try:
                 containers = await self.get_containers()
 

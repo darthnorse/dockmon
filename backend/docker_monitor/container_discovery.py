@@ -356,25 +356,12 @@ class ContainerDiscovery:
                     }
                 })
 
-            # Re-register with stats and events service
-            # Skip agent hosts - they use WebSocket for stats/events
-            if host.connection_type != "agent":
+            # Re-register with stats and events service (agent hosts use WebSocket instead)
+            if host.connection_type != "agent" and self.monitor:
                 try:
-                    stats_client = get_stats_client()
-                    tls_ca = db_host.tls_ca if db_host else None
-                    tls_cert = db_host.tls_cert if db_host else None
-                    tls_key = db_host.tls_key if db_host else None
-                    num_cpus = db_host.num_cpus if db_host else None
-                    total_memory = db_host.total_memory if db_host else None
-
-                    is_local = host.url.startswith("unix://")
-                    await stats_client.add_docker_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key, num_cpus, total_memory, is_local)
-                    await stats_client.add_event_host(host_id, host.name, host.url, tls_ca, tls_cert, tls_key)
-                    logger.info(f"Re-registered {host.name} ({host_id[:8]}) with stats/events service after reconnection")
+                    await self.monitor.register_host_with_go_services(host_id)
                 except Exception as e:
                     logger.warning(f"Failed to re-register {host.name} with Go services after reconnection: {e}")
-            else:
-                logger.debug(f"Skipped stats/event service re-registration for agent host {host.name} (uses WebSocket)")
 
             return True
 

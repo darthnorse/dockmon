@@ -91,6 +91,16 @@ func generateToken() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
+// newInstanceID identifies this process. It is not a secret: the backend compares it
+// across /health calls to notice a restart that wiped the in-memory hosts and streams.
+func newInstanceID() (string, error) {
+	bytes := make([]byte, 8)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
 // writeTokenSecurely writes the token to a file with protection against symlink attacks
 // Uses atomic write (temp file + rename) to prevent TOCTOU races and symlink exploits
 func writeTokenSecurely(path string, token string) error {
@@ -206,6 +216,11 @@ func main() {
 		log.Fatalf("Failed to write token file: %v", err)
 	}
 	log.Printf("Generated temporary auth token for stats service")
+
+	instanceID, err := newInstanceID()
+	if err != nil {
+		log.Fatalf("Failed to generate instance id: %v", err)
+	}
 	log.Printf("Configuration: port=%s, aggregation=%v, cache_size=%d",
 		config.Port, config.AggregationInterval, config.EventCacheSize)
 
@@ -319,6 +334,7 @@ func main() {
 		jsonResponse(w, map[string]interface{}{
 			"status":            "ok",
 			"service":           "dockmon-stats",
+			"instance_id":       instanceID,
 			"stats_streams":     streamManager.GetStreamCount(),
 			"event_hosts":       eventManager.GetActiveHosts(),
 			"event_connections": eventBroadcaster.GetConnectionCount(),

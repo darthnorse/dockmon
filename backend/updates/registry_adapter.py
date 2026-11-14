@@ -947,7 +947,6 @@ class RegistryAdapter:
         if mode == "latest":
             return f"{image}:latest"
 
-        # Parse semantic version
         # Match patterns like: 1.25.3, 1.25.3-alpine, 1.25, v1.25.3
         version_match = re.match(r"(v?)(\d+)(?:\.(\d+))?(?:\.(\d+))?(.*)$", tag)
         if not version_match:

@@ -954,20 +954,14 @@ class RegistryAdapter:
             # Not a version tag, return as-is
             return image_tag
 
-        prefix, major, minor_ver, patch_ver, suffix = version_match.groups()
+        prefix, major, minor_ver, _, suffix = version_match.groups()
 
-        if mode == "minor":
-            # Track minor+patch updates within major version (X.*)
-            # nginx:1.25.3 → nginx:1 (gets 1.26, 1.99, NOT 2.0)
-            return f"{image}:{prefix}{major}{suffix or ''}"
-        elif mode == "patch":
-            # Track patch updates only within minor version (X.Y.*)
-            # nginx:1.25.3 → nginx:1.25 (gets 1.25.4, NOT 1.26)
-            if minor_ver:
-                return f"{image}:{prefix}{major}.{minor_ver}{suffix or ''}"
-            else:
-                # Already major-only tag, fallback to minor mode
-                return f"{image}:{prefix}{major}{suffix or ''}"
+        # patch: nginx:1.25.3 → nginx:1.25; a major-only tag falls back to minor
+        if mode == "patch" and minor_ver:
+            return f"{image}:{prefix}{major}.{minor_ver}{suffix}"
+        # minor: nginx:1.25.3 → nginx:1 (gets 1.26, NOT 2.0)
+        if mode in ("minor", "patch"):
+            return f"{image}:{prefix}{major}{suffix}"
 
         return image_tag
 

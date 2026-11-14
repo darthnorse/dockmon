@@ -19,6 +19,10 @@ DIGEST_REF = "app@sha256:" + "a" * 64
      "registry:5000/app:latest"),
     ("localhost:5000/org/app", "localhost:5000/org/app:latest", "localhost:5000/org/app:latest",
      "localhost:5000/org/app:latest", "localhost:5000/org/app:latest"),
+    ("nginx:v1.25.3", "nginx:v1.25.3", "nginx:v1.25", "nginx:v1", "nginx:latest"),
+    ("app:v1.2.3-alpine", "app:v1.2.3-alpine", "app:v1.2-alpine", "app:v1-alpine", "app:latest"),
+    ("ghcr.io/pocket-id/pocket-id:v2", "ghcr.io/pocket-id/pocket-id:v2", "ghcr.io/pocket-id/pocket-id:v2",
+     "ghcr.io/pocket-id/pocket-id:v2", "ghcr.io/pocket-id/pocket-id:latest"),
 ])
 def test_floating_tag_table(image, exact, patch, minor, latest):
     adapter = RegistryAdapter()
@@ -26,11 +30,8 @@ def test_floating_tag_table(image, exact, patch, minor, latest):
     assert computed == [exact, patch, minor, latest]
 
 
-# The rows below pin defects rather than intent: the v prefix is dropped and a digest is read as a tag.
+# The rows below pin defects rather than intent: a digest is read as a tag.
 @pytest.mark.parametrize("image,mode,expected", [
-    ("nginx:v1.25.3", "exact", "nginx:v1.25.3"),
-    ("nginx:v1.25.3", "patch", "nginx:1.25"),
-    ("nginx:v1.25.3", "minor", "nginx:1"),
     (DIGEST_REF, "exact", DIGEST_REF),
     (DIGEST_REF, "patch", DIGEST_REF),
     (DIGEST_REF, "latest", "app@sha256:latest"),

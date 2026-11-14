@@ -423,3 +423,14 @@ async def test_oci_index_child_digest_is_matched_like_docker_list():
     result = await run_check(checker, container_dict())
 
     assert_subset(result, update_available=False)
+
+
+async def test_v_prefixed_tag_tracks_and_updates_to_its_own_tag_line():
+    client = FakeClient(repo_digests=repo_digests(CURRENT))
+    checker = make_checker({"app:v1": registry_result(LATEST, labels=version_labels("1.3.0"))}, client=client,
+                           record=update_record("minor"))
+
+    result = await run_check(checker, container_dict("app:v1.2.3", labels=version_labels("1.2.3")))
+
+    assert checker.registry.refs() == ["app:v1"]
+    assert_subset(result, update_available=True, latest_image="app:v1", latest_digest=LATEST)

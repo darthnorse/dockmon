@@ -195,22 +195,50 @@ class RegistryAdapter:
                 - tag: Tag name
             Or None if resolution fails
         """
-        # Check cache first
-        cache_key = f"{image_ref}:{platform}"
+        try:
+            registry, repository, tag = self._parse_image_ref(image_ref)
+        except Exception as e:
+            logger.error(f"Failed to resolve {image_ref}: {e}")
+            return None
+        return await self._resolve(image_ref, registry, repository, tag, platform, auth)
+
+    async def resolve_digest(
+        self,
+        image_ref: str,
+        image_digest: str,
+        platform: str = "linux/amd64",
+        auth: Optional[Dict] = None
+    ) -> Optional[Dict]:
+        """Resolve one digest in image_ref's repository (e.g. the running image); same result as resolve_tag."""
+        try:
+            registry, repository, _ = self._parse_image_ref(image_ref)
+        except Exception as e:
+            logger.error(f"Failed to resolve {image_digest} of {image_ref}: {e}")
+            return None
+        return await self._resolve(f"{repository}@{image_digest}", registry, repository, image_digest, platform, auth)
+
+    async def _resolve(
+        self,
+        ref_name: str,
+        registry: str,
+        repository: str,
+        reference: str,
+        platform: str,
+        auth: Optional[Dict],
+    ) -> Optional[Dict]:
+        """Fetch the manifest for a tag or digest, its config labels and its version annotation."""
+        cache_key = f"{ref_name}:{platform}"
         cached = self.cache.get(cache_key)
         if cached:
-            logger.debug(f"Cache hit for {image_ref}")
+            logger.debug(f"Cache hit for {ref_name}")
             return cached
 
         try:
-            # Parse image reference
-            registry, repository, tag = self._parse_image_ref(image_ref)
-
             # Get auth token if needed
             token = await self._get_auth_token(registry, repository, auth)
 
             # Fetch manifest
-            manifest_url = self._get_manifest_url(registry, repository, tag)
+            manifest_url = self._get_manifest_url(registry, repository, reference)
             digest, manifest = await self._fetch_manifest(
                 manifest_url, token, platform
             )
@@ -239,16 +267,16 @@ class RegistryAdapter:
                     },
                     "registry": registry,
                     "repository": repository,
-                    "tag": tag,
+                    "tag": reference,
                 }
                 self.cache.set(cache_key, result)
-                logger.info(f"Resolved {image_ref} → {digest[:16]}...")
+                logger.info(f"Resolved {ref_name} → {digest[:16]}...")
                 return result
 
         except TransientRegistryError:
             raise  # let callers distinguish transient (retryable) from definitive failures
         except Exception as e:
-            logger.error(f"Failed to resolve {image_ref}: {e}")
+            logger.error(f"Failed to resolve {ref_name}: {e}")
 
         return None
 

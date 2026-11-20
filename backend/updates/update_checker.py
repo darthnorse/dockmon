@@ -24,6 +24,7 @@ CACHE_TTL_LATEST = int(os.getenv('DOCKMON_CACHE_TTL_LATEST', 30 * 60))  # 30 min
 CACHE_TTL_PINNED = int(os.getenv('DOCKMON_CACHE_TTL_PINNED', 24 * 3600))  # 24 hours
 CACHE_TTL_FLOATING = int(os.getenv('DOCKMON_CACHE_TTL_FLOATING', 6 * 3600))  # 6 hours
 CACHE_TTL_DEFAULT = int(os.getenv('DOCKMON_CACHE_TTL_DEFAULT', 6 * 3600))  # 6 hours
+CACHE_TTL_DIGEST = int(os.getenv('DOCKMON_CACHE_TTL_DIGEST', 30 * 24 * 3600))  # 30 days: a digest never changes
 from updates.registry_adapter import get_registry_adapter, TransientRegistryError
 from updates.changelog_resolver import resolve_changelog_url
 from alerts.engine import resolve_update_available_alerts
@@ -476,10 +477,13 @@ class UpdateChecker:
             ).first()
 
         # The OCI annotation describes the image itself; a label may be inherited from its base image
-        registry_version = latest_manifest.get("annotated_version") or latest_manifest_labels.get("org.opencontainers.image.version")
-        current_version = self._known_current_version(
-            current_version, update_available, registry_version, current_digest, existing_record
-        )
+        annotated = latest_manifest.get("annotated_version")
+        registry_version = annotated or latest_manifest_labels.get("org.opencontainers.image.version")
+        if not update_available and registry_version:
+            current_version = registry_version
+        elif annotated:
+            # Compare like with like: the running image's own annotation, not its possibly inherited label
+            current_version = await self._running_image_version(image, current_digest, platform, auth)
 
         # Fallback to image tag when no version was published (Issue #178)
         latest_version = registry_version or self._extract_version_from_tag(floating_tag)
@@ -643,24 +647,30 @@ class UpdateChecker:
         ids.discard(None)
         return ids
 
-    @staticmethod
-    def _known_current_version(
-        label_version: Optional[str],
-        update_available: bool,
-        registry_version: Optional[str],
-        current_digest: str,
-        existing_record: Optional[ContainerUpdate],
-    ) -> Optional[str]:
-        """
-        Version of the running image. Images that publish it only as a registry annotation have
-        no label locally, so use what is known: the registry's version when the running image is the
-        latest one, else the version an earlier check stored for this same digest, else the label.
-        """
-        if not update_available and registry_version:
-            return registry_version
-        if existing_record and existing_record.current_digest == current_digest and existing_record.current_version:
-            return existing_record.current_version
-        return label_version
+    async def _running_image_version(self, image: str, image_digest: str, platform: str, auth) -> Optional[str]:
+        """Version of the running image's digest in the registry; cached for long, as a digest never changes."""
+        cache_key = f"{image_digest}:{platform}"
+        cached = self.db.get_cached_image_digest(cache_key)
+        if cached:
+            manifest = json.loads(cached["manifest_json"])
+        else:
+            try:
+                result = await self.registry.resolve_digest(image, image_digest, platform=platform, auth=auth)
+            except TransientRegistryError:
+                logger.warning(f"Transient registry failure resolving the running image {image_digest[:16]}...")
+                return None
+            if not result:
+                return None
+            manifest = result["manifest"]
+            self.db.cache_image_digest(
+                cache_key=cache_key,
+                digest=image_digest,
+                manifest_json=json.dumps(manifest),
+                registry_url=result["registry"],
+                ttl_seconds=CACHE_TTL_DIGEST,
+            )
+        labels = manifest.get("config", {}).get("config", {}).get("Labels", {}) or {}
+        return manifest.get("annotated_version") or labels.get("org.opencontainers.image.version")
 
     def _extract_version_from_tag(self, image_ref: str) -> Optional[str]:
         """

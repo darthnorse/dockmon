@@ -452,3 +452,16 @@ async def test_no_annotated_version_without_annotations(http):
     result = await RegistryAdapter().resolve_tag(IMAGE)
 
     assert result["manifest"]["annotated_version"] is None
+
+
+async def test_a_digest_resolves_to_its_annotated_version(http):
+    routes = index_routes(OCI_INDEX, OCI_MANIFEST)
+    child = {"schemaVersion": 2, "mediaType": OCI_MANIFEST, "config": DESCRIPTOR, "annotations": ANNOTATED}
+    routes[("GET", f"{BASE}/manifests/{AMD64}")] = FakeResponse(body=child)
+    routes[("GET", f"{BASE}/manifests/{TAG_DIGEST}")] = routes.pop(("GET", f"{BASE}/manifests/latest"))
+    http.routes.update(routes)
+
+    result = await RegistryAdapter().resolve_digest(IMAGE, TAG_DIGEST)
+
+    assert result["digest"] == TAG_DIGEST
+    assert result["manifest"]["annotated_version"] == "1.2.3"

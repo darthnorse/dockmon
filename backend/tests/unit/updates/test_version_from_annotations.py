@@ -1,4 +1,6 @@
 """Versions published only as OCI annotations: the latest one from the registry, the running one kept in the record."""
+import json
+
 import pytest
 
 from checker_fakes import (
@@ -7,13 +9,13 @@ from checker_fakes import (
     VERSION_LABEL,
     FakeClient,
     container_dict,
-    digest,
     make_checker,
     registry_result,
-    update_record,
 )
 from database import ContainerUpdate, DockerHostDB
 from updates.database_updater import update_container_records_after_update
+from updates.registry_adapter import TransientRegistryError
+from updates.update_checker import CACHE_TTL_DIGEST
 
 HOST_ID = "7be442c9-24bc-4047-b33a-41bbf51ea2f9"
 
@@ -59,23 +61,56 @@ class TestCheck:
 
         assert versions(result) == (False, "7.0.48-jammy", "7.0.48-jammy")
 
-    async def test_an_unchanged_digest_keeps_the_stored_version(self):
+    async def test_an_older_running_image_is_looked_up_and_cached(self):
         client = FakeClient(repo_digests=repo_digests(CURRENT))
-        record = update_record(current_digest=CURRENT, current_version="28.3.0")
-        checker = make_checker({"app:stable": annotated(LATEST, "28.4.0")}, client=client, record=record)
+        checker = make_checker({
+            "app:stable": annotated(LATEST, "28.4.0"),
+            f"app:stable@{CURRENT}": annotated(CURRENT, "28.3.0"),
+        }, client=client)
 
         result = await run_check(checker, container_dict())
 
         assert versions(result) == (True, "28.3.0", "28.4.0")
+        cached = {call.kwargs["cache_key"]: call.kwargs["ttl_seconds"] for call in checker.db.cache_image_digest.call_args_list}
+        assert cached[f"{CURRENT}:linux/amd64"] == CACHE_TTL_DIGEST
 
-    async def test_a_changed_digest_does_not_reuse_the_stored_version(self):
+    async def test_a_cached_running_version_needs_no_registry_request(self):
         client = FakeClient(repo_digests=repo_digests(CURRENT))
-        record = update_record(current_digest=digest("7"), current_version="27.0.0")
-        checker = make_checker({"app:stable": annotated(LATEST, "28.4.0")}, client=client, record=record)
+        checker = make_checker({"app:stable": annotated(LATEST, "28.4.0")}, client=client)
+        running = {"digest": CURRENT, "registry_url": "docker.io",
+                   "manifest_json": json.dumps(annotated(CURRENT, "28.3.0")["manifest"])}
+        checker.db.get_cached_image_digest.side_effect = lambda key: running if key == f"{CURRENT}:linux/amd64" else None
 
         result = await run_check(checker, container_dict())
 
-        assert versions(result) == (True, None, "28.4.0")
+        assert versions(result) == (True, "28.3.0", "28.4.0")
+        assert checker.registry.refs() == ["app:stable"]
+
+    async def test_an_inherited_label_does_not_hide_a_new_image(self):
+        # Both versions come from the images' own annotations, not Ubuntu's "22.04"
+        ubuntu = {VERSION_LABEL: "22.04"}
+        client = FakeClient(repo_digests=repo_digests(CURRENT), image_labels=ubuntu)
+        checker = make_checker({
+            "app:stable": annotated(LATEST, "7.0.48-jammy", labels=ubuntu),
+            f"app:stable@{CURRENT}": annotated(CURRENT, "7.0.47-jammy", labels=ubuntu),
+        }, client=client)
+
+        result = await run_check(checker, container_dict())
+
+        assert versions(result) == (True, "7.0.47-jammy", "7.0.48-jammy")
+
+    @pytest.mark.parametrize("lookup", [None, TransientRegistryError("rate limited")], ids=["not found", "transient"])
+    async def test_without_a_registry_version_the_inherited_label_is_not_used(self, lookup):
+        ubuntu = {VERSION_LABEL: "22.04"}
+        client = FakeClient(repo_digests=repo_digests(CURRENT), image_labels=ubuntu)
+        checker = make_checker({
+            "app:stable": annotated(LATEST, "7.0.48-jammy", labels=ubuntu),
+            f"app:stable@{CURRENT}": lookup,
+        }, client=client)
+
+        result = await run_check(checker, container_dict())
+
+        assert versions(result) == (True, None, "7.0.48-jammy")
 
     async def test_a_version_from_the_tag_does_not_replace_the_local_label(self):
         # No version from the registry (no annotation, no label): the tag's "1.25" is cruder than the label

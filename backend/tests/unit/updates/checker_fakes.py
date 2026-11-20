@@ -78,6 +78,9 @@ class FakeRegistry:
             raise route
         return route
 
+    async def resolve_digest(self, image_ref, image_digest, **kwargs):
+        return await self.resolve_tag(f"{image_ref}@{image_digest}", **kwargs)
+
     def refs(self):
         return [ref for ref, _ in self.calls]
 

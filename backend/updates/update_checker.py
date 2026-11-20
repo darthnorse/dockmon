@@ -24,6 +24,7 @@ CACHE_TTL_LATEST = int(os.getenv('DOCKMON_CACHE_TTL_LATEST', 30 * 60))  # 30 min
 CACHE_TTL_PINNED = int(os.getenv('DOCKMON_CACHE_TTL_PINNED', 24 * 3600))  # 24 hours
 CACHE_TTL_FLOATING = int(os.getenv('DOCKMON_CACHE_TTL_FLOATING', 6 * 3600))  # 6 hours
 CACHE_TTL_DEFAULT = int(os.getenv('DOCKMON_CACHE_TTL_DEFAULT', 6 * 3600))  # 6 hours
+CACHE_TTL_DIGEST = int(os.getenv('DOCKMON_CACHE_TTL_DIGEST', 30 * 24 * 3600))  # 30 days: a digest never changes
 from updates.registry_adapter import get_registry_adapter, TransientRegistryError
 from updates.changelog_resolver import resolve_changelog_url
 from alerts.engine import resolve_update_available_alerts
@@ -447,6 +448,15 @@ class UpdateChecker:
             # Fall back to simple comparison (handles case where repo_digests not available)
             update_available = current_digest != latest_digest
 
+        # A new index can differ only for other platforms (e.g. a late riscv64 build): then this
+        # host's image is the same. The image store keeps only the index digest, so ask the registry.
+        running_manifest = None
+        if update_available and platform_digest:
+            running_manifest = await self._running_image_manifest(image, current_digest, platform, auth)
+            if running_manifest and self._extract_platform_digest(running_manifest, platform) == platform_digest:
+                update_available = False
+                logger.info(f"[{container['name']}] {floating_tag} changed only for other platforms; the {platform} image is the same")
+
         verified_image = None
         stale = False
         if running and running.image_id and platform_verified:
@@ -475,14 +485,21 @@ class UpdateChecker:
                 container_id=composite_key
             ).first()
 
-        # Extract latest version from OCI labels
-        latest_version = latest_manifest_labels.get("org.opencontainers.image.version")
+        # The OCI annotation describes the image itself; a label may be inherited from its base image
+        annotated = latest_manifest.get("annotated_version")
+        registry_version = annotated or latest_manifest_labels.get("org.opencontainers.image.version")
+        if not update_available and registry_version:
+            current_version = registry_version
+        elif annotated:
+            # Compare like with like: the running image's own annotation, not its possibly inherited label
+            if running_manifest is None:
+                running_manifest = await self._running_image_manifest(image, current_digest, platform, auth)
+            current_version = self._manifest_version(running_manifest)
 
-        # Fallback to image tag when OCI version label is missing (Issue #178)
+        # Fallback to image tag when no version was published (Issue #178)
+        latest_version = registry_version or self._extract_version_from_tag(floating_tag)
         if not current_version:
             current_version = self._extract_version_from_tag(image)
-        if not latest_version:
-            latest_version = self._extract_version_from_tag(floating_tag)
 
         if current_version or latest_version:
             logger.debug(f"Version info: current={current_version}, latest={latest_version}")
@@ -640,6 +657,36 @@ class UpdateChecker:
         ids = {index_digest, self._extract_platform_digest(manifest, platform), self._config_digest(manifest)}
         ids.discard(None)
         return ids
+
+    async def _running_image_manifest(self, image: str, image_digest: str, platform: str, auth) -> Optional[Dict]:
+        """The running image's digest resolved in the registry; cached for long, as a digest never changes."""
+        cache_key = f"{image_digest}:{platform}"
+        cached = self.db.get_cached_image_digest(cache_key)
+        if cached:
+            return json.loads(cached["manifest_json"])
+        try:
+            result = await self.registry.resolve_digest(image, image_digest, platform=platform, auth=auth)
+        except TransientRegistryError:
+            logger.warning(f"Transient registry failure resolving the running image {image_digest[:16]}...")
+            return None
+        if not result:
+            return None
+        self.db.cache_image_digest(
+            cache_key=cache_key,
+            digest=image_digest,
+            manifest_json=json.dumps(result["manifest"]),
+            registry_url=result["registry"],
+            ttl_seconds=CACHE_TTL_DIGEST,
+        )
+        return result["manifest"]
+
+    @staticmethod
+    def _manifest_version(manifest: Optional[Dict]) -> Optional[str]:
+        """Version of a resolved manifest: its annotation, else its config label."""
+        if not manifest:
+            return None
+        labels = manifest.get("config", {}).get("config", {}).get("Labels", {}) or {}
+        return manifest.get("annotated_version") or labels.get("org.opencontainers.image.version")
 
     def _extract_version_from_tag(self, image_ref: str) -> Optional[str]:
         """

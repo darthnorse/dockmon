@@ -9,7 +9,7 @@ import aiohttp
 import pytest
 
 from checker_fakes import DOCKER_LIST, DOCKER_MANIFEST, OCI_INDEX, VERSION_LABEL, digest
-from updates.registry_adapter import RegistryAdapter
+from updates.registry_adapter import RegistryAdapter, TransientRegistryError
 
 BASE = "https://registry.example.com/v2/org/app"
 IMAGE = "registry.example.com/org/app:latest"
@@ -385,3 +385,51 @@ async def test_config_digest_comes_from_the_requested_platform(http):
     result = await RegistryAdapter().resolve_tag(IMAGE, platform="linux/arm64")
 
     assert result["manifest"]["config_digest"] == arm_config
+
+
+TRANSIENT_STATUSES = [429, 503]
+
+
+@pytest.mark.parametrize("status", TRANSIENT_STATUSES)
+async def test_single_manifest_blob_rate_limit_is_transient(http, status):
+    http.routes.update(single_manifest_routes())
+    http.routes[("GET", f"{BASE}/blobs/{CONFIG}")] = FakeResponse(status=status)
+
+    with pytest.raises(TransientRegistryError):
+        await RegistryAdapter().resolve_tag(IMAGE)
+
+
+@pytest.mark.parametrize("status", TRANSIENT_STATUSES)
+async def test_index_child_manifest_rate_limit_is_transient(http, status):
+    http.routes.update(index_routes(DOCKER_LIST, DOCKER_MANIFEST))
+    http.routes[("GET", f"{BASE}/manifests/{AMD64}")] = FakeResponse(status=status)
+
+    with pytest.raises(TransientRegistryError):
+        await RegistryAdapter().resolve_tag(IMAGE)
+
+
+@pytest.mark.parametrize("status", TRANSIENT_STATUSES)
+async def test_index_child_blob_rate_limit_is_transient(http, status):
+    http.routes.update(index_routes(DOCKER_LIST, DOCKER_MANIFEST))
+    http.routes[("GET", f"{BASE}/blobs/{CONFIG}")] = FakeResponse(status=status)
+
+    with pytest.raises(TransientRegistryError):
+        await RegistryAdapter().resolve_tag(IMAGE)
+
+
+async def test_rate_limited_child_manifest_is_not_cached_without_labels(http):
+    """A 429 on the platform manifest must not leave an empty config in the cache: the next check
+    has to fetch the labels again, or the latest version stays unknown for the cache's lifetime."""
+    http.routes.update(index_routes(DOCKER_LIST, DOCKER_MANIFEST))
+    child_route = ("GET", f"{BASE}/manifests/{AMD64}")
+    child_manifest = http.routes[child_route]
+    http.routes[child_route] = FakeResponse(status=429)
+    adapter = RegistryAdapter()
+
+    with pytest.raises(TransientRegistryError):
+        await adapter.resolve_tag(IMAGE)
+
+    http.routes[child_route] = child_manifest
+    result = await adapter.resolve_tag(IMAGE)
+
+    assert result["manifest"]["config"] == CONFIG_BLOB

@@ -88,6 +88,11 @@ def update_container_records_after_update(
                 record.update_available = False
                 record.check_status = None
                 record.current_image = new_image
+                # The version is often only a registry annotation, not a label the next check can read
+                if new_digest and new_digest == record.latest_digest:
+                    record.current_version = record.latest_version
+                else:
+                    record.current_version = None
                 record.current_digest = new_digest
                 record.last_updated_at = now
                 record.updated_at = now

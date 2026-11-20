@@ -385,3 +385,83 @@ async def test_config_digest_comes_from_the_requested_platform(http):
     result = await RegistryAdapter().resolve_tag(IMAGE, platform="linux/arm64")
 
     assert result["manifest"]["config_digest"] == arm_config
+
+
+ANNOTATED = {VERSION_LABEL: "1.2.3"}
+
+
+def annotated_index_routes(index_annotations):
+    routes = index_routes(OCI_INDEX, OCI_MANIFEST)
+    descriptors = [{"digest": AMD64, "platform": {"os": "linux", "architecture": "amd64"}}]
+    index = {"schemaVersion": 2, "mediaType": OCI_INDEX, "manifests": descriptors, "annotations": index_annotations}
+    routes[("GET", f"{BASE}/manifests/latest")] = FakeResponse(body=index, headers={"Docker-Content-Digest": TAG_DIGEST})
+    return routes
+
+
+async def test_version_from_the_platform_manifest_annotations(http):
+    http.routes.update(index_routes(DOCKER_LIST, OCI_MANIFEST))
+    child = {"schemaVersion": 2, "mediaType": OCI_MANIFEST, "config": DESCRIPTOR, "annotations": ANNOTATED}
+    http.routes[("GET", f"{BASE}/manifests/{AMD64}")] = FakeResponse(body=child)
+
+    result = await RegistryAdapter().resolve_tag(IMAGE)
+
+    assert result["manifest"]["annotated_version"] == "1.2.3"
+
+
+async def test_version_from_the_platform_descriptor_in_the_index(http):
+    descriptors = [{"digest": AMD64, "platform": {"os": "linux", "architecture": "amd64"}, "annotations": ANNOTATED}]
+    http.routes.update(index_routes(OCI_INDEX, OCI_MANIFEST, descriptors=descriptors))
+
+    result = await RegistryAdapter().resolve_tag(IMAGE)
+
+    assert result["manifest"]["annotated_version"] == "1.2.3"
+
+
+async def test_version_from_the_index_annotations(http):
+    http.routes.update(annotated_index_routes(ANNOTATED))
+
+    result = await RegistryAdapter().resolve_tag(IMAGE)
+
+    assert result["manifest"]["annotated_version"] == "1.2.3"
+
+
+async def test_version_from_a_single_manifest_annotations(http):
+    http.routes.update(single_manifest_routes())
+    manifest = {"schemaVersion": 2, "mediaType": OCI_MANIFEST, "config": DESCRIPTOR, "annotations": ANNOTATED}
+    http.routes[("GET", f"{BASE}/manifests/latest")] = FakeResponse(body=manifest, headers={"Docker-Content-Digest": TAG_DIGEST})
+
+    result = await RegistryAdapter().resolve_tag(IMAGE)
+
+    assert result["manifest"]["annotated_version"] == "1.2.3"
+
+
+async def test_the_platform_manifest_annotation_wins_over_the_index(http):
+    routes = annotated_index_routes({VERSION_LABEL: "1"})
+    child = {"schemaVersion": 2, "mediaType": OCI_MANIFEST, "config": DESCRIPTOR, "annotations": ANNOTATED}
+    routes[("GET", f"{BASE}/manifests/{AMD64}")] = FakeResponse(body=child)
+    http.routes.update(routes)
+
+    result = await RegistryAdapter().resolve_tag(IMAGE)
+
+    assert result["manifest"]["annotated_version"] == "1.2.3"
+
+
+async def test_no_annotated_version_without_annotations(http):
+    http.routes.update(index_routes(DOCKER_LIST, DOCKER_MANIFEST))
+
+    result = await RegistryAdapter().resolve_tag(IMAGE)
+
+    assert result["manifest"]["annotated_version"] is None
+
+
+async def test_a_digest_resolves_to_its_annotated_version(http):
+    routes = index_routes(OCI_INDEX, OCI_MANIFEST)
+    child = {"schemaVersion": 2, "mediaType": OCI_MANIFEST, "config": DESCRIPTOR, "annotations": ANNOTATED}
+    routes[("GET", f"{BASE}/manifests/{AMD64}")] = FakeResponse(body=child)
+    routes[("GET", f"{BASE}/manifests/{TAG_DIGEST}")] = routes.pop(("GET", f"{BASE}/manifests/latest"))
+    http.routes.update(routes)
+
+    result = await RegistryAdapter().resolve_digest(IMAGE, TAG_DIGEST)
+
+    assert result["digest"] == TAG_DIGEST
+    assert result["manifest"]["annotated_version"] == "1.2.3"

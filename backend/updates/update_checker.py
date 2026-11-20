@@ -448,6 +448,15 @@ class UpdateChecker:
             # Fall back to simple comparison (handles case where repo_digests not available)
             update_available = current_digest != latest_digest
 
+        # A new index can differ only for other platforms (e.g. a late riscv64 build): then this
+        # host's image is the same. The image store keeps only the index digest, so ask the registry.
+        running_manifest = None
+        if update_available and platform_digest:
+            running_manifest = await self._running_image_manifest(image, current_digest, platform, auth)
+            if running_manifest and self._extract_platform_digest(running_manifest, platform) == platform_digest:
+                update_available = False
+                logger.info(f"[{container['name']}] {floating_tag} changed only for other platforms; the {platform} image is the same")
+
         verified_image = None
         stale = False
         if running and running.image_id and platform_verified:
@@ -483,7 +492,9 @@ class UpdateChecker:
             current_version = registry_version
         elif annotated:
             # Compare like with like: the running image's own annotation, not its possibly inherited label
-            current_version = await self._running_image_version(image, current_digest, platform, auth)
+            if running_manifest is None:
+                running_manifest = await self._running_image_manifest(image, current_digest, platform, auth)
+            current_version = self._manifest_version(running_manifest)
 
         # Fallback to image tag when no version was published (Issue #178)
         latest_version = registry_version or self._extract_version_from_tag(floating_tag)
@@ -647,28 +658,33 @@ class UpdateChecker:
         ids.discard(None)
         return ids
 
-    async def _running_image_version(self, image: str, image_digest: str, platform: str, auth) -> Optional[str]:
-        """Version of the running image's digest in the registry; cached for long, as a digest never changes."""
+    async def _running_image_manifest(self, image: str, image_digest: str, platform: str, auth) -> Optional[Dict]:
+        """The running image's digest resolved in the registry; cached for long, as a digest never changes."""
         cache_key = f"{image_digest}:{platform}"
         cached = self.db.get_cached_image_digest(cache_key)
         if cached:
-            manifest = json.loads(cached["manifest_json"])
-        else:
-            try:
-                result = await self.registry.resolve_digest(image, image_digest, platform=platform, auth=auth)
-            except TransientRegistryError:
-                logger.warning(f"Transient registry failure resolving the running image {image_digest[:16]}...")
-                return None
-            if not result:
-                return None
-            manifest = result["manifest"]
-            self.db.cache_image_digest(
-                cache_key=cache_key,
-                digest=image_digest,
-                manifest_json=json.dumps(manifest),
-                registry_url=result["registry"],
-                ttl_seconds=CACHE_TTL_DIGEST,
-            )
+            return json.loads(cached["manifest_json"])
+        try:
+            result = await self.registry.resolve_digest(image, image_digest, platform=platform, auth=auth)
+        except TransientRegistryError:
+            logger.warning(f"Transient registry failure resolving the running image {image_digest[:16]}...")
+            return None
+        if not result:
+            return None
+        self.db.cache_image_digest(
+            cache_key=cache_key,
+            digest=image_digest,
+            manifest_json=json.dumps(result["manifest"]),
+            registry_url=result["registry"],
+            ttl_seconds=CACHE_TTL_DIGEST,
+        )
+        return result["manifest"]
+
+    @staticmethod
+    def _manifest_version(manifest: Optional[Dict]) -> Optional[str]:
+        """Version of a resolved manifest: its annotation, else its config label."""
+        if not manifest:
+            return None
         labels = manifest.get("config", {}).get("config", {}).get("Labels", {}) or {}
         return manifest.get("annotated_version") or labels.get("org.opencontainers.image.version")
 

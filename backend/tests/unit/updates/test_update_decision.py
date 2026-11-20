@@ -66,7 +66,11 @@ async def test_platform_child_digest_in_repo_digests_means_no_update():
 
 async def test_index_and_child_missing_from_repo_digests_means_update():
     client = FakeClient(repo_digests=repo_digests(CURRENT, digest("7")))
-    checker = make_checker({"app:stable": registry_result(LATEST, manifest=index_manifest())}, client=client)
+    running_index = registry_result(CURRENT, manifest=index_manifest(amd64=digest("8")))
+    checker = make_checker({
+        "app:stable": registry_result(LATEST, manifest=index_manifest()),
+        f"app:stable@{CURRENT}": running_index,
+    }, client=client)
 
     result = await run_check(checker, container_dict())
 
@@ -434,3 +438,43 @@ async def test_v_prefixed_tag_tracks_and_updates_to_its_own_tag_line():
 
     assert checker.registry.refs() == ["app:v1"]
     assert_subset(result, update_available=True, latest_image="app:v1", latest_digest=LATEST)
+
+
+async def test_an_index_changed_only_for_other_platforms_is_not_an_update():
+    # Same amd64 image in both indexes; only the arm64 entry was rebuilt (e.g. a late riscv64 build)
+    client = FakeClient(repo_digests=repo_digests(CURRENT))
+    running_index = registry_result(CURRENT, manifest=index_manifest(arm64=digest("8")))
+    checker = make_checker({
+        "app:stable": registry_result(LATEST, manifest=index_manifest()),
+        f"app:stable@{CURRENT}": running_index,
+    }, client=client)
+
+    result = await run_check(checker, container_dict())
+
+    assert_subset(result, update_available=False, current_digest=CURRENT, latest_digest=LATEST)
+
+
+async def test_a_changed_entry_for_this_hosts_platform_is_an_update():
+    # Same amd64 entry, but this host is arm64 and its entry changed
+    client = FakeClient(repo_digests=repo_digests(CURRENT), architecture="arm64")
+    running_index = registry_result(CURRENT, manifest=index_manifest(arm64=digest("8")))
+    checker = make_checker({
+        "app:stable": registry_result(LATEST, manifest=index_manifest()),
+        f"app:stable@{CURRENT}": running_index,
+    }, client=client)
+
+    result = await run_check(checker, container_dict())
+
+    assert_subset(result, update_available=True)
+
+
+async def test_an_unresolvable_running_index_keeps_the_update():
+    client = FakeClient(repo_digests=repo_digests(CURRENT))
+    checker = make_checker({
+        "app:stable": registry_result(LATEST, manifest=index_manifest()),
+        f"app:stable@{CURRENT}": None,
+    }, client=client)
+
+    result = await run_check(checker, container_dict())
+
+    assert_subset(result, update_available=True)

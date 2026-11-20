@@ -118,10 +118,12 @@ def evidence(image_id, ref="app:latest", platform="linux/amd64"):
     return json.dumps({"image_id": image_id, "platform": platform, "ref": ref}, sort_keys=True)
 
 
-def update_record(mode="exact", verified_image=None):
+def update_record(mode="exact", verified_image=None, current_digest=None, current_version=None):
     return SimpleNamespace(
         floating_tag_mode=mode,
         verified_image=verified_image,
+        current_digest=current_digest,
+        current_version=current_version,
         changelog_url=None,
         changelog_source=None,
         changelog_checked_at=None,

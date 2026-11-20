@@ -475,14 +475,16 @@ class UpdateChecker:
                 container_id=composite_key
             ).first()
 
-        # Extract latest version from OCI labels
-        latest_version = latest_manifest_labels.get("org.opencontainers.image.version")
+        # The OCI annotation describes the image itself; a label may be inherited from its base image
+        registry_version = latest_manifest.get("annotated_version") or latest_manifest_labels.get("org.opencontainers.image.version")
+        current_version = self._known_current_version(
+            current_version, update_available, registry_version, current_digest, existing_record
+        )
 
-        # Fallback to image tag when OCI version label is missing (Issue #178)
+        # Fallback to image tag when no version was published (Issue #178)
+        latest_version = registry_version or self._extract_version_from_tag(floating_tag)
         if not current_version:
             current_version = self._extract_version_from_tag(image)
-        if not latest_version:
-            latest_version = self._extract_version_from_tag(floating_tag)
 
         if current_version or latest_version:
             logger.debug(f"Version info: current={current_version}, latest={latest_version}")
@@ -640,6 +642,25 @@ class UpdateChecker:
         ids = {index_digest, self._extract_platform_digest(manifest, platform), self._config_digest(manifest)}
         ids.discard(None)
         return ids
+
+    @staticmethod
+    def _known_current_version(
+        label_version: Optional[str],
+        update_available: bool,
+        registry_version: Optional[str],
+        current_digest: str,
+        existing_record: Optional[ContainerUpdate],
+    ) -> Optional[str]:
+        """
+        Version of the running image. Images that publish it only as a registry annotation have
+        no label locally, so use what is known: the registry's version when the running image is the
+        latest one, else the version an earlier check stored for this same digest, else the label.
+        """
+        if not update_available and registry_version:
+            return registry_version
+        if existing_record and existing_record.current_digest == current_digest and existing_record.current_version:
+            return existing_record.current_version
+        return label_version
 
     def _extract_version_from_tag(self, image_ref: str) -> Optional[str]:
         """

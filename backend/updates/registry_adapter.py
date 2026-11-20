@@ -54,6 +54,17 @@ class TransientRegistryError(Exception):
     as 'image not in any registry'."""
 
 
+OCI_VERSION_KEY = "org.opencontainers.image.version"
+
+
+def annotated_version(*annotation_sets: Optional[Dict]) -> Optional[str]:
+    """The first OCI version annotation in the given sets, most specific first; None if there is none."""
+    for annotations in annotation_sets:
+        if annotations and annotations.get(OCI_VERSION_KEY):
+            return annotations[OCI_VERSION_KEY]
+    return None
+
+
 class RegistryCache:
     """Simple in-memory cache with TTL for registry responses"""
 
@@ -206,8 +217,14 @@ class RegistryAdapter:
 
             if digest and manifest:
                 # Fetch config blob to get Labels (for OCI version extraction)
-                config_data, config_digest = await self._fetch_config_blob(
+                config_data, config_digest, image_annotations = await self._fetch_config_blob(
                     registry, repository, manifest, token, platform
+                )
+                # Many images (Docker official images, gitea, ...) publish their version only as an
+                # annotation: on the platform manifest, its descriptor in the index, or the index itself
+                descriptor = match_platform_manifest(manifest, platform) or {}
+                version = annotated_version(
+                    image_annotations, descriptor.get("annotations"), manifest.get("annotations")
                 )
 
                 result = {
@@ -218,6 +235,7 @@ class RegistryAdapter:
                         # Image ID under the classic image store; lets callers match a
                         # container's image ID against the registry (see update_checker)
                         "config_digest": config_digest,
+                        "annotated_version": version,
                     },
                     "registry": registry,
                     "repository": repository,
@@ -774,12 +792,13 @@ class RegistryAdapter:
         manifest: Dict,
         token: Optional[str],
         platform: str = "linux/amd64"
-    ) -> Tuple[Optional[Dict], Optional[str]]:
+    ) -> Tuple[Optional[Dict], Optional[str], Optional[Dict]]:
         """
         Fetch image config blob to extract Labels (for OCI version detection).
 
-        Returns (config dict, config digest). The digest comes from the descriptor, so it is
-        returned even when fetching the blob itself fails.
+        Returns (config dict, config digest, platform manifest annotations). The digest comes from
+        the descriptor, so it is returned even when fetching the blob itself fails. The annotations
+        are only set for a manifest list; a single manifest's own annotations are on the manifest.
         """
         # Get config digest from manifest
         config_descriptor = manifest.get("config", {})
@@ -796,7 +815,7 @@ class RegistryAdapter:
                 )
             else:
                 logger.info(f"No config digest in manifest for {repository} (type: {manifest_type})")
-            return None, None
+            return None, None, None
 
         # Normalize registry URL
         normalized_registry = self._normalize_registry_url(registry)
@@ -816,17 +835,17 @@ class RegistryAdapter:
                         # Use content_type=None to bypass aiohttp's content-type validation
                         config = await response.json(content_type=None)
                         logger.info(f"Fetched config blob for {repository}")
-                        return config, config_digest
+                        return config, config_digest, None
                     else:
                         logger.warning(f"Failed to fetch config blob: {response.status}")
-                        return None, config_digest
+                        return None, config_digest, None
 
         except asyncio.TimeoutError:
             logger.warning(f"Timeout fetching config blob for {repository}")
-            return None, config_digest
+            return None, config_digest, None
         except Exception as e:
             logger.warning(f"Error fetching config blob: {e}")
-            return None, config_digest
+            return None, config_digest, None
 
     async def _fetch_config_from_manifest_list(
         self,
@@ -835,7 +854,7 @@ class RegistryAdapter:
         manifest_list: Dict,
         token: Optional[str],
         platform: str
-    ) -> Tuple[Optional[Dict], Optional[str]]:
+    ) -> Tuple[Optional[Dict], Optional[str], Optional[Dict]]:
         """
         Fetch config blob from a manifest list by first getting the platform-specific manifest.
 
@@ -847,12 +866,12 @@ class RegistryAdapter:
 
         if not platform_manifest_descriptor:
             logger.warning(f"No manifest found for platform {platform} in {repository}")
-            return None, None
+            return None, None, None
 
         platform_digest = platform_manifest_descriptor.get("digest")
         if not platform_digest:
             logger.warning(f"Platform manifest descriptor missing digest for {repository}")
-            return None, None
+            return None, None, None
 
         logger.info(f"Found platform-specific manifest for {repository}: {platform_digest[:16]}...")
 
@@ -871,11 +890,13 @@ class RegistryAdapter:
             headers["Authorization"] = token
 
         config_digest = None
+        annotations = None
         try:
             async with aiohttp.ClientSession(trust_env=True) as session:
                 async with session.get(manifest_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
                     if response.status == 200:
                         platform_manifest = await response.json()
+                        annotations = platform_manifest.get("annotations")
                         logger.info(f"Fetched platform-specific manifest for {repository}")
 
                         # Now get the config blob from this manifest
@@ -884,7 +905,7 @@ class RegistryAdapter:
 
                         if not config_digest:
                             logger.warning(f"Platform-specific manifest has no config digest for {repository}")
-                            return None, None
+                            return None, None, None
 
                         # Fetch the config blob
                         blob_url = f"{normalized_registry}/v2/{repository}/blobs/{config_digest}"
@@ -896,20 +917,20 @@ class RegistryAdapter:
                             if blob_response.status == 200:
                                 config = await blob_response.json(content_type=None)
                                 logger.info(f"Fetched config blob from platform-specific manifest for {repository}")
-                                return config, config_digest
+                                return config, config_digest, annotations
                             else:
                                 logger.warning(f"Failed to fetch config blob: {blob_response.status}")
-                                return None, config_digest
+                                return None, config_digest, annotations
                     else:
                         logger.warning(f"Failed to fetch platform-specific manifest: {response.status}")
-                        return None, None
+                        return None, None, None
 
         except asyncio.TimeoutError:
             logger.warning(f"Timeout fetching platform-specific config for {repository}")
-            return None, config_digest
+            return None, config_digest, annotations
         except Exception as e:
             logger.warning(f"Error fetching platform-specific config: {e}")
-            return None, config_digest
+            return None, config_digest, annotations
 
     def compute_floating_tag(self, image_tag: str, mode: str) -> str:
         """

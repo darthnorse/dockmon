@@ -54,6 +54,14 @@ class TransientRegistryError(Exception):
     as 'image not in any registry'."""
 
 
+def _raise_if_transient(status: int, url: str) -> None:
+    """Raise TransientRegistryError for a status that means "try again later": rate limit or server error."""
+    if status == 429:
+        raise TransientRegistryError(f"rate limited (429): {url}")
+    if status >= 500:
+        raise TransientRegistryError(f"server error {status}: {url}")
+
+
 class RegistryCache:
     """Simple in-memory cache with TTL for registry responses"""
 
@@ -818,9 +826,12 @@ class RegistryAdapter:
                         logger.info(f"Fetched config blob for {repository}")
                         return config, config_digest
                     else:
+                        _raise_if_transient(response.status, blob_url)
                         logger.warning(f"Failed to fetch config blob: {response.status}")
                         return None, config_digest
 
+        except TransientRegistryError:
+            raise
         except asyncio.TimeoutError:
             logger.warning(f"Timeout fetching config blob for {repository}")
             return None, config_digest
@@ -898,12 +909,16 @@ class RegistryAdapter:
                                 logger.info(f"Fetched config blob from platform-specific manifest for {repository}")
                                 return config, config_digest
                             else:
+                                _raise_if_transient(blob_response.status, blob_url)
                                 logger.warning(f"Failed to fetch config blob: {blob_response.status}")
                                 return None, config_digest
                     else:
+                        _raise_if_transient(response.status, manifest_url)
                         logger.warning(f"Failed to fetch platform-specific manifest: {response.status}")
                         return None, None
 
+        except TransientRegistryError:
+            raise
         except asyncio.TimeoutError:
             logger.warning(f"Timeout fetching platform-specific config for {repository}")
             return None, config_digest
